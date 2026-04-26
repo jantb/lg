@@ -196,13 +196,10 @@ pub(crate) fn run_conflict_llm(state: &mut AppState) {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let res = crate::git::conflict_bundle(&conflicts, &log)
-            .and_then(crate::ollama::resolve_merge_conflicts)
-            .and_then(|patch| crate::git::apply_patch_text(&patch).map(|_| patch));
+            .and_then(crate::ollama::resolve_merge_conflicts);
         match res {
             Ok(patch) => {
-                let _ = tx.send(WorkflowMsg::Done(format!(
-                    "LLM patch applied. Review changes, then press v to validate.\n\n{patch}"
-                )));
+                let _ = tx.send(WorkflowMsg::Patch(patch));
             }
             Err(e) => {
                 let _ = tx.send(WorkflowMsg::Error(e.to_string()));
@@ -215,6 +212,25 @@ pub(crate) fn run_conflict_llm(state: &mut AppState) {
         label: "LLM conflict resolution".to_string(),
     });
     state.set_status("asking LLM to resolve conflicts\u{2026}", false);
+}
+
+pub(crate) fn apply_pending_llm_patch(state: &mut AppState) {
+    let Some(patch) = state.pending_llm_patch.clone() else {
+        state.set_status("no LLM patch to apply", true);
+        return;
+    };
+    match crate::git::apply_patch_text(&patch) {
+        Ok(()) => {
+            state.pending_llm_patch = None;
+            state.conflict_log =
+                "LLM patch applied. Review, stage resolved files, then validate.".to_string();
+            state.set_status("LLM patch applied", false);
+        }
+        Err(e) => {
+            state.conflict_log = e.to_string();
+            state.set_status("LLM patch failed", true);
+        }
+    }
 }
 
 pub(crate) fn run_conflict_validation(state: &mut AppState) {
@@ -854,20 +870,17 @@ impl App {
     }
 
     fn drain_workflow_job(&mut self) -> Result<()> {
-        let mut finished: Option<std::result::Result<String, String>> = None;
+        let mut finished: Option<WorkflowMsg> = None;
         if let Some(job) = self.state.workflow_job.as_mut() {
             while let Ok(msg) = job.rx.try_recv() {
-                match msg {
-                    WorkflowMsg::Done(s) => finished = Some(Ok(s)),
-                    WorkflowMsg::Error(s) => finished = Some(Err(s)),
-                }
+                finished = Some(msg);
             }
             job.spinner = job.spinner.wrapping_add(1);
         }
         if let Some(res) = finished {
             self.state.workflow_job = None;
             match res {
-                Ok(s) => {
+                WorkflowMsg::Done(s) => {
                     if matches!(self.state.modal, Modal::Conflict) {
                         self.state.conflict_log = s.clone();
                     } else {
@@ -875,7 +888,14 @@ impl App {
                     }
                     self.state.set_status(first_status_line(&s), false);
                 }
-                Err(e) => {
+                WorkflowMsg::Patch(patch) => {
+                    self.state.pending_llm_patch = Some(patch);
+                    self.state.conflict_log =
+                        "LLM patch ready. Review preview and press p to apply.".to_string();
+                    self.state.modal = Modal::Conflict;
+                    self.state.set_status("LLM patch ready", false);
+                }
+                WorkflowMsg::Error(e) => {
                     if let Ok(conflicts) = crate::git::conflicted_files() {
                         if !conflicts.is_empty() {
                             self.state.conflicts = conflicts;

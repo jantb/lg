@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use crate::{app, state::AppState, ui};
+use crate::{app, git::ConflictChoice, state::AppState, ui};
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let w = (area.width * 8 / 10).clamp(72, 140).min(area.width);
@@ -63,14 +63,42 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     }
     frame.render_stateful_widget(list, body[0], &mut list_state);
 
-    let log = if state.conflict_log.trim().is_empty() {
-        "No validation log yet. Press v to run cargo/gradle validation.".to_string()
+    let detail = if let Some(patch) = &state.pending_llm_patch {
+        format!("LLM patch preview. Press p to apply.\n\n{patch}")
+    } else if let Some(path) = state.conflicts.get(state.conflict_idx) {
+        match crate::git::conflict_hunks(path) {
+            Ok(hunks) if !hunks.is_empty() => {
+                let idx = state.conflict_hunk_idx.min(hunks.len() - 1);
+                let h = &hunks[idx];
+                let mut text = format!("{}  hunk {} of {}\n\n", path, idx + 1, hunks.len());
+                text.push_str("<<<<<<< ours\n");
+                text.push_str(&h.ours);
+                if let Some(base) = &h.base {
+                    text.push_str("||||||| base\n");
+                    text.push_str(base);
+                }
+                text.push_str("======= theirs\n");
+                text.push_str(&h.theirs);
+                text.push_str(">>>>>>> theirs\n");
+                text
+            }
+            Ok(_) => {
+                if state.conflict_log.trim().is_empty() {
+                    format!("{path}\n\nNo conflict markers remain. Press s to stage this file.")
+                } else {
+                    state.conflict_log.clone()
+                }
+            }
+            Err(e) => format!("failed to read conflict hunks: {e}"),
+        }
+    } else if state.conflict_log.trim().is_empty() {
+        "No conflicted file selected.".to_string()
     } else {
         state.conflict_log.clone()
     };
     frame.render_widget(
-        Paragraph::new(log)
-            .block(ui::bordered("LLM / Validation Log"))
+        Paragraph::new(detail)
+            .block(ui::bordered("Merge Editor / Preview"))
             .wrap(Wrap { trim: false }),
         body[1],
     );
@@ -78,7 +106,15 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let controls = vec![
         Line::from(vec![
             Span::styled("l", Style::default().fg(Color::Cyan)),
-            Span::raw(" ask LLM  "),
+            Span::raw(" LLM  "),
+            Span::styled("p", Style::default().fg(Color::Cyan)),
+            Span::raw(" apply patch  "),
+            Span::styled("o/t/b", Style::default().fg(Color::Yellow)),
+            Span::raw(" ours/theirs/both  "),
+            Span::styled("[/]", Style::default().fg(Color::Yellow)),
+            Span::raw(" hunk  "),
+            Span::styled("s", Style::default().fg(Color::Green)),
+            Span::raw(" stage  "),
             Span::styled("v", Style::default().fg(Color::Green)),
             Span::raw(" validate  "),
             Span::styled("c", Style::default().fg(Color::Yellow)),
@@ -103,11 +139,24 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Char('j') | KeyCode::Down => {
             if state.conflict_idx + 1 < state.conflicts.len() {
                 state.conflict_idx += 1;
+                state.conflict_hunk_idx = 0;
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
             state.conflict_idx = state.conflict_idx.saturating_sub(1);
+            state.conflict_hunk_idx = 0;
         }
+        KeyCode::Char(']') => {
+            state.conflict_hunk_idx = state.conflict_hunk_idx.saturating_add(1);
+        }
+        KeyCode::Char('[') => {
+            state.conflict_hunk_idx = state.conflict_hunk_idx.saturating_sub(1);
+        }
+        KeyCode::Char('o') | KeyCode::Char('O') => resolve_selected(state, ConflictChoice::Ours),
+        KeyCode::Char('t') | KeyCode::Char('T') => resolve_selected(state, ConflictChoice::Theirs),
+        KeyCode::Char('b') | KeyCode::Char('B') => resolve_selected(state, ConflictChoice::Both),
+        KeyCode::Char('s') | KeyCode::Char('S') => stage_selected(state),
+        KeyCode::Char('p') | KeyCode::Char('P') => app::apply_pending_llm_patch(state),
         KeyCode::Char('l') | KeyCode::Char('L') => app::run_conflict_llm(state),
         KeyCode::Char('v') | KeyCode::Char('V') => app::run_conflict_validation(state),
         KeyCode::Char('c') | KeyCode::Char('C') => app::continue_conflict_operation(state),
@@ -118,4 +167,32 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn resolve_selected(state: &mut AppState, choice: ConflictChoice) {
+    let Some(path) = state.conflicts.get(state.conflict_idx).cloned() else {
+        return;
+    };
+    match crate::git::resolve_conflict_hunk(&path, state.conflict_hunk_idx, choice) {
+        Ok(()) => {
+            state.conflict_log = format!("Resolved hunk {} in {path}", state.conflict_hunk_idx + 1);
+            state.conflict_hunk_idx = 0;
+        }
+        Err(e) => state.conflict_log = e.to_string(),
+    }
+}
+
+fn stage_selected(state: &mut AppState) {
+    let Some(path) = state.conflicts.get(state.conflict_idx).cloned() else {
+        return;
+    };
+    match crate::git::stage_if_resolved(&path) {
+        Ok(()) => {
+            state.conflict_log = format!("staged {path}");
+            state.conflicts.remove(state.conflict_idx);
+            state.conflict_idx = state.conflict_idx.saturating_sub(1);
+            state.conflict_hunk_idx = 0;
+        }
+        Err(e) => state.conflict_log = e.to_string(),
+    }
 }

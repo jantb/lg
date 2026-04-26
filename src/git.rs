@@ -3,6 +3,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST, DEFAULT_PUSH_REMOTE};
 
@@ -236,6 +237,20 @@ pub struct Commit {
     pub subject: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictHunk {
+    pub ours: String,
+    pub base: Option<String>,
+    pub theirs: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictChoice {
+    Ours,
+    Theirs,
+    Both,
+}
+
 /// Parse `git status -z --porcelain=v1` output into unified `FileEntry` vec.
 /// Each entry carries the raw x and y status chars.
 pub fn parse_porcelain_xy(bytes: &[u8]) -> Vec<FileEntry> {
@@ -411,6 +426,7 @@ pub fn checkout_branch(name: &str) -> Result<String> {
 
 pub fn flow_merge_main_into_current(current_branch: &str) -> Result<String> {
     ensure_feature_branch(current_branch)?;
+    create_safety_ref("merge-main")?;
     run(&["fetch"])?;
     run(&["checkout", BRANCH_MAIN])?;
     run(&["pull", "--rebase"])?;
@@ -423,6 +439,7 @@ pub fn flow_merge_main_into_current(current_branch: &str) -> Result<String> {
 
 pub fn flow_release_current(current_branch: &str, target_branch: &str) -> Result<String> {
     ensure_feature_branch(current_branch)?;
+    create_safety_ref("release-current")?;
     run(&["push"])?;
     if target_branch != current_branch {
         reset_local_to_remote(target_branch)?;
@@ -453,6 +470,7 @@ pub fn flow_reset_branch_from_main(current_branch: &str, target_branch: &str) ->
     if current_branch != target_branch {
         run(&["checkout", target_branch])?;
     }
+    create_safety_ref(&format!("reset-{target_branch}"))?;
     run(&[
         "reset",
         "--hard",
@@ -599,6 +617,163 @@ pub fn apply_patch_text(patch: &str) -> Result<()> {
     }
 }
 
+pub fn conflict_hunks(path: &str) -> Result<Vec<ConflictHunk>> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("read {path}"))?;
+    Ok(parse_conflict_hunks(&text))
+}
+
+pub fn resolve_conflict_hunk(path: &str, idx: usize, choice: ConflictChoice) -> Result<()> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("read {path}"))?;
+    let resolved = resolve_conflict_text(&text, idx, choice)
+        .ok_or_else(|| anyhow::anyhow!("conflict hunk {idx} not found in {path}"))?;
+    std::fs::write(path, resolved).with_context(|| format!("write {path}"))?;
+    Ok(())
+}
+
+pub fn stage_if_resolved(path: &str) -> Result<()> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    if text.contains("<<<<<<<") || text.contains("=======") || text.contains(">>>>>>>") {
+        anyhow::bail!("conflict markers remain in {path}");
+    }
+    stage(path)
+}
+
+fn parse_conflict_hunks(text: &str) -> Vec<ConflictHunk> {
+    let mut hunks = Vec::new();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut i = 0usize;
+
+    while i < lines.len() {
+        if !lines[i].starts_with("<<<<<<<") {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        let mut ours = Vec::new();
+        while i < lines.len()
+            && !lines[i].starts_with("|||||||")
+            && !lines[i].starts_with("=======")
+        {
+            ours.push(lines[i]);
+            i += 1;
+        }
+
+        let mut base = None;
+        if i < lines.len() && lines[i].starts_with("|||||||") {
+            i += 1;
+            let mut base_lines = Vec::new();
+            while i < lines.len() && !lines[i].starts_with("=======") {
+                base_lines.push(lines[i]);
+                i += 1;
+            }
+            base = Some(join_lines(&base_lines));
+        }
+
+        if i < lines.len() && lines[i].starts_with("=======") {
+            i += 1;
+        }
+
+        let mut theirs = Vec::new();
+        while i < lines.len() && !lines[i].starts_with(">>>>>>>") {
+            theirs.push(lines[i]);
+            i += 1;
+        }
+        if i < lines.len() && lines[i].starts_with(">>>>>>>") {
+            i += 1;
+        }
+
+        hunks.push(ConflictHunk {
+            ours: join_lines(&ours),
+            base,
+            theirs: join_lines(&theirs),
+        });
+    }
+
+    hunks
+}
+
+fn resolve_conflict_text(text: &str, target_idx: usize, choice: ConflictChoice) -> Option<String> {
+    let mut out = String::new();
+    let lines: Vec<&str> = text.lines().collect();
+    let had_trailing_newline = text.ends_with('\n');
+    let mut i = 0usize;
+    let mut hunk_idx = 0usize;
+    let mut found = false;
+
+    while i < lines.len() {
+        if !lines[i].starts_with("<<<<<<<") {
+            out.push_str(lines[i]);
+            out.push('\n');
+            i += 1;
+            continue;
+        }
+
+        let marker_start = i;
+        i += 1;
+        let ours_start = i;
+        while i < lines.len()
+            && !lines[i].starts_with("|||||||")
+            && !lines[i].starts_with("=======")
+        {
+            i += 1;
+        }
+        let ours = &lines[ours_start..i];
+
+        if i < lines.len() && lines[i].starts_with("|||||||") {
+            i += 1;
+            while i < lines.len() && !lines[i].starts_with("=======") {
+                i += 1;
+            }
+        }
+
+        if i < lines.len() && lines[i].starts_with("=======") {
+            i += 1;
+        }
+        let theirs_start = i;
+        while i < lines.len() && !lines[i].starts_with(">>>>>>>") {
+            i += 1;
+        }
+        let theirs = &lines[theirs_start..i];
+        if i < lines.len() && lines[i].starts_with(">>>>>>>") {
+            i += 1;
+        }
+
+        if hunk_idx == target_idx {
+            found = true;
+            let selected: Vec<&str> = match choice {
+                ConflictChoice::Ours => ours.to_vec(),
+                ConflictChoice::Theirs => theirs.to_vec(),
+                ConflictChoice::Both => ours.iter().chain(theirs.iter()).copied().collect(),
+            };
+            for line in selected {
+                out.push_str(line);
+                out.push('\n');
+            }
+        } else {
+            for line in &lines[marker_start..i] {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        hunk_idx += 1;
+    }
+
+    if !had_trailing_newline && out.ends_with('\n') {
+        out.pop();
+    }
+    found.then_some(out)
+}
+
+fn join_lines(lines: &[&str]) -> String {
+    if lines.is_empty() {
+        String::new()
+    } else {
+        let mut s = lines.join("\n");
+        s.push('\n');
+        s
+    }
+}
+
 pub fn run_detected_validation() -> Result<String> {
     let commands = detected_validation_commands();
     if commands.is_empty() {
@@ -630,6 +805,10 @@ pub fn run_detected_validation() -> Result<String> {
 }
 
 fn detected_validation_commands() -> Vec<Vec<String>> {
+    if let Some(commands) = configured_validation_commands() {
+        return commands;
+    }
+
     if Path::new("Cargo.toml").exists() {
         return vec![
             vec!["cargo".into(), "test".into(), "--all-targets".into()],
@@ -653,6 +832,38 @@ fn detected_validation_commands() -> Vec<Vec<String>> {
     }
 
     Vec::new()
+}
+
+fn configured_validation_commands() -> Option<Vec<Vec<String>>> {
+    let text = std::fs::read_to_string(".lg.toml").ok()?;
+    let mut in_validation = false;
+    let mut commands = Vec::new();
+
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') {
+            in_validation = line == "[validation]";
+            continue;
+        }
+        if !in_validation || !line.starts_with("commands") {
+            continue;
+        }
+        let (_, rhs) = line.split_once('=')?;
+        let rhs = rhs.trim();
+        let rhs = rhs.strip_prefix('[')?.strip_suffix(']')?;
+        for part in rhs.split(',') {
+            let cmd = part.trim().trim_matches('"').trim_matches('\'');
+            if !cmd.is_empty() {
+                commands.push(split_command(cmd));
+            }
+        }
+    }
+
+    (!commands.is_empty()).then_some(commands)
+}
+
+fn split_command(cmd: &str) -> Vec<String> {
+    cmd.split_whitespace().map(str::to_owned).collect()
 }
 
 pub fn continue_in_progress_operation() -> Result<String> {
@@ -753,6 +964,25 @@ fn orphan_branches() -> Result<Vec<String>> {
     Ok(orphans)
 }
 
+fn create_safety_ref(label: &str) -> Result<String> {
+    let branch = head_branch().unwrap_or_else(|_| "detached".to_string());
+    let clean_label: String = label
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let clean_branch: String = branch
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let name = format!("lg/backup/{clean_label}-{clean_branch}-{ts}");
+    run(&["branch", &name, "HEAD"])?;
+    Ok(name)
+}
+
 pub fn unpushed_shas() -> Result<std::collections::HashSet<String>> {
     match run(&["rev-list", "--abbrev-commit", "@{u}..HEAD"]) {
         Ok(out) => {
@@ -799,7 +1029,10 @@ pub fn counts_ahead_behind() -> Result<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileEntry, label_commit_patch, parse_porcelain, parse_porcelain_xy};
+    use super::{
+        ConflictChoice, FileEntry, label_commit_patch, parse_conflict_hunks, parse_porcelain,
+        parse_porcelain_xy, resolve_conflict_text,
+    };
 
     #[test]
     fn parse_porcelain_empty() {
@@ -879,6 +1112,26 @@ mod tests {
         assert_eq!(
             label_commit_patch(text),
             "commit abc\n\nFiles changed:\n a.rs | 1 +\n\nPatch:\ndiff --git a/a.rs b/a.rs\n"
+        );
+    }
+
+    #[test]
+    fn parse_conflict_hunks_reads_ours_base_theirs() {
+        let text =
+            "a\n<<<<<<< HEAD\nours\n||||||| base\nbase\n=======\ntheirs\n>>>>>>> branch\nz\n";
+        let hunks = parse_conflict_hunks(text);
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].ours, "ours\n");
+        assert_eq!(hunks[0].base.as_deref(), Some("base\n"));
+        assert_eq!(hunks[0].theirs, "theirs\n");
+    }
+
+    #[test]
+    fn resolve_conflict_text_accepts_both_for_selected_hunk() {
+        let text = "a\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\nz\n";
+        assert_eq!(
+            resolve_conflict_text(text, 0, ConflictChoice::Both).unwrap(),
+            "a\nours\ntheirs\nz\n"
         );
     }
 
