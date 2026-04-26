@@ -19,7 +19,10 @@ use std::{io::Stdout, time::Duration};
 use crate::{
     config::{COMMIT_LIST_LIMIT, DEFAULT_PUSH_REMOTE, STATUS_MSG_LIFETIME_SECS, TICK_MS},
     panel,
-    state::{AppState, DiffSource, GenMsg, Modal, Pane, PendingAction, PushJob, PushMsg, TreeKind},
+    state::{
+        AppState, CheckoutJob, CheckoutMsg, DiffSource, GenMsg, Modal, Pane, PendingAction,
+        PushJob, PushMsg, TreeKind,
+    },
     ui,
 };
 
@@ -66,7 +69,7 @@ fn panel_key_needs_refresh(pane: Pane, k: KeyEvent) -> bool {
                 | KeyCode::Char('A')
                 | KeyCode::Char('U')
         ),
-        Pane::Branches => k.code == KeyCode::Enter,
+        Pane::Branches => false,
         Pane::Status | Pane::Commits | Pane::Main => false,
     }
 }
@@ -100,6 +103,33 @@ fn spawn_push(state: &mut AppState) {
         remote,
     });
     state.set_status("pushing\u{2026}", false);
+}
+
+pub(crate) fn checkout_branch_async(state: &mut AppState, branch: String) {
+    if state.checkout_job.is_some() || state.push_job.is_some() {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let target = branch.clone();
+    std::thread::spawn(move || match crate::git::checkout_branch(&target) {
+        Ok(out) => {
+            let line = out
+                .lines()
+                .rfind(|l| !l.trim().is_empty())
+                .unwrap_or("checked out")
+                .to_owned();
+            let _ = tx.send(CheckoutMsg::Done(line));
+        }
+        Err(e) => {
+            let _ = tx.send(CheckoutMsg::Error(e.to_string()));
+        }
+    });
+    state.checkout_job = Some(CheckoutJob {
+        rx,
+        spinner: 0,
+        branch: branch.clone(),
+    });
+    state.set_status(format!("checking out {branch}\u{2026}"), false);
 }
 
 fn footer_spec(pane: Pane) -> (u8, &'static str, &'static [(&'static str, &'static str)]) {
@@ -437,8 +467,12 @@ impl App {
 
             self.drain_generation();
             self.drain_push_job()?;
+            self.drain_checkout_job()?;
 
-            let poll_ms = if self.state.generation.is_some() || self.state.push_job.is_some() {
+            let poll_ms = if self.state.generation.is_some()
+                || self.state.push_job.is_some()
+                || self.state.checkout_job.is_some()
+            {
                 80
             } else {
                 TICK_MS
@@ -570,6 +604,28 @@ impl App {
         if let Some(res) = finished {
             self.state.push_job = None;
             self.state.modal = Modal::None;
+            match res {
+                Ok(s) => self.state.set_status(s, false),
+                Err(e) => self.state.set_status(e, true),
+            }
+            self.refresh()?;
+        }
+        Ok(())
+    }
+
+    fn drain_checkout_job(&mut self) -> Result<()> {
+        let mut finished: Option<std::result::Result<String, String>> = None;
+        if let Some(job) = self.state.checkout_job.as_mut() {
+            while let Ok(msg) = job.rx.try_recv() {
+                match msg {
+                    CheckoutMsg::Done(s) => finished = Some(Ok(s)),
+                    CheckoutMsg::Error(s) => finished = Some(Err(s)),
+                }
+            }
+            job.spinner = job.spinner.wrapping_add(1);
+        }
+        if let Some(res) = finished {
+            self.state.checkout_job = None;
             match res {
                 Ok(s) => self.state.set_status(s, false),
                 Err(e) => self.state.set_status(e, true),

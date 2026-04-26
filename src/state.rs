@@ -39,6 +39,19 @@ pub struct PushJob {
     pub remote: String,
 }
 
+#[derive(Debug)]
+pub enum CheckoutMsg {
+    Done(String),
+    Error(String),
+}
+
+#[derive(Debug)]
+pub struct CheckoutJob {
+    pub rx: Receiver<CheckoutMsg>,
+    pub spinner: usize,
+    pub branch: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Status,
@@ -253,6 +266,7 @@ pub struct AppState {
 
     pub generation: Option<Generation>,
     pub push_job: Option<PushJob>,
+    pub checkout_job: Option<CheckoutJob>,
 }
 
 impl AppState {
@@ -291,6 +305,7 @@ impl AppState {
 
             generation: None,
             push_job: None,
+            checkout_job: None,
         }
     }
 
@@ -303,6 +318,8 @@ impl AppState {
             Some("generating")
         } else if self.push_job.is_some() {
             Some("pushing")
+        } else if self.checkout_job.is_some() {
+            Some("checking out")
         } else {
             match self.pending_action {
                 Some(PendingAction::GenerateMessage) => Some("starting generator"),

@@ -8,7 +8,11 @@ use ratatui::{
     widgets::{List, ListItem, ListState},
 };
 
-use crate::{state::AppState, ui};
+use crate::{
+    app,
+    state::{AppState, SPINNER_FRAMES},
+    ui,
+};
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let count = if state.branches.is_empty() {
@@ -29,7 +33,27 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         .branches
         .iter()
         .map(|b| {
-            let line = if b.is_current {
+            let line = if state
+                .checkout_job
+                .as_ref()
+                .is_some_and(|job| job.branch == b.name)
+            {
+                let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
+                Line::from(vec![
+                    Span::styled(
+                        format!("{spinner} "),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        b.name.clone(),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ])
+            } else if b.is_current {
                 Line::from(Span::styled(
                     format!("* {}", b.name),
                     Style::default()
@@ -74,12 +98,9 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Enter => {
             if let Some(b) = state.branches.get(state.branches_idx) {
-                if !b.is_current {
+                if state.checkout_job.is_none() && !b.is_current {
                     let name = b.name.clone();
-                    match crate::git::checkout_branch(&name) {
-                        Ok(_) => state.set_status(format!("checked out {name}"), false),
-                        Err(e) => state.set_status(e.to_string(), true),
-                    }
+                    app::checkout_branch_async(state, name);
                 }
             }
         }
