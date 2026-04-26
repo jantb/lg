@@ -117,8 +117,8 @@ fn footer_spec(pane: Pane) -> (u8, &'static str, &'static [(&'static str, &'stat
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, state: &AppState) {
-    // Horizontal split: left flexible, right 30 cols.
-    let chunks = Layout::horizontal([Constraint::Min(0), Constraint::Length(30)]).split(area);
+    // Horizontal split: left flexible, right status area.
+    let chunks = Layout::horizontal([Constraint::Min(0), Constraint::Length(40)]).split(area);
 
     // Left: modal-aware spec.
     let left_spans: Vec<Span> = match state.modal {
@@ -207,13 +207,34 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &AppState) {
     );
 
     // Right: live status or branch name.
-    let (right_text, right_color) = match &state.status {
-        Some(s) => (
-            s.text.clone(),
-            if s.is_error { Color::Red } else { Color::Green },
-        ),
-        None => (
-            format!("branch: {}", state.branch.as_deref().unwrap_or("")),
+    let (right_text, right_color) = match (&state.status, state.activity_label()) {
+        (Some(s), Some(label)) if !s.is_error => {
+            let spinner = crate::state::SPINNER_FRAMES
+                [state.animation_tick % crate::state::SPINNER_FRAMES.len()];
+            let text = if s.text.starts_with(label) {
+                format!("{spinner} {}", s.text)
+            } else {
+                format!("{spinner} {label}: {}", s.text)
+            };
+            (text, Color::Cyan)
+        }
+        (Some(s), _) => {
+            let icon = if s.is_error { "\u{2717}" } else { "\u{2713}" };
+            (
+                format!("{icon} {}", s.text),
+                if s.is_error { Color::Red } else { Color::Green },
+            )
+        }
+        (None, Some(label)) => {
+            let spinner = crate::state::SPINNER_FRAMES
+                [state.animation_tick % crate::state::SPINNER_FRAMES.len()];
+            (format!("{spinner} {label}\u{2026}"), Color::Cyan)
+        }
+        (None, None) => (
+            format!(
+                "\u{2022} {}",
+                state.branch.as_deref().unwrap_or("no branch")
+            ),
             Color::DarkGray,
         ),
     };
@@ -239,6 +260,8 @@ where
     }
 
     pub fn render(&mut self) -> Result<()> {
+        self.state.advance_animation();
+
         // Compute viewport height before the draw closure so we can update state.
         let size = self.terminal.size()?;
         let area = Rect {
@@ -598,6 +621,8 @@ impl App {
     }
 
     fn render(&mut self) -> Result<()> {
+        self.state.advance_animation();
+
         // Compute viewport height before the draw closure so we can update state.
         let size = self.terminal.size()?;
         let area = Rect {

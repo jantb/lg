@@ -5,7 +5,10 @@ use ratatui::{
     widgets::{Block, BorderType, Borders},
 };
 
-use crate::config::{BORDER_COLOR, LEFT_COLUMN_WIDTH, STATUS_BAR_HEIGHT};
+use crate::{
+    config::{BORDER_COLOR, LEFT_COLUMN_WIDTH, STATUS_BAR_HEIGHT},
+    state::SPINNER_FRAMES,
+};
 
 /// Split area into header (1 line), body, and status bar.
 pub fn split_main(area: Rect) -> (Rect, Rect, Rect) {
@@ -79,11 +82,28 @@ pub fn framed<'a>(
     focused: bool,
     count: Option<(usize, usize)>,
 ) -> Block<'a> {
+    framed_with_activity(n, title, focused, count, 0, false)
+}
+
+pub fn framed_with_activity<'a>(
+    n: u8,
+    title: &'a str,
+    focused: bool,
+    count: Option<(usize, usize)>,
+    tick: usize,
+    active: bool,
+) -> Block<'a> {
     let (border_color, title_style) = if focused {
         (
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            if active {
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            },
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -95,7 +115,18 @@ pub fn framed<'a>(
         )
     };
 
-    let title_text = format!("[{n}] {title}");
+    let title_text = if focused {
+        let pulse = if active {
+            SPINNER_FRAMES[tick % SPINNER_FRAMES.len()]
+        } else if tick % 2 == 0 {
+            "\u{25cf}"
+        } else {
+            "\u{25cb}"
+        };
+        format!("{pulse} [{n}] {title}")
+    } else {
+        format!("[{n}] {title}")
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

@@ -278,6 +278,65 @@ fn files_panel_renders_xy_codes_with_color() {
     assert!(found_cyan_q, "expected a cyan '?' cell for untracked file");
 }
 
+#[test]
+fn status_panel_renders_change_counts() {
+    let state = make_state_with_files();
+    let backend = TestBackend::new(40, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    terminal
+        .draw(|frame| {
+            panel::status::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(text.contains("3 files"), "missing total file count: {text}");
+    assert!(text.contains("S1"), "missing staged count: {text}");
+    assert!(text.contains("U1"), "missing unstaged count: {text}");
+    assert!(text.contains("?1"), "missing untracked count: {text}");
+}
+
+#[test]
+fn status_panel_shows_active_generation() {
+    let mut state = make_state_with_files();
+    let (_tx, rx) = std::sync::mpsc::channel::<lg::state::GenMsg>();
+    state.generation = Some(lg::state::Generation {
+        rx,
+        output: String::new(),
+        spinner: 0,
+    });
+
+    let backend = TestBackend::new(40, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    terminal
+        .draw(|frame| {
+            panel::status::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(
+        text.contains("generating"),
+        "expected active generation cue: {text}"
+    );
+}
+
 // ── Tree building ─────────────────────────────────────────────────────────────
 
 #[test]

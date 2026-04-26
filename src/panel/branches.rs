@@ -16,7 +16,14 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     } else {
         Some((state.branches_idx + 1, state.branches.len()))
     };
-    let block = ui::framed(3, "Branches", focused, count);
+    let block = ui::framed_with_activity(
+        3,
+        "Branches",
+        focused,
+        count,
+        state.animation_tick,
+        state.activity_label().is_some(),
+    );
 
     let items: Vec<ListItem> = state
         .branches
@@ -36,11 +43,14 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         })
         .collect();
 
-    let list = List::new(items).block(block).highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("\u{203a} ");
 
     let mut list_state = ListState::default();
     if focused && !state.branches.is_empty() {

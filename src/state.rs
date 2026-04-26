@@ -249,6 +249,7 @@ pub struct AppState {
     pub status: Option<StatusMsg>,
     pub pending_action: Option<PendingAction>,
     pub should_quit: bool,
+    pub animation_tick: usize,
 
     pub generation: Option<Generation>,
     pub push_job: Option<PushJob>,
@@ -286,10 +287,42 @@ impl AppState {
             status: None,
             pending_action: None,
             should_quit: false,
+            animation_tick: 0,
 
             generation: None,
             push_job: None,
         }
+    }
+
+    pub fn advance_animation(&mut self) {
+        self.animation_tick = self.animation_tick.wrapping_add(1);
+    }
+
+    pub fn activity_label(&self) -> Option<&'static str> {
+        if self.generation.is_some() {
+            Some("generating")
+        } else if self.push_job.is_some() {
+            Some("pushing")
+        } else {
+            match self.pending_action {
+                Some(PendingAction::GenerateMessage) => Some("starting generator"),
+                Some(PendingAction::Commit) => Some("committing"),
+                Some(PendingAction::Push) => Some("starting push"),
+                None => None,
+            }
+        }
+    }
+
+    pub fn file_counts(&self) -> (usize, usize, usize) {
+        self.files
+            .iter()
+            .fold((0, 0, 0), |(staged, unstaged, untracked), f| {
+                (
+                    staged + usize::from(f.x != ' ' && f.x != '?'),
+                    unstaged + usize::from(f.y != ' ' && f.y != '?'),
+                    untracked + usize::from(f.x == '?' || f.y == '?'),
+                )
+            })
     }
 
     pub fn tree_rows(&self) -> Vec<TreeRow> {

@@ -5,7 +5,14 @@ use ratatui::{Frame, layout::Rect, widgets::Paragraph};
 use crate::{config::DIFF_PAGE, state::AppState, ui};
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
-    let block = ui::framed(0, "Diff", focused, None);
+    let block = ui::framed_with_activity(
+        0,
+        "Diff",
+        focused,
+        None,
+        state.animation_tick,
+        state.activity_label().is_some(),
+    );
 
     let lines: Vec<ratatui::text::Line> = state
         .diff_text
