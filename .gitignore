@@ -1,0 +1,4 @@
+.agent/
+target/
+.terrarium/output/
+harness_output.txt
