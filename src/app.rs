@@ -20,8 +20,8 @@ use crate::{
     config::{COMMIT_LIST_LIMIT, DEFAULT_PUSH_REMOTE, STATUS_MSG_LIFETIME_SECS, TICK_MS},
     panel,
     state::{
-        AppState, CheckoutJob, CheckoutMsg, DiffSource, GenMsg, Modal, Pane, PendingAction,
-        PushJob, PushMsg, TreeKind,
+        AppState, CheckoutJob, CheckoutMsg, DiffSource, FlowAction, GenMsg, Modal, Pane,
+        PendingAction, PushJob, PushMsg, TreeKind, WorkflowJob, WorkflowMsg,
     },
     ui,
 };
@@ -57,6 +57,15 @@ fn prev_pane(p: Pane) -> Pane {
         Pane::Commits => Pane::Branches,
         Pane::Main => Pane::Commits,
     }
+}
+
+fn first_status_line(s: &str) -> String {
+    s.lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or(s)
+        .chars()
+        .take(120)
+        .collect()
 }
 
 fn panel_key_needs_refresh(pane: Pane, k: KeyEvent) -> bool {
@@ -132,9 +141,148 @@ pub(crate) fn checkout_branch_async(state: &mut AppState, branch: String) {
     state.set_status(format!("checking out {branch}\u{2026}"), false);
 }
 
+pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: Option<String>) {
+    if state.workflow_job.is_some() {
+        return;
+    }
+
+    let current = state.branch.clone().unwrap_or_default();
+    let label = action.label().to_owned();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let res = match action {
+            FlowAction::MergeMain => crate::git::flow_merge_main_into_current(&current),
+            FlowAction::ReleaseDev => {
+                crate::git::flow_release_current(&current, crate::config::BRANCH_DEV)
+            }
+            FlowAction::ReleaseTest => {
+                crate::git::flow_release_current(&current, crate::config::BRANCH_TEST)
+            }
+            FlowAction::ResetDev => {
+                crate::git::flow_reset_branch_from_main(&current, crate::config::BRANCH_DEV)
+            }
+            FlowAction::ResetTest => {
+                crate::git::flow_reset_branch_from_main(&current, crate::config::BRANCH_TEST)
+            }
+            FlowAction::NewFeature => {
+                crate::git::flow_create_feature_branch(&current, &input.unwrap_or_default())
+            }
+            FlowAction::CleanOrphans => crate::git::flow_clean_orphan_branches(&current),
+        };
+        match res {
+            Ok(s) => {
+                let _ = tx.send(WorkflowMsg::Done(s));
+            }
+            Err(e) => {
+                let _ = tx.send(WorkflowMsg::Error(e.to_string()));
+            }
+        }
+    });
+
+    state.workflow_job = Some(WorkflowJob {
+        rx,
+        spinner: 0,
+        label,
+    });
+    state.set_status("running flow workflow\u{2026}", false);
+}
+
+pub(crate) fn run_conflict_llm(state: &mut AppState) {
+    if state.workflow_job.is_some() {
+        return;
+    }
+    let conflicts = state.conflicts.clone();
+    let log = state.conflict_log.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let res = crate::git::conflict_bundle(&conflicts, &log)
+            .and_then(crate::ollama::resolve_merge_conflicts)
+            .and_then(|patch| crate::git::apply_patch_text(&patch).map(|_| patch));
+        match res {
+            Ok(patch) => {
+                let _ = tx.send(WorkflowMsg::Done(format!(
+                    "LLM patch applied. Review changes, then press v to validate.\n\n{patch}"
+                )));
+            }
+            Err(e) => {
+                let _ = tx.send(WorkflowMsg::Error(e.to_string()));
+            }
+        }
+    });
+    state.workflow_job = Some(WorkflowJob {
+        rx,
+        spinner: 0,
+        label: "LLM conflict resolution".to_string(),
+    });
+    state.set_status("asking LLM to resolve conflicts\u{2026}", false);
+}
+
+pub(crate) fn run_conflict_validation(state: &mut AppState) {
+    if state.workflow_job.is_some() {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || match crate::git::run_detected_validation() {
+        Ok(log) => {
+            let _ = tx.send(WorkflowMsg::Done(log));
+        }
+        Err(e) => {
+            let _ = tx.send(WorkflowMsg::Error(e.to_string()));
+        }
+    });
+    state.workflow_job = Some(WorkflowJob {
+        rx,
+        spinner: 0,
+        label: "validation".to_string(),
+    });
+    state.set_status("running validation\u{2026}", false);
+}
+
+pub(crate) fn continue_conflict_operation(state: &mut AppState) {
+    if state.workflow_job.is_some() {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || match crate::git::continue_in_progress_operation() {
+        Ok(s) => {
+            let _ = tx.send(WorkflowMsg::Done(s));
+        }
+        Err(e) => {
+            let _ = tx.send(WorkflowMsg::Error(e.to_string()));
+        }
+    });
+    state.workflow_job = Some(WorkflowJob {
+        rx,
+        spinner: 0,
+        label: "continue merge".to_string(),
+    });
+    state.set_status("continuing git operation\u{2026}", false);
+}
+
+pub(crate) fn abort_conflict_operation(state: &mut AppState) {
+    if state.workflow_job.is_some() {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || match crate::git::abort_in_progress_operation() {
+        Ok(s) => {
+            let _ = tx.send(WorkflowMsg::Done(s));
+        }
+        Err(e) => {
+            let _ = tx.send(WorkflowMsg::Error(e.to_string()));
+        }
+    });
+    state.workflow_job = Some(WorkflowJob {
+        rx,
+        spinner: 0,
+        label: "abort merge".to_string(),
+    });
+    state.set_status("aborting git operation\u{2026}", false);
+}
+
 fn footer_spec(pane: Pane) -> (u8, &'static str, &'static [(&'static str, &'static str)]) {
     match pane {
-        Pane::Status => (1, "Status", &[("?", "help"), ("q", "quit")]),
+        Pane::Status => (1, "Status", &[("F", "flow"), ("?", "help"), ("q", "quit")]),
         Pane::Files => (
             2,
             "Files",
@@ -144,19 +292,34 @@ fn footer_spec(pane: Pane) -> (u8, &'static str, &'static [(&'static str, &'stat
                 ("A/U", "all"),
                 ("c", "commit"),
                 ("p/P", "push"),
+                ("F", "flow"),
                 ("?", "help"),
             ],
         ),
-        Pane::Branches => (3, "Branches", &[("Enter", "checkout"), ("?", "help")]),
+        Pane::Branches => (
+            3,
+            "Branches",
+            &[("Enter", "checkout"), ("F", "flow"), ("?", "help")],
+        ),
         Pane::Commits => (
             4,
             "Commits",
-            &[("j/k", "navigate"), ("Enter", "focus diff"), ("?", "help")],
+            &[
+                ("j/k", "navigate"),
+                ("Enter", "focus diff"),
+                ("F", "flow"),
+                ("?", "help"),
+            ],
         ),
         Pane::Main => (
             0,
             "Diff",
-            &[("j/k", "scroll"), ("g/G", "top/bot"), ("?", "help")],
+            &[
+                ("j/k", "scroll"),
+                ("g/G", "top/bot"),
+                ("F", "flow"),
+                ("?", "help"),
+            ],
         ),
     }
 }
@@ -233,6 +396,46 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &AppState) {
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
+            )];
+            for (i, (key, label)) in pairs.iter().enumerate() {
+                spans.push(Span::styled(*key, Style::default().fg(Color::Yellow)));
+                spans.push(Span::raw(" "));
+                spans.push(Span::raw(*label));
+                if i + 1 < pairs.len() {
+                    spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
+                }
+            }
+            spans
+        }
+        Modal::Flow => {
+            let pairs: &[(&str, &str)] =
+                &[("j/k", "select"), ("Enter", "continue"), ("Esc", "back")];
+            let mut spans = vec![Span::styled(
+                "Flow ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )];
+            for (i, (key, label)) in pairs.iter().enumerate() {
+                spans.push(Span::styled(*key, Style::default().fg(Color::Yellow)));
+                spans.push(Span::raw(" "));
+                spans.push(Span::raw(*label));
+                if i + 1 < pairs.len() {
+                    spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
+                }
+            }
+            spans
+        }
+        Modal::Conflict => {
+            let pairs: &[(&str, &str)] = &[
+                ("l", "llm"),
+                ("v", "validate"),
+                ("c", "continue"),
+                ("a", "abort"),
+            ];
+            let mut spans = vec![Span::styled(
+                "Conflict ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             )];
             for (i, (key, label)) in pairs.iter().enumerate() {
                 spans.push(Span::styled(*key, Style::default().fg(Color::Yellow)));
@@ -337,6 +540,8 @@ where
                 Modal::Commit => panel::commit::render(state, area, frame),
                 Modal::Push => panel::push::render(state, area, frame),
                 Modal::Help => panel::help::render(state, area, frame),
+                Modal::Flow => panel::flow::render(state, area, frame),
+                Modal::Conflict => panel::conflict::render(state, area, frame),
             }
         })?;
         Ok(())
@@ -360,12 +565,23 @@ where
                 panel::push::handle_key(&mut self.state, k)?;
                 return self.render();
             }
+            Modal::Flow => {
+                panel::flow::handle_key(&mut self.state, k)?;
+                return self.render();
+            }
+            Modal::Conflict => {
+                panel::conflict::handle_key(&mut self.state, k)?;
+                return self.render();
+            }
             Modal::None => {}
         }
         match k.code {
             KeyCode::Char('?') => {
                 self.state.prev_focus = self.state.focus;
                 self.state.modal = Modal::Help;
+            }
+            KeyCode::Char('F') => {
+                self.state.modal = Modal::Flow;
             }
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.state.should_quit = true;
@@ -468,10 +684,12 @@ impl App {
             self.drain_generation();
             self.drain_push_job()?;
             self.drain_checkout_job()?;
+            self.drain_workflow_job()?;
 
             let poll_ms = if self.state.generation.is_some()
                 || self.state.push_job.is_some()
                 || self.state.checkout_job.is_some()
+                || self.state.workflow_job.is_some()
             {
                 80
             } else {
@@ -635,6 +853,51 @@ impl App {
         Ok(())
     }
 
+    fn drain_workflow_job(&mut self) -> Result<()> {
+        let mut finished: Option<std::result::Result<String, String>> = None;
+        if let Some(job) = self.state.workflow_job.as_mut() {
+            while let Ok(msg) = job.rx.try_recv() {
+                match msg {
+                    WorkflowMsg::Done(s) => finished = Some(Ok(s)),
+                    WorkflowMsg::Error(s) => finished = Some(Err(s)),
+                }
+            }
+            job.spinner = job.spinner.wrapping_add(1);
+        }
+        if let Some(res) = finished {
+            self.state.workflow_job = None;
+            match res {
+                Ok(s) => {
+                    if matches!(self.state.modal, Modal::Conflict) {
+                        self.state.conflict_log = s.clone();
+                    } else {
+                        self.state.modal = Modal::None;
+                    }
+                    self.state.set_status(first_status_line(&s), false);
+                }
+                Err(e) => {
+                    if let Ok(conflicts) = crate::git::conflicted_files() {
+                        if !conflicts.is_empty() {
+                            self.state.conflicts = conflicts;
+                            self.state.conflict_idx = 0;
+                            self.state.conflict_log = e.clone();
+                            self.state.modal = Modal::Conflict;
+                            self.state.set_status("merge conflicts detected", true);
+                            self.refresh()?;
+                            return Ok(());
+                        }
+                    }
+                    if matches!(self.state.modal, Modal::Conflict) {
+                        self.state.conflict_log = e.clone();
+                    }
+                    self.state.set_status(first_status_line(&e), true);
+                }
+            }
+            self.refresh()?;
+        }
+        Ok(())
+    }
+
     fn drain_generation(&mut self) {
         let mut drained: Vec<GenMsg> = Vec::new();
         if let Some(g) = self.state.generation.as_ref() {
@@ -724,6 +987,8 @@ impl App {
                 Modal::Commit => panel::commit::render(state, area, frame),
                 Modal::Push => panel::push::render(state, area, frame),
                 Modal::Help => panel::help::render(state, area, frame),
+                Modal::Flow => panel::flow::render(state, area, frame),
+                Modal::Conflict => panel::conflict::render(state, area, frame),
             }
         })?;
         Ok(())
@@ -748,6 +1013,14 @@ impl App {
                 panel::push::handle_key(&mut self.state, k)?;
                 return Ok(());
             }
+            Modal::Flow => {
+                panel::flow::handle_key(&mut self.state, k)?;
+                return Ok(());
+            }
+            Modal::Conflict => {
+                panel::conflict::handle_key(&mut self.state, k)?;
+                return Ok(());
+            }
             Modal::None => {}
         }
 
@@ -755,6 +1028,10 @@ impl App {
             KeyCode::Char('?') => {
                 self.state.prev_focus = self.state.focus;
                 self.state.modal = Modal::Help;
+                return Ok(());
+            }
+            KeyCode::Char('F') => {
+                self.state.modal = Modal::Flow;
                 return Ok(());
             }
             KeyCode::Char('q') | KeyCode::Esc => {

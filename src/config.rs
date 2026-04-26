@@ -35,6 +35,9 @@ Staged changes:
 
 ";
 pub const DEFAULT_PUSH_REMOTE: &str = "origin";
+pub const BRANCH_MAIN: &str = "main";
+pub const BRANCH_DEV: &str = "develop";
+pub const BRANCH_TEST: &str = "release/next";
 pub const COMMIT_MSG_MAX_CHARS: usize = 2048;
 pub const COMMIT_MSG_SUBJECT_MAX_CHARS: usize = 72;
 pub const COMMIT_MSG_GEN_MAX_CHARS: usize = 512;

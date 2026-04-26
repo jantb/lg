@@ -84,6 +84,33 @@ fn numeric_keys_set_focus() {
     assert_eq!(app.state.focus, Pane::Main);
 }
 
+#[test]
+fn pressing_f_opens_flow_modal_with_deploy_map() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.send_key(key(KeyCode::Char('F'))).unwrap();
+    assert_eq!(app.state.modal, Modal::Flow);
+
+    let buf = app.terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(
+        text.contains("production"),
+        "missing production path: {text}"
+    );
+    assert!(text.contains("develop"), "missing develop branch: {text}");
+    assert!(text.contains("dev"), "missing dev deployment: {text}");
+    assert!(
+        text.contains("release/next"),
+        "missing release/next branch: {text}"
+    );
+    assert!(text.contains("test"), "missing test deployment: {text}");
+}
+
 // ── Panel transitions ─────────────────────────────────────────────────────────
 
 #[test]

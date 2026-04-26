@@ -1,0 +1,224 @@
+use anyhow::Result;
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Clear, List, ListItem, ListState, Paragraph},
+};
+
+use crate::{
+    app,
+    state::{AppState, FlowAction, Modal, SPINNER_FRAMES},
+    ui,
+};
+
+pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
+    let w = (area.width * 7 / 10).clamp(58, 96).min(area.width);
+    let h = 16.min(area.height);
+    let modal = ui::centered(area, w, h);
+    frame.render_widget(Clear, modal);
+
+    if let Some(job) = &state.workflow_job {
+        let spinner = SPINNER_FRAMES[job.spinner % SPINNER_FRAMES.len()];
+        let text = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    spinner,
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled(job.label.clone(), Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Git workflow is running",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(text).block(ui::bordered("Flow")), modal);
+        return;
+    }
+
+    if let Some(action) = state.flow_input {
+        let text = vec![
+            Line::from(action.label()),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("branch: ", Style::default().fg(Color::Yellow)),
+                Span::raw(state.flow_text.as_str()),
+                Span::styled("\u{2588}", Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Enter", Style::default().fg(Color::Green)),
+                Span::raw(" create  "),
+                Span::styled("Esc", Style::default().fg(Color::Gray)),
+                Span::raw(" back"),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(text).block(ui::bordered("Flow")), modal);
+        return;
+    }
+
+    if let Some(action) = state.flow_confirm {
+        let text = vec![
+            Line::from(Span::styled(
+                action.label(),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            warning_for(action),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("y", Style::default().fg(Color::Green)),
+                Span::raw(" run  "),
+                Span::styled("n/Esc", Style::default().fg(Color::Gray)),
+                Span::raw(" cancel"),
+            ]),
+        ];
+        frame.render_widget(
+            Paragraph::new(text).block(ui::bordered("Confirm Flow")),
+            modal,
+        );
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(7), Constraint::Min(0)])
+        .split(modal);
+
+    let diagram = vec![
+        Line::from("origin/main  ----------------------------> production"),
+        Line::from("     |"),
+        Line::from("     +--> feature/*  --release-->  develop      -> dev"),
+        Line::from("     |"),
+        Line::from("     +--> feature/*  --release-->  release/next -> test"),
+    ];
+    frame.render_widget(
+        Paragraph::new(diagram).block(ui::bordered("Flow Map")),
+        chunks[0],
+    );
+
+    let items: Vec<ListItem> = FlowAction::ALL
+        .iter()
+        .map(|action| ListItem::new(Line::from(action.label())))
+        .collect();
+    let list = List::new(items)
+        .block(ui::bordered("Actions"))
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("\u{203a} ");
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.flow_idx.min(FlowAction::ALL.len() - 1)));
+    frame.render_stateful_widget(list, chunks[1], &mut list_state);
+}
+
+pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
+    if state.workflow_job.is_some() {
+        return Ok(());
+    }
+
+    if let Some(action) = state.flow_input {
+        match key.code {
+            KeyCode::Esc => {
+                state.flow_input = None;
+                state.flow_text.clear();
+            }
+            KeyCode::Enter => {
+                let name = state.flow_text.trim().to_owned();
+                if name.is_empty() {
+                    state.set_status("branch name cannot be empty", true);
+                } else {
+                    state.flow_input = None;
+                    state.flow_text.clear();
+                    app::run_flow_action(state, action, Some(name));
+                }
+            }
+            KeyCode::Backspace => {
+                state.flow_text.pop();
+            }
+            KeyCode::Char(c) => {
+                state.flow_text.push(c);
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    if let Some(action) = state.flow_confirm {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                state.flow_confirm = None;
+                app::run_flow_action(state, action, None);
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                state.flow_confirm = None;
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            state.modal = Modal::None;
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            if state.flow_idx + 1 < FlowAction::ALL.len() {
+                state.flow_idx += 1;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            state.flow_idx = state.flow_idx.saturating_sub(1);
+        }
+        KeyCode::Enter => {
+            let action = FlowAction::ALL[state.flow_idx.min(FlowAction::ALL.len() - 1)];
+            if action == FlowAction::NewFeature {
+                state.flow_input = Some(action);
+                state.flow_text.clear();
+            } else if action.needs_confirmation() {
+                state.flow_confirm = Some(action);
+            } else {
+                app::run_flow_action(state, action, None);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn warning_for(action: FlowAction) -> Line<'static> {
+    match action {
+        FlowAction::ResetDev | FlowAction::ResetTest => Line::from(Span::styled(
+            "Hard reset and force push. Unique target history will be lost.",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )),
+        FlowAction::CleanOrphans => Line::from(Span::styled(
+            "Deletes local branches without upstream tracking.",
+            Style::default().fg(Color::Red),
+        )),
+        FlowAction::ReleaseDev => Line::from(
+            "Pushes current branch, syncs develop, merges origin/main, merges current, pushes develop -> dev.",
+        ),
+        FlowAction::ReleaseTest => Line::from(
+            "Pushes current branch, syncs release/next, merges origin/main, merges current, pushes release/next -> test.",
+        ),
+        FlowAction::MergeMain => {
+            Line::from("Fetches, updates main/current, merges origin/main, then pushes current.")
+        }
+        FlowAction::NewFeature => Line::from(""),
+    }
+}

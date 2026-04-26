@@ -52,6 +52,19 @@ pub struct CheckoutJob {
     pub branch: String,
 }
 
+#[derive(Debug)]
+pub enum WorkflowMsg {
+    Done(String),
+    Error(String),
+}
+
+#[derive(Debug)]
+pub struct WorkflowJob {
+    pub rx: Receiver<WorkflowMsg>,
+    pub spinner: usize,
+    pub label: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Status,
@@ -67,6 +80,8 @@ pub enum Modal {
     Commit,
     Push,
     Help,
+    Flow,
+    Conflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,6 +282,55 @@ pub struct AppState {
     pub generation: Option<Generation>,
     pub push_job: Option<PushJob>,
     pub checkout_job: Option<CheckoutJob>,
+    pub workflow_job: Option<WorkflowJob>,
+
+    pub flow_idx: usize,
+    pub flow_confirm: Option<FlowAction>,
+    pub flow_input: Option<FlowAction>,
+    pub flow_text: String,
+
+    pub conflicts: Vec<String>,
+    pub conflict_idx: usize,
+    pub conflict_log: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowAction {
+    MergeMain,
+    ReleaseDev,
+    ReleaseTest,
+    ResetDev,
+    ResetTest,
+    NewFeature,
+    CleanOrphans,
+}
+
+impl FlowAction {
+    pub const ALL: [Self; 7] = [
+        Self::MergeMain,
+        Self::ReleaseDev,
+        Self::ReleaseTest,
+        Self::ResetDev,
+        Self::ResetTest,
+        Self::NewFeature,
+        Self::CleanOrphans,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::MergeMain => "Merge origin/main into current branch",
+            Self::ReleaseDev => "Release current branch into develop",
+            Self::ReleaseTest => "Release current branch into release/next",
+            Self::ResetDev => "Reset develop from origin/main",
+            Self::ResetTest => "Reset release/next from origin/main",
+            Self::NewFeature => "Start new feature from origin/main",
+            Self::CleanOrphans => "Clean local branches without upstream",
+        }
+    }
+
+    pub fn needs_confirmation(self) -> bool {
+        !matches!(self, Self::NewFeature)
+    }
 }
 
 impl AppState {
@@ -306,6 +370,16 @@ impl AppState {
             generation: None,
             push_job: None,
             checkout_job: None,
+            workflow_job: None,
+
+            flow_idx: 0,
+            flow_confirm: None,
+            flow_input: None,
+            flow_text: String::new(),
+
+            conflicts: Vec::new(),
+            conflict_idx: 0,
+            conflict_log: String::new(),
         }
     }
 
@@ -320,6 +394,8 @@ impl AppState {
             Some("pushing")
         } else if self.checkout_job.is_some() {
             Some("checking out")
+        } else if self.workflow_job.is_some() {
+            Some("running workflow")
         } else {
             match self.pending_action {
                 Some(PendingAction::GenerateMessage) => Some("starting generator"),

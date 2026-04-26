@@ -1,7 +1,9 @@
 pub mod branches;
 pub mod commit;
 pub mod commits;
+pub mod conflict;
 pub mod files;
+pub mod flow;
 pub mod help;
 pub mod main;
 pub mod push;

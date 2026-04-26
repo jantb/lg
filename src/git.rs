@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::process::{Command, Output};
+use std::path::Path;
+use std::process::{Command, Output, Stdio};
+
+use crate::config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST, DEFAULT_PUSH_REMOTE};
 
 fn trace_enter(label: &str) {
     let Some(path) = std::env::var_os("LG_TRACE") else {
@@ -52,6 +55,21 @@ fn run(args: &[&str]) -> Result<Output> {
             args.join(" "),
             stderr.trim()
         ))
+    }
+}
+
+fn run_combined(args: &[&str]) -> Result<String> {
+    let out = Command::new("git")
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to spawn git {}", args.join(" ")))?;
+    trace(args, &out);
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    if out.status.success() {
+        Ok(text)
+    } else {
+        Err(anyhow::anyhow!("git {} failed:\n{text}", args.join(" ")))
     }
 }
 
@@ -389,6 +407,350 @@ pub fn checkout_branch(name: &str) -> Result<String> {
     } else {
         Err(anyhow::anyhow!("git checkout failed: {}", combined.trim()))
     }
+}
+
+pub fn flow_merge_main_into_current(current_branch: &str) -> Result<String> {
+    ensure_feature_branch(current_branch)?;
+    run(&["fetch"])?;
+    run(&["checkout", BRANCH_MAIN])?;
+    run(&["pull", "--rebase"])?;
+    run(&["checkout", current_branch])?;
+    run(&["pull", "--rebase"])?;
+    run(&["merge", &format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}")])?;
+    run(&["push"])?;
+    Ok(format!("merged origin/{BRANCH_MAIN} into {current_branch}"))
+}
+
+pub fn flow_release_current(current_branch: &str, target_branch: &str) -> Result<String> {
+    ensure_feature_branch(current_branch)?;
+    run(&["push"])?;
+    if target_branch != current_branch {
+        reset_local_to_remote(target_branch)?;
+    } else {
+        run(&["fetch"])?;
+        run(&["pull", "--rebase"])?;
+    }
+    run(&["checkout", target_branch])?;
+    run(&["merge", &format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}")])?;
+    run(&["merge", &format!("{DEFAULT_PUSH_REMOTE}/{current_branch}")])?;
+    run(&["push"])?;
+    run(&["checkout", current_branch])?;
+
+    let env = if target_branch == BRANCH_DEV {
+        "dev"
+    } else if target_branch == BRANCH_TEST {
+        "test"
+    } else {
+        target_branch
+    };
+    Ok(format!(
+        "released {current_branch} to {target_branch} -> {env}"
+    ))
+}
+
+pub fn flow_reset_branch_from_main(current_branch: &str, target_branch: &str) -> Result<String> {
+    run(&["fetch"])?;
+    if current_branch != target_branch {
+        run(&["checkout", target_branch])?;
+    }
+    run(&[
+        "reset",
+        "--hard",
+        &format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}"),
+    ])?;
+    run(&["push", "--force"])?;
+    if current_branch != target_branch {
+        run(&["checkout", current_branch])?;
+    }
+    Ok(format!("reset {target_branch} from origin/{BRANCH_MAIN}"))
+}
+
+pub fn flow_create_feature_branch(current_branch: &str, new_branch: &str) -> Result<String> {
+    if new_branch.trim().is_empty() {
+        anyhow::bail!("branch name cannot be empty");
+    }
+    if !is_valid_branch_name(new_branch) {
+        anyhow::bail!("invalid branch name: {new_branch}");
+    }
+    let stashed = has_uncommitted_changes()?;
+    if stashed {
+        run(&[
+            "stash",
+            "push",
+            "-u",
+            "-m",
+            "lg flow: auto-stash before branch creation",
+        ])?;
+    }
+    run(&["fetch"])?;
+    let start_point = if current_branch == BRANCH_MAIN {
+        run(&["pull", "--rebase"])?;
+        BRANCH_MAIN.to_string()
+    } else {
+        format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}")
+    };
+    run(&["checkout", "--no-track", "-b", new_branch, &start_point])?;
+    if stashed {
+        run(&["stash", "pop"])?;
+    }
+    Ok(format!("created {new_branch} from {start_point}"))
+}
+
+pub fn flow_clean_orphan_branches(current_branch: &str) -> Result<String> {
+    run(&["fetch"])?;
+    let branches = orphan_branches()?;
+    if branches.is_empty() {
+        return Ok("no orphan branches found".to_string());
+    }
+
+    let mut deleted = 0usize;
+    let mut skipped = 0usize;
+    for branch in branches {
+        if branch == current_branch {
+            skipped += 1;
+            continue;
+        }
+        match run(&["branch", "-D", &branch]) {
+            Ok(_) => deleted += 1,
+            Err(_) => skipped += 1,
+        }
+    }
+    Ok(format!(
+        "deleted {deleted} orphan branches, skipped {skipped}"
+    ))
+}
+
+pub fn conflicted_files() -> Result<Vec<String>> {
+    let out = run(&["status", "--porcelain"])?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut files = Vec::new();
+    for line in text.lines() {
+        if line.len() < 4 {
+            continue;
+        }
+        let status = &line[..2];
+        if matches!(status, "DD" | "AU" | "UD" | "UA" | "DU" | "AA" | "UU") {
+            files.push(line[3..].to_string());
+        }
+    }
+    Ok(files)
+}
+
+pub fn conflict_bundle(files: &[String], validation_log: &str) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("Merge conflict context for lg.\n\n");
+    if !validation_log.trim().is_empty() {
+        out.push_str("Validation / previous error log:\n");
+        out.push_str(&truncate(validation_log, 12_000));
+        out.push_str("\n\n");
+    }
+
+    out.push_str("Conflicted files:\n");
+    for path in files {
+        out.push_str("- ");
+        out.push_str(path);
+        out.push('\n');
+    }
+    out.push('\n');
+
+    for path in files {
+        out.push_str("===== ");
+        out.push_str(path);
+        out.push_str(" =====\n");
+        match std::fs::read_to_string(path) {
+            Ok(contents) => out.push_str(&truncate(&contents, 24_000)),
+            Err(e) => out.push_str(&format!("failed to read file: {e}")),
+        }
+        out.push_str("\n\n");
+    }
+
+    if let Ok(diff) = run_combined(&["diff", "--cc"]) {
+        out.push_str("Combined diff:\n");
+        out.push_str(&truncate(&diff, 24_000));
+    }
+
+    Ok(out)
+}
+
+pub fn apply_patch_text(patch: &str) -> Result<()> {
+    let mut child = Command::new("git")
+        .args(["apply", "--whitespace=fix"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn git apply")?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(patch.as_bytes())
+            .context("failed to send patch to git apply")?;
+    }
+
+    let out = child
+        .wait_with_output()
+        .context("failed to wait for git apply")?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+        Err(anyhow::anyhow!("git apply failed:\n{text}"))
+    }
+}
+
+pub fn run_detected_validation() -> Result<String> {
+    let commands = detected_validation_commands();
+    if commands.is_empty() {
+        return Ok(
+            "No Cargo.toml or Gradle build files found; no validation command detected.".into(),
+        );
+    }
+
+    let mut log = String::new();
+    for cmd in commands {
+        log.push_str("$ ");
+        log.push_str(&cmd.join(" "));
+        log.push('\n');
+
+        let out = Command::new(&cmd[0])
+            .args(&cmd[1..])
+            .output()
+            .with_context(|| format!("failed to spawn {}", cmd.join(" ")))?;
+
+        log.push_str(&String::from_utf8_lossy(&out.stdout));
+        log.push_str(&String::from_utf8_lossy(&out.stderr));
+        log.push('\n');
+
+        if !out.status.success() {
+            return Err(anyhow::anyhow!("{}", truncate(&log, 32_000)));
+        }
+    }
+    Ok(truncate(&log, 32_000))
+}
+
+fn detected_validation_commands() -> Vec<Vec<String>> {
+    if Path::new("Cargo.toml").exists() {
+        return vec![
+            vec!["cargo".into(), "test".into(), "--all-targets".into()],
+            vec![
+                "cargo".into(),
+                "clippy".into(),
+                "--all-targets".into(),
+                "--".into(),
+                "-D".into(),
+                "warnings".into(),
+            ],
+        ];
+    }
+
+    if Path::new("build.gradle").exists()
+        || Path::new("build.gradle.kts").exists()
+        || Path::new("settings.gradle").exists()
+        || Path::new("settings.gradle.kts").exists()
+    {
+        return vec![vec!["gradle".into(), "test".into()]];
+    }
+
+    Vec::new()
+}
+
+pub fn continue_in_progress_operation() -> Result<String> {
+    let conflicts = conflicted_files()?;
+    if !conflicts.is_empty() {
+        anyhow::bail!("unresolved conflicts remain: {}", conflicts.join(", "));
+    }
+
+    if git_path_exists("rebase-merge")? || git_path_exists("rebase-apply")? {
+        return run_combined(&["rebase", "--continue"]);
+    }
+    if git_path_exists("CHERRY_PICK_HEAD")? {
+        return run_combined(&["cherry-pick", "--continue"]);
+    }
+    if git_path_exists("MERGE_HEAD")? {
+        run(&["add", "-A"])?;
+        return run_combined(&["commit", "--no-edit"]);
+    }
+    Ok("no merge, rebase, or cherry-pick operation is in progress".to_string())
+}
+
+pub fn abort_in_progress_operation() -> Result<String> {
+    if git_path_exists("rebase-merge")? || git_path_exists("rebase-apply")? {
+        return run_combined(&["rebase", "--abort"]);
+    }
+    if git_path_exists("CHERRY_PICK_HEAD")? {
+        return run_combined(&["cherry-pick", "--abort"]);
+    }
+    if git_path_exists("MERGE_HEAD")? {
+        return run_combined(&["merge", "--abort"]);
+    }
+    Ok("no merge, rebase, or cherry-pick operation is in progress".to_string())
+}
+
+fn git_path_exists(name: &str) -> Result<bool> {
+    let out = run(&["rev-parse", "--git-path", name])?;
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    Ok(Path::new(&path).exists())
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}\n... truncated ...", &s[..max])
+    }
+}
+
+fn ensure_feature_branch(branch: &str) -> Result<()> {
+    if branch.is_empty() || matches!(branch, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST) {
+        anyhow::bail!(
+            "checkout a feature branch first; protected branches: {BRANCH_MAIN}, {BRANCH_DEV}, {BRANCH_TEST}"
+        );
+    }
+    Ok(())
+}
+
+fn is_valid_branch_name(name: &str) -> bool {
+    Command::new("git")
+        .args(["check-ref-format", "--branch", name])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn has_uncommitted_changes() -> Result<bool> {
+    let out = run(&["status", "--porcelain"])?;
+    Ok(!out.stdout.is_empty())
+}
+
+fn reset_local_to_remote(branch: &str) -> Result<()> {
+    run(&["fetch"])?;
+    run(&[
+        "branch",
+        "-f",
+        branch,
+        &format!("{DEFAULT_PUSH_REMOTE}/{branch}"),
+    ])
+    .map(|_| ())
+}
+
+fn orphan_branches() -> Result<Vec<String>> {
+    let out = run(&["branch", "--format=%(refname:short)"])?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut orphans = Vec::new();
+    for branch in text.lines().map(str::trim).filter(|b| !b.is_empty()) {
+        if matches!(branch, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST) {
+            continue;
+        }
+        let upstream = Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", &format!("{branch}@{{u}}")])
+            .output()
+            .with_context(|| format!("failed to check upstream for {branch}"))?;
+        if !upstream.status.success() {
+            orphans.push(branch.to_string());
+        }
+    }
+    Ok(orphans)
 }
 
 pub fn unpushed_shas() -> Result<std::collections::HashSet<String>> {
