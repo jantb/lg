@@ -56,6 +56,21 @@ fn prev_pane(p: Pane) -> Pane {
     }
 }
 
+fn panel_key_needs_refresh(pane: Pane, k: KeyEvent) -> bool {
+    match pane {
+        Pane::Files => matches!(
+            k.code,
+            KeyCode::Char(' ')
+                | KeyCode::Char('y')
+                | KeyCode::Char('u')
+                | KeyCode::Char('A')
+                | KeyCode::Char('U')
+        ),
+        Pane::Branches => k.code == KeyCode::Enter,
+        Pane::Status | Pane::Commits | Pane::Main => false,
+    }
+}
+
 fn spawn_push(state: &mut AppState) {
     if state.push_job.is_some() {
         return;
@@ -745,7 +760,10 @@ impl App {
             _ => {}
         }
 
-        match self.state.focus {
+        let focus_before = self.state.focus;
+        let needs_refresh = panel_key_needs_refresh(focus_before, k);
+
+        match focus_before {
             Pane::Status => {}
             Pane::Files => panel::files::handle_key(&mut self.state, k)?,
             Pane::Branches => panel::branches::handle_key(&mut self.state, k)?,
@@ -753,14 +771,16 @@ impl App {
             Pane::Main => panel::main::handle_key(&mut self.state, k)?,
         }
 
-        if matches!(
-            self.state.focus,
-            Pane::Files | Pane::Branches | Pane::Commits
-        ) {
+        if needs_refresh {
+            self.refresh()?;
+        } else if matches!(focus_before, Pane::Files | Pane::Branches | Pane::Commits)
+            || matches!(
+                self.state.focus,
+                Pane::Files | Pane::Branches | Pane::Commits
+            )
+        {
             self.recompute_diff_source();
         }
-
-        self.refresh()?;
         Ok(())
     }
 

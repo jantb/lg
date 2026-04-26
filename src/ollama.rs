@@ -5,11 +5,17 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use crate::config::{
-    COMMIT_MSG_GEN_MAX_CHARS, OLLAMA_CHAT_ENDPOINT, OLLAMA_MIN_P, OLLAMA_MODEL, OLLAMA_NUM_CTX,
-    OLLAMA_NUM_PREDICT, OLLAMA_PRESENCE_PENALTY, OLLAMA_PROMPT_PREFIX, OLLAMA_REPEAT_PENALTY,
-    OLLAMA_TEMPERATURE, OLLAMA_TOP_K, OLLAMA_TOP_P,
+    COMMIT_MSG_GEN_MAX_CHARS, COMMIT_MSG_SUBJECT_MAX_CHARS, OLLAMA_CHAT_ENDPOINT,
+    OLLAMA_KEEP_ALIVE, OLLAMA_MIN_P, OLLAMA_MODEL, OLLAMA_NUM_CTX, OLLAMA_NUM_PREDICT,
+    OLLAMA_PRESENCE_PENALTY, OLLAMA_PROMPT_PREFIX, OLLAMA_REPEAT_PENALTY, OLLAMA_TEMPERATURE,
+    OLLAMA_TOP_K, OLLAMA_TOP_P,
 };
 use crate::state::GenMsg;
+
+const MAX_DIFF_EXCERPT_LINES: usize = 180;
+const MAX_DIFF_EXCERPT_BYTES: usize = 16_000;
+const MAX_SUMMARY_FILES: usize = 24;
+const MAX_SIGNAL_LINES: usize = 48;
 
 #[derive(Serialize)]
 struct ChatRequest<'a> {
@@ -17,6 +23,7 @@ struct ChatRequest<'a> {
     messages: Vec<ChatMessage<'a>>,
     stream: bool,
     think: bool,
+    keep_alive: &'a str,
     options: Options,
 }
 
@@ -36,21 +43,176 @@ struct Options {
     num_predict: i32,
     repeat_penalty: f32,
     presence_penalty: f32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    stop: Vec<&'static str>,
 }
 
 impl Default for Options {
     fn default() -> Self {
+        let num_predict = std::env::var("LG_OLLAMA_NUM_PREDICT")
+            .ok()
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(OLLAMA_NUM_PREDICT);
+
         Self {
             temperature: OLLAMA_TEMPERATURE,
             top_p: OLLAMA_TOP_P,
             top_k: OLLAMA_TOP_K,
             min_p: OLLAMA_MIN_P,
             num_ctx: OLLAMA_NUM_CTX,
-            num_predict: OLLAMA_NUM_PREDICT,
+            num_predict,
             repeat_penalty: OLLAMA_REPEAT_PENALTY,
             presence_penalty: OLLAMA_PRESENCE_PENALTY,
+            stop: Vec::new(),
         }
     }
+}
+
+#[derive(Default)]
+struct DiffFileSummary {
+    path: String,
+    added: usize,
+    removed: usize,
+    hunks: Vec<String>,
+}
+
+fn build_commit_prompt(diff: &str) -> String {
+    format!(
+        "{OLLAMA_PROMPT_PREFIX}{}\n\nDiff excerpt:\n{}\n",
+        summarize_diff(diff),
+        diff_excerpt(diff)
+    )
+}
+
+fn summarize_diff(diff: &str) -> String {
+    let mut files: Vec<DiffFileSummary> = Vec::new();
+    let mut current: Option<usize> = None;
+    let mut signals: Vec<String> = Vec::new();
+
+    for line in diff.lines() {
+        if let Some(path) = parse_diff_path(line) {
+            files.push(DiffFileSummary {
+                path,
+                ..Default::default()
+            });
+            current = Some(files.len() - 1);
+            continue;
+        }
+
+        if let Some(i) = current {
+            if line.starts_with("@@") {
+                if files[i].hunks.len() < 3 {
+                    files[i].hunks.push(truncate_line(line, 90));
+                }
+            } else if line.starts_with('+') && !line.starts_with("+++") {
+                files[i].added += 1;
+                push_signal(&mut signals, '+', line);
+            } else if line.starts_with('-') && !line.starts_with("---") {
+                files[i].removed += 1;
+                push_signal(&mut signals, '-', line);
+            }
+        }
+    }
+
+    if files.is_empty() {
+        return "No textual diff was found.".to_owned();
+    }
+
+    let mut out = String::new();
+    out.push_str("Files changed:\n");
+    for file in files.iter().take(MAX_SUMMARY_FILES) {
+        out.push_str("- ");
+        out.push_str(&file.path);
+        out.push_str(&format!(" (+{} -{})", file.added, file.removed));
+        if !file.hunks.is_empty() {
+            out.push_str("; hunks: ");
+            out.push_str(&file.hunks.join(" | "));
+        }
+        out.push('\n');
+    }
+    if files.len() > MAX_SUMMARY_FILES {
+        out.push_str(&format!(
+            "- ... {} more files\n",
+            files.len() - MAX_SUMMARY_FILES
+        ));
+    }
+
+    if !signals.is_empty() {
+        out.push_str("\nNotable changed lines:\n");
+        for line in signals {
+            out.push_str("- ");
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+
+    out
+}
+
+fn diff_excerpt(diff: &str) -> String {
+    let mut out = String::new();
+    let mut bytes = 0usize;
+
+    for (lines, line) in diff
+        .lines()
+        .filter(|line| is_excerpt_line(line))
+        .enumerate()
+    {
+        let len = line.len() + 1;
+        if lines >= MAX_DIFF_EXCERPT_LINES || bytes + len > MAX_DIFF_EXCERPT_BYTES {
+            out.push_str("... diff excerpt truncated ...\n");
+            break;
+        }
+        out.push_str(line);
+        out.push('\n');
+        bytes += len;
+    }
+
+    if out.trim().is_empty() {
+        diff.lines()
+            .take(40)
+            .map(|line| truncate_line(line, 120))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        out
+    }
+}
+
+fn parse_diff_path(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("diff --git ")?;
+    let (_, b_path) = rest.split_once(" b/")?;
+    Some(b_path.to_owned())
+}
+
+fn push_signal(signals: &mut Vec<String>, prefix: char, line: &str) {
+    if signals.len() >= MAX_SIGNAL_LINES {
+        return;
+    }
+    let body = line[1..].trim();
+    if body.is_empty() || matches!(body, "{" | "}" | ");" | "," | ")" | "]" | "};") {
+        return;
+    }
+    signals.push(format!("{prefix} {}", truncate_line(body, 110)));
+}
+
+fn is_excerpt_line(line: &str) -> bool {
+    line.starts_with("diff --git ")
+        || line.starts_with("index ")
+        || line.starts_with("--- ")
+        || line.starts_with("+++ ")
+        || line.starts_with("@@")
+        || (line.starts_with('+') && !line.starts_with("+++"))
+        || (line.starts_with('-') && !line.starts_with("---"))
+}
+
+fn truncate_line(line: &str, max_chars: usize) -> String {
+    let mut chars = line.chars();
+    let mut out: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        out.push_str("...");
+    }
+    out
 }
 
 /// Stream tokens from Ollama's `/api/chat` endpoint, routing `message.thinking`
@@ -60,16 +222,23 @@ impl Default for Options {
 pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
     let start = Instant::now();
     let opts = Options::default();
-    let prompt_bytes = OLLAMA_PROMPT_PREFIX.len() + diff.len();
+    let model = std::env::var("LG_OLLAMA_MODEL").unwrap_or_else(|_| OLLAMA_MODEL.to_owned());
+    let endpoint = std::env::var("LG_OLLAMA_CHAT_ENDPOINT")
+        .unwrap_or_else(|_| OLLAMA_CHAT_ENDPOINT.to_owned());
+    let keep_alive =
+        std::env::var("LG_OLLAMA_KEEP_ALIVE").unwrap_or_else(|_| OLLAMA_KEEP_ALIVE.to_owned());
+    let prompt = build_commit_prompt(&diff);
+    let prompt_bytes = prompt.len();
 
     let body = ChatRequest {
-        model: OLLAMA_MODEL,
+        model: &model,
         messages: vec![ChatMessage {
             role: "user",
-            content: format!("{OLLAMA_PROMPT_PREFIX}{diff}"),
+            content: prompt,
         }],
         stream: true,
         think: false,
+        keep_alive: &keep_alive,
         options: opts,
     };
 
@@ -80,7 +249,7 @@ pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
         let _ = writeln!(
             f,
             "# START model={} think=false num_ctx={} num_predict={} prompt_bytes={} elapsed_ms=0",
-            OLLAMA_MODEL, OLLAMA_NUM_CTX, OLLAMA_NUM_PREDICT, prompt_bytes,
+            model, OLLAMA_NUM_CTX, body.options.num_predict, prompt_bytes,
         );
     }
 
@@ -98,7 +267,7 @@ pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
         }
     };
 
-    let resp = match client.post(OLLAMA_CHAT_ENDPOINT).json(&body).send() {
+    let resp = match client.post(&endpoint).json(&body).send() {
         Ok(r) => r,
         Err(e) => {
             if let Some(f) = trace.as_mut() {
@@ -229,12 +398,42 @@ pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
 }
 
 fn finalize(raw: &str) -> String {
-    strip_think_tags(raw)
+    let cleaned = strip_think_tags(raw);
+    let mut lines = cleaned
         .trim()
         .trim_matches('"')
-        .chars()
-        .take(COMMIT_MSG_GEN_MAX_CHARS)
-        .collect()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| !line.starts_with("```"));
+
+    let Some(subject) = lines.next() else {
+        return String::new();
+    };
+
+    let subject = trim_outer_quotes(subject);
+    let mut out: String = subject.chars().take(COMMIT_MSG_SUBJECT_MAX_CHARS).collect();
+
+    let body: Vec<String> = lines
+        .take(2)
+        .map(trim_outer_quotes)
+        .map(|line| line.chars().take(120).collect::<String>())
+        .filter(|line| !line.is_empty())
+        .collect();
+
+    if !body.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(&body.join("\n"));
+    }
+
+    out.chars().take(COMMIT_MSG_GEN_MAX_CHARS).collect()
+}
+
+fn trim_outer_quotes(s: &str) -> &str {
+    s.trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_matches('`')
 }
 
 fn strip_think_tags(s: &str) -> String {
@@ -371,7 +570,17 @@ mod tests {
     fn finalize_strips_quotes_and_truncates() {
         assert_eq!(finalize("  \"feat: add\"  "), "feat: add");
         let long = "x".repeat(200);
-        assert_eq!(finalize(&long).len(), COMMIT_MSG_GEN_MAX_CHARS);
+        assert_eq!(finalize(&long).len(), COMMIT_MSG_SUBJECT_MAX_CHARS);
+    }
+
+    #[test]
+    fn finalize_preserves_short_body_lines() {
+        assert_eq!(
+            finalize(
+                "feat(tui): show active generation state\n\nAdds status counts.\nKeeps focused panels visible.\nExtra line ignored."
+            ),
+            "feat(tui): show active generation state\n\nAdds status counts.\nKeeps focused panels visible."
+        );
     }
 
     #[test]

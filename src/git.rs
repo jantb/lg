@@ -351,8 +351,29 @@ pub fn folder_diff(prefix: &str) -> Result<String> {
 }
 
 pub fn show_commit(sha: &str) -> Result<String> {
-    let out = run(&["show", "--stat", "-p", sha])?;
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    let format = "format:commit %H%nAuthor: %an <%ae>%nDate:   %ad%n%nMessage:%n%B%nFiles changed:";
+    let out = run(&[
+        "show",
+        "--date=short",
+        "--patch-with-stat",
+        "--find-renames",
+        "--root",
+        &format!("--format={format}"),
+        sha,
+    ])?;
+    Ok(label_commit_patch(&String::from_utf8_lossy(&out.stdout)))
+}
+
+fn label_commit_patch(text: &str) -> String {
+    if let Some(pos) = text.find("\ndiff --git ") {
+        let mut out = String::with_capacity(text.len() + "\nPatch:\n".len());
+        out.push_str(text[..pos].trim_end());
+        out.push_str("\n\nPatch:\n");
+        out.push_str(&text[pos + 1..]);
+        out
+    } else {
+        text.to_owned()
+    }
 }
 
 pub fn checkout_branch(name: &str) -> Result<String> {
@@ -416,7 +437,7 @@ pub fn counts_ahead_behind() -> Result<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileEntry, parse_porcelain, parse_porcelain_xy};
+    use super::{FileEntry, label_commit_patch, parse_porcelain, parse_porcelain_xy};
 
     #[test]
     fn parse_porcelain_empty() {
@@ -488,6 +509,15 @@ mod tests {
             x,
             y,
         }
+    }
+
+    #[test]
+    fn label_commit_patch_inserts_patch_heading() {
+        let text = "commit abc\n\nFiles changed:\n a.rs | 1 +\n\ndiff --git a/a.rs b/a.rs\n";
+        assert_eq!(
+            label_commit_patch(text),
+            "commit abc\n\nFiles changed:\n a.rs | 1 +\n\nPatch:\ndiff --git a/a.rs b/a.rs\n"
+        );
     }
 
     #[test]

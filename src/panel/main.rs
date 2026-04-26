@@ -1,6 +1,10 @@
 use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{Frame, layout::Rect, widgets::Paragraph};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    widgets::{Paragraph, Wrap},
+};
 
 use crate::{config::DIFF_PAGE, state::AppState, ui};
 
@@ -25,7 +29,10 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         .saturating_sub(state.diff_viewport_height);
     let offset = state.diff_offset.min(max_offset);
 
-    let para = Paragraph::new(lines).block(block).scroll((offset, 0));
+    let para = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .scroll((offset, 0));
 
     frame.render_widget(para, area);
 }

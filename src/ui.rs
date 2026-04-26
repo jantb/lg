@@ -151,7 +151,17 @@ pub fn framed_with_activity<'a>(
 
 /// Colorize a single diff line into a styled `Line`.
 pub fn highlight_diff_line(line: &str) -> Line<'_> {
-    let style = if line.starts_with("+++") || line.starts_with("---") {
+    let style = if matches!(line, "Message:" | "Files changed:" | "Patch:") {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else if line.starts_with("commit ") {
+        Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD)
+    } else if line.starts_with("Author:") || line.starts_with("Date:") {
+        Style::default().fg(Color::Gray)
+    } else if line.starts_with("+++") || line.starts_with("---") {
         Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD)
