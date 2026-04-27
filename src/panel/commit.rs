@@ -2,10 +2,10 @@ use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Clear, List, ListItem, Paragraph},
 };
 use std::collections::HashSet;
 
@@ -34,28 +34,37 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         .constraints([Constraint::Min(3), Constraint::Length(1)])
         .split(chunks[0]);
 
-    let (msg_view, title_text) = match &state.generation {
+    let (msg_view, title_text, editable) = match &state.generation {
         Some(g) => {
             let spinner = SPINNER_FRAMES[g.spinner % SPINNER_FRAMES.len()];
             let title = format!("Commit message  {spinner} generating\u{2026}  (Esc=cancel)");
-            let view = if g.output.is_empty() {
-                "\u{2588}".to_owned()
-            } else {
-                format!("{}\u{2588}", g.output)
-            };
-            (view, title)
+            (g.output.clone(), title, false)
         }
         None => (
-            format!("{}\u{2588}", state.commit_message),
+            state.commit_message.clone(),
             "Commit message  (Ctrl+S=commit  Enter=newline  Ctrl+R=regenerate  Esc=back)"
                 .to_owned(),
+            true,
         ),
     };
 
-    let input = Paragraph::new(msg_view)
-        .wrap(Wrap { trim: false })
-        .block(ui::bordered(&title_text));
+    let input_area = left_chunks[0];
+    let body_area = Rect {
+        x: input_area.x.saturating_add(1),
+        y: input_area.y.saturating_add(1),
+        width: input_area.width.saturating_sub(2),
+        height: input_area.height.saturating_sub(2),
+    };
+    let (visible_text, cursor) = visible_message_view(&msg_view, body_area.width, body_area.height);
+
+    let input = Paragraph::new(visible_text).block(ui::bordered(&title_text));
     frame.render_widget(input, left_chunks[0]);
+    if editable && body_area.width > 0 && body_area.height > 0 {
+        frame.set_cursor_position(Position::new(
+            body_area.x.saturating_add(cursor.0),
+            body_area.y.saturating_add(cursor.1),
+        ));
+    }
 
     let generating = state.generation.is_some();
     let hints = if generating {
@@ -118,6 +127,57 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 
     let sidebar = List::new(items).block(ui::bordered("Staged"));
     frame.render_widget(sidebar, chunks[1]);
+}
+
+fn visible_message_view(message: &str, width: u16, height: u16) -> (String, (u16, u16)) {
+    if width == 0 || height == 0 {
+        return (String::new(), (0, 0));
+    }
+
+    let width = width as usize;
+    let height = height as usize;
+    let mut lines = Vec::new();
+    let mut cursor_row = 0;
+    let mut cursor_col = 0;
+
+    for logical_line in message.split('\n') {
+        if logical_line.is_empty() {
+            lines.push(String::new());
+            cursor_row = lines.len() - 1;
+            cursor_col = 0;
+            continue;
+        }
+
+        let chars: Vec<char> = logical_line.chars().collect();
+        for chunk in chars.chunks(width) {
+            lines.push(chunk.iter().collect::<String>());
+        }
+
+        let len = chars.len();
+        cursor_row = lines.len() - 1;
+        cursor_col = if len % width == 0 {
+            width - 1
+        } else {
+            len % width
+        };
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    let scroll = cursor_row.saturating_sub(height.saturating_sub(1));
+    let visible = lines
+        .iter()
+        .skip(scroll)
+        .take(height)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let cursor_y = (cursor_row - scroll).min(height - 1) as u16;
+    let cursor_x = cursor_col.min(width.saturating_sub(1)) as u16;
+
+    (visible, (cursor_x, cursor_y))
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {

@@ -169,6 +169,60 @@ fn commit_input_accepts_long_multiline_message() {
     assert_eq!(state.commit_message, format!("{}\ny", "x".repeat(2_048)));
 }
 
+#[test]
+fn commit_modal_uses_terminal_cursor_for_multiline_message() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state = make_state_with_files();
+    app.state.modal = Modal::Commit;
+    app.state.commit_message = "one\ntwo".into();
+
+    app.render().unwrap();
+
+    let buf = app.terminal.backend().buffer().clone();
+    let mut all_text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            all_text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(all_text.contains("one"), "missing first message line");
+    assert!(all_text.contains("two"), "missing second message line");
+    assert!(
+        !all_text.contains('\u{2588}'),
+        "commit input should not render a block character as the cursor"
+    );
+    app.terminal.backend_mut().assert_cursor_position((14, 6));
+}
+
+#[test]
+fn commit_modal_scrolls_to_cursor_for_long_multiline_message() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state = make_state_with_files();
+    app.state.modal = Modal::Commit;
+    app.state.commit_message = (0..40)
+        .map(|i| format!("line-{i:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    app.render().unwrap();
+
+    let buf = app.terminal.backend().buffer().clone();
+    let mut all_text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            all_text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(all_text.contains("line-39"), "missing final message line");
+    assert!(
+        !all_text.contains("line-00"),
+        "oldest message line should scroll out of the editor viewport"
+    );
+    app.terminal.backend_mut().assert_cursor_position((18, 23));
+}
+
 // ── Diff scroll clamping ──────────────────────────────────────────────────────
 
 #[test]
