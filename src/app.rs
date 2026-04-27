@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind},
@@ -14,7 +15,12 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
-use std::{io::Stdout, time::Duration};
+use std::{
+    io::Stdout,
+    path::{Component, Path},
+    sync::mpsc::Receiver,
+    time::Duration,
+};
 
 use crate::{
     config::{COMMIT_LIST_LIMIT, DEFAULT_PUSH_REMOTE, STATUS_MSG_LIFETIME_SECS, TICK_MS},
@@ -29,6 +35,8 @@ use crate::{
 pub struct App {
     pub state: AppState,
     pub terminal: Terminal<CrosstermBackend<Stdout>>,
+    file_events: Receiver<notify::Result<notify::Event>>,
+    _file_watcher: RecommendedWatcher,
 }
 
 /// Headless app backed by a generic [`Backend`]; used by tests and the harness.
@@ -81,6 +89,43 @@ fn panel_key_needs_refresh(pane: Pane, k: KeyEvent) -> bool {
         Pane::Branches => false,
         Pane::Status | Pane::Commits | Pane::Main => false,
     }
+}
+
+fn path_has_ignored_component(path: &Path) -> bool {
+    path.components().any(|component| match component {
+        Component::Normal(name) => name
+            .to_str()
+            .is_some_and(|name| matches!(name, ".git" | "target")),
+        _ => false,
+    })
+}
+
+fn should_refresh_for_fs_event(event: &notify::Event) -> bool {
+    if matches!(event.kind, EventKind::Access(_)) {
+        return false;
+    }
+    if event.paths.is_empty() {
+        return true;
+    }
+    event
+        .paths
+        .iter()
+        .any(|path| !path_has_ignored_component(path))
+}
+
+fn watch_current_dir() -> Result<(RecommendedWatcher, Receiver<notify::Result<notify::Event>>)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |event| {
+        let _ = tx.send(event);
+    })
+    .context("start file watcher")?;
+
+    let cwd = std::env::current_dir().context("resolve current directory")?;
+    watcher
+        .watch(&cwd, RecursiveMode::Recursive)
+        .with_context(|| format!("watch {}", cwd.display()))?;
+
+    Ok((watcher, rx))
 }
 
 fn spawn_push(state: &mut AppState) {
@@ -667,6 +712,8 @@ impl App {
             anyhow::bail!("not a git repository (or any parent up to mount point)");
         }
 
+        let (_file_watcher, file_events) = watch_current_dir()?;
+
         let prev_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let _ = disable_raw_mode();
@@ -684,6 +731,8 @@ impl App {
         let mut app = Self {
             state: AppState::new(),
             terminal,
+            file_events,
+            _file_watcher,
         };
         app.refresh()?;
         Ok(app)
@@ -701,6 +750,7 @@ impl App {
             self.drain_push_job()?;
             self.drain_checkout_job()?;
             self.drain_workflow_job()?;
+            self.drain_file_events()?;
 
             let poll_ms = if self.state.generation.is_some()
                 || self.state.push_job.is_some()
@@ -768,6 +818,10 @@ impl App {
     }
 
     fn recompute_diff_source(&mut self) -> &mut Self {
+        self.recompute_diff_source_inner(false)
+    }
+
+    fn recompute_diff_source_inner(&mut self, force: bool) -> &mut Self {
         let new_source = match self.state.focus {
             Pane::Files => {
                 let rows = self.state.tree_rows();
@@ -799,7 +853,7 @@ impl App {
                 .unwrap_or(DiffSource::None),
             _ => DiffSource::None,
         };
-        if new_source != self.state.diff_source {
+        if force || new_source != self.state.diff_source {
             self.state.diff_source = new_source.clone();
             self.state.diff_offset = 0;
             self.state.diff_text = match &new_source {
@@ -822,6 +876,27 @@ impl App {
                 self.state.diff_text.lines().count().min(u16::MAX as usize) as u16;
         }
         self
+    }
+
+    fn drain_file_events(&mut self) -> Result<()> {
+        let mut should_refresh = false;
+        while let Ok(event) = self.file_events.try_recv() {
+            match event {
+                Ok(event) => {
+                    if should_refresh_for_fs_event(&event) {
+                        should_refresh = true;
+                    }
+                }
+                Err(err) => {
+                    self.state
+                        .set_status(format!("file watch failed: {err}"), true);
+                }
+            }
+        }
+        if should_refresh {
+            self.refresh()?;
+        }
+        Ok(())
     }
 
     fn drain_push_job(&mut self) -> Result<()> {
@@ -970,7 +1045,7 @@ impl App {
         self.state.remote_url = crate::git::remote_url(DEFAULT_PUSH_REMOTE).ok();
         self.state.ahead_behind = crate::git::counts_ahead_behind().ok();
         self.state.clamp();
-        self.recompute_diff_source();
+        self.recompute_diff_source_inner(true);
         Ok(())
     }
 
