@@ -21,7 +21,7 @@ Rules:
 - Describe the behavior change, not the files touched. Be specific.
 - Prefer concrete user-visible outcomes over vague words like update, improve, or change.
 - Use the change summary first; use the diff excerpt only for extra detail.
-- Prefer one line. Add at most two body lines only when they clarify distinct changes.
+- Prefer one line when it fully captures the change. Use a short body of up to four lines when needed.
 - Output ONLY the commit message. No prose, no quotes, no markdown, no code fences.
 
 Examples:
@@ -38,7 +38,6 @@ pub const DEFAULT_PUSH_REMOTE: &str = "origin";
 pub const BRANCH_MAIN: &str = "main";
 pub const BRANCH_DEV: &str = "develop";
 pub const BRANCH_TEST: &str = "release/next";
-pub const COMMIT_MSG_MAX_CHARS: usize = 2048;
 pub const COMMIT_MSG_SUBJECT_MAX_CHARS: usize = 72;
 pub const COMMIT_MSG_GEN_MAX_CHARS: usize = 512;
 pub const STATUS_BAR_HEIGHT: u16 = 1;

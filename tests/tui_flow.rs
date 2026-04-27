@@ -157,6 +157,18 @@ fn backspace_removes_last_char_of_commit_message() {
     assert_eq!(state.commit_message, "hell");
 }
 
+#[test]
+fn commit_input_accepts_long_multiline_message() {
+    let mut state = make_state_with_files();
+    state.modal = Modal::Commit;
+    state.commit_message = "x".repeat(2_048);
+
+    panel::commit::handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+    panel::commit::handle_key(&mut state, key(KeyCode::Char('y'))).unwrap();
+
+    assert_eq!(state.commit_message, format!("{}\ny", "x".repeat(2_048)));
+}
+
 // ── Diff scroll clamping ──────────────────────────────────────────────────────
 
 #[test]

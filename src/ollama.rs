@@ -17,6 +17,8 @@ const MAX_DIFF_EXCERPT_LINES: usize = 180;
 const MAX_DIFF_EXCERPT_BYTES: usize = 16_000;
 const MAX_SUMMARY_FILES: usize = 24;
 const MAX_SIGNAL_LINES: usize = 48;
+const COMMIT_MSG_BODY_MAX_LINES: usize = 4;
+const COMMIT_MSG_BODY_LINE_MAX_CHARS: usize = 120;
 
 #[derive(Serialize)]
 struct ChatRequest<'a> {
@@ -502,14 +504,18 @@ fn finalize(raw: &str) -> String {
     };
 
     let subject = trim_outer_quotes(subject);
-    let mut out: String = subject.chars().take(COMMIT_MSG_SUBJECT_MAX_CHARS).collect();
+    let (subject, overflow) = split_subject(subject);
+    let mut out = subject;
 
-    let body: Vec<String> = lines
-        .take(2)
-        .map(trim_outer_quotes)
-        .map(|line| line.chars().take(120).collect::<String>())
-        .filter(|line| !line.is_empty())
-        .collect();
+    let mut body = Vec::new();
+    push_wrapped_body_lines(&mut body, &overflow);
+
+    for line in lines.map(trim_outer_quotes) {
+        push_wrapped_body_lines(&mut body, line);
+        if body.len() >= COMMIT_MSG_BODY_MAX_LINES {
+            break;
+        }
+    }
 
     if !body.is_empty() {
         out.push_str("\n\n");
@@ -517,6 +523,56 @@ fn finalize(raw: &str) -> String {
     }
 
     out.chars().take(COMMIT_MSG_GEN_MAX_CHARS).collect()
+}
+
+fn split_subject(s: &str) -> (String, String) {
+    if s.chars().count() <= COMMIT_MSG_SUBJECT_MAX_CHARS {
+        return (s.to_string(), String::new());
+    }
+
+    let split_at = s
+        .char_indices()
+        .take_while(|(i, _)| s[..*i].chars().count() <= COMMIT_MSG_SUBJECT_MAX_CHARS)
+        .filter_map(|(i, c)| c.is_whitespace().then_some(i))
+        .last()
+        .unwrap_or_else(|| {
+            s.char_indices()
+                .nth(COMMIT_MSG_SUBJECT_MAX_CHARS)
+                .map(|(i, _)| i)
+                .unwrap_or(s.len())
+        });
+
+    let subject = s[..split_at].trim().to_string();
+    let overflow = s[split_at..].trim().to_string();
+    (subject, overflow)
+}
+
+fn push_wrapped_body_lines(body: &mut Vec<String>, line: &str) {
+    let mut rest = line.trim();
+    while !rest.is_empty() && body.len() < COMMIT_MSG_BODY_MAX_LINES {
+        if rest.chars().count() <= COMMIT_MSG_BODY_LINE_MAX_CHARS {
+            body.push(rest.to_string());
+            break;
+        }
+
+        let split_at = rest
+            .char_indices()
+            .take_while(|(i, _)| rest[..*i].chars().count() <= COMMIT_MSG_BODY_LINE_MAX_CHARS)
+            .filter_map(|(i, c)| c.is_whitespace().then_some(i))
+            .last()
+            .unwrap_or_else(|| {
+                rest.char_indices()
+                    .nth(COMMIT_MSG_BODY_LINE_MAX_CHARS)
+                    .map(|(i, _)| i)
+                    .unwrap_or(rest.len())
+            });
+
+        let chunk = rest[..split_at].trim();
+        if !chunk.is_empty() {
+            body.push(chunk.to_string());
+        }
+        rest = rest[split_at..].trim();
+    }
 }
 
 fn trim_outer_quotes(s: &str) -> &str {
@@ -657,19 +713,37 @@ mod tests {
     use std::sync::mpsc::channel;
 
     #[test]
-    fn finalize_strips_quotes_and_truncates() {
+    fn finalize_strips_quotes_and_keeps_overflow() {
         assert_eq!(finalize("  \"feat: add\"  "), "feat: add");
         let long = "x".repeat(200);
-        assert_eq!(finalize(&long).len(), COMMIT_MSG_SUBJECT_MAX_CHARS);
+        assert_eq!(
+            finalize(&long),
+            format!(
+                "{}\n\n{}\n{}",
+                "x".repeat(COMMIT_MSG_SUBJECT_MAX_CHARS),
+                "x".repeat(COMMIT_MSG_BODY_LINE_MAX_CHARS),
+                "x".repeat(8)
+            )
+        );
+    }
+
+    #[test]
+    fn finalize_moves_long_subject_overflow_to_body() {
+        assert_eq!(
+            finalize(
+                "feat(tui): show a longer generated message that needs extra detail instead of being cut off"
+            ),
+            "feat(tui): show a longer generated message that needs extra detail\n\ninstead of being cut off"
+        );
     }
 
     #[test]
     fn finalize_preserves_short_body_lines() {
         assert_eq!(
             finalize(
-                "feat(tui): show active generation state\n\nAdds status counts.\nKeeps focused panels visible.\nExtra line ignored."
+                "feat(tui): show active generation state\n\nAdds status counts.\nKeeps focused panels visible.\nKeeps the modal useful for longer messages.\nAvoids cutting off generated context.\nExtra line ignored."
             ),
-            "feat(tui): show active generation state\n\nAdds status counts.\nKeeps focused panels visible."
+            "feat(tui): show active generation state\n\nAdds status counts.\nKeeps focused panels visible.\nKeeps the modal useful for longer messages.\nAvoids cutting off generated context."
         );
     }
 

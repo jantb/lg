@@ -145,7 +145,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Enter => {
-            if !generating && state.commit_message.len() < crate::config::COMMIT_MSG_MAX_CHARS {
+            if !generating {
                 state.commit_message.push('\n');
             }
         }
@@ -155,7 +155,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char(c) if !ctrl => {
-            if !generating && state.commit_message.len() < crate::config::COMMIT_MSG_MAX_CHARS {
+            if !generating {
                 state.commit_message.push(c);
             }
         }
