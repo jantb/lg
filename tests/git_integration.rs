@@ -226,6 +226,146 @@ fn release_flow_returns_to_original_branch_after_target_push() {
         String::from_utf8_lossy(&release_log.stdout).contains("feature commit"),
         "release/next did not receive feature commit"
     );
+    let local_release = git(dir.path(), &["rev-parse", "release/next"]);
+    let remote_release = git(bare.path(), &["rev-parse", "release/next"]);
+    assert_eq!(
+        String::from_utf8_lossy(&local_release.stdout),
+        String::from_utf8_lossy(&remote_release.stdout),
+        "origin/release/next was not pushed to the merged release/next HEAD"
+    );
+    let upstream = git(
+        dir.path(),
+        &["rev-parse", "--abbrev-ref", "release/next@{upstream}"],
+    );
+    assert!(
+        upstream.status.success(),
+        "release/next upstream was not configured: {}",
+        String::from_utf8_lossy(&upstream.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&upstream.stdout).trim(),
+        "origin/release/next"
+    );
+}
+
+#[test]
+fn release_conflict_continue_auto_stages_pushes_target_and_returns_to_feature() {
+    let dir = init_repo();
+    fs::write(dir.path().join("conflict.txt"), "base\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "origin", "main"]);
+
+    git_ok(dir.path(), &["checkout", "-b", "develop"]);
+    git_ok(dir.path(), &["push", "origin", "develop"]);
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", "release/next"]);
+    fs::write(dir.path().join("conflict.txt"), "release\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "release side");
+    git_ok(dir.path(), &["push", "origin", "release/next"]);
+
+    let feature = "feature/release-conflict";
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("conflict.txt"), "feature\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "feature side");
+    git_ok(dir.path(), &["push", "origin", feature]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::flow_release_current(feature, "release/next")
+        .expect_err("release should stop for manual conflict resolution");
+    assert_eq!(head_branch(dir.path()), "release/next");
+
+    fs::write(dir.path().join("conflict.txt"), "resolved\n").unwrap();
+    lg::git::continue_in_progress_operation_with_followup(Some("release/next"), Some(feature))
+        .expect("continue release conflict");
+
+    assert_eq!(head_branch(dir.path()), feature);
+    let released_file = git(bare.path(), &["show", "release/next:conflict.txt"]);
+    assert!(
+        released_file.status.success(),
+        "release/next file missing: {}",
+        String::from_utf8_lossy(&released_file.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&released_file.stdout), "resolved\n");
+}
+
+#[test]
+fn merge_main_flow_stashes_dirty_work_updates_main_and_returns_to_feature() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+
+    let feature = "feature/merge-main";
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("feature.txt"), "feature").unwrap();
+    stage_in(dir.path(), "feature.txt");
+    commit_in(dir.path(), "feature commit");
+    git_ok(dir.path(), &["push", "-u", "origin", feature]);
+
+    fs::write(dir.path().join("dirty.txt"), "dirty work").unwrap();
+
+    let updater = tempfile::tempdir().expect("updater tempdir");
+    git_ok(
+        updater.path(),
+        &["clone", bare.path().to_str().unwrap(), "."],
+    );
+    git_ok(
+        updater.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git_ok(updater.path(), &["config", "user.name", "Test User"]);
+    fs::write(updater.path().join("main.txt"), "main update").unwrap();
+    stage_in(updater.path(), "main.txt");
+    commit_in(updater.path(), "main update");
+    git_ok(updater.path(), &["push", "origin", "main"]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::flow_merge_main_into_current(feature).expect("merge main into feature");
+
+    assert_eq!(head_branch(dir.path()), feature);
+    assert!(
+        dir.path().join("dirty.txt").exists(),
+        "dirty work should be restored"
+    );
+
+    let main_rev = git(dir.path(), &["rev-parse", "main"]);
+    let origin_main_rev = git(dir.path(), &["rev-parse", "origin/main"]);
+    assert_eq!(
+        String::from_utf8_lossy(&main_rev.stdout),
+        String::from_utf8_lossy(&origin_main_rev.stdout),
+        "local main should be updated to origin/main"
+    );
+
+    let log = git(dir.path(), &["log", "--oneline", feature]);
+    assert!(
+        String::from_utf8_lossy(&log.stdout).contains("main update"),
+        "feature branch did not receive origin/main"
+    );
+
+    let stash_list = git(dir.path(), &["stash", "list"]);
+    assert!(
+        String::from_utf8_lossy(&stash_list.stdout).is_empty(),
+        "auto-stash should be restored and dropped"
+    );
 }
 
 #[test]

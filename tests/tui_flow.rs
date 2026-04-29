@@ -1,5 +1,5 @@
 use lg::{
-    git::{BranchReleaseStatus, FileEntry, ReleaseTargetStatus},
+    git::{Branch, BranchReleaseStatus, FileEntry, ReleaseTargetStatus},
     panel,
     state::{AppState, Modal, Pane, TreeKind, WorkflowJob, build_tree_rows},
 };
@@ -35,6 +35,19 @@ fn make_state_with_files() -> AppState {
         },
     ];
     s
+}
+
+fn add_flow_branches(state: &mut AppState) {
+    state.branches = vec![
+        Branch {
+            name: "develop".into(),
+            is_current: false,
+        },
+        Branch {
+            name: "release/next".into(),
+            is_current: false,
+        },
+    ];
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -87,6 +100,7 @@ fn numeric_keys_set_focus() {
 #[test]
 fn pressing_f_opens_flow_modal_with_deploy_map() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    add_flow_branches(&mut app.state);
     app.send_key(key(KeyCode::Char('F'))).unwrap();
     assert_eq!(app.state.modal, Modal::Flow);
 
@@ -109,6 +123,47 @@ fn pressing_f_opens_flow_modal_with_deploy_map() {
         "missing release/next branch: {text}"
     );
     assert!(text.contains("test"), "missing test deployment: {text}");
+}
+
+#[test]
+fn pressing_f_does_not_open_flow_without_release_branches() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.send_key(key(KeyCode::Char('F'))).unwrap();
+
+    assert_eq!(app.state.modal, Modal::None);
+}
+
+#[test]
+fn flow_modal_hides_merge_main_on_protected_branches() {
+    let mut state = AppState::new();
+    add_flow_branches(&mut state);
+    state.branch = Some("main".into());
+    state.modal = Modal::Flow;
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::flow::render(&state, frame.area(), frame);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(
+        !text.contains("Merge origin/main into current branch"),
+        "merge-main should be hidden on protected branches: {text}"
+    );
+    assert!(
+        text.contains("Start new feature from origin/main"),
+        "other flow actions should remain visible: {text}"
+    );
 }
 
 // ── Panel transitions ─────────────────────────────────────────────────────────
@@ -433,6 +488,7 @@ fn status_panel_shows_active_generation() {
 #[test]
 fn current_branch_panel_renders_environment_history() {
     let mut state = AppState::new();
+    add_flow_branches(&mut state);
     state.branch = Some("feature/released".into());
     state.current_branch_releases = BranchReleaseStatus {
         develop: Some(ReleaseTargetStatus {
@@ -476,6 +532,36 @@ fn current_branch_panel_renders_environment_history() {
         "missing release timestamp: {text}"
     );
     assert!(text.contains("+2 pending"), "missing pending count: {text}");
+}
+
+#[test]
+fn current_branch_panel_hides_environment_history_without_release_branches() {
+    let state = AppState::new();
+    let backend = TestBackend::new(90, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::environments::render(&state, frame.area(), frame);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(
+        !text.contains("Current Branch"),
+        "environment box should be hidden: {text}"
+    );
+    assert!(!text.contains("dev"), "dev status should be hidden: {text}");
+    assert!(
+        !text.contains("test"),
+        "test status should be hidden: {text}"
+    );
 }
 
 #[test]
@@ -713,6 +799,7 @@ fn push_modal_handle_key_is_noop_while_running() {
 fn layout_renders_all_panel_borders() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 24)).unwrap();
     app.state = make_state_with_files();
+    add_flow_branches(&mut app.state);
     app.render().unwrap();
 
     let buf = app.terminal.backend().buffer().clone();
@@ -734,4 +821,25 @@ fn layout_renders_all_panel_borders() {
         "missing Branches panel title"
     );
     assert!(all_text.contains("Commits"), "missing Commits panel title");
+}
+
+#[test]
+fn layout_gives_files_panel_environment_space_when_flow_is_hidden() {
+    let area = ratatui::layout::Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 24,
+    };
+    let with_flow = lg::ui::split_layout_with_environments(area, true);
+    let without_flow = lg::ui::split_layout_with_environments(area, false);
+
+    assert_eq!(without_flow.environments.height, 0);
+    assert_eq!(without_flow.files.y, with_flow.environments.y);
+    assert_eq!(
+        without_flow.files.height,
+        with_flow.environments.height + with_flow.files.height
+    );
+    assert_eq!(without_flow.branches, with_flow.branches);
+    assert_eq!(without_flow.commits, with_flow.commits);
 }

@@ -32,7 +32,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from("Resolve files, validate with project tests, then continue the Git operation."),
+        Line::from(
+            "Resolve files, then press c. lg stages resolved files, continues, pushes, and returns when needed.",
+        ),
     ];
     frame.render_widget(
         Paragraph::new(header).block(ui::bordered("Conflict")),
@@ -83,11 +85,14 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 text
             }
             Ok(_) => {
-                if state.conflict_log.trim().is_empty() {
-                    format!("{path}\n\nNo conflict markers remain. Press s to stage this file.")
-                } else {
-                    state.conflict_log.clone()
+                let mut text = format!(
+                    "{path}\n\nNo conflict markers remain.\nPress c to stage resolved files and continue, or s to stage only this file."
+                );
+                if !state.conflict_log.trim().is_empty() {
+                    text.push_str("\n\nLast message:\n");
+                    text.push_str(&state.conflict_log);
                 }
+                text
             }
             Err(e) => format!("failed to read conflict hunks: {e}"),
         }
@@ -105,28 +110,27 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 
     let controls = vec![
         Line::from(vec![
-            Span::styled("l", Style::default().fg(Color::Cyan)),
-            Span::raw(" LLM  "),
-            Span::styled("p", Style::default().fg(Color::Cyan)),
-            Span::raw(" apply patch  "),
             Span::styled("o/t/b", Style::default().fg(Color::Yellow)),
             Span::raw(" ours/theirs/both  "),
             Span::styled("[/]", Style::default().fg(Color::Yellow)),
             Span::raw(" hunk  "),
             Span::styled("s", Style::default().fg(Color::Green)),
-            Span::raw(" stage  "),
+            Span::raw(" stage selected  "),
+            Span::styled("c", Style::default().fg(Color::Green)),
+            Span::raw(" stage + continue  "),
             Span::styled("v", Style::default().fg(Color::Green)),
-            Span::raw(" validate  "),
-            Span::styled("c", Style::default().fg(Color::Yellow)),
-            Span::raw(" continue  "),
+            Span::raw(" validate"),
+        ]),
+        Line::from(vec![
+            Span::styled("l", Style::default().fg(Color::Cyan)),
+            Span::raw(" LLM  "),
+            Span::styled("p", Style::default().fg(Color::Cyan)),
+            Span::raw(" apply patch  "),
             Span::styled("a", Style::default().fg(Color::Red)),
             Span::raw(" abort  "),
             Span::styled("Esc", Style::default().fg(Color::Gray)),
             Span::raw(" close"),
         ]),
-        Line::from(
-            "Detected commands: Cargo projects use cargo test/clippy; Gradle projects use gradle test.",
-        ),
     ];
     frame.render_widget(
         Paragraph::new(controls).block(Block::default().borders(Borders::ALL)),
@@ -192,6 +196,11 @@ fn stage_selected(state: &mut AppState) {
             state.conflicts.remove(state.conflict_idx);
             state.conflict_idx = state.conflict_idx.saturating_sub(1);
             state.conflict_hunk_idx = 0;
+            if state.conflicts.is_empty() {
+                state
+                    .conflict_log
+                    .push_str("\nAll conflicts are staged. Press c to continue.");
+            }
         }
         Err(e) => state.conflict_log = e.to_string(),
     }

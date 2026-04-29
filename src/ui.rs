@@ -54,9 +54,14 @@ pub struct LayoutRects {
 }
 
 pub fn split_layout(area: Rect) -> LayoutRects {
+    split_layout_with_environments(area, true)
+}
+
+pub fn split_layout_with_environments(area: Rect, show_environments: bool) -> LayoutRects {
     let rows = Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).split(area);
-    let cols = Layout::horizontal([Constraint::Length(LEFT_COLUMN_WIDTH), Constraint::Min(0)])
-        .split(rows[0]);
+    let left_width = left_column_width(rows[0].width);
+    let cols =
+        Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).split(rows[0]);
     let lefts = Layout::vertical([
         Constraint::Length(5),
         Constraint::Length(5),
@@ -65,15 +70,37 @@ pub fn split_layout(area: Rect) -> LayoutRects {
         Constraint::Ratio(1, 3),
     ])
     .split(cols[0]);
+    let (environments, files) = if show_environments {
+        (lefts[1], lefts[2])
+    } else {
+        (
+            Rect {
+                height: 0,
+                ..lefts[1]
+            },
+            Rect {
+                y: lefts[1].y,
+                height: lefts[1].height.saturating_add(lefts[2].height),
+                ..lefts[2]
+            },
+        )
+    };
     LayoutRects {
         status: lefts[0],
-        environments: lefts[1],
-        files: lefts[2],
+        environments,
+        files,
         branches: lefts[3],
         commits: lefts[4],
         main: cols[1],
         footer: rows[1],
     }
+}
+
+fn left_column_width(total_width: u16) -> u16 {
+    let min_main_width = 40.min(total_width / 2);
+    LEFT_COLUMN_WIDTH
+        .min(total_width.saturating_sub(min_main_width))
+        .max(24.min(total_width))
 }
 
 /// Framed block for numbered panels.

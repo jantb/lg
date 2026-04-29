@@ -3,7 +3,10 @@ use std::sync::mpsc::Receiver;
 
 use chrono::{DateTime, Utc};
 
-use crate::git::{Branch, BranchReleaseStatus, Commit, FileEntry};
+use crate::{
+    config::{BRANCH_DEV, BRANCH_TEST},
+    git::{Branch, BranchReleaseStatus, Commit, FileEntry},
+};
 
 #[derive(Debug)]
 pub enum GenMsg {
@@ -53,6 +56,64 @@ pub struct CheckoutJob {
 }
 
 #[derive(Debug)]
+pub enum OperationMsg {
+    Done(String),
+    Error(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationKind {
+    Commit,
+    Worktree,
+}
+
+#[derive(Debug)]
+pub struct OperationJob {
+    pub rx: Receiver<OperationMsg>,
+    pub spinner: usize,
+    pub label: &'static str,
+    pub kind: OperationKind,
+}
+
+#[derive(Debug)]
+pub enum RefreshMsg {
+    Done(Box<RefreshSnapshot>),
+}
+
+#[derive(Debug)]
+pub struct RefreshSnapshot {
+    pub files: Option<Vec<FileEntry>>,
+    pub branches: Option<Vec<Branch>>,
+    pub flow_branches_available: bool,
+    pub commits: Option<Vec<Commit>>,
+    pub unpushed_shas: Option<HashSet<String>>,
+    pub branch: Option<String>,
+    pub current_branch_releases: BranchReleaseStatus,
+    pub remote_url: Option<String>,
+    pub ahead_behind: Option<(u32, u32)>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct RefreshJob {
+    pub rx: Receiver<RefreshMsg>,
+    pub spinner: usize,
+    pub refresh_diff: bool,
+}
+
+#[derive(Debug)]
+pub enum DiffMsg {
+    Done { source: DiffSource, text: String },
+}
+
+#[derive(Debug)]
+pub struct DiffJob {
+    pub rx: Receiver<DiffMsg>,
+    pub spinner: usize,
+    pub source: DiffSource,
+}
+
+#[derive(Debug)]
 pub enum WorkflowMsg {
     Progress(usize),
     Done(String),
@@ -67,6 +128,12 @@ pub struct WorkflowJob {
     pub label: String,
     pub steps: Vec<String>,
     pub current_step: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictFollowup {
+    pub push_branch: Option<String>,
+    pub return_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,11 +172,15 @@ pub struct StatusMsg {
     pub at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingAction {
     GenerateMessage,
     Commit,
     Push,
+    StageAll,
+    UnstageAll,
+    StagePath(String),
+    UnstagePath(String),
 }
 
 // ── File tree ────────────────────────────────────────────────────────────────
@@ -260,6 +331,7 @@ pub struct AppState {
     pub branches: Vec<Branch>,
     pub commits: Vec<Commit>,
     pub current_branch_releases: BranchReleaseStatus,
+    pub flow_branches_available: bool,
     pub unpushed_shas: HashSet<String>,
 
     pub files_idx: usize,
@@ -287,6 +359,10 @@ pub struct AppState {
     pub generation: Option<Generation>,
     pub push_job: Option<PushJob>,
     pub checkout_job: Option<CheckoutJob>,
+    pub operation_job: Option<OperationJob>,
+    pub refresh_job: Option<RefreshJob>,
+    pub refresh_pending_diff: bool,
+    pub diff_job: Option<DiffJob>,
     pub workflow_job: Option<WorkflowJob>,
 
     pub flow_idx: usize,
@@ -298,6 +374,7 @@ pub struct AppState {
     pub conflict_idx: usize,
     pub conflict_hunk_idx: usize,
     pub conflict_log: String,
+    pub conflict_followup: Option<ConflictFollowup>,
     pub pending_llm_patch: Option<String>,
 }
 
@@ -351,6 +428,7 @@ impl AppState {
             branches: Vec::new(),
             commits: Vec::new(),
             current_branch_releases: BranchReleaseStatus::default(),
+            flow_branches_available: false,
             unpushed_shas: HashSet::new(),
 
             files_idx: 0,
@@ -378,6 +456,10 @@ impl AppState {
             generation: None,
             push_job: None,
             checkout_job: None,
+            operation_job: None,
+            refresh_job: None,
+            refresh_pending_diff: false,
+            diff_job: None,
             workflow_job: None,
 
             flow_idx: 0,
@@ -389,6 +471,7 @@ impl AppState {
             conflict_idx: 0,
             conflict_hunk_idx: 0,
             conflict_log: String::new(),
+            conflict_followup: None,
             pending_llm_patch: None,
         }
     }
@@ -404,13 +487,23 @@ impl AppState {
             Some("pushing")
         } else if self.checkout_job.is_some() {
             Some("checking out")
+        } else if let Some(job) = &self.operation_job {
+            Some(job.label)
+        } else if self.refresh_job.is_some() {
+            Some("refreshing")
+        } else if self.diff_job.is_some() {
+            Some("loading diff")
         } else if self.workflow_job.is_some() {
             Some("running workflow")
         } else {
-            match self.pending_action {
+            match &self.pending_action {
                 Some(PendingAction::GenerateMessage) => Some("starting generator"),
                 Some(PendingAction::Commit) => Some("committing"),
                 Some(PendingAction::Push) => Some("starting push"),
+                Some(PendingAction::StageAll | PendingAction::StagePath(_)) => Some("staging"),
+                Some(PendingAction::UnstageAll | PendingAction::UnstagePath(_)) => {
+                    Some("unstaging")
+                }
                 None => None,
             }
         }
@@ -430,6 +523,15 @@ impl AppState {
 
     pub fn tree_rows(&self) -> Vec<TreeRow> {
         build_tree_rows(&self.files, &self.collapsed_dirs)
+    }
+
+    pub fn branch_exists(&self, name: &str) -> bool {
+        self.branches.iter().any(|branch| branch.name == name)
+    }
+
+    pub fn flow_available(&self) -> bool {
+        self.flow_branches_available
+            || (self.branch_exists(BRANCH_DEV) && self.branch_exists(BRANCH_TEST))
     }
 
     pub fn start_generation(&mut self, rx: Receiver<GenMsg>) {
@@ -472,6 +574,8 @@ impl AppState {
         }
         clamp_idx(&mut self.branches_idx, self.branches.len());
         clamp_idx(&mut self.commits_idx, self.commits.len());
+        let flow_len = usize::from(self.flow_available()) * FlowAction::ALL.len();
+        clamp_idx(&mut self.flow_idx, flow_len);
     }
 }
 

@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use crate::{
-    state::{AppState, Modal, TreeKind},
+    state::{AppState, Modal, PendingAction, TreeKind},
     ui,
 };
 
@@ -133,23 +133,16 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Char(' ') | KeyCode::Char('y') => {
             if let Some(row) = rows.get(state.files_idx) {
                 match &row.kind {
-                    TreeKind::AllChanges => match crate::git::stage_all() {
-                        Ok(()) => state.set_status("staged all", false),
-                        Err(e) => state.set_status(e.to_string(), true),
-                    },
+                    TreeKind::AllChanges => {
+                        state.pending_action = Some(PendingAction::StageAll);
+                    }
                     TreeKind::Folder { .. } => {
                         let path = row.path.clone();
-                        match crate::git::stage(&path) {
-                            Ok(()) => state.set_status(format!("staged {path}/"), false),
-                            Err(e) => state.set_status(e.to_string(), true),
-                        }
+                        state.pending_action = Some(PendingAction::StagePath(path));
                     }
                     TreeKind::File { entry_idx } => {
                         let path = state.files[*entry_idx].path.clone();
-                        match crate::git::stage(&path) {
-                            Ok(()) => state.set_status(format!("staged {path}"), false),
-                            Err(e) => state.set_status(e.to_string(), true),
-                        }
+                        state.pending_action = Some(PendingAction::StagePath(path));
                     }
                 }
             }
@@ -157,35 +150,26 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Char('u') => {
             if let Some(row) = rows.get(state.files_idx) {
                 match &row.kind {
-                    TreeKind::AllChanges => match crate::git::unstage_all() {
-                        Ok(()) => state.set_status("unstaged all", false),
-                        Err(e) => state.set_status(e.to_string(), true),
-                    },
+                    TreeKind::AllChanges => {
+                        state.pending_action = Some(PendingAction::UnstageAll);
+                    }
                     TreeKind::Folder { .. } => {
                         let path = row.path.clone();
-                        match crate::git::unstage(&path) {
-                            Ok(()) => state.set_status(format!("unstaged {path}/"), false),
-                            Err(e) => state.set_status(e.to_string(), true),
-                        }
+                        state.pending_action = Some(PendingAction::UnstagePath(path));
                     }
                     TreeKind::File { entry_idx } => {
                         let path = state.files[*entry_idx].path.clone();
-                        match crate::git::unstage(&path) {
-                            Ok(()) => state.set_status(format!("unstaged {path}"), false),
-                            Err(e) => state.set_status(e.to_string(), true),
-                        }
+                        state.pending_action = Some(PendingAction::UnstagePath(path));
                     }
                 }
             }
         }
-        KeyCode::Char('A') => match crate::git::stage_all() {
-            Ok(()) => state.set_status("staged all", false),
-            Err(e) => state.set_status(e.to_string(), true),
-        },
-        KeyCode::Char('U') => match crate::git::unstage_all() {
-            Ok(()) => state.set_status("unstaged all", false),
-            Err(e) => state.set_status(e.to_string(), true),
-        },
+        KeyCode::Char('A') => {
+            state.pending_action = Some(PendingAction::StageAll);
+        }
+        KeyCode::Char('U') => {
+            state.pending_action = Some(PendingAction::UnstageAll);
+        }
         KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
             if let Some(row) = rows.get(state.files_idx) {
                 if let TreeKind::Folder { expanded, .. } = row.kind {

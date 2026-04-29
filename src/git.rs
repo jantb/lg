@@ -347,6 +347,12 @@ pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
     })
 }
 
+pub fn flow_branches_available() -> bool {
+    preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_DEV}"), BRANCH_DEV).is_some()
+        && preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_TEST}"), BRANCH_TEST)
+            .is_some()
+}
+
 fn release_target_status(
     branch: &str,
     unique_commits: &[String],
@@ -505,21 +511,23 @@ pub fn flow_merge_main_into_current_with_progress(
 ) -> Result<String> {
     ensure_feature_branch(current_branch)?;
     progress();
+    let stashed = stash_uncommitted_changes("lg flow: auto-stash before merging main")?;
+    progress();
     create_safety_ref("merge-main")?;
     progress();
     run(&["fetch"])?;
     progress();
     run(&["checkout", BRANCH_MAIN])?;
     progress();
-    run(&["pull", "--rebase"])?;
+    run(&["pull", "--rebase", DEFAULT_PUSH_REMOTE, BRANCH_MAIN])?;
     progress();
     run(&["checkout", current_branch])?;
-    progress();
-    run(&["pull", "--rebase"])?;
     progress();
     run(&["merge", &format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}")])?;
     progress();
     run(&["push"])?;
+    progress();
+    pop_stash_if_needed(stashed)?;
     Ok(format!("merged origin/{BRANCH_MAIN} into {current_branch}"))
 }
 
@@ -547,6 +555,12 @@ pub fn flow_release_current_with_progress(
             target_branch,
             &format!("{DEFAULT_PUSH_REMOTE}/{target_branch}"),
         ])?;
+        run(&[
+            "branch",
+            "--set-upstream-to",
+            &format!("{DEFAULT_PUSH_REMOTE}/{target_branch}"),
+            target_branch,
+        ])?;
     } else {
         progress();
         run(&["fetch"])?;
@@ -560,7 +574,11 @@ pub fn flow_release_current_with_progress(
     progress();
     run(&["merge", &format!("{DEFAULT_PUSH_REMOTE}/{current_branch}")])?;
     progress();
-    run(&["push", DEFAULT_PUSH_REMOTE, target_branch])?;
+    run(&[
+        "push",
+        DEFAULT_PUSH_REMOTE,
+        &format!("HEAD:refs/heads/{target_branch}"),
+    ])?;
     progress();
     run(&["checkout", current_branch])?;
 
@@ -757,10 +775,27 @@ pub fn resolve_conflict_hunk(path: &str, idx: usize, choice: ConflictChoice) -> 
 
 pub fn stage_if_resolved(path: &str) -> Result<()> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
-    if text.contains("<<<<<<<") || text.contains("=======") || text.contains(">>>>>>>") {
+    if has_conflict_markers(&text) {
         anyhow::bail!("conflict markers remain in {path}");
     }
     stage(path)
+}
+
+pub fn stage_resolved_conflicts() -> Result<Vec<String>> {
+    let mut staged = Vec::new();
+    for path in conflicted_files()? {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if has_conflict_markers(&text) {
+            continue;
+        }
+        stage(&path)?;
+        staged.push(path);
+    }
+    Ok(staged)
+}
+
+fn has_conflict_markers(text: &str) -> bool {
+    text.contains("<<<<<<<") || text.contains("=======") || text.contains(">>>>>>>")
 }
 
 fn parse_conflict_hunks(text: &str) -> Vec<ConflictHunk> {
@@ -992,35 +1027,92 @@ fn split_command(cmd: &str) -> Vec<String> {
 }
 
 pub fn continue_in_progress_operation() -> Result<String> {
+    continue_in_progress_operation_with_followup(None, None)
+}
+
+pub fn continue_in_progress_operation_with_followup(
+    push_branch: Option<&str>,
+    return_branch: Option<&str>,
+) -> Result<String> {
+    let staged = stage_resolved_conflicts()?;
     let conflicts = conflicted_files()?;
     if !conflicts.is_empty() {
-        anyhow::bail!("unresolved conflicts remain: {}", conflicts.join(", "));
+        anyhow::bail!(
+            "unresolved conflicts remain: {}\nResolve the remaining conflict markers, then press c again; lg will stage resolved files automatically.",
+            conflicts.join(", ")
+        );
     }
 
+    let mut out;
     if git_path_exists("rebase-merge")? || git_path_exists("rebase-apply")? {
-        return run_combined(&["rebase", "--continue"]);
-    }
-    if git_path_exists("CHERRY_PICK_HEAD")? {
-        return run_combined(&["cherry-pick", "--continue"]);
-    }
-    if git_path_exists("MERGE_HEAD")? {
+        out = run_combined(&["rebase", "--continue"])?;
+    } else if git_path_exists("CHERRY_PICK_HEAD")? {
+        out = run_combined(&["cherry-pick", "--continue"])?;
+    } else if git_path_exists("MERGE_HEAD")? {
         run(&["add", "-A"])?;
-        return run_combined(&["commit", "--no-edit"]);
+        out = run_combined(&["commit", "--no-edit"])?;
+        if !staged.is_empty() {
+            out.push_str(&format!(
+                "\nauto-staged resolved conflicts: {}",
+                staged.join(", ")
+            ));
+        }
+    } else {
+        out = "no merge, rebase, or cherry-pick operation is in progress".to_string();
     }
-    Ok("no merge, rebase, or cherry-pick operation is in progress".to_string())
+
+    if let Some(branch) = push_branch {
+        let push = run_combined(&[
+            "push",
+            DEFAULT_PUSH_REMOTE,
+            &format!("HEAD:refs/heads/{branch}"),
+        ])?;
+        out.push_str("\n\nPush:\n");
+        out.push_str(push.trim());
+    }
+
+    if let Some(branch) = return_branch {
+        if head_branch()
+            .map(|current| current != branch)
+            .unwrap_or(true)
+        {
+            let checkout = run_combined(&["checkout", branch])?;
+            out.push_str("\n\nCheckout:\n");
+            out.push_str(checkout.trim());
+        }
+    }
+
+    Ok(out)
 }
 
 pub fn abort_in_progress_operation() -> Result<String> {
+    abort_in_progress_operation_with_return(None)
+}
+
+pub fn abort_in_progress_operation_with_return(return_branch: Option<&str>) -> Result<String> {
+    let mut out;
     if git_path_exists("rebase-merge")? || git_path_exists("rebase-apply")? {
-        return run_combined(&["rebase", "--abort"]);
+        out = run_combined(&["rebase", "--abort"])?;
+    } else if git_path_exists("CHERRY_PICK_HEAD")? {
+        out = run_combined(&["cherry-pick", "--abort"])?;
+    } else if git_path_exists("MERGE_HEAD")? {
+        out = run_combined(&["merge", "--abort"])?;
+    } else {
+        out = "no merge, rebase, or cherry-pick operation is in progress".to_string();
     }
-    if git_path_exists("CHERRY_PICK_HEAD")? {
-        return run_combined(&["cherry-pick", "--abort"]);
+
+    if let Some(branch) = return_branch {
+        if head_branch()
+            .map(|current| current != branch)
+            .unwrap_or(true)
+        {
+            let checkout = run_combined(&["checkout", branch])?;
+            out.push_str("\n\nCheckout:\n");
+            out.push_str(checkout.trim());
+        }
     }
-    if git_path_exists("MERGE_HEAD")? {
-        return run_combined(&["merge", "--abort"]);
-    }
-    Ok("no merge, rebase, or cherry-pick operation is in progress".to_string())
+
+    Ok(out)
 }
 
 fn git_path_exists(name: &str) -> Result<bool> {
@@ -1057,6 +1149,21 @@ fn is_valid_branch_name(name: &str) -> bool {
 fn has_uncommitted_changes() -> Result<bool> {
     let out = run(&["status", "--porcelain"])?;
     Ok(!out.stdout.is_empty())
+}
+
+fn stash_uncommitted_changes(message: &str) -> Result<bool> {
+    let stashed = has_uncommitted_changes()?;
+    if stashed {
+        run(&["stash", "push", "-u", "-m", message])?;
+    }
+    Ok(stashed)
+}
+
+fn pop_stash_if_needed(stashed: bool) -> Result<()> {
+    if stashed {
+        run(&["stash", "pop"])?;
+    }
+    Ok(())
 }
 
 fn preferred_commit_ref(remote_ref: &str, local_ref: &str) -> Option<String> {

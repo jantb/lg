@@ -13,6 +13,11 @@ use crate::{
 };
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
+    if !state.flow_available() {
+        frame.render_widget(Paragraph::new(""), area);
+        return;
+    }
+
     let block = ui::bordered("Current Branch");
     let mut lines = Vec::new();
 

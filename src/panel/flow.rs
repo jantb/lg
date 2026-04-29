@@ -10,9 +10,24 @@ use ratatui::{
 
 use crate::{
     app,
+    config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST},
     state::{AppState, FlowAction, Modal, SPINNER_FRAMES},
     ui,
 };
+
+fn merge_main_available(state: &AppState) -> bool {
+    state
+        .branch
+        .as_deref()
+        .is_some_and(|branch| !matches!(branch, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST))
+}
+
+fn available_actions(state: &AppState) -> Vec<FlowAction> {
+    FlowAction::ALL
+        .into_iter()
+        .filter(|action| *action != FlowAction::MergeMain || merge_main_available(state))
+        .collect()
+}
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let w = (area.width * 7 / 10).clamp(58, 96).min(area.width);
@@ -46,6 +61,26 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         } else {
             text.extend(workflow_lines(job));
         }
+        frame.render_widget(Paragraph::new(text).block(ui::bordered("Flow")), modal);
+        return;
+    }
+
+    if !state.flow_available() {
+        let text = vec![
+            Line::from(Span::styled(
+                "Flow unavailable",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from("Create local develop and release/next branches to enable this workflow."),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Esc", Style::default().fg(Color::Gray)),
+                Span::raw(" back"),
+            ]),
+        ];
         frame.render_widget(Paragraph::new(text).block(ui::bordered("Flow")), modal);
         return;
     }
@@ -113,7 +148,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         chunks[0],
     );
 
-    let items: Vec<ListItem> = FlowAction::ALL
+    let actions = available_actions(state);
+    let items: Vec<ListItem> = actions
         .iter()
         .map(|action| ListItem::new(Line::from(action.label())))
         .collect();
@@ -126,12 +162,22 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         )
         .highlight_symbol("\u{203a} ");
     let mut list_state = ListState::default();
-    list_state.select(Some(state.flow_idx.min(FlowAction::ALL.len() - 1)));
+    list_state.select(Some(state.flow_idx.min(actions.len().saturating_sub(1))));
     frame.render_stateful_widget(list, chunks[1], &mut list_state);
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     if state.workflow_job.is_some() {
+        return Ok(());
+    }
+
+    if !state.flow_available() {
+        state.flow_confirm = None;
+        state.flow_input = None;
+        state.flow_text.clear();
+        if key.code == KeyCode::Esc {
+            state.modal = Modal::None;
+        }
         return Ok(());
     }
 
@@ -181,7 +227,8 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             state.modal = Modal::None;
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            if state.flow_idx + 1 < FlowAction::ALL.len() {
+            let actions = available_actions(state);
+            if state.flow_idx + 1 < actions.len() {
                 state.flow_idx += 1;
             }
         }
@@ -189,7 +236,13 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             state.flow_idx = state.flow_idx.saturating_sub(1);
         }
         KeyCode::Enter => {
-            let action = FlowAction::ALL[state.flow_idx.min(FlowAction::ALL.len() - 1)];
+            let actions = available_actions(state);
+            let Some(action) = actions
+                .get(state.flow_idx.min(actions.len().saturating_sub(1)))
+                .copied()
+            else {
+                return Ok(());
+            };
             if action == FlowAction::NewFeature {
                 state.flow_input = Some(action);
                 state.flow_text.clear();
@@ -215,14 +268,14 @@ fn warning_for(action: FlowAction) -> Line<'static> {
             Style::default().fg(Color::Red),
         )),
         FlowAction::ReleaseDev => Line::from(
-            "Pushes current branch, syncs develop, merges origin/main, merges current, pushes develop -> dev, then returns.",
+            "Pushes current branch, syncs develop, merges origin/main, merges current, pushes HEAD to develop -> dev, then returns.",
         ),
         FlowAction::ReleaseTest => Line::from(
-            "Pushes current branch, syncs release/next, merges origin/main, merges current, pushes release/next -> test, then returns.",
+            "Pushes current branch, syncs release/next, merges origin/main, merges current, pushes HEAD to release/next -> test, then returns.",
         ),
-        FlowAction::MergeMain => {
-            Line::from("Fetches, updates main/current, merges origin/main, then pushes current.")
-        }
+        FlowAction::MergeMain => Line::from(
+            "Stashes local changes, updates main from origin/main, returns, merges origin/main, pushes current, then restores.",
+        ),
         FlowAction::NewFeature => Line::from(""),
     }
 }
