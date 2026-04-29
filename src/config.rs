@@ -44,6 +44,7 @@ pub const STATUS_BAR_HEIGHT: u16 = 1;
 pub const STATUS_MSG_LIFETIME_SECS: i64 = 3;
 pub const BORDER_COLOR: Color = Color::LightBlue;
 pub const TICK_MS: u64 = 250;
+pub const BACKGROUND_FETCH_INTERVAL_SECS: u64 = 300;
 pub const COMMIT_LIST_LIMIT: usize = 200;
 pub const LEFT_COLUMN_WIDTH: u16 = 64;
 pub const DIFF_PAGE: u16 = 20;

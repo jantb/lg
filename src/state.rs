@@ -76,6 +76,18 @@ pub struct OperationJob {
 }
 
 #[derive(Debug)]
+pub enum FetchMsg {
+    Done(String),
+    Error(String),
+}
+
+#[derive(Debug)]
+pub struct FetchJob {
+    pub rx: Receiver<FetchMsg>,
+    pub spinner: usize,
+}
+
+#[derive(Debug)]
 pub enum RefreshMsg {
     Done(Box<RefreshSnapshot>),
 }
@@ -360,7 +372,9 @@ pub struct AppState {
     pub push_job: Option<PushJob>,
     pub checkout_job: Option<CheckoutJob>,
     pub operation_job: Option<OperationJob>,
+    pub fetch_job: Option<FetchJob>,
     pub refresh_job: Option<RefreshJob>,
+    pub refresh_pending: bool,
     pub refresh_pending_diff: bool,
     pub diff_job: Option<DiffJob>,
     pub workflow_job: Option<WorkflowJob>,
@@ -457,7 +471,9 @@ impl AppState {
             push_job: None,
             checkout_job: None,
             operation_job: None,
+            fetch_job: None,
             refresh_job: None,
+            refresh_pending: false,
             refresh_pending_diff: false,
             diff_job: None,
             workflow_job: None,
@@ -489,6 +505,8 @@ impl AppState {
             Some("checking out")
         } else if let Some(job) = &self.operation_job {
             Some(job.label)
+        } else if self.fetch_job.is_some() {
+            Some("fetching")
         } else if self.refresh_job.is_some() {
             Some("refreshing")
         } else if self.diff_job.is_some() {

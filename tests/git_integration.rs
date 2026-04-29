@@ -87,6 +87,23 @@ fn commit_in(dir: &std::path::Path, msg: &str) {
     );
 }
 
+fn commit_in_as(dir: &std::path::Path, msg: &str, author: &str, email: &str) {
+    let out = Command::new("git")
+        .args(["commit", "-m", msg])
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", author)
+        .env("GIT_AUTHOR_EMAIL", email)
+        .env("GIT_COMMITTER_NAME", author)
+        .env("GIT_COMMITTER_EMAIL", email)
+        .output()
+        .expect("git commit");
+    assert!(
+        out.status.success(),
+        "commit failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 struct CwdGuard {
     old: std::path::PathBuf,
     _lock: MutexGuard<'static, ()>,
@@ -172,6 +189,26 @@ fn head_branch_returns_current_branch() {
         .expect("git rev-parse");
     let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     assert_eq!(branch, "main");
+}
+
+#[test]
+fn list_commits_includes_short_author_name() {
+    let dir = init_repo();
+    fs::write(dir.path().join("a.txt"), "one").unwrap();
+    stage_in(dir.path(), "a.txt");
+    commit_in_as(
+        dir.path(),
+        "add authored commit",
+        "Alice Example",
+        "alice@example.com",
+    );
+
+    let _cwd = CwdGuard::new(dir.path());
+    let commits = lg::git::list_commits(10).unwrap();
+
+    assert_eq!(commits[0].author, "Alice Example");
+    assert_eq!(commits[0].author_short, "Alice");
+    assert_eq!(commits[0].subject, "add authored commit");
 }
 
 #[test]

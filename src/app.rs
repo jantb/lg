@@ -19,17 +19,20 @@ use std::{
     io::Stdout,
     path::{Component, Path},
     sync::mpsc::Receiver,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::{
-    config::{COMMIT_LIST_LIMIT, DEFAULT_PUSH_REMOTE, STATUS_MSG_LIFETIME_SECS, TICK_MS},
+    config::{
+        BACKGROUND_FETCH_INTERVAL_SECS, COMMIT_LIST_LIMIT, DEFAULT_PUSH_REMOTE,
+        STATUS_MSG_LIFETIME_SECS, TICK_MS,
+    },
     panel,
     state::{
         AppState, CheckoutJob, CheckoutMsg, ConflictFollowup, DiffJob, DiffMsg, DiffSource,
-        FlowAction, GenMsg, Modal, OperationJob, OperationKind, OperationMsg, Pane, PendingAction,
-        PushJob, PushMsg, RefreshJob, RefreshMsg, RefreshSnapshot, TreeKind, WorkflowJob,
-        WorkflowMsg,
+        FetchJob, FetchMsg, FlowAction, GenMsg, Modal, OperationJob, OperationKind, OperationMsg,
+        Pane, PendingAction, PushJob, PushMsg, RefreshJob, RefreshMsg, RefreshSnapshot, TreeKind,
+        WorkflowJob, WorkflowMsg,
     },
     ui,
 };
@@ -39,6 +42,7 @@ pub struct App {
     pub terminal: Terminal<CrosstermBackend<Stdout>>,
     file_events: Receiver<notify::Result<notify::Event>>,
     _file_watcher: RecommendedWatcher,
+    last_fetch_started: Instant,
 }
 
 /// Headless app backed by a generic [`Backend`]; used by tests and the harness.
@@ -82,6 +86,7 @@ fn git_job_running(state: &AppState) -> bool {
     state.push_job.is_some()
         || state.checkout_job.is_some()
         || state.operation_job.is_some()
+        || state.fetch_job.is_some()
         || state.workflow_job.is_some()
 }
 
@@ -1004,9 +1009,12 @@ impl App {
             terminal,
             file_events,
             _file_watcher,
+            last_fetch_started: Instant::now()
+                - Duration::from_secs(BACKGROUND_FETCH_INTERVAL_SECS),
         };
         prime_branches(&mut app.state);
         app.start_refresh(true);
+        app.start_fetch();
         Ok(app)
     }
 
@@ -1022,15 +1030,18 @@ impl App {
             self.drain_push_job()?;
             self.drain_checkout_job()?;
             self.drain_operation_job()?;
+            self.drain_fetch_job();
             self.drain_refresh_job();
             self.drain_diff_job();
             self.drain_workflow_job()?;
             self.drain_file_events()?;
+            self.maybe_start_periodic_fetch();
 
             let poll_ms = if self.state.generation.is_some()
                 || self.state.push_job.is_some()
                 || self.state.checkout_job.is_some()
                 || self.state.operation_job.is_some()
+                || self.state.fetch_job.is_some()
                 || self.state.refresh_job.is_some()
                 || self.state.diff_job.is_some()
                 || self.state.workflow_job.is_some()
@@ -1137,8 +1148,13 @@ impl App {
     }
 
     fn start_refresh(&mut self, refresh_diff: bool) {
+        self.start_refresh_with_status(refresh_diff, true);
+    }
+
+    fn start_refresh_with_status(&mut self, refresh_diff: bool, show_status: bool) {
         if let Some(job) = self.state.refresh_job.as_mut() {
             job.refresh_diff |= refresh_diff;
+            self.state.refresh_pending = true;
             self.state.refresh_pending_diff |= refresh_diff;
             return;
         }
@@ -1151,7 +1167,33 @@ impl App {
             spinner: 0,
             refresh_diff,
         });
-        self.state.set_status("refreshing\u{2026}", false);
+        if show_status {
+            self.state.set_status("refreshing\u{2026}", false);
+        }
+    }
+
+    fn start_fetch(&mut self) {
+        if git_job_running(&self.state) {
+            return;
+        }
+        self.last_fetch_started = Instant::now();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || match crate::git::fetch_updates() {
+            Ok(s) => {
+                let _ = tx.send(FetchMsg::Done(s));
+            }
+            Err(e) => {
+                let _ = tx.send(FetchMsg::Error(e.to_string()));
+            }
+        });
+        self.state.fetch_job = Some(FetchJob { rx, spinner: 0 });
+    }
+
+    fn maybe_start_periodic_fetch(&mut self) {
+        if self.last_fetch_started.elapsed() >= Duration::from_secs(BACKGROUND_FETCH_INTERVAL_SECS)
+        {
+            self.start_fetch();
+        }
     }
 
     fn start_diff_job(&mut self, force: bool) {
@@ -1254,12 +1296,14 @@ impl App {
             job.spinner = job.spinner.wrapping_add(1);
         }
         if let Some((snapshot, refresh_diff)) = finished {
+            let pending_refresh = self.state.refresh_pending;
             let pending_diff = self.state.refresh_pending_diff;
             self.state.refresh_job = None;
+            self.state.refresh_pending = false;
             self.state.refresh_pending_diff = false;
             self.apply_refresh_snapshot(snapshot, refresh_diff);
-            if pending_diff {
-                self.start_refresh(true);
+            if pending_refresh {
+                self.start_refresh(pending_diff);
             }
         }
     }
@@ -1280,6 +1324,28 @@ impl App {
                 self.state.diff_line_count =
                     self.state.diff_text.lines().count().min(u16::MAX as usize) as u16;
             }
+        }
+    }
+
+    fn drain_fetch_job(&mut self) {
+        let mut finished: Option<std::result::Result<String, String>> = None;
+        if let Some(job) = self.state.fetch_job.as_mut() {
+            while let Ok(msg) = job.rx.try_recv() {
+                match msg {
+                    FetchMsg::Done(s) => finished = Some(Ok(s)),
+                    FetchMsg::Error(s) => finished = Some(Err(s)),
+                }
+            }
+            job.spinner = job.spinner.wrapping_add(1);
+        }
+        if let Some(res) = finished {
+            self.state.fetch_job = None;
+            match res {
+                Ok(s) if s != "no remotes configured" => self.state.set_status(s, false),
+                Ok(_) => {}
+                Err(e) => self.state.set_status(first_status_line(&e), true),
+            }
+            self.start_refresh_with_status(false, false);
         }
     }
 

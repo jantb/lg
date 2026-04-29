@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST, DEFAULT_PUSH_REMOTE};
@@ -40,6 +41,22 @@ fn trace(args: &[&str], out: &Output) {
         stdout,
         stderr,
     );
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct ReleaseStatusCacheKey {
+    branch: String,
+    branch_oid: String,
+    base_oid: String,
+    develop_oid: Option<String>,
+    test_oid: Option<String>,
+}
+
+static RELEASE_STATUS_CACHE: OnceLock<Mutex<HashMap<ReleaseStatusCacheKey, BranchReleaseStatus>>> =
+    OnceLock::new();
+
+fn release_status_cache() -> &'static Mutex<HashMap<ReleaseStatusCacheKey, BranchReleaseStatus>> {
+    RELEASE_STATUS_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn run(args: &[&str]) -> Result<Output> {
@@ -247,6 +264,8 @@ pub struct ReleaseTargetStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
     pub sha: String,
+    pub author: String,
+    pub author_short: String,
     pub subject: String,
 }
 
@@ -332,19 +351,46 @@ pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
     let base_ref =
         preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}"), BRANCH_MAIN)
             .unwrap_or_else(|| BRANCH_MAIN.to_string());
-    if !commit_ref_exists(&base_ref) || !commit_ref_exists(branch) {
+    let Some(base_oid) = commit_oid(&base_ref) else {
         return Ok(BranchReleaseStatus::default());
+    };
+    let Some(branch_oid) = commit_oid(branch) else {
+        return Ok(BranchReleaseStatus::default());
+    };
+    let develop_ref =
+        preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_DEV}"), BRANCH_DEV);
+    let test_ref =
+        preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_TEST}"), BRANCH_TEST);
+    let key = ReleaseStatusCacheKey {
+        branch: branch.to_string(),
+        branch_oid,
+        base_oid,
+        develop_oid: develop_ref.as_deref().and_then(commit_oid),
+        test_oid: test_ref.as_deref().and_then(commit_oid),
+    };
+    if let Ok(cache) = release_status_cache().lock()
+        && let Some(status) = cache.get(&key)
+    {
+        return Ok(status.clone());
     }
 
     let unique_commits = rev_list(&["--reverse", branch, &format!("^{base_ref}")])?;
     if unique_commits.is_empty() {
-        return Ok(BranchReleaseStatus::default());
+        let status = BranchReleaseStatus::default();
+        if let Ok(mut cache) = release_status_cache().lock() {
+            cache.insert(key, status.clone());
+        }
+        return Ok(status);
     }
 
-    Ok(BranchReleaseStatus {
-        develop: release_target_status(branch, &unique_commits, BRANCH_DEV)?,
-        test: release_target_status(branch, &unique_commits, BRANCH_TEST)?,
-    })
+    let status = BranchReleaseStatus {
+        develop: release_target_status(branch, &unique_commits, &base_ref, develop_ref.as_deref())?,
+        test: release_target_status(branch, &unique_commits, &base_ref, test_ref.as_deref())?,
+    };
+    if let Ok(mut cache) = release_status_cache().lock() {
+        cache.insert(key, status.clone());
+    }
+    Ok(status)
 }
 
 pub fn flow_branches_available() -> bool {
@@ -356,19 +402,14 @@ pub fn flow_branches_available() -> bool {
 fn release_target_status(
     branch: &str,
     unique_commits: &[String],
-    target_branch: &str,
+    base_ref: &str,
+    target_ref: Option<&str>,
 ) -> Result<Option<ReleaseTargetStatus>> {
-    let Some(target_ref) = preferred_commit_ref(
-        &format!("{DEFAULT_PUSH_REMOTE}/{target_branch}"),
-        target_branch,
-    ) else {
+    let Some(target_ref) = target_ref else {
         return Ok(None);
     };
 
-    let base_ref =
-        preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}"), BRANCH_MAIN)
-            .unwrap_or_else(|| BRANCH_MAIN.to_string());
-    let missing = rev_list(&[branch, &format!("^{base_ref}"), "--not", &target_ref])?;
+    let missing = rev_list(&[branch, &format!("^{base_ref}"), "--not", target_ref])?;
     let missing_set: HashSet<&str> = missing.iter().map(String::as_str).collect();
     let latest_released = unique_commits
         .iter()
@@ -379,7 +420,7 @@ fn release_target_status(
         return Ok(None);
     };
 
-    let released_at = first_containing_commit_date(&target_ref, latest_released)
+    let released_at = first_containing_commit_date(target_ref, latest_released)
         .or_else(|| commit_date(latest_released).ok())
         .unwrap_or_else(|| "unknown".to_string());
     Ok(Some(ReleaseTargetStatus {
@@ -391,7 +432,7 @@ fn release_target_status(
 pub fn list_commits(limit: usize) -> Result<Vec<Commit>> {
     trace_enter("list_commits");
     let n = limit.to_string();
-    let fmt = "--format=%h\x1f%s";
+    let fmt = "--format=%h\x1f%an\x1f%s";
     let result = run(&["log", fmt, "-n", &n]);
     match result {
         Ok(out) => {
@@ -399,13 +440,19 @@ pub fn list_commits(limit: usize) -> Result<Vec<Commit>> {
             let commits = text
                 .lines()
                 .filter_map(|line| {
-                    let mut parts = line.splitn(2, '\x1f');
+                    let mut parts = line.splitn(3, '\x1f');
                     let sha = parts.next()?.trim().to_owned();
+                    let author = parts.next().unwrap_or("").trim().to_owned();
                     let subject = parts.next().unwrap_or("").trim().to_owned();
                     if sha.is_empty() {
                         return None;
                     }
-                    Some(Commit { sha, subject })
+                    Some(Commit {
+                        sha,
+                        author_short: short_author_name(&author),
+                        author,
+                        subject,
+                    })
                 })
                 .collect();
             Ok(commits)
@@ -419,6 +466,33 @@ pub fn list_commits(limit: usize) -> Result<Vec<Commit>> {
             }
         }
     }
+}
+
+fn short_author_name(author: &str) -> String {
+    let trimmed = author.trim();
+    let first = trimmed
+        .split_whitespace()
+        .next()
+        .unwrap_or(trimmed)
+        .trim_matches(|c: char| !c.is_alphanumeric());
+    let short = if first.is_empty() { trimmed } else { first };
+    short.chars().take(12).collect()
+}
+
+pub fn fetch_updates() -> Result<String> {
+    let remotes = run(&["remote"])?;
+    if String::from_utf8_lossy(&remotes.stdout).trim().is_empty() {
+        return Ok("no remotes configured".to_string());
+    }
+
+    let text = run_combined(&["fetch", "--all", "--prune"])?;
+    let status = text
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.trim().to_owned())
+        .unwrap_or_else(|| "fetched branch updates".to_string());
+    Ok(status)
 }
 
 pub fn all_diffs() -> Result<String> {
@@ -1184,6 +1258,12 @@ fn commit_ref_exists(reference: &str) -> bool {
         &format!("{reference}^{{commit}}"),
     ])
     .is_ok()
+}
+
+fn commit_oid(reference: &str) -> Option<String> {
+    let out = run(&["rev-parse", "--verify", &format!("{reference}^{{commit}}")]).ok()?;
+    let oid = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    (!oid.is_empty()).then_some(oid)
 }
 
 fn rev_list(args: &[&str]) -> Result<Vec<String>> {

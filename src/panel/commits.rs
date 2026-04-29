@@ -37,8 +37,12 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
             } else {
                 Style::default()
             };
+            let author_style = Style::default()
+                .fg(author_color(&c.author))
+                .add_modifier(Modifier::BOLD);
             let line = Line::from(vec![
                 Span::styled(format!("{} ", c.sha), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("{:<12} ", c.author_short), author_style),
                 Span::styled(c.subject.clone(), subject_style),
             ]);
             ListItem::new(line)
@@ -80,4 +84,23 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn author_color(author: &str) -> Color {
+    const COLORS: &[Color] = &[
+        Color::Cyan,
+        Color::Yellow,
+        Color::Green,
+        Color::Magenta,
+        Color::Blue,
+        Color::LightCyan,
+        Color::LightYellow,
+        Color::LightGreen,
+        Color::LightMagenta,
+        Color::LightBlue,
+    ];
+    let hash = author.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    COLORS[hash as usize % COLORS.len()]
 }

@@ -1,5 +1,5 @@
 use lg::{
-    git::{Branch, BranchReleaseStatus, FileEntry, ReleaseTargetStatus},
+    git::{Branch, BranchReleaseStatus, Commit, FileEntry, ReleaseTargetStatus},
     panel,
     state::{AppState, Modal, Pane, TreeKind, WorkflowJob, build_tree_rows},
 };
@@ -842,4 +842,45 @@ fn layout_gives_files_panel_environment_space_when_flow_is_hidden() {
     );
     assert_eq!(without_flow.branches, with_flow.branches);
     assert_eq!(without_flow.commits, with_flow.commits);
+}
+
+#[test]
+fn commits_panel_shows_author_names_with_distinct_colors() {
+    let mut state = AppState::new();
+    state.commits = vec![
+        Commit {
+            sha: "abc1234".into(),
+            author: "Alice Example".into(),
+            author_short: "Alice".into(),
+            subject: "add feature".into(),
+        },
+        Commit {
+            sha: "def5678".into(),
+            author: "Bob Example".into(),
+            author_short: "Bob".into(),
+            subject: "fix bug".into(),
+        },
+    ];
+
+    let backend = TestBackend::new(80, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(text.contains("Alice"), "missing first author: {text}");
+    assert!(text.contains("Bob"), "missing second author: {text}");
+    assert_ne!(buf[(9, 1)].fg, Color::Reset);
+    assert_ne!(buf[(9, 2)].fg, Color::Reset);
+    assert_ne!(buf[(9, 1)].fg, buf[(9, 2)].fg);
 }
