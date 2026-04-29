@@ -286,6 +286,84 @@ fn release_flow_returns_to_original_branch_after_target_push() {
 }
 
 #[test]
+fn release_flow_stashes_dirty_work_for_target_checkouts() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "origin", "main"]);
+
+    git_ok(dir.path(), &["checkout", "-b", "develop"]);
+    fs::write(dir.path().join("target_only.txt"), "develop\n").unwrap();
+    stage_in(dir.path(), "target_only.txt");
+    commit_in(dir.path(), "develop target file");
+    git_ok(dir.path(), &["push", "origin", "develop"]);
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", "release/next"]);
+    fs::write(dir.path().join("target_only.txt"), "release\n").unwrap();
+    stage_in(dir.path(), "target_only.txt");
+    commit_in(dir.path(), "release target file");
+    git_ok(dir.path(), &["push", "origin", "release/next"]);
+
+    let feature = "feature/release-dirty";
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("feature.txt"), "feature").unwrap();
+    stage_in(dir.path(), "feature.txt");
+    commit_in(dir.path(), "feature commit");
+
+    fs::write(dir.path().join("init.txt"), "dirty init").unwrap();
+    fs::write(dir.path().join("target_only.txt"), "untracked local").unwrap();
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::flow_release_current(feature, "develop").expect("release to develop");
+    assert_eq!(head_branch(dir.path()), feature);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("init.txt")).unwrap(),
+        "dirty init"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("target_only.txt")).unwrap(),
+        "untracked local"
+    );
+
+    lg::git::flow_release_current(feature, "release/next").expect("release to release/next");
+    assert_eq!(head_branch(dir.path()), feature);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("init.txt")).unwrap(),
+        "dirty init"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("target_only.txt")).unwrap(),
+        "untracked local"
+    );
+
+    let develop_log = git(bare.path(), &["log", "--oneline", "develop"]);
+    assert!(
+        String::from_utf8_lossy(&develop_log.stdout).contains("feature commit"),
+        "develop did not receive feature commit"
+    );
+    let release_log = git(bare.path(), &["log", "--oneline", "release/next"]);
+    assert!(
+        String::from_utf8_lossy(&release_log.stdout).contains("feature commit"),
+        "release/next did not receive feature commit"
+    );
+    let stash_list = git(dir.path(), &["stash", "list"]);
+    assert!(
+        String::from_utf8_lossy(&stash_list.stdout).is_empty(),
+        "auto-stash should be restored and dropped"
+    );
+}
+
+#[test]
 fn release_conflict_continue_auto_stages_pushes_target_and_returns_to_feature() {
     let dir = init_repo();
     fs::write(dir.path().join("conflict.txt"), "base\n").unwrap();

@@ -616,6 +616,8 @@ pub fn flow_release_current_with_progress(
 ) -> Result<String> {
     ensure_feature_branch(current_branch)?;
     progress();
+    let stashed = stash_uncommitted_changes("lg flow: auto-stash before release")?;
+    progress();
     create_safety_ref("release-current")?;
     progress();
     run(&["push", DEFAULT_PUSH_REMOTE, current_branch])?;
@@ -655,6 +657,8 @@ pub fn flow_release_current_with_progress(
     ])?;
     progress();
     run(&["checkout", current_branch])?;
+    progress();
+    pop_stash_if_needed(stashed)?;
 
     let env = if target_branch == BRANCH_DEV {
         "dev"

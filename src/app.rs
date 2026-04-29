@@ -452,6 +452,7 @@ fn workflow_steps(action: FlowAction, current: &str, input: Option<&str>) -> Vec
 
 fn release_steps(current: &str, target: &str) -> Vec<String> {
     vec![
+        "stash current changes".into(),
         "create safety backup".into(),
         format!("push {current}"),
         "fetch origin".into(),
@@ -461,6 +462,7 @@ fn release_steps(current: &str, target: &str) -> Vec<String> {
         format!("merge origin/{current}"),
         format!("push HEAD to origin/{target}"),
         format!("checkout {current}"),
+        "restore stashed changes".into(),
     ]
 }
 
