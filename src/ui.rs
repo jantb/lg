@@ -45,6 +45,7 @@ pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
 
 pub struct LayoutRects {
     pub status: Rect,
+    pub environments: Rect,
     pub files: Rect,
     pub branches: Rect,
     pub commits: Rect,
@@ -57,17 +58,19 @@ pub fn split_layout(area: Rect) -> LayoutRects {
     let cols = Layout::horizontal([Constraint::Length(LEFT_COLUMN_WIDTH), Constraint::Min(0)])
         .split(rows[0]);
     let lefts = Layout::vertical([
-        Constraint::Ratio(1, 4),
-        Constraint::Ratio(1, 4),
-        Constraint::Ratio(1, 4),
-        Constraint::Ratio(1, 4),
+        Constraint::Length(5),
+        Constraint::Length(5),
+        Constraint::Ratio(1, 3),
+        Constraint::Ratio(1, 3),
+        Constraint::Ratio(1, 3),
     ])
     .split(cols[0]);
     LayoutRects {
         status: lefts[0],
-        files: lefts[1],
-        branches: lefts[2],
-        commits: lefts[3],
+        environments: lefts[1],
+        files: lefts[2],
+        branches: lefts[3],
+        commits: lefts[4],
         main: cols[1],
         footer: rows[1],
     }

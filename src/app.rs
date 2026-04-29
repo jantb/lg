@@ -193,26 +193,51 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
 
     let current = state.branch.clone().unwrap_or_default();
     let label = action.label().to_owned();
+    let steps = workflow_steps(action, &current, input.as_deref());
+    let thread_steps = steps.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
+        let mut step_idx = 0usize;
+        let mut progress = || {
+            let _ = tx.send(WorkflowMsg::Progress(step_idx));
+            step_idx += 1;
+        };
         let res = match action {
-            FlowAction::MergeMain => crate::git::flow_merge_main_into_current(&current),
-            FlowAction::ReleaseDev => {
-                crate::git::flow_release_current(&current, crate::config::BRANCH_DEV)
+            FlowAction::MergeMain => {
+                crate::git::flow_merge_main_into_current_with_progress(&current, &mut progress)
             }
-            FlowAction::ReleaseTest => {
-                crate::git::flow_release_current(&current, crate::config::BRANCH_TEST)
-            }
-            FlowAction::ResetDev => {
-                crate::git::flow_reset_branch_from_main(&current, crate::config::BRANCH_DEV)
-            }
-            FlowAction::ResetTest => {
-                crate::git::flow_reset_branch_from_main(&current, crate::config::BRANCH_TEST)
-            }
+            FlowAction::ReleaseDev => crate::git::flow_release_current_with_progress(
+                &current,
+                crate::config::BRANCH_DEV,
+                &mut progress,
+            ),
+            FlowAction::ReleaseTest => crate::git::flow_release_current_with_progress(
+                &current,
+                crate::config::BRANCH_TEST,
+                &mut progress,
+            ),
+            FlowAction::ResetDev => crate::git::flow_reset_branch_from_main_with_progress(
+                &current,
+                crate::config::BRANCH_DEV,
+                &mut progress,
+            ),
+            FlowAction::ResetTest => crate::git::flow_reset_branch_from_main_with_progress(
+                &current,
+                crate::config::BRANCH_TEST,
+                &mut progress,
+            ),
             FlowAction::NewFeature => {
+                for _ in &thread_steps {
+                    progress();
+                }
                 crate::git::flow_create_feature_branch(&current, &input.unwrap_or_default())
             }
-            FlowAction::CleanOrphans => crate::git::flow_clean_orphan_branches(&current),
+            FlowAction::CleanOrphans => {
+                for _ in &thread_steps {
+                    progress();
+                }
+                crate::git::flow_clean_orphan_branches(&current)
+            }
         };
         match res {
             Ok(s) => {
@@ -228,8 +253,64 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
         rx,
         spinner: 0,
         label,
+        steps,
+        current_step: None,
     });
     state.set_status("running flow workflow\u{2026}", false);
+}
+
+fn workflow_steps(action: FlowAction, current: &str, input: Option<&str>) -> Vec<String> {
+    match action {
+        FlowAction::MergeMain => vec![
+            "create safety backup".into(),
+            "fetch origin".into(),
+            "checkout main".into(),
+            "update main".into(),
+            format!("checkout {current}"),
+            format!("update {current}"),
+            format!("merge origin/{} into {current}", crate::config::BRANCH_MAIN),
+            format!("push {current}"),
+        ],
+        FlowAction::ReleaseDev => release_steps(current, crate::config::BRANCH_DEV),
+        FlowAction::ReleaseTest => release_steps(current, crate::config::BRANCH_TEST),
+        FlowAction::ResetDev => reset_steps(current, crate::config::BRANCH_DEV),
+        FlowAction::ResetTest => reset_steps(current, crate::config::BRANCH_TEST),
+        FlowAction::NewFeature => vec![format!(
+            "create {}",
+            input.filter(|s| !s.is_empty()).unwrap_or("new branch")
+        )],
+        FlowAction::CleanOrphans => vec!["scan branches".into(), "delete orphan branches".into()],
+    }
+}
+
+fn release_steps(current: &str, target: &str) -> Vec<String> {
+    vec![
+        "create safety backup".into(),
+        format!("push {current}"),
+        "fetch origin".into(),
+        format!("sync {target} from origin/{target}"),
+        format!("checkout {target}"),
+        format!("merge origin/{}", crate::config::BRANCH_MAIN),
+        format!("merge origin/{current}"),
+        format!("push {target}"),
+        format!("checkout {current}"),
+    ]
+}
+
+fn reset_steps(current: &str, target: &str) -> Vec<String> {
+    let mut steps = vec!["fetch origin".into()];
+    if current != target {
+        steps.push(format!("checkout {target}"));
+    }
+    steps.extend([
+        "create safety backup".into(),
+        format!("reset {target} to origin/{}", crate::config::BRANCH_MAIN),
+        format!("force push {target}"),
+    ]);
+    if current != target {
+        steps.push(format!("checkout {current}"));
+    }
+    steps
 }
 
 pub(crate) fn run_conflict_llm(state: &mut AppState) {
@@ -255,6 +336,8 @@ pub(crate) fn run_conflict_llm(state: &mut AppState) {
         rx,
         spinner: 0,
         label: "LLM conflict resolution".to_string(),
+        steps: Vec::new(),
+        current_step: None,
     });
     state.set_status("asking LLM to resolve conflicts\u{2026}", false);
 }
@@ -295,6 +378,8 @@ pub(crate) fn run_conflict_validation(state: &mut AppState) {
         rx,
         spinner: 0,
         label: "validation".to_string(),
+        steps: Vec::new(),
+        current_step: None,
     });
     state.set_status("running validation\u{2026}", false);
 }
@@ -316,6 +401,8 @@ pub(crate) fn continue_conflict_operation(state: &mut AppState) {
         rx,
         spinner: 0,
         label: "continue merge".to_string(),
+        steps: Vec::new(),
+        current_step: None,
     });
     state.set_status("continuing git operation\u{2026}", false);
 }
@@ -337,6 +424,8 @@ pub(crate) fn abort_conflict_operation(state: &mut AppState) {
         rx,
         spinner: 0,
         label: "abort merge".to_string(),
+        steps: Vec::new(),
+        current_step: None,
     });
     state.set_status("aborting git operation\u{2026}", false);
 }
@@ -589,6 +678,7 @@ where
             let focused_pane = state.focus;
 
             panel::status::render(state, rects.status, frame, focused_pane == Pane::Status);
+            panel::environments::render(state, rects.environments, frame);
             panel::files::render(state, rects.files, frame, focused_pane == Pane::Files);
             panel::branches::render(state, rects.branches, frame, focused_pane == Pane::Branches);
             panel::commits::render(state, rects.commits, frame, focused_pane == Pane::Commits);
@@ -948,13 +1038,19 @@ impl App {
         let mut finished: Option<WorkflowMsg> = None;
         if let Some(job) = self.state.workflow_job.as_mut() {
             while let Ok(msg) = job.rx.try_recv() {
-                finished = Some(msg);
+                match msg {
+                    WorkflowMsg::Progress(step) => job.current_step = Some(step),
+                    WorkflowMsg::Done(_) | WorkflowMsg::Error(_) | WorkflowMsg::Patch(_) => {
+                        finished = Some(msg)
+                    }
+                }
             }
             job.spinner = job.spinner.wrapping_add(1);
         }
         if let Some(res) = finished {
             self.state.workflow_job = None;
             match res {
+                WorkflowMsg::Progress(_) => {}
                 WorkflowMsg::Done(s) => {
                     if matches!(self.state.modal, Modal::Conflict) {
                         self.state.conflict_log = s.clone();
@@ -1042,6 +1138,12 @@ impl App {
                 .set_status(format!("unpushed check failed: {e}"), true),
         }
         self.state.branch = crate::git::head_branch().ok();
+        self.state.current_branch_releases = self
+            .state
+            .branch
+            .as_deref()
+            .and_then(|branch| crate::git::branch_release_status(branch).ok())
+            .unwrap_or_default();
         self.state.remote_url = crate::git::remote_url(DEFAULT_PUSH_REMOTE).ok();
         self.state.ahead_behind = crate::git::counts_ahead_behind().ok();
         self.state.clamp();
@@ -1070,6 +1172,7 @@ impl App {
             let focused_pane = state.focus;
 
             panel::status::render(state, rects.status, frame, focused_pane == Pane::Status);
+            panel::environments::render(state, rects.environments, frame);
             panel::files::render(state, rects.files, frame, focused_pane == Pane::Files);
             panel::branches::render(state, rects.branches, frame, focused_pane == Pane::Branches);
             panel::commits::render(state, rects.commits, frame, focused_pane == Pane::Commits);
@@ -1173,6 +1276,12 @@ impl App {
             }
             KeyCode::Char('p') => {
                 self.state.branch = crate::git::head_branch().ok();
+                self.state.current_branch_releases = self
+                    .state
+                    .branch
+                    .as_deref()
+                    .and_then(|branch| crate::git::branch_release_status(branch).ok())
+                    .unwrap_or_default();
                 self.state.remote_url = crate::git::remote_url(DEFAULT_PUSH_REMOTE).ok();
                 self.state.modal = Modal::Push;
                 return Ok(());

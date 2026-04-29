@@ -22,7 +22,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 
     if let Some(job) = &state.workflow_job {
         let spinner = SPINNER_FRAMES[job.spinner % SPINNER_FRAMES.len()];
-        let text = vec![
+        let mut text = vec![
             Line::from(""),
             Line::from(vec![
                 Span::styled(
@@ -35,13 +35,17 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 Span::styled(job.label.clone(), Style::default().fg(Color::Cyan)),
             ]),
             Line::from(""),
-            Line::from(Span::styled(
+        ];
+        if job.steps.is_empty() {
+            text.push(Line::from(Span::styled(
                 "Git workflow is running",
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::DIM),
-            )),
-        ];
+            )));
+        } else {
+            text.extend(workflow_lines(job));
+        }
         frame.render_widget(Paragraph::new(text).block(ui::bordered("Flow")), modal);
         return;
     }
@@ -211,14 +215,51 @@ fn warning_for(action: FlowAction) -> Line<'static> {
             Style::default().fg(Color::Red),
         )),
         FlowAction::ReleaseDev => Line::from(
-            "Pushes current branch, syncs develop, merges origin/main, merges current, pushes develop -> dev.",
+            "Pushes current branch, syncs develop, merges origin/main, merges current, pushes develop -> dev, then returns.",
         ),
         FlowAction::ReleaseTest => Line::from(
-            "Pushes current branch, syncs release/next, merges origin/main, merges current, pushes release/next -> test.",
+            "Pushes current branch, syncs release/next, merges origin/main, merges current, pushes release/next -> test, then returns.",
         ),
         FlowAction::MergeMain => {
             Line::from("Fetches, updates main/current, merges origin/main, then pushes current.")
         }
         FlowAction::NewFeature => Line::from(""),
     }
+}
+
+fn workflow_lines(job: &crate::state::WorkflowJob) -> Vec<Line<'static>> {
+    let current = job.current_step.unwrap_or(0);
+    let frame = match job.spinner % 4 {
+        0 => "|",
+        1 => "/",
+        2 => "-",
+        _ => "\\",
+    };
+    job.steps
+        .iter()
+        .enumerate()
+        .map(|(idx, step)| {
+            if idx < current {
+                Line::from(vec![
+                    Span::styled("[x] ", Style::default().fg(Color::Green)),
+                    Span::raw(step.clone()),
+                ])
+            } else if idx == current {
+                Line::from(vec![
+                    Span::styled(format!(">{frame}< "), Style::default().fg(Color::Cyan)),
+                    Span::styled(
+                        step.clone(),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled("[ ] ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(step.clone(), Style::default().fg(Color::DarkGray)),
+                ])
+            }
+        })
+        .collect()
 }

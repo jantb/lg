@@ -1,7 +1,7 @@
 use lg::{
-    git::FileEntry,
+    git::{BranchReleaseStatus, FileEntry, ReleaseTargetStatus},
     panel,
-    state::{AppState, Modal, Pane, TreeKind, build_tree_rows},
+    state::{AppState, Modal, Pane, TreeKind, WorkflowJob, build_tree_rows},
 };
 use ratatui::{
     Terminal,
@@ -430,6 +430,100 @@ fn status_panel_shows_active_generation() {
     );
 }
 
+#[test]
+fn current_branch_panel_renders_environment_history() {
+    let mut state = AppState::new();
+    state.branch = Some("feature/released".into());
+    state.current_branch_releases = BranchReleaseStatus {
+        develop: Some(ReleaseTargetStatus {
+            released_at: "2026-04-29 14:20".into(),
+            missing_commits: 2,
+        }),
+        test: Some(ReleaseTargetStatus {
+            released_at: "2026-04-29 14:25".into(),
+            missing_commits: 0,
+        }),
+    };
+
+    let backend = TestBackend::new(90, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::environments::render(&state, frame.area(), frame);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(
+        text.contains("Current Branch"),
+        "missing current branch panel: {text}"
+    );
+    assert!(
+        text.contains("feature/released"),
+        "missing branch name: {text}"
+    );
+    assert!(text.contains("dev"), "missing dev badge: {text}");
+    assert!(text.contains("test"), "missing test badge: {text}");
+    assert!(
+        text.contains("2026-04-29 14:20"),
+        "missing release timestamp: {text}"
+    );
+    assert!(text.contains("+2 pending"), "missing pending count: {text}");
+}
+
+#[test]
+fn flow_modal_renders_running_workflow_steps() {
+    let mut state = AppState::new();
+    let (_tx, rx) = std::sync::mpsc::channel();
+    state.workflow_job = Some(WorkflowJob {
+        rx,
+        spinner: 1,
+        label: "Release current branch into release/next".into(),
+        steps: vec![
+            "push feature/demo".into(),
+            "merge origin/feature/demo".into(),
+            "push release/next".into(),
+        ],
+        current_step: Some(1),
+    });
+
+    let backend = TestBackend::new(90, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::flow::render(&state, frame.area(), frame);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(
+        text.contains("[x] push feature/demo"),
+        "missing completed step: {text}"
+    );
+    assert!(
+        text.contains(">/< merge origin/feature/demo"),
+        "missing active step marker: {text}"
+    );
+    assert!(
+        text.contains("[ ] push release/next"),
+        "missing pending step: {text}"
+    );
+}
+
 // ── Tree building ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -630,6 +724,10 @@ fn layout_renders_all_panel_borders() {
     }
 
     assert!(all_text.contains("Status"), "missing Status panel title");
+    assert!(
+        all_text.contains("Current Branch"),
+        "missing Current Branch panel title"
+    );
     assert!(all_text.contains("Files"), "missing Files panel title");
     assert!(
         all_text.contains("Branches"),

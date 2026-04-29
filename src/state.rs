@@ -3,7 +3,7 @@ use std::sync::mpsc::Receiver;
 
 use chrono::{DateTime, Utc};
 
-use crate::git::{Branch, Commit, FileEntry};
+use crate::git::{Branch, BranchReleaseStatus, Commit, FileEntry};
 
 #[derive(Debug)]
 pub enum GenMsg {
@@ -54,6 +54,7 @@ pub struct CheckoutJob {
 
 #[derive(Debug)]
 pub enum WorkflowMsg {
+    Progress(usize),
     Done(String),
     Error(String),
     Patch(String),
@@ -64,6 +65,8 @@ pub struct WorkflowJob {
     pub rx: Receiver<WorkflowMsg>,
     pub spinner: usize,
     pub label: String,
+    pub steps: Vec<String>,
+    pub current_step: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,6 +259,7 @@ pub struct AppState {
     pub files: Vec<FileEntry>,
     pub branches: Vec<Branch>,
     pub commits: Vec<Commit>,
+    pub current_branch_releases: BranchReleaseStatus,
     pub unpushed_shas: HashSet<String>,
 
     pub files_idx: usize,
@@ -346,6 +350,7 @@ impl AppState {
             files: Vec::new(),
             branches: Vec::new(),
             commits: Vec::new(),
+            current_branch_releases: BranchReleaseStatus::default(),
             unpushed_shas: HashSet::new(),
 
             files_idx: 0,

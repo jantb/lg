@@ -1,5 +1,12 @@
-use std::{fs, process::Command};
+use std::{
+    fs,
+    path::Path,
+    process::Command,
+    sync::{Mutex, MutexGuard},
+};
 use tempfile::TempDir;
+
+static CWD_LOCK: Mutex<()> = Mutex::new(());
 
 /// Run a git command inside `dir`, with author/committer env vars set.
 fn git(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
@@ -80,6 +87,36 @@ fn commit_in(dir: &std::path::Path, msg: &str) {
     );
 }
 
+struct CwdGuard {
+    old: std::path::PathBuf,
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl CwdGuard {
+    fn new(dir: &Path) -> Self {
+        let lock = CWD_LOCK.lock().expect("cwd lock poisoned");
+        let old = std::env::current_dir().expect("current dir");
+        std::env::set_current_dir(dir).expect("set current dir");
+        Self { old, _lock: lock }
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        std::env::set_current_dir(&self.old).expect("restore current dir");
+    }
+}
+
+fn head_branch(dir: &Path) -> String {
+    let out = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert!(
+        out.status.success(),
+        "git rev-parse failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[test]
@@ -142,6 +179,92 @@ fn commit_on_empty_message_fails() {
     // lg::git::commit guards against empty messages.
     let result = lg::git::commit("");
     assert!(result.is_err(), "expected Err for empty message");
+}
+
+#[test]
+fn release_flow_returns_to_original_branch_after_target_push() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "origin", "main"]);
+
+    git_ok(dir.path(), &["checkout", "-b", "develop"]);
+    git_ok(dir.path(), &["push", "origin", "develop"]);
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", "release/next"]);
+    git_ok(dir.path(), &["push", "origin", "release/next"]);
+
+    let feature = "feature/release-return";
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("feature.txt"), "feature").unwrap();
+    stage_in(dir.path(), "feature.txt");
+    commit_in(dir.path(), "feature commit");
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::flow_release_current(feature, "develop").expect("release to develop");
+    assert_eq!(head_branch(dir.path()), feature);
+
+    lg::git::flow_release_current(feature, "release/next").expect("release to release/next");
+    assert_eq!(head_branch(dir.path()), feature);
+
+    let develop_log = git(bare.path(), &["log", "--oneline", "develop"]);
+    assert!(
+        String::from_utf8_lossy(&develop_log.stdout).contains("feature commit"),
+        "develop did not receive feature commit"
+    );
+    let release_log = git(bare.path(), &["log", "--oneline", "release/next"]);
+    assert!(
+        String::from_utf8_lossy(&release_log.stdout).contains("feature commit"),
+        "release/next did not receive feature commit"
+    );
+}
+
+#[test]
+fn branch_release_status_reports_missing_commits_after_release() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "origin", "main"]);
+
+    git_ok(dir.path(), &["checkout", "-b", "develop"]);
+    git_ok(dir.path(), &["push", "origin", "develop"]);
+
+    let feature = "feature/release-status";
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("feature.txt"), "released").unwrap();
+    stage_in(dir.path(), "feature.txt");
+    commit_in(dir.path(), "released feature commit");
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::flow_release_current(feature, "develop").expect("release to develop");
+
+    fs::write(dir.path().join("followup.txt"), "not released").unwrap();
+    stage_in(dir.path(), "followup.txt");
+    commit_in(dir.path(), "unreleased followup");
+
+    let status = lg::git::branch_release_status(feature).expect("branch release status");
+    let develop = status.develop.expect("develop release status");
+    assert!(!develop.released_at.is_empty(), "missing release timestamp");
+    assert_eq!(develop.missing_commits, 1);
+    assert!(status.test.is_none(), "release/next should not be marked");
 }
 
 // ── parse_porcelain unit tests (comprehensive) ─────────────────────────────

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
@@ -231,6 +232,18 @@ pub struct Branch {
     pub is_current: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BranchReleaseStatus {
+    pub develop: Option<ReleaseTargetStatus>,
+    pub test: Option<ReleaseTargetStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseTargetStatus {
+    pub released_at: String,
+    pub missing_commits: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
     pub sha: String,
@@ -309,6 +322,64 @@ pub fn list_branches() -> Result<Vec<Branch>> {
         })
         .collect();
     Ok(branches)
+}
+
+pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
+    if branch.is_empty() || matches!(branch, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST) {
+        return Ok(BranchReleaseStatus::default());
+    }
+
+    let base_ref =
+        preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}"), BRANCH_MAIN)
+            .unwrap_or_else(|| BRANCH_MAIN.to_string());
+    if !commit_ref_exists(&base_ref) || !commit_ref_exists(branch) {
+        return Ok(BranchReleaseStatus::default());
+    }
+
+    let unique_commits = rev_list(&["--reverse", branch, &format!("^{base_ref}")])?;
+    if unique_commits.is_empty() {
+        return Ok(BranchReleaseStatus::default());
+    }
+
+    Ok(BranchReleaseStatus {
+        develop: release_target_status(branch, &unique_commits, BRANCH_DEV)?,
+        test: release_target_status(branch, &unique_commits, BRANCH_TEST)?,
+    })
+}
+
+fn release_target_status(
+    branch: &str,
+    unique_commits: &[String],
+    target_branch: &str,
+) -> Result<Option<ReleaseTargetStatus>> {
+    let Some(target_ref) = preferred_commit_ref(
+        &format!("{DEFAULT_PUSH_REMOTE}/{target_branch}"),
+        target_branch,
+    ) else {
+        return Ok(None);
+    };
+
+    let base_ref =
+        preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}"), BRANCH_MAIN)
+            .unwrap_or_else(|| BRANCH_MAIN.to_string());
+    let missing = rev_list(&[branch, &format!("^{base_ref}"), "--not", &target_ref])?;
+    let missing_set: HashSet<&str> = missing.iter().map(String::as_str).collect();
+    let latest_released = unique_commits
+        .iter()
+        .rev()
+        .find(|sha| !missing_set.contains(sha.as_str()));
+
+    let Some(latest_released) = latest_released else {
+        return Ok(None);
+    };
+
+    let released_at = first_containing_commit_date(&target_ref, latest_released)
+        .or_else(|| commit_date(latest_released).ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    Ok(Some(ReleaseTargetStatus {
+        released_at,
+        missing_commits: missing.len(),
+    }))
 }
 
 pub fn list_commits(limit: usize) -> Result<Vec<Commit>> {
@@ -425,32 +496,72 @@ pub fn checkout_branch(name: &str) -> Result<String> {
 }
 
 pub fn flow_merge_main_into_current(current_branch: &str) -> Result<String> {
+    flow_merge_main_into_current_with_progress(current_branch, &mut || {})
+}
+
+pub fn flow_merge_main_into_current_with_progress(
+    current_branch: &str,
+    progress: &mut impl FnMut(),
+) -> Result<String> {
     ensure_feature_branch(current_branch)?;
+    progress();
     create_safety_ref("merge-main")?;
+    progress();
     run(&["fetch"])?;
+    progress();
     run(&["checkout", BRANCH_MAIN])?;
+    progress();
     run(&["pull", "--rebase"])?;
+    progress();
     run(&["checkout", current_branch])?;
+    progress();
     run(&["pull", "--rebase"])?;
+    progress();
     run(&["merge", &format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}")])?;
+    progress();
     run(&["push"])?;
     Ok(format!("merged origin/{BRANCH_MAIN} into {current_branch}"))
 }
 
 pub fn flow_release_current(current_branch: &str, target_branch: &str) -> Result<String> {
+    flow_release_current_with_progress(current_branch, target_branch, &mut || {})
+}
+
+pub fn flow_release_current_with_progress(
+    current_branch: &str,
+    target_branch: &str,
+    progress: &mut impl FnMut(),
+) -> Result<String> {
     ensure_feature_branch(current_branch)?;
+    progress();
     create_safety_ref("release-current")?;
-    run(&["push"])?;
+    progress();
+    run(&["push", DEFAULT_PUSH_REMOTE, current_branch])?;
     if target_branch != current_branch {
-        reset_local_to_remote(target_branch)?;
-    } else {
+        progress();
         run(&["fetch"])?;
+        progress();
+        run(&[
+            "branch",
+            "-f",
+            target_branch,
+            &format!("{DEFAULT_PUSH_REMOTE}/{target_branch}"),
+        ])?;
+    } else {
+        progress();
+        run(&["fetch"])?;
+        progress();
         run(&["pull", "--rebase"])?;
     }
+    progress();
     run(&["checkout", target_branch])?;
+    progress();
     run(&["merge", &format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}")])?;
+    progress();
     run(&["merge", &format!("{DEFAULT_PUSH_REMOTE}/{current_branch}")])?;
-    run(&["push"])?;
+    progress();
+    run(&["push", DEFAULT_PUSH_REMOTE, target_branch])?;
+    progress();
     run(&["checkout", current_branch])?;
 
     let env = if target_branch == BRANCH_DEV {
@@ -466,18 +577,32 @@ pub fn flow_release_current(current_branch: &str, target_branch: &str) -> Result
 }
 
 pub fn flow_reset_branch_from_main(current_branch: &str, target_branch: &str) -> Result<String> {
+    flow_reset_branch_from_main_with_progress(current_branch, target_branch, &mut || {})
+}
+
+pub fn flow_reset_branch_from_main_with_progress(
+    current_branch: &str,
+    target_branch: &str,
+    progress: &mut impl FnMut(),
+) -> Result<String> {
+    progress();
     run(&["fetch"])?;
     if current_branch != target_branch {
+        progress();
         run(&["checkout", target_branch])?;
     }
+    progress();
     create_safety_ref(&format!("reset-{target_branch}"))?;
+    progress();
     run(&[
         "reset",
         "--hard",
         &format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}"),
     ])?;
+    progress();
     run(&["push", "--force"])?;
     if current_branch != target_branch {
+        progress();
         run(&["checkout", current_branch])?;
     }
     Ok(format!("reset {target_branch} from origin/{BRANCH_MAIN}"))
@@ -934,15 +1059,68 @@ fn has_uncommitted_changes() -> Result<bool> {
     Ok(!out.stdout.is_empty())
 }
 
-fn reset_local_to_remote(branch: &str) -> Result<()> {
-    run(&["fetch"])?;
+fn preferred_commit_ref(remote_ref: &str, local_ref: &str) -> Option<String> {
+    if commit_ref_exists(remote_ref) {
+        Some(remote_ref.to_string())
+    } else if commit_ref_exists(local_ref) {
+        Some(local_ref.to_string())
+    } else {
+        None
+    }
+}
+
+fn commit_ref_exists(reference: &str) -> bool {
     run(&[
-        "branch",
-        "-f",
-        branch,
-        &format!("{DEFAULT_PUSH_REMOTE}/{branch}"),
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        &format!("{reference}^{{commit}}"),
     ])
-    .map(|_| ())
+    .is_ok()
+}
+
+fn rev_list(args: &[&str]) -> Result<Vec<String>> {
+    let mut cmd = vec!["rev-list"];
+    cmd.extend_from_slice(args);
+    let out = run(&cmd)?;
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+fn is_ancestor(ancestor: &str, descendant: &str) -> Result<bool> {
+    let out = Command::new("git")
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .output()
+        .with_context(|| {
+            format!("failed to spawn git merge-base --is-ancestor {ancestor} {descendant}")
+        })?;
+    trace(&["merge-base", "--is-ancestor", ancestor, descendant], &out);
+    Ok(out.status.success())
+}
+
+fn first_containing_commit_date(target_ref: &str, commit: &str) -> Option<String> {
+    let commits = rev_list(&["--first-parent", "--reverse", target_ref]).ok()?;
+    for target_commit in commits {
+        if is_ancestor(commit, &target_commit).ok()? {
+            return commit_date(&target_commit).ok();
+        }
+    }
+    None
+}
+
+fn commit_date(commit: &str) -> Result<String> {
+    let out = run(&[
+        "show",
+        "-s",
+        "--format=%cd",
+        "--date=format:%Y-%m-%d %H:%M",
+        commit,
+    ])?;
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 fn orphan_branches() -> Result<Vec<String>> {
@@ -977,7 +1155,7 @@ fn create_safety_ref(label: &str) -> Result<String> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs();
+        .as_nanos();
     let name = format!("lg/backup/{clean_label}-{clean_branch}-{ts}");
     run(&["branch", &name, "HEAD"])?;
     Ok(name)
