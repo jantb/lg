@@ -610,6 +610,43 @@ fn flow_modal_renders_running_workflow_steps() {
     );
 }
 
+#[test]
+fn conflict_modal_asks_user_to_resolve_externally() {
+    let mut state = AppState::new();
+    state.modal = Modal::Conflict;
+    state.conflicts = vec!["src/conflict.rs".into()];
+    state.conflict_log = "merge failed".into();
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::conflict::render(&state, frame.area(), frame);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(text.contains("Merge conflict detected"), "{text}");
+    assert!(
+        text.contains("Resolve the conflict outside lg"),
+        "modal should ask for external resolution: {text}"
+    );
+    assert!(
+        text.contains("validate resolved/staged/merged state"),
+        "modal should expose validate action: {text}"
+    );
+    assert!(!text.contains("ours/theirs/both"), "{text}");
+    assert!(!text.contains("LLM"), "{text}");
+    assert!(!text.contains("stage + continue"), "{text}");
+}
+
 // ── Tree building ─────────────────────────────────────────────────────────────
 
 #[test]

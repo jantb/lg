@@ -1,4 +1,3 @@
-use anyhow::{Context, Result};
 use serde::Serialize;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
@@ -398,95 +397,6 @@ pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
         );
     }
     let _ = tx.send(GenMsg::Done(finalize(&full_output)));
-}
-
-pub fn resolve_merge_conflicts(context: String) -> Result<String> {
-    let prompt = format!(
-        "\
-You are resolving Git merge conflicts inside a repository.
-
-Return ONLY a unified diff patch that can be applied with `git apply`.
-Do not include prose, markdown fences, or explanations.
-Preserve the intended behavior from both sides when possible.
-Remove all conflict markers.
-If validation logs are included, fix the reported compiler or test errors too.
-
-Context:
-
-{context}
-"
-    );
-
-    let content = complete_once(prompt)?;
-    let patch = strip_code_fences(&content).trim().to_string();
-    if patch.is_empty() {
-        anyhow::bail!("LLM returned an empty patch");
-    }
-    Ok(patch)
-}
-
-fn complete_once(prompt: String) -> Result<String> {
-    let num_predict = std::env::var("LG_OLLAMA_RESOLVE_NUM_PREDICT")
-        .ok()
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(2048);
-    let opts = Options {
-        num_predict,
-        ..Default::default()
-    };
-
-    let model = std::env::var("LG_OLLAMA_MODEL").unwrap_or_else(|_| OLLAMA_MODEL.to_owned());
-    let endpoint = std::env::var("LG_OLLAMA_CHAT_ENDPOINT")
-        .unwrap_or_else(|_| OLLAMA_CHAT_ENDPOINT.to_owned());
-    let keep_alive =
-        std::env::var("LG_OLLAMA_KEEP_ALIVE").unwrap_or_else(|_| OLLAMA_KEEP_ALIVE.to_owned());
-
-    let body = ChatRequest {
-        model: &model,
-        messages: vec![ChatMessage {
-            role: "user",
-            content: prompt,
-        }],
-        stream: false,
-        think: false,
-        keep_alive: &keep_alive,
-        options: opts,
-    };
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .build()
-        .context("http client")?;
-    let resp: serde_json::Value = client
-        .post(&endpoint)
-        .json(&body)
-        .send()
-        .context("ollama request")?
-        .error_for_status()
-        .context("ollama status")?
-        .json()
-        .context("ollama json")?;
-
-    resp.get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow::anyhow!("ollama response did not contain message.content"))
-}
-
-fn strip_code_fences(s: &str) -> String {
-    let trimmed = s.trim();
-    if !trimmed.starts_with("```") {
-        return trimmed.to_string();
-    }
-
-    let mut lines = trimmed.lines();
-    let _ = lines.next();
-    let mut body: Vec<&str> = lines.collect();
-    if body.last().is_some_and(|line| line.trim() == "```") {
-        body.pop();
-    }
-    body.join("\n")
 }
 
 fn finalize(raw: &str) -> String {

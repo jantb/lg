@@ -401,7 +401,7 @@ fn release_conflict_continue_auto_stages_pushes_target_and_returns_to_feature() 
     assert_eq!(head_branch(dir.path()), "release/next");
 
     fs::write(dir.path().join("conflict.txt"), "resolved\n").unwrap();
-    lg::git::continue_in_progress_operation_with_followup(Some("release/next"), Some(feature))
+    lg::git::validate_conflict_resolution_with_followup(Some("release/next"), Some(feature))
         .expect("continue release conflict");
 
     assert_eq!(head_branch(dir.path()), feature);
@@ -412,6 +412,64 @@ fn release_conflict_continue_auto_stages_pushes_target_and_returns_to_feature() 
         String::from_utf8_lossy(&released_file.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&released_file.stdout), "resolved\n");
+}
+
+#[test]
+fn release_conflict_validate_pushes_target_after_user_returns_to_feature() {
+    let dir = init_repo();
+    fs::write(dir.path().join("conflict.txt"), "base\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "origin", "main"]);
+
+    git_ok(dir.path(), &["checkout", "-b", "develop"]);
+    git_ok(dir.path(), &["push", "origin", "develop"]);
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", "release/next"]);
+    fs::write(dir.path().join("conflict.txt"), "release\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "release side");
+    git_ok(dir.path(), &["push", "origin", "release/next"]);
+
+    let feature = "feature/release-conflict-manual";
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("conflict.txt"), "feature\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "feature side");
+    git_ok(dir.path(), &["push", "origin", feature]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::flow_release_current(feature, "release/next")
+        .expect_err("release should stop for manual conflict resolution");
+    assert_eq!(head_branch(dir.path()), "release/next");
+
+    fs::write(dir.path().join("conflict.txt"), "manually resolved\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    git_ok(dir.path(), &["commit", "--no-edit"]);
+    git_ok(dir.path(), &["checkout", feature]);
+
+    lg::git::validate_conflict_resolution_with_followup(Some("release/next"), Some(feature))
+        .expect("validate manually completed release conflict");
+
+    assert_eq!(head_branch(dir.path()), feature);
+    let released_file = git(bare.path(), &["show", "release/next:conflict.txt"]);
+    assert!(
+        released_file.status.success(),
+        "release/next file missing: {}",
+        String::from_utf8_lossy(&released_file.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&released_file.stdout),
+        "manually resolved\n"
+    );
 }
 
 #[test]

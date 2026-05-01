@@ -130,7 +130,6 @@ pub enum WorkflowMsg {
     Progress(usize),
     Done(String),
     Error(String),
-    Patch(String),
 }
 
 #[derive(Debug)]
@@ -386,10 +385,8 @@ pub struct AppState {
 
     pub conflicts: Vec<String>,
     pub conflict_idx: usize,
-    pub conflict_hunk_idx: usize,
     pub conflict_log: String,
     pub conflict_followup: Option<ConflictFollowup>,
-    pub pending_llm_patch: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -485,10 +482,8 @@ impl AppState {
 
             conflicts: Vec::new(),
             conflict_idx: 0,
-            conflict_hunk_idx: 0,
             conflict_log: String::new(),
             conflict_followup: None,
-            pending_llm_patch: None,
         }
     }
 

@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use crate::{app, git::ConflictChoice, state::AppState, ui};
+use crate::{app, state::AppState, ui};
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let w = (area.width * 8 / 10).clamp(72, 140).min(area.width);
@@ -27,14 +27,12 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 
     let header = vec![
         Line::from(Span::styled(
-            "Merge conflict resolver",
+            "Merge conflict detected",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from(
-            "Resolve files, then press c. lg stages resolved files, continues, pushes, and returns when needed.",
-        ),
+        Line::from("Resolve the conflict outside lg, then press v to validate and continue."),
     ];
     frame.render_widget(
         Paragraph::new(header).block(ui::bordered("Conflict")),
@@ -65,73 +63,35 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     }
     frame.render_stateful_widget(list, body[0], &mut list_state);
 
-    let detail = if let Some(patch) = &state.pending_llm_patch {
-        format!("LLM patch preview. Press p to apply.\n\n{patch}")
-    } else if let Some(path) = state.conflicts.get(state.conflict_idx) {
-        match crate::git::conflict_hunks(path) {
-            Ok(hunks) if !hunks.is_empty() => {
-                let idx = state.conflict_hunk_idx.min(hunks.len() - 1);
-                let h = &hunks[idx];
-                let mut text = format!("{}  hunk {} of {}\n\n", path, idx + 1, hunks.len());
-                text.push_str("<<<<<<< ours\n");
-                text.push_str(&h.ours);
-                if let Some(base) = &h.base {
-                    text.push_str("||||||| base\n");
-                    text.push_str(base);
-                }
-                text.push_str("======= theirs\n");
-                text.push_str(&h.theirs);
-                text.push_str(">>>>>>> theirs\n");
-                text
-            }
-            Ok(_) => {
-                let mut text = format!(
-                    "{path}\n\nNo conflict markers remain.\nPress c to stage resolved files and continue, or s to stage only this file."
-                );
-                if !state.conflict_log.trim().is_empty() {
-                    text.push_str("\n\nLast message:\n");
-                    text.push_str(&state.conflict_log);
-                }
-                text
-            }
-            Err(e) => format!("failed to read conflict hunks: {e}"),
+    let detail = if let Some(path) = state.conflicts.get(state.conflict_idx) {
+        let mut text = format!(
+            "{path}\n\nlg will not edit conflict contents. Resolve the file in your editor or with git, then press v."
+        );
+        if !state.conflict_log.trim().is_empty() {
+            text.push_str("\n\nLast message:\n");
+            text.push_str(&state.conflict_log);
         }
+        text
     } else if state.conflict_log.trim().is_empty() {
-        "No conflicted file selected.".to_string()
+        "No conflicted file selected.\n\nIf you already completed the merge, press v to let lg detect that and finish the flow.".to_string()
     } else {
         state.conflict_log.clone()
     };
     frame.render_widget(
         Paragraph::new(detail)
-            .block(ui::bordered("Merge Editor / Preview"))
+            .block(ui::bordered("Next Step"))
             .wrap(Wrap { trim: false }),
         body[1],
     );
 
-    let controls = vec![
-        Line::from(vec![
-            Span::styled("o/t/b", Style::default().fg(Color::Yellow)),
-            Span::raw(" ours/theirs/both  "),
-            Span::styled("[/]", Style::default().fg(Color::Yellow)),
-            Span::raw(" hunk  "),
-            Span::styled("s", Style::default().fg(Color::Green)),
-            Span::raw(" stage selected  "),
-            Span::styled("c", Style::default().fg(Color::Green)),
-            Span::raw(" stage + continue  "),
-            Span::styled("v", Style::default().fg(Color::Green)),
-            Span::raw(" validate"),
-        ]),
-        Line::from(vec![
-            Span::styled("l", Style::default().fg(Color::Cyan)),
-            Span::raw(" LLM  "),
-            Span::styled("p", Style::default().fg(Color::Cyan)),
-            Span::raw(" apply patch  "),
-            Span::styled("a", Style::default().fg(Color::Red)),
-            Span::raw(" abort  "),
-            Span::styled("Esc", Style::default().fg(Color::Gray)),
-            Span::raw(" close"),
-        ]),
-    ];
+    let controls = vec![Line::from(vec![
+        Span::styled("v", Style::default().fg(Color::Green)),
+        Span::raw(" validate resolved/staged/merged state  "),
+        Span::styled("a", Style::default().fg(Color::Red)),
+        Span::raw(" abort  "),
+        Span::styled("Esc", Style::default().fg(Color::Gray)),
+        Span::raw(" close"),
+    ])];
     frame.render_widget(
         Paragraph::new(controls).block(Block::default().borders(Borders::ALL)),
         chunks[2],
@@ -143,27 +103,12 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Char('j') | KeyCode::Down => {
             if state.conflict_idx + 1 < state.conflicts.len() {
                 state.conflict_idx += 1;
-                state.conflict_hunk_idx = 0;
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
             state.conflict_idx = state.conflict_idx.saturating_sub(1);
-            state.conflict_hunk_idx = 0;
         }
-        KeyCode::Char(']') => {
-            state.conflict_hunk_idx = state.conflict_hunk_idx.saturating_add(1);
-        }
-        KeyCode::Char('[') => {
-            state.conflict_hunk_idx = state.conflict_hunk_idx.saturating_sub(1);
-        }
-        KeyCode::Char('o') | KeyCode::Char('O') => resolve_selected(state, ConflictChoice::Ours),
-        KeyCode::Char('t') | KeyCode::Char('T') => resolve_selected(state, ConflictChoice::Theirs),
-        KeyCode::Char('b') | KeyCode::Char('B') => resolve_selected(state, ConflictChoice::Both),
-        KeyCode::Char('s') | KeyCode::Char('S') => stage_selected(state),
-        KeyCode::Char('p') | KeyCode::Char('P') => app::apply_pending_llm_patch(state),
-        KeyCode::Char('l') | KeyCode::Char('L') => app::run_conflict_llm(state),
-        KeyCode::Char('v') | KeyCode::Char('V') => app::run_conflict_validation(state),
-        KeyCode::Char('c') | KeyCode::Char('C') => app::continue_conflict_operation(state),
+        KeyCode::Char('v') | KeyCode::Char('V') => app::validate_conflict_resolution(state),
         KeyCode::Char('a') | KeyCode::Char('A') => app::abort_conflict_operation(state),
         KeyCode::Esc => {
             state.modal = crate::state::Modal::None;
@@ -171,37 +116,4 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
-}
-
-fn resolve_selected(state: &mut AppState, choice: ConflictChoice) {
-    let Some(path) = state.conflicts.get(state.conflict_idx).cloned() else {
-        return;
-    };
-    match crate::git::resolve_conflict_hunk(&path, state.conflict_hunk_idx, choice) {
-        Ok(()) => {
-            state.conflict_log = format!("Resolved hunk {} in {path}", state.conflict_hunk_idx + 1);
-            state.conflict_hunk_idx = 0;
-        }
-        Err(e) => state.conflict_log = e.to_string(),
-    }
-}
-
-fn stage_selected(state: &mut AppState) {
-    let Some(path) = state.conflicts.get(state.conflict_idx).cloned() else {
-        return;
-    };
-    match crate::git::stage_if_resolved(&path) {
-        Ok(()) => {
-            state.conflict_log = format!("staged {path}");
-            state.conflicts.remove(state.conflict_idx);
-            state.conflict_idx = state.conflict_idx.saturating_sub(1);
-            state.conflict_hunk_idx = 0;
-            if state.conflicts.is_empty() {
-                state
-                    .conflict_log
-                    .push_str("\nAll conflicts are staged. Press c to continue.");
-            }
-        }
-        Err(e) => state.conflict_log = e.to_string(),
-    }
 }

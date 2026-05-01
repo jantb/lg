@@ -482,86 +482,14 @@ fn reset_steps(current: &str, target: &str) -> Vec<String> {
     steps
 }
 
-pub(crate) fn run_conflict_llm(state: &mut AppState) {
-    if state.workflow_job.is_some() {
-        return;
-    }
-    let conflicts = state.conflicts.clone();
-    let log = state.conflict_log.clone();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let res = crate::git::conflict_bundle(&conflicts, &log)
-            .and_then(crate::ollama::resolve_merge_conflicts);
-        match res {
-            Ok(patch) => {
-                let _ = tx.send(WorkflowMsg::Patch(patch));
-            }
-            Err(e) => {
-                let _ = tx.send(WorkflowMsg::Error(e.to_string()));
-            }
-        }
-    });
-    state.workflow_job = Some(WorkflowJob {
-        rx,
-        spinner: 0,
-        label: "LLM conflict resolution".to_string(),
-        steps: Vec::new(),
-        current_step: None,
-    });
-    state.set_status("asking LLM to resolve conflicts\u{2026}", false);
-}
-
-pub(crate) fn apply_pending_llm_patch(state: &mut AppState) {
-    let Some(patch) = state.pending_llm_patch.clone() else {
-        state.set_status("no LLM patch to apply", true);
-        return;
-    };
-    match crate::git::apply_patch_text(&patch) {
-        Ok(()) => {
-            state.pending_llm_patch = None;
-            state.conflict_log =
-                "LLM patch applied. Review, then press c to stage resolved files and continue."
-                    .to_string();
-            state.set_status("LLM patch applied", false);
-        }
-        Err(e) => {
-            state.conflict_log = e.to_string();
-            state.set_status("LLM patch failed", true);
-        }
-    }
-}
-
-pub(crate) fn run_conflict_validation(state: &mut AppState) {
-    if state.workflow_job.is_some() {
-        return;
-    }
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || match crate::git::run_detected_validation() {
-        Ok(log) => {
-            let _ = tx.send(WorkflowMsg::Done(log));
-        }
-        Err(e) => {
-            let _ = tx.send(WorkflowMsg::Error(e.to_string()));
-        }
-    });
-    state.workflow_job = Some(WorkflowJob {
-        rx,
-        spinner: 0,
-        label: "validation".to_string(),
-        steps: Vec::new(),
-        current_step: None,
-    });
-    state.set_status("running validation\u{2026}", false);
-}
-
-pub(crate) fn continue_conflict_operation(state: &mut AppState) {
+pub(crate) fn validate_conflict_resolution(state: &mut AppState) {
     if state.workflow_job.is_some() {
         return;
     }
     let followup = state.conflict_followup.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        match crate::git::continue_in_progress_operation_with_followup(
+        match crate::git::validate_conflict_resolution_with_followup(
             followup.as_ref().and_then(|f| f.push_branch.as_deref()),
             followup.as_ref().and_then(|f| f.return_branch.as_deref()),
         ) {
@@ -576,16 +504,16 @@ pub(crate) fn continue_conflict_operation(state: &mut AppState) {
     state.workflow_job = Some(WorkflowJob {
         rx,
         spinner: 0,
-        label: "stage resolved files and continue".to_string(),
+        label: "validate conflict resolution".to_string(),
         steps: vec![
-            "stage resolved files".to_string(),
-            "continue Git operation".to_string(),
+            "detect conflict state".to_string(),
+            "continue Git operation if needed".to_string(),
             "push release branch if needed".to_string(),
             "return to feature branch if needed".to_string(),
         ],
         current_step: None,
     });
-    state.set_status("staging resolved files and continuing\u{2026}", false);
+    state.set_status("validating conflict resolution\u{2026}", false);
 }
 
 pub(crate) fn abort_conflict_operation(state: &mut AppState) {
@@ -774,12 +702,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &AppState) {
             spans
         }
         Modal::Conflict => {
-            let pairs: &[(&str, &str)] = &[
-                ("l", "llm"),
-                ("v", "validate"),
-                ("c", "continue"),
-                ("a", "abort"),
-            ];
+            let pairs: &[(&str, &str)] = &[("v", "validate"), ("a", "abort"), ("Esc", "close")];
             let mut spans = vec![Span::styled(
                 "Conflict ",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
@@ -1437,7 +1360,7 @@ impl App {
             while let Ok(msg) = job.rx.try_recv() {
                 match msg {
                     WorkflowMsg::Progress(step) => job.current_step = Some(step),
-                    WorkflowMsg::Done(_) | WorkflowMsg::Error(_) | WorkflowMsg::Patch(_) => {
+                    WorkflowMsg::Done(_) | WorkflowMsg::Error(_) => {
                         finished_label = Some(job.label.clone());
                         finished = Some(msg)
                     }
@@ -1452,10 +1375,11 @@ impl App {
                 WorkflowMsg::Done(s) => {
                     if matches!(
                         finished_label.as_deref(),
-                        Some("stage resolved files and continue") | Some("abort merge")
+                        Some("validate conflict resolution") | Some("abort merge")
                     ) {
                         self.state.conflict_followup = None;
                         self.state.conflicts.clear();
+                        self.state.modal = Modal::None;
                     } else if !matches!(self.state.modal, Modal::Conflict) {
                         self.state.conflict_followup = None;
                     }
@@ -1465,13 +1389,6 @@ impl App {
                         self.state.modal = Modal::None;
                     }
                     self.state.set_status(first_status_line(&s), false);
-                }
-                WorkflowMsg::Patch(patch) => {
-                    self.state.pending_llm_patch = Some(patch);
-                    self.state.conflict_log =
-                        "LLM patch ready. Review preview and press p to apply.".to_string();
-                    self.state.modal = Modal::Conflict;
-                    self.state.set_status("LLM patch ready", false);
                 }
                 WorkflowMsg::Error(e) => {
                     if let Ok(conflicts) = crate::git::conflicted_files() {

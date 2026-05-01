@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -267,20 +267,6 @@ pub struct Commit {
     pub author: String,
     pub author_short: String,
     pub subject: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConflictHunk {
-    pub ours: String,
-    pub base: Option<String>,
-    pub theirs: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConflictChoice {
-    Ours,
-    Theirs,
-    Both,
 }
 
 /// Parse `git status -z --porcelain=v1` output into unified `FileEntry` vec.
@@ -775,90 +761,6 @@ pub fn conflicted_files() -> Result<Vec<String>> {
     Ok(files)
 }
 
-pub fn conflict_bundle(files: &[String], validation_log: &str) -> Result<String> {
-    let mut out = String::new();
-    out.push_str("Merge conflict context for lg.\n\n");
-    if !validation_log.trim().is_empty() {
-        out.push_str("Validation / previous error log:\n");
-        out.push_str(&truncate(validation_log, 12_000));
-        out.push_str("\n\n");
-    }
-
-    out.push_str("Conflicted files:\n");
-    for path in files {
-        out.push_str("- ");
-        out.push_str(path);
-        out.push('\n');
-    }
-    out.push('\n');
-
-    for path in files {
-        out.push_str("===== ");
-        out.push_str(path);
-        out.push_str(" =====\n");
-        match std::fs::read_to_string(path) {
-            Ok(contents) => out.push_str(&truncate(&contents, 24_000)),
-            Err(e) => out.push_str(&format!("failed to read file: {e}")),
-        }
-        out.push_str("\n\n");
-    }
-
-    if let Ok(diff) = run_combined(&["diff", "--cc"]) {
-        out.push_str("Combined diff:\n");
-        out.push_str(&truncate(&diff, 24_000));
-    }
-
-    Ok(out)
-}
-
-pub fn apply_patch_text(patch: &str) -> Result<()> {
-    let mut child = Command::new("git")
-        .args(["apply", "--whitespace=fix"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("failed to spawn git apply")?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin
-            .write_all(patch.as_bytes())
-            .context("failed to send patch to git apply")?;
-    }
-
-    let out = child
-        .wait_with_output()
-        .context("failed to wait for git apply")?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-        text.push_str(&String::from_utf8_lossy(&out.stderr));
-        Err(anyhow::anyhow!("git apply failed:\n{text}"))
-    }
-}
-
-pub fn conflict_hunks(path: &str) -> Result<Vec<ConflictHunk>> {
-    let text = std::fs::read_to_string(path).with_context(|| format!("read {path}"))?;
-    Ok(parse_conflict_hunks(&text))
-}
-
-pub fn resolve_conflict_hunk(path: &str, idx: usize, choice: ConflictChoice) -> Result<()> {
-    let text = std::fs::read_to_string(path).with_context(|| format!("read {path}"))?;
-    let resolved = resolve_conflict_text(&text, idx, choice)
-        .ok_or_else(|| anyhow::anyhow!("conflict hunk {idx} not found in {path}"))?;
-    std::fs::write(path, resolved).with_context(|| format!("write {path}"))?;
-    Ok(())
-}
-
-pub fn stage_if_resolved(path: &str) -> Result<()> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    if has_conflict_markers(&text) {
-        anyhow::bail!("conflict markers remain in {path}");
-    }
-    stage(path)
-}
-
 pub fn stage_resolved_conflicts() -> Result<Vec<String>> {
     let mut staged = Vec::new();
     for path in conflicted_files()? {
@@ -876,239 +778,7 @@ fn has_conflict_markers(text: &str) -> bool {
     text.contains("<<<<<<<") || text.contains("=======") || text.contains(">>>>>>>")
 }
 
-fn parse_conflict_hunks(text: &str) -> Vec<ConflictHunk> {
-    let mut hunks = Vec::new();
-    let lines: Vec<&str> = text.lines().collect();
-    let mut i = 0usize;
-
-    while i < lines.len() {
-        if !lines[i].starts_with("<<<<<<<") {
-            i += 1;
-            continue;
-        }
-        i += 1;
-        let mut ours = Vec::new();
-        while i < lines.len()
-            && !lines[i].starts_with("|||||||")
-            && !lines[i].starts_with("=======")
-        {
-            ours.push(lines[i]);
-            i += 1;
-        }
-
-        let mut base = None;
-        if i < lines.len() && lines[i].starts_with("|||||||") {
-            i += 1;
-            let mut base_lines = Vec::new();
-            while i < lines.len() && !lines[i].starts_with("=======") {
-                base_lines.push(lines[i]);
-                i += 1;
-            }
-            base = Some(join_lines(&base_lines));
-        }
-
-        if i < lines.len() && lines[i].starts_with("=======") {
-            i += 1;
-        }
-
-        let mut theirs = Vec::new();
-        while i < lines.len() && !lines[i].starts_with(">>>>>>>") {
-            theirs.push(lines[i]);
-            i += 1;
-        }
-        if i < lines.len() && lines[i].starts_with(">>>>>>>") {
-            i += 1;
-        }
-
-        hunks.push(ConflictHunk {
-            ours: join_lines(&ours),
-            base,
-            theirs: join_lines(&theirs),
-        });
-    }
-
-    hunks
-}
-
-fn resolve_conflict_text(text: &str, target_idx: usize, choice: ConflictChoice) -> Option<String> {
-    let mut out = String::new();
-    let lines: Vec<&str> = text.lines().collect();
-    let had_trailing_newline = text.ends_with('\n');
-    let mut i = 0usize;
-    let mut hunk_idx = 0usize;
-    let mut found = false;
-
-    while i < lines.len() {
-        if !lines[i].starts_with("<<<<<<<") {
-            out.push_str(lines[i]);
-            out.push('\n');
-            i += 1;
-            continue;
-        }
-
-        let marker_start = i;
-        i += 1;
-        let ours_start = i;
-        while i < lines.len()
-            && !lines[i].starts_with("|||||||")
-            && !lines[i].starts_with("=======")
-        {
-            i += 1;
-        }
-        let ours = &lines[ours_start..i];
-
-        if i < lines.len() && lines[i].starts_with("|||||||") {
-            i += 1;
-            while i < lines.len() && !lines[i].starts_with("=======") {
-                i += 1;
-            }
-        }
-
-        if i < lines.len() && lines[i].starts_with("=======") {
-            i += 1;
-        }
-        let theirs_start = i;
-        while i < lines.len() && !lines[i].starts_with(">>>>>>>") {
-            i += 1;
-        }
-        let theirs = &lines[theirs_start..i];
-        if i < lines.len() && lines[i].starts_with(">>>>>>>") {
-            i += 1;
-        }
-
-        if hunk_idx == target_idx {
-            found = true;
-            let selected: Vec<&str> = match choice {
-                ConflictChoice::Ours => ours.to_vec(),
-                ConflictChoice::Theirs => theirs.to_vec(),
-                ConflictChoice::Both => ours.iter().chain(theirs.iter()).copied().collect(),
-            };
-            for line in selected {
-                out.push_str(line);
-                out.push('\n');
-            }
-        } else {
-            for line in &lines[marker_start..i] {
-                out.push_str(line);
-                out.push('\n');
-            }
-        }
-        hunk_idx += 1;
-    }
-
-    if !had_trailing_newline && out.ends_with('\n') {
-        out.pop();
-    }
-    found.then_some(out)
-}
-
-fn join_lines(lines: &[&str]) -> String {
-    if lines.is_empty() {
-        String::new()
-    } else {
-        let mut s = lines.join("\n");
-        s.push('\n');
-        s
-    }
-}
-
-pub fn run_detected_validation() -> Result<String> {
-    let commands = detected_validation_commands();
-    if commands.is_empty() {
-        return Ok(
-            "No Cargo.toml or Gradle build files found; no validation command detected.".into(),
-        );
-    }
-
-    let mut log = String::new();
-    for cmd in commands {
-        log.push_str("$ ");
-        log.push_str(&cmd.join(" "));
-        log.push('\n');
-
-        let out = Command::new(&cmd[0])
-            .args(&cmd[1..])
-            .output()
-            .with_context(|| format!("failed to spawn {}", cmd.join(" ")))?;
-
-        log.push_str(&String::from_utf8_lossy(&out.stdout));
-        log.push_str(&String::from_utf8_lossy(&out.stderr));
-        log.push('\n');
-
-        if !out.status.success() {
-            return Err(anyhow::anyhow!("{}", truncate(&log, 32_000)));
-        }
-    }
-    Ok(truncate(&log, 32_000))
-}
-
-fn detected_validation_commands() -> Vec<Vec<String>> {
-    if let Some(commands) = configured_validation_commands() {
-        return commands;
-    }
-
-    if Path::new("Cargo.toml").exists() {
-        return vec![
-            vec!["cargo".into(), "test".into(), "--all-targets".into()],
-            vec![
-                "cargo".into(),
-                "clippy".into(),
-                "--all-targets".into(),
-                "--".into(),
-                "-D".into(),
-                "warnings".into(),
-            ],
-        ];
-    }
-
-    if Path::new("build.gradle").exists()
-        || Path::new("build.gradle.kts").exists()
-        || Path::new("settings.gradle").exists()
-        || Path::new("settings.gradle.kts").exists()
-    {
-        return vec![vec!["gradle".into(), "test".into()]];
-    }
-
-    Vec::new()
-}
-
-fn configured_validation_commands() -> Option<Vec<Vec<String>>> {
-    let text = std::fs::read_to_string(".lg.toml").ok()?;
-    let mut in_validation = false;
-    let mut commands = Vec::new();
-
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.starts_with('[') {
-            in_validation = line == "[validation]";
-            continue;
-        }
-        if !in_validation || !line.starts_with("commands") {
-            continue;
-        }
-        let (_, rhs) = line.split_once('=')?;
-        let rhs = rhs.trim();
-        let rhs = rhs.strip_prefix('[')?.strip_suffix(']')?;
-        for part in rhs.split(',') {
-            let cmd = part.trim().trim_matches('"').trim_matches('\'');
-            if !cmd.is_empty() {
-                commands.push(split_command(cmd));
-            }
-        }
-    }
-
-    (!commands.is_empty()).then_some(commands)
-}
-
-fn split_command(cmd: &str) -> Vec<String> {
-    cmd.split_whitespace().map(str::to_owned).collect()
-}
-
-pub fn continue_in_progress_operation() -> Result<String> {
-    continue_in_progress_operation_with_followup(None, None)
-}
-
-pub fn continue_in_progress_operation_with_followup(
+pub fn validate_conflict_resolution_with_followup(
     push_branch: Option<&str>,
     return_branch: Option<&str>,
 ) -> Result<String> {
@@ -1116,7 +786,7 @@ pub fn continue_in_progress_operation_with_followup(
     let conflicts = conflicted_files()?;
     if !conflicts.is_empty() {
         anyhow::bail!(
-            "unresolved conflicts remain: {}\nResolve the remaining conflict markers, then press c again; lg will stage resolved files automatically.",
+            "unresolved conflicts remain: {}\nResolve them outside lg, then press v to validate again.",
             conflicts.join(", ")
         );
     }
@@ -1136,15 +806,12 @@ pub fn continue_in_progress_operation_with_followup(
             ));
         }
     } else {
-        out = "no merge, rebase, or cherry-pick operation is in progress".to_string();
+        out = "no merge, rebase, or cherry-pick operation is in progress; assuming the conflict was completed manually".to_string();
     }
 
     if let Some(branch) = push_branch {
-        let push = run_combined(&[
-            "push",
-            DEFAULT_PUSH_REMOTE,
-            &format!("HEAD:refs/heads/{branch}"),
-        ])?;
+        let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+        let push = run_combined(&["push", DEFAULT_PUSH_REMOTE, &refspec])?;
         out.push_str("\n\nPush:\n");
         out.push_str(push.trim());
     }
@@ -1197,14 +864,6 @@ fn git_path_exists(name: &str) -> Result<bool> {
     let out = run(&["rev-parse", "--git-path", name])?;
     let path = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     Ok(Path::new(&path).exists())
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}\n... truncated ...", &s[..max])
-    }
 }
 
 fn ensure_feature_branch(branch: &str) -> Result<()> {
@@ -1398,10 +1057,7 @@ pub fn counts_ahead_behind() -> Result<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ConflictChoice, FileEntry, label_commit_patch, parse_conflict_hunks, parse_porcelain,
-        parse_porcelain_xy, resolve_conflict_text,
-    };
+    use super::{FileEntry, label_commit_patch, parse_porcelain, parse_porcelain_xy};
 
     #[test]
     fn parse_porcelain_empty() {
@@ -1481,26 +1137,6 @@ mod tests {
         assert_eq!(
             label_commit_patch(text),
             "commit abc\n\nFiles changed:\n a.rs | 1 +\n\nPatch:\ndiff --git a/a.rs b/a.rs\n"
-        );
-    }
-
-    #[test]
-    fn parse_conflict_hunks_reads_ours_base_theirs() {
-        let text =
-            "a\n<<<<<<< HEAD\nours\n||||||| base\nbase\n=======\ntheirs\n>>>>>>> branch\nz\n";
-        let hunks = parse_conflict_hunks(text);
-        assert_eq!(hunks.len(), 1);
-        assert_eq!(hunks[0].ours, "ours\n");
-        assert_eq!(hunks[0].base.as_deref(), Some("base\n"));
-        assert_eq!(hunks[0].theirs, "theirs\n");
-    }
-
-    #[test]
-    fn resolve_conflict_text_accepts_both_for_selected_hunk() {
-        let text = "a\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\nz\n";
-        assert_eq!(
-            resolve_conflict_text(text, 0, ConflictChoice::Both).unwrap(),
-            "a\nours\ntheirs\nz\n"
         );
     }
 
