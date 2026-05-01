@@ -31,8 +31,8 @@ use crate::{
     state::{
         AppState, CheckoutJob, CheckoutMsg, ConflictFollowup, DiffJob, DiffMsg, DiffSource,
         FetchJob, FetchMsg, FlowAction, GenMsg, Modal, OperationJob, OperationKind, OperationMsg,
-        Pane, PendingAction, PushJob, PushMsg, RefreshJob, RefreshMsg, RefreshSnapshot, TreeKind,
-        WorkflowJob, WorkflowMsg,
+        Pane, PendingAction, PushJob, PushMsg, RefreshJob, RefreshMsg, RefreshSnapshot, ReviewJob,
+        ReviewMsg, TreeKind, WorkflowJob, WorkflowMsg,
     },
     ui,
 };
@@ -90,6 +90,34 @@ fn git_job_running(state: &AppState) -> bool {
         || state.workflow_job.is_some()
 }
 
+fn spawn_assisted_review(state: &mut AppState) {
+    if state.review_job.is_some() {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(
+        move || match crate::git::build_assisted_review_against_main() {
+            Ok(review) => {
+                let _ = tx.send(ReviewMsg::Done(Box::new(review)));
+            }
+            Err(e) => {
+                let _ = tx.send(ReviewMsg::Error(e.to_string()));
+            }
+        },
+    );
+    state.review_job = Some(ReviewJob { rx, spinner: 0 });
+    state.focus = Pane::Main;
+    state.diff_source = DiffSource::Review;
+    state.diff_offset = 0;
+    state.review = None;
+    state.review_idx = 0;
+    state.review_collapsed.clear();
+    state.review_context_open.clear();
+    state.diff_text = "building assisted review against main...".to_string();
+    state.diff_line_count = 1;
+    state.set_status("building review...", false);
+}
+
 fn selected_diff_source(state: &AppState) -> DiffSource {
     match state.focus {
         Pane::Files => {
@@ -123,7 +151,7 @@ fn selected_diff_source(state: &AppState) -> DiffSource {
 
 fn load_diff_text(source: &DiffSource) -> String {
     match source {
-        DiffSource::None | DiffSource::Branch(_) => String::new(),
+        DiffSource::None | DiffSource::Branch(_) | DiffSource::Review => String::new(),
         DiffSource::All => crate::git::all_diffs().unwrap_or_else(|e| format!("error: {e}")),
         DiffSource::File(path) => {
             crate::git::file_diff(path).unwrap_or_else(|e| format!("error: {e}"))
@@ -545,8 +573,8 @@ pub(crate) fn abort_conflict_operation(state: &mut AppState) {
     state.set_status("aborting git operation\u{2026}", false);
 }
 
-fn footer_spec(pane: Pane) -> (u8, &'static str, &'static [(&'static str, &'static str)]) {
-    match pane {
+fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, &'static str)]) {
+    match state.focus {
         Pane::Status => (1, "Status", &[("F", "flow"), ("?", "help"), ("q", "quit")]),
         Pane::Files => (
             2,
@@ -576,16 +604,34 @@ fn footer_spec(pane: Pane) -> (u8, &'static str, &'static [(&'static str, &'stat
                 ("?", "help"),
             ],
         ),
-        Pane::Main => (
-            0,
-            "Diff",
-            &[
-                ("j/k", "scroll"),
-                ("g/G", "top/bot"),
-                ("F", "flow"),
-                ("?", "help"),
-            ],
-        ),
+        Pane::Main => {
+            if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
+                (
+                    0,
+                    "Review",
+                    &[
+                        ("j/k", "move"),
+                        ("Enter/space", "expand"),
+                        ("f", "source"),
+                        ("g/G", "top/bot"),
+                        ("R", "refresh"),
+                        ("?", "help"),
+                    ],
+                )
+            } else {
+                (
+                    0,
+                    "Diff",
+                    &[
+                        ("R", "review"),
+                        ("j/k", "scroll"),
+                        ("g/G", "top/bot"),
+                        ("F", "flow"),
+                        ("?", "help"),
+                    ],
+                )
+            }
+        }
     }
 }
 
@@ -596,7 +642,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &AppState) {
     // Left: modal-aware spec.
     let left_spans: Vec<Span> = match state.modal {
         Modal::None => {
-            let (n, name, pairs) = footer_spec(state.focus);
+            let (n, name, pairs) = footer_spec(state);
             let mut spans = vec![Span::styled(
                 format!("[{n}] {name} "),
                 Style::default()
@@ -893,6 +939,9 @@ where
                     spawn_push(&mut self.state);
                 }
             }
+            KeyCode::Char('R') => {
+                spawn_assisted_review(&mut self.state);
+            }
             _ => match self.state.focus {
                 Pane::Status => {}
                 Pane::Files => panel::files::handle_key(&mut self.state, k)?,
@@ -958,6 +1007,7 @@ impl App {
             self.drain_fetch_job();
             self.drain_refresh_job();
             self.drain_diff_job();
+            self.drain_review_job();
             self.drain_workflow_job()?;
             self.drain_file_events()?;
             self.maybe_start_periodic_fetch();
@@ -969,6 +1019,7 @@ impl App {
                 || self.state.fetch_job.is_some()
                 || self.state.refresh_job.is_some()
                 || self.state.diff_job.is_some()
+                || self.state.review_job.is_some()
                 || self.state.workflow_job.is_some()
             {
                 80
@@ -1122,6 +1173,9 @@ impl App {
     }
 
     fn start_diff_job(&mut self, force: bool) {
+        if self.state.focus == Pane::Main && matches!(self.state.diff_source, DiffSource::Review) {
+            return;
+        }
         let source = selected_diff_source(&self.state);
         if !force && source == self.state.diff_source {
             return;
@@ -1248,6 +1302,64 @@ impl App {
                 self.state.diff_text = text;
                 self.state.diff_line_count =
                     self.state.diff_text.lines().count().min(u16::MAX as usize) as u16;
+            }
+        }
+    }
+
+    fn drain_review_job(&mut self) {
+        let mut finished: Option<std::result::Result<Box<crate::git::AssistedReview>, String>> =
+            None;
+        if let Some(job) = self.state.review_job.as_mut() {
+            while let Ok(msg) = job.rx.try_recv() {
+                match msg {
+                    ReviewMsg::Done(review) => finished = Some(Ok(review)),
+                    ReviewMsg::Error(err) => finished = Some(Err(err)),
+                }
+            }
+            job.spinner = job.spinner.wrapping_add(1);
+        }
+        if let Some(result) = finished {
+            self.state.review_job = None;
+            match result {
+                Ok(review) => {
+                    let report = review.report.clone();
+                    self.state.review = Some(*review);
+                    self.state.review_collapsed.clear();
+                    self.state.review_context_open.clear();
+                    if let Some(review) = &self.state.review {
+                        for node in &review.nodes {
+                            let expandable = !node.body.is_empty()
+                                || review.nodes.iter().any(|candidate| {
+                                    candidate
+                                        .parent
+                                        .as_ref()
+                                        .is_some_and(|parent| parent == &node.id)
+                                });
+                            if expandable {
+                                self.state.review_collapsed.insert(node.id.clone());
+                            }
+                        }
+                        self.state.review_idx = review
+                            .nodes
+                            .iter()
+                            .position(|node| {
+                                node.id == "branch" || node.id.starts_with("branch:file:")
+                            })
+                            .unwrap_or(0);
+                    }
+                    self.state.diff_source = DiffSource::Review;
+                    self.state.diff_text = report;
+                    self.state.diff_offset = 0;
+                    self.state.diff_line_count =
+                        self.state.diff_text.lines().count().min(u16::MAX as usize) as u16;
+                    self.state.set_status("review ready", false);
+                }
+                Err(err) => {
+                    self.state.diff_text = format!("error building assisted review: {err}");
+                    self.state.diff_line_count =
+                        self.state.diff_text.lines().count().min(u16::MAX as usize) as u16;
+                    self.state.set_status(first_status_line(&err), true);
+                }
             }
         }
     }
@@ -1584,6 +1696,10 @@ impl App {
                     return Ok(());
                 }
                 spawn_push(&mut self.state);
+                return Ok(());
+            }
+            KeyCode::Char('R') => {
+                spawn_assisted_review(&mut self.state);
                 return Ok(());
             }
             _ => {}

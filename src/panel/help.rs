@@ -32,6 +32,7 @@ const SECTIONS: &[Section] = &[
             ("Tab/Shift-Tab", "Cycle focus"),
             ("c", "Open commit modal"),
             ("p", "Open push modal"),
+            ("R", "Build assisted review against main"),
         ],
     },
     Section {
@@ -65,6 +66,9 @@ const SECTIONS: &[Section] = &[
             ("j/k", "Scroll line"),
             ("Ctrl-d/Ctrl-u", "Scroll half page"),
             ("g / G", "Top / bottom"),
+            ("R", "Build assisted review against main"),
+            ("Enter / space", "Expand or collapse review item"),
+            ("f", "Toggle source context for selected hunk"),
             ("wheel", "Scroll 3 lines (mouse)"),
             ("Shift+drag", "Select text (terminal native)"),
         ],

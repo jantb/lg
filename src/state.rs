@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 
 use crate::{
     config::{BRANCH_DEV, BRANCH_TEST},
-    git::{Branch, BranchReleaseStatus, Commit, FileEntry},
+    git::{AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry},
 };
 
 #[derive(Debug)]
@@ -126,6 +126,18 @@ pub struct DiffJob {
 }
 
 #[derive(Debug)]
+pub enum ReviewMsg {
+    Done(Box<AssistedReview>),
+    Error(String),
+}
+
+#[derive(Debug)]
+pub struct ReviewJob {
+    pub rx: Receiver<ReviewMsg>,
+    pub spinner: usize,
+}
+
+#[derive(Debug)]
 pub enum WorkflowMsg {
     Progress(usize),
     Done(String),
@@ -174,6 +186,7 @@ pub enum DiffSource {
     Folder(String), // folder prefix (no trailing slash)
     Commit(String), // sha
     Branch(String), // branch name
+    Review,
 }
 
 #[derive(Debug, Clone)]
@@ -356,6 +369,10 @@ pub struct AppState {
     pub diff_source: DiffSource,
     pub diff_line_count: u16,
     pub diff_viewport_height: u16,
+    pub review: Option<AssistedReview>,
+    pub review_idx: usize,
+    pub review_collapsed: HashSet<String>,
+    pub review_context_open: HashSet<String>,
 
     pub commit_message: String,
     pub branch: Option<String>,
@@ -376,6 +393,7 @@ pub struct AppState {
     pub refresh_pending: bool,
     pub refresh_pending_diff: bool,
     pub diff_job: Option<DiffJob>,
+    pub review_job: Option<ReviewJob>,
     pub workflow_job: Option<WorkflowJob>,
 
     pub flow_idx: usize,
@@ -453,6 +471,10 @@ impl AppState {
             diff_source: DiffSource::None,
             diff_line_count: 0,
             diff_viewport_height: 0,
+            review: None,
+            review_idx: 0,
+            review_collapsed: HashSet::new(),
+            review_context_open: HashSet::new(),
 
             commit_message: String::new(),
             branch: None,
@@ -473,6 +495,7 @@ impl AppState {
             refresh_pending: false,
             refresh_pending_diff: false,
             diff_job: None,
+            review_job: None,
             workflow_job: None,
 
             flow_idx: 0,
@@ -506,6 +529,8 @@ impl AppState {
             Some("refreshing")
         } else if self.diff_job.is_some() {
             Some("loading diff")
+        } else if self.review_job.is_some() {
+            Some("reviewing")
         } else if self.workflow_job.is_some() {
             Some("running workflow")
         } else {

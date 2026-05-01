@@ -192,6 +192,269 @@ fn head_branch_returns_current_branch() {
 }
 
 #[test]
+fn assisted_review_reports_diff_and_entry_points_against_main() {
+    let dir = init_repo();
+    fs::create_dir(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "pub fn greet() -> &'static str {\n    \"hello\"\n}\n",
+    )
+    .unwrap();
+    stage_in(dir.path(), "src/lib.rs");
+    commit_in(dir.path(), "initial commit");
+
+    git_ok(dir.path(), &["checkout", "-b", "feature/review"]);
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "pub fn greet() -> &'static str {\n    \"hello review\"\n}\n",
+    )
+    .unwrap();
+    stage_in(dir.path(), "src/lib.rs");
+    commit_in(dir.path(), "update greeting");
+
+    let _cwd = CwdGuard::new(dir.path());
+    let report = lg::git::assisted_review_against_main().unwrap();
+
+    assert!(report.contains("Assisted review against main"), "{report}");
+    assert!(report.contains("Base: main"), "{report}");
+    assert!(report.contains("Full diff against main"), "{report}");
+    assert!(report.contains("src/lib.rs"), "{report}");
+    assert!(report.contains("fn greet"), "{report}");
+    assert!(report.contains("\"hello review\""), "{report}");
+
+    let review = lg::git::build_assisted_review_against_main().unwrap();
+    let hunk_pos = review
+        .nodes
+        .iter()
+        .position(|node| node.id.starts_with("branch:hunk:"))
+        .expect("hunk node");
+    let entry_pos = review
+        .nodes
+        .iter()
+        .position(|node| node.title.contains("fn greet"))
+        .expect("entry node");
+    assert_eq!(review.nodes[0].title, "Full diff against main");
+    assert_eq!(
+        review.nodes[entry_pos].parent.as_deref(),
+        Some("branch"),
+        "entry point should be directly under the full diff root"
+    );
+    assert_eq!(review.nodes[entry_pos].depth, 1);
+    assert_eq!(
+        review.nodes[hunk_pos].parent.as_deref(),
+        Some(review.nodes[entry_pos].id.as_str()),
+        "hunk should be nested under its entry point"
+    );
+    assert_eq!(review.nodes[hunk_pos].depth, 2);
+    assert!(entry_pos < 3, "entry point should appear before metadata");
+    assert!(
+        review.nodes.iter().all(|node| node.id != "full-diff"),
+        "interactive review should not have a flat full-diff lump"
+    );
+    assert!(
+        review.nodes[hunk_pos].title.contains(" - updates "),
+        "hunk title should include a description: {}",
+        review.nodes[hunk_pos].title
+    );
+    assert!(
+        review.nodes[hunk_pos]
+            .body
+            .first()
+            .is_some_and(|line| line.starts_with("effect: updates")),
+        "expanded hunk should start with effect description: {:?}",
+        review.nodes[hunk_pos].body
+    );
+}
+
+#[test]
+fn assisted_review_groups_multiple_hunks_under_same_entry_point() {
+    let dir = init_repo();
+    fs::create_dir(dir.path().join("src")).unwrap();
+    let filler = (0..20)
+        .map(|i| format!("    out.push_str(\"{i}\");"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        format!(
+            "pub fn greet() -> String {{\n    let mut out = String::new();\n    out.push_str(\"hello\");\n{filler}\n    out.push_str(\"world\");\n    out\n}}\n"
+        ),
+    )
+    .unwrap();
+    stage_in(dir.path(), "src/lib.rs");
+    commit_in(dir.path(), "initial commit");
+
+    git_ok(dir.path(), &["checkout", "-b", "feature/review-group"]);
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        format!(
+            "pub fn greet() -> String {{\n    let mut out = String::new();\n    out.push_str(\"hello review\");\n{filler}\n    out.push_str(\"world review\");\n    out\n}}\n"
+        ),
+    )
+    .unwrap();
+    stage_in(dir.path(), "src/lib.rs");
+    commit_in(dir.path(), "update greeting parts");
+
+    let _cwd = CwdGuard::new(dir.path());
+    let review = lg::git::build_assisted_review_against_main().unwrap();
+    let entry_nodes: Vec<_> = review
+        .nodes
+        .iter()
+        .filter(|node| node.title.contains("fn greet"))
+        .collect();
+    assert_eq!(entry_nodes.len(), 1, "same entry point should be grouped");
+    let hunk_count = review
+        .nodes
+        .iter()
+        .filter(|node| node.parent.as_deref() == Some(entry_nodes[0].id.as_str()))
+        .count();
+    assert_eq!(hunk_count, 2, "separate hunks should share one entry point");
+}
+
+#[test]
+fn assisted_review_filters_import_only_hunks_from_entrypoints() {
+    let dir = init_repo();
+    fs::create_dir(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/lib.rs"), "pub fn greet() {}\n").unwrap();
+    stage_in(dir.path(), "src/lib.rs");
+    commit_in(dir.path(), "initial commit");
+
+    git_ok(dir.path(), &["checkout", "-b", "feature/import-only"]);
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "use std::fmt;\n\npub fn greet() {}\n",
+    )
+    .unwrap();
+    stage_in(dir.path(), "src/lib.rs");
+    commit_in(dir.path(), "add import");
+
+    let _cwd = CwdGuard::new(dir.path());
+    let review = lg::git::build_assisted_review_against_main().unwrap();
+    assert!(
+        review
+            .nodes
+            .iter()
+            .all(|node| !node.id.starts_with("branch:hunk:")),
+        "import-only hunks should not become entry points: {:?}",
+        review.nodes
+    );
+    assert!(
+        review.nodes[0]
+            .body
+            .iter()
+            .any(|line| line.contains("import changes hidden")),
+        "root should explain hidden import-only changes: {:?}",
+        review.nodes[0].body
+    );
+}
+
+#[test]
+fn assisted_review_ignores_whitespace_only_changes() {
+    let dir = init_repo();
+    fs::create_dir(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "pub fn greet() {\n    println!(\"hello\");\n}\n",
+    )
+    .unwrap();
+    stage_in(dir.path(), "src/lib.rs");
+    commit_in(dir.path(), "initial commit");
+
+    git_ok(dir.path(), &["checkout", "-b", "feature/format-only"]);
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "pub fn greet() {\n        println!(\"hello\");\n}\n",
+    )
+    .unwrap();
+    stage_in(dir.path(), "src/lib.rs");
+    commit_in(dir.path(), "format greeting");
+
+    let _cwd = CwdGuard::new(dir.path());
+    let review = lg::git::build_assisted_review_against_main().unwrap();
+
+    assert!(
+        review.report.contains("(empty)"),
+        "whitespace-only branch diff should be empty: {}",
+        review.report
+    );
+    assert!(
+        review
+            .nodes
+            .iter()
+            .all(|node| !node.id.starts_with("branch:hunk:")),
+        "whitespace-only hunks should not become entry points: {:?}",
+        review.nodes
+    );
+}
+
+#[test]
+fn assisted_review_reports_kotlin_entry_points() {
+    let dir = init_repo();
+    fs::create_dir_all(dir.path().join("src/main/kotlin")).unwrap();
+    fs::write(
+        dir.path().join("src/main/kotlin/App.kt"),
+        "class App {\n    fun greeting(): String = \"hello\"\n}\n",
+    )
+    .unwrap();
+    stage_in(dir.path(), "src/main/kotlin/App.kt");
+    commit_in(dir.path(), "initial kotlin");
+
+    git_ok(dir.path(), &["checkout", "-b", "feature/kotlin-review"]);
+    fs::write(
+        dir.path().join("src/main/kotlin/App.kt"),
+        "class App {\n    fun greeting(): String = \"hello review\"\n}\n",
+    )
+    .unwrap();
+    stage_in(dir.path(), "src/main/kotlin/App.kt");
+    commit_in(dir.path(), "update kotlin greeting");
+
+    let _cwd = CwdGuard::new(dir.path());
+    let report = lg::git::assisted_review_against_main().unwrap();
+
+    assert!(report.contains("src/main/kotlin/App.kt"), "{report}");
+    assert!(report.contains("fun greeting"), "{report}");
+    assert!(report.contains("\"hello review\""), "{report}");
+}
+
+#[test]
+fn assisted_review_ignores_uncommitted_local_changes() {
+    let dir = init_repo();
+    fs::write(dir.path().join("tracked.txt"), "main\n").unwrap();
+    stage_in(dir.path(), "tracked.txt");
+    commit_in(dir.path(), "initial tracked");
+
+    fs::write(dir.path().join("tracked.txt"), "local only\n").unwrap();
+    fs::write(dir.path().join("scratch.txt"), "untracked local\n").unwrap();
+
+    let _cwd = CwdGuard::new(dir.path());
+    let review = lg::git::build_assisted_review_against_main().unwrap();
+
+    assert!(
+        review.report.contains("Full diff against main"),
+        "{}",
+        review.report
+    );
+    assert!(
+        review.report.contains("(empty)"),
+        "branch diff should be empty: {}",
+        review.report
+    );
+    assert!(
+        !review.report.contains("local only") && !review.report.contains("scratch.txt"),
+        "local changes should not be included: {}",
+        review.report
+    );
+    assert!(
+        review
+            .nodes
+            .iter()
+            .all(|node| !node.title.contains("local")),
+        "local nodes should not exist: {:?}",
+        review.nodes
+    );
+}
+
+#[test]
 fn list_commits_includes_short_author_name() {
     let dir = init_repo();
     fs::write(dir.path().join("a.txt"), "one").unwrap();

@@ -1,5 +1,8 @@
 use lg::{
-    git::{Branch, BranchReleaseStatus, Commit, FileEntry, ReleaseTargetStatus},
+    git::{
+        AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry, ReleaseTargetStatus,
+        ReviewNode,
+    },
     panel,
     state::{AppState, Modal, Pane, TreeKind, WorkflowJob, build_tree_rows},
 };
@@ -48,6 +51,17 @@ fn add_flow_branches(state: &mut AppState) {
             is_current: false,
         },
     ];
+}
+
+fn buffer_text(app: &lg::app::HeadlessApp<TestBackend>) -> String {
+    let buf = app.terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+    text
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -197,6 +211,118 @@ fn help_overlay_closes_on_any_key() {
 
     assert_eq!(state.modal, Modal::None);
     assert_eq!(state.focus, Pane::Files);
+}
+
+#[test]
+fn review_panel_expands_hunks_and_source_context() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Branch diff".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:entry:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: "src/main/kotlin/App.kt:2 in fun greeting - updates greeting (+1 -1)".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:hunk:0".into(),
+                parent: Some("branch:entry:0".into()),
+                depth: 2,
+                title: "src/main/kotlin/App.kt:2 - updates greeting (+1 -1)".into(),
+                body: vec![
+                    "effect: updates greeting (+1 -1)".into(),
+                    "@@ -1,3 +1,3 @@".into(),
+                    "-    fun greeting() = \"hello\"".into(),
+                    "+    fun greeting() = \"hello review\"".into(),
+                ],
+                context: vec![
+                    "    1 | class App {".into(),
+                    "    2 |     fun greeting() = \"hello review\"".into(),
+                    "    3 | }".into(),
+                ],
+            },
+        ],
+    });
+    app.state.review_collapsed.insert("branch:entry:0".into());
+    app.state.review_collapsed.insert("branch:hunk:0".into());
+
+    app.render().unwrap();
+    let collapsed = buffer_text(&app);
+    assert!(collapsed.contains("fun greeting"), "{collapsed}");
+    assert!(
+        !collapsed.contains("hello review"),
+        "collapsed hunk should hide patch body: {collapsed}"
+    );
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('j'))).unwrap();
+    panel::main::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('j'))).unwrap();
+    panel::main::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
+    app.render().unwrap();
+    let expanded = buffer_text(&app);
+    assert!(
+        expanded.contains("+    fun greeting() = \"hello review\""),
+        "expanded hunk should show patch: {expanded}"
+    );
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('f'))).unwrap();
+    app.render().unwrap();
+    let context = buffer_text(&app);
+    assert!(
+        context.contains("source context") && context.contains("2 |     fun greeting()"),
+        "source context should be visible: {context}"
+    );
+}
+
+#[test]
+fn review_panel_starts_fully_collapsed_at_entry_roots() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Full diff against main".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:entry:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: "src/lib.rs:2 in fn greet - updates greet (+1 -1)".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+        ],
+    });
+    app.state.review_idx = 0;
+    app.state.review_collapsed.insert("branch".into());
+
+    app.render().unwrap();
+    let collapsed = buffer_text(&app);
+    assert!(collapsed.contains("Full diff against main"), "{collapsed}");
+    assert!(
+        !collapsed.contains("fn greet"),
+        "collapsed root should hide recursive children: {collapsed}"
+    );
 }
 
 // ── Commit input ──────────────────────────────────────────────────────────────
