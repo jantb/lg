@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -1362,42 +1362,87 @@ fn push_entry_nodes(
         return;
     }
     let groups = entry_groups(entries);
-    for (group_idx, group) in groups.iter().enumerate() {
-        let group_id = format!("{prefix}:entry:{group_idx}");
-        let added: usize = group.indices.iter().map(|idx| entries[*idx].added).sum();
-        let removed: usize = group.indices.iter().map(|idx| entries[*idx].removed).sum();
-        let description = if group.indices.len() == 1 {
-            entries[group.indices[0]].description.clone()
-        } else {
-            format!(
-                "{} hunks update this entry point (+{added} -{removed})",
-                group.indices.len()
-            )
-        };
+    let parents = entry_group_parents(entries, &groups);
+    let tree = EntryTree {
+        prefix,
+        entries,
+        groups: &groups,
+        parents: &parents,
+    };
+    let mut emitted = BTreeSet::new();
+    for (group_idx, parent) in parents.iter().enumerate() {
+        if parent.is_none() {
+            tree.push_group(nodes, group_idx, &root_id, 1, &mut emitted);
+        }
+    }
+    for group_idx in 0..groups.len() {
+        tree.push_group(nodes, group_idx, &root_id, 1, &mut emitted);
+    }
+}
+
+struct EntryTree<'a> {
+    prefix: &'a str,
+    entries: &'a [ReviewEntryPoint],
+    groups: &'a [EntryGroup],
+    parents: &'a [Option<usize>],
+}
+
+impl EntryTree<'_> {
+    fn push_group(
+        &self,
+        nodes: &mut Vec<ReviewNode>,
+        group_idx: usize,
+        parent_id: &str,
+        depth: u16,
+        emitted: &mut BTreeSet<usize>,
+    ) {
+        if !emitted.insert(group_idx) {
+            return;
+        }
+
+        let group = &self.groups[group_idx];
+        let group_id = format!("{}:entry:{group_idx}", self.prefix);
         nodes.push(ReviewNode {
             id: group_id.clone(),
-            parent: Some(root_id.clone()),
-            depth: 1,
-            title: format!("{} in {} - {}", group.path, group.symbol, description),
+            parent: Some(parent_id.to_string()),
+            depth,
+            title: format!(
+                "{} in {} - {}",
+                group.path,
+                group.symbol,
+                entry_group_description(self.entries, group)
+            ),
             body: Vec::new(),
             context: Vec::new(),
         });
         for idx in &group.indices {
-            let entry = &entries[*idx];
+            let entry = &self.entries[*idx];
             let location = entry
                 .line
                 .map(|line| format!(":{line}"))
                 .unwrap_or_default();
             nodes.push(ReviewNode {
-                id: format!("{prefix}:hunk:{idx}"),
+                id: format!("{}:hunk:{idx}", self.prefix),
                 parent: Some(group_id.clone()),
-                depth: 2,
+                depth: depth.saturating_add(1),
                 title: format!("{}{} - {}", entry.path, location, entry.description),
                 body: std::iter::once(format!("effect: {}", entry.description))
                     .chain(entry.patch.iter().cloned())
                     .collect(),
                 context: entry.context.clone(),
             });
+        }
+
+        for child_idx in 0..self.groups.len() {
+            if self.parents[child_idx] == Some(group_idx) {
+                self.push_group(
+                    nodes,
+                    child_idx,
+                    &group_id,
+                    depth.saturating_add(1),
+                    emitted,
+                );
+            }
         }
     }
 }
@@ -1406,6 +1451,19 @@ struct EntryGroup {
     path: String,
     symbol: String,
     indices: Vec<usize>,
+}
+
+fn entry_group_description(entries: &[ReviewEntryPoint], group: &EntryGroup) -> String {
+    let added: usize = group.indices.iter().map(|idx| entries[*idx].added).sum();
+    let removed: usize = group.indices.iter().map(|idx| entries[*idx].removed).sum();
+    if group.indices.len() == 1 {
+        entries[group.indices[0]].description.clone()
+    } else {
+        format!(
+            "{} hunks update this entry point (+{added} -{removed})",
+            group.indices.len()
+        )
+    }
 }
 
 fn entry_groups(entries: &[ReviewEntryPoint]) -> Vec<EntryGroup> {
@@ -1425,6 +1483,70 @@ fn entry_groups(entries: &[ReviewEntryPoint]) -> Vec<EntryGroup> {
         }
     }
     groups
+}
+
+fn entry_group_parents(entries: &[ReviewEntryPoint], groups: &[EntryGroup]) -> Vec<Option<usize>> {
+    groups
+        .iter()
+        .enumerate()
+        .map(|(callee_idx, callee)| {
+            let callable = callable_symbol_name(&callee.symbol)?;
+            groups
+                .iter()
+                .enumerate()
+                .filter(|(caller_idx, _)| *caller_idx != callee_idx)
+                .filter(|(_, caller)| entry_group_references(entries, caller, &callable))
+                .map(|(caller_idx, _)| caller_idx)
+                .next()
+        })
+        .collect()
+}
+
+fn entry_group_references(
+    entries: &[ReviewEntryPoint],
+    group: &EntryGroup,
+    callable: &str,
+) -> bool {
+    group
+        .indices
+        .iter()
+        .any(|idx| patch_references_callable(&entries[*idx].patch, callable))
+}
+
+fn patch_references_callable(patch: &[String], callable: &str) -> bool {
+    patch
+        .iter()
+        .filter_map(|line| {
+            line.strip_prefix('+')
+                .or_else(|| line.strip_prefix(' '))
+                .or_else(|| line.strip_prefix('-'))
+        })
+        .any(|line| line_references_callable(line, callable))
+}
+
+fn line_references_callable(line: &str, callable: &str) -> bool {
+    line.match_indices(callable).any(|(idx, _)| {
+        let before = line[..idx].chars().next_back();
+        let after = line[idx + callable.len()..].chars().next();
+        !before.is_some_and(is_ident_continue) && !after.is_some_and(is_ident_continue)
+    })
+}
+
+fn is_ident_continue(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphanumeric()
+}
+
+fn callable_symbol_name(symbol: &str) -> Option<String> {
+    let rest = symbol
+        .strip_prefix("fn ")
+        .or_else(|| symbol.strip_prefix("async fn "))
+        .or_else(|| symbol.strip_prefix("fun "))?;
+    let name = rest
+        .split(|ch: char| ch == '(' || ch == '<' || ch == ':' || ch == '{' || ch.is_whitespace())
+        .next()
+        .unwrap_or(rest)
+        .trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 fn render_assisted_review(review: &ReviewRender<'_>) -> String {

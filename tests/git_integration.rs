@@ -312,6 +312,58 @@ fn assisted_review_groups_multiple_hunks_under_same_entry_point() {
 }
 
 #[test]
+fn assisted_review_nests_entry_points_when_hunk_calls_changed_function() {
+    let dir = init_repo();
+    fs::create_dir_all(dir.path().join("src/main/kotlin")).unwrap();
+    let spacer = (0..12)
+        .map(|idx| format!("    fun spacer{idx}() = {idx}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(
+        dir.path().join("src/main/kotlin/App.kt"),
+        format!(
+            "class App {{\n    fun nextStep(): String {{\n        return \"done\"\n    }}\n\n{spacer}\n\n    fun maybeTransferPointsToHousehold(): String {{\n        return \"skip\"\n    }}\n}}\n"
+        ),
+    )
+    .unwrap();
+    stage_in(dir.path(), "src/main/kotlin/App.kt");
+    commit_in(dir.path(), "initial commit");
+
+    git_ok(dir.path(), &["checkout", "-b", "feature/nested-review"]);
+    fs::write(
+        dir.path().join("src/main/kotlin/App.kt"),
+        format!(
+            "class App {{\n    fun nextStep(): String {{\n        return maybeTransferPointsToHousehold()\n    }}\n\n{spacer}\n\n    fun maybeTransferPointsToHousehold(): String {{\n        return \"transfer\"\n    }}\n}}\n"
+        ),
+    )
+    .unwrap();
+    stage_in(dir.path(), "src/main/kotlin/App.kt");
+    commit_in(dir.path(), "wire nested flow");
+
+    let _cwd = CwdGuard::new(dir.path());
+    let review = lg::git::build_assisted_review_against_main().unwrap();
+    let next_step = review
+        .nodes
+        .iter()
+        .position(|node| node.title.contains("fun nextStep"))
+        .expect("nextStep entry");
+    let maybe_transfer = review
+        .nodes
+        .iter()
+        .position(|node| node.title.contains("fun maybeTransferPointsToHousehold"))
+        .expect("callee entry");
+
+    assert_eq!(
+        review.nodes[maybe_transfer].parent.as_deref(),
+        Some(review.nodes[next_step].id.as_str()),
+        "callee entry should be nested under caller entry: {:?}",
+        review.nodes
+    );
+    assert_eq!(review.nodes[next_step].depth, 1);
+    assert_eq!(review.nodes[maybe_transfer].depth, 2);
+}
+
+#[test]
 fn assisted_review_filters_import_only_hunks_from_entrypoints() {
     let dir = init_repo();
     fs::create_dir(dir.path().join("src")).unwrap();
