@@ -7,6 +7,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
 };
+use std::collections::HashSet;
 
 use crate::{
     config::DIFF_PAGE,
@@ -17,7 +18,7 @@ use crate::{
 
 mod source;
 
-use source::{inline_diff_overlay, review_source_context_lines, source_sections};
+use source::{RenderCache, inline_diff_overlay, review_source_context_lines, source_sections};
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
@@ -85,18 +86,32 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
         return;
     };
 
+    // Precompute parent membership sets so the inner loop is O(1) per node
+    // instead of repeatedly scanning every node. Built once per frame.
+    let mut parents_with_child: HashSet<&str> = HashSet::new();
+    let mut parents_with_drill_child: HashSet<&str> = HashSet::new();
+    for candidate in &review.nodes {
+        if let Some(parent) = candidate.parent.as_deref() {
+            parents_with_child.insert(parent);
+            if is_review_file_node(&candidate.id) || is_review_entry_node(&candidate.id) {
+                parents_with_drill_child.insert(parent);
+            }
+        }
+    }
+
+    // File-read cache shared across this frame's source-context renders.
+    let mut cache = RenderCache::default();
+    let wrap_width = area.width.saturating_sub(2);
+    let body_style = Style::default().fg(Color::DarkGray);
+
     for idx in visible_review_node_indices(state) {
         let node = &review.nodes[idx];
         let selected = focused && state.review_idx == idx;
-        let has_children = review.nodes.iter().any(|candidate| {
-            candidate
-                .parent
-                .as_ref()
-                .is_some_and(|parent| parent == &node.id)
-        });
-        let has_body = renders_review_body(&node.id) && !node.body.is_empty();
-        let drillable = has_drill_child(review, &node.id);
-        let expanded = !state.review_collapsed.contains(&node.id);
+        let node_id = node.id.as_str();
+        let has_children = parents_with_child.contains(node_id);
+        let has_body = renders_review_body(node_id) && !node.body.is_empty();
+        let drillable = parents_with_drill_child.contains(node_id);
+        let expanded = !state.review_collapsed.contains(node_id);
         let marker = if has_children || has_body {
             if expanded { "▾" } else { "▸" }
         } else {
@@ -114,12 +129,11 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
 
         if expanded {
             let syntax_path = review_node_path(&node.title);
-            if renders_review_body(&node.id) {
+            // Each section/marker line repeats this prefix — render it once.
+            let body_prefix = format!("{indent}  │ ");
+            if renders_review_body(node_id) {
                 for body in &node.body {
-                    let mut spans = vec![Span::styled(
-                        format!("{indent}  │ "),
-                        Style::default().fg(Color::DarkGray),
-                    )];
+                    let mut spans = vec![Span::styled(body_prefix.clone(), body_style)];
                     let body_line = syntax_path
                         .map(|path| ui::highlight_diff_line_for_path(body, path))
                         .unwrap_or_else(|| ui::highlight_diff_line(body));
@@ -127,41 +141,40 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
                     lines.push(Line::from(spans));
                 }
             }
-            if state.review_context_open.contains(&node.id) {
+            if state.review_context_open.contains(node_id) {
                 lines.extend(review_source_context_lines(
+                    &mut cache,
                     review,
                     node,
                     syntax_path,
                     &indent,
                 ));
             }
-            if let Some(assist) = review_assist_text(state, &node.id) {
+            let assist = review_assist_text(state, node_id);
+            if let Some(assist) = assist {
                 lines.push(Line::from(Span::styled(
                     format!("{indent}  │ ollama"),
                     Style::default()
                         .fg(Color::LightCyan)
                         .add_modifier(Modifier::BOLD),
                 )));
-                let wrap_width = area.width.saturating_sub(2);
-                lines.extend(markdown::render(
-                    assist,
-                    &format!("{indent}  │ "),
-                    wrap_width,
-                ));
+                lines.extend(markdown::render(assist, &body_prefix, wrap_width));
             }
-            if has_body
-                || state.review_context_open.contains(&node.id)
-                || review_assist_text(state, &node.id).is_some()
-            {
+            if has_body || state.review_context_open.contains(node_id) || assist.is_some() {
                 lines.push(Line::from(Span::styled(
                     format!("{indent}  └─"),
-                    Style::default().fg(Color::DarkGray),
+                    body_style,
                 )));
             }
         }
     }
 
-    let max_offset = max_scroll_offset(state);
+    // Use the lines we just built as the source of truth for the scroll bound.
+    // Avoids a second walk over every visible node (each of which would
+    // re-read source files and re-parse diff overlays) and stays correct when
+    // markdown::render word-wraps assist output into more lines than the raw
+    // source had.
+    let max_offset = (lines.len() as u16).saturating_sub(state.diff_viewport_height);
     let offset = state.diff_offset.min(max_offset);
     let para = Paragraph::new(lines)
         .block(block)
@@ -607,13 +620,6 @@ fn first_drill_child<'a>(
                 .enumerate()
                 .find(|(_, candidate)| candidate.parent.as_deref() == Some(node_id))
         })
-}
-
-fn has_drill_child(review: &crate::git::AssistedReview, node_id: &str) -> bool {
-    review.nodes.iter().any(|candidate| {
-        candidate.parent.as_deref() == Some(node_id)
-            && (is_review_file_node(&candidate.id) || is_review_entry_node(&candidate.id))
-    })
 }
 
 fn review_assist_text<'a>(state: &'a AppState, node_id: &str) -> Option<&'a str> {

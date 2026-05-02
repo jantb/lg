@@ -2,7 +2,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::ui;
 
@@ -12,7 +12,25 @@ pub(super) struct SourceSection {
     pub context: Vec<String>,
 }
 
+/// Per-frame cache so file reads aren't repeated across the
+/// scroll-bound and rendering passes of the review panel.
+#[derive(Default)]
+pub(super) struct RenderCache {
+    files: HashMap<String, Option<String>>,
+}
+
+impl RenderCache {
+    fn read(&mut self, path: &str) -> Option<&str> {
+        if !self.files.contains_key(path) {
+            self.files
+                .insert(path.to_string(), std::fs::read_to_string(path).ok());
+        }
+        self.files.get(path).and_then(|opt| opt.as_deref())
+    }
+}
+
 pub(super) fn review_source_context_lines(
+    cache: &mut RenderCache,
     review: &crate::git::AssistedReview,
     node: &crate::git::ReviewNode,
     syntax_path: Option<&str>,
@@ -24,7 +42,7 @@ pub(super) fn review_source_context_lines(
         let multiple = sections.len() > 1;
         for section in sections {
             if let Some(mut source) =
-                full_source_with_inline_diff(&section.path, &section.body, indent, multiple)
+                full_source_with_inline_diff(cache, &section.path, &section.body, indent, multiple)
             {
                 lines.append(&mut source);
             } else {
@@ -125,12 +143,14 @@ fn fallback_source_context_lines(
 }
 
 fn full_source_with_inline_diff(
+    cache: &mut RenderCache,
     path: &str,
     body: &[String],
     indent: &str,
     show_path: bool,
 ) -> Option<Vec<Line<'static>>> {
-    let text = std::fs::read_to_string(path).ok()?;
+    // Cache file reads across the multiple times we're invoked per frame.
+    let text = cache.read(path)?.to_owned();
     let overlay = inline_diff_overlay(body);
     let label = if show_path {
         format!("source {path}")
@@ -139,7 +159,9 @@ fn full_source_with_inline_diff(
     };
     let mut lines = vec![section_header(indent, &label)];
 
+    let mut total_lines = 0usize;
     for (idx, source) in text.lines().enumerate() {
+        total_lines = idx + 1;
         let line_no = idx + 1;
         if let Some(removed) = overlay.removed_before.get(&line_no) {
             for removed_line in removed {
@@ -160,7 +182,7 @@ fn full_source_with_inline_diff(
         lines.push(source_line(path, indent, Some(line_no), marker, source));
     }
 
-    let eof_line = text.lines().count() + 1;
+    let eof_line = total_lines + 1;
     if let Some(removed) = overlay.removed_before.get(&eof_line) {
         for removed_line in removed {
             lines.push(source_line(
