@@ -18,7 +18,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         return;
     }
 
-    let block = ui::bordered("Current Branch");
+    let block = ui::bordered("Deployment Status");
     let mut lines = Vec::new();
 
     match state.branch.as_deref() {

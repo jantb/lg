@@ -808,8 +808,8 @@ fn current_branch_panel_renders_environment_history() {
     }
 
     assert!(
-        text.contains("Current Branch"),
-        "missing current branch panel: {text}"
+        text.contains("Deployment Status"),
+        "missing deployment status panel: {text}"
     );
     assert!(
         text.contains("feature/released"),
@@ -844,7 +844,7 @@ fn current_branch_panel_hides_environment_history_without_release_branches() {
     }
 
     assert!(
-        !text.contains("Current Branch"),
+        !text.contains("Deployment Status"),
         "environment box should be hidden: {text}"
     );
     assert!(!text.contains("dev"), "dev status should be hidden: {text}");
@@ -1139,8 +1139,8 @@ fn layout_renders_all_panel_borders() {
 
     assert!(all_text.contains("Status"), "missing Status panel title");
     assert!(
-        all_text.contains("Current Branch"),
-        "missing Current Branch panel title"
+        all_text.contains("Deployment Status"),
+        "missing Deployment Status panel title"
     );
     assert!(all_text.contains("Files"), "missing Files panel title");
     assert!(
