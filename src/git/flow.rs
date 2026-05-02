@@ -189,18 +189,42 @@ pub fn delete_local_branch(name: &str, force: bool) -> Result<String> {
     if name.is_empty() {
         anyhow::bail!("branch name must not be empty");
     }
+    if is_protected_branch(name) {
+        anyhow::bail!("cannot delete protected branch {name}");
+    }
+    let mut prefix = String::new();
+    if let Ok(current) = head_branch()
+        && current == name
+    {
+        let checkout = checkout_branch(BRANCH_MAIN)?;
+        let checkout_line = checkout
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+        prefix = if checkout_line.is_empty() {
+            format!("checked out {BRANCH_MAIN}; ")
+        } else {
+            format!("checked out {BRANCH_MAIN} ({checkout_line}); ")
+        };
+    }
     let flag = if force { "-D" } else { "-d" };
     let out = run(&["branch", flag, name])?;
-    Ok(String::from_utf8_lossy(&out.stdout)
+    let line = String::from_utf8_lossy(&out.stdout)
         .lines()
         .find(|line| !line.trim().is_empty())
         .unwrap_or("deleted")
-        .to_owned())
+        .to_owned();
+    Ok(format!("{prefix}{line}"))
 }
 
 pub fn delete_remote_branch(name: &str) -> Result<String> {
     if name.is_empty() {
         anyhow::bail!("branch name must not be empty");
+    }
+    if is_protected_branch(name) {
+        anyhow::bail!("cannot delete protected branch {name}");
     }
     run_combined(&["push", DEFAULT_PUSH_REMOTE, "--delete", name]).map(|text| {
         text.lines()
@@ -209,6 +233,10 @@ pub fn delete_remote_branch(name: &str) -> Result<String> {
             .unwrap_or("deleted")
             .to_owned()
     })
+}
+
+fn is_protected_branch(name: &str) -> bool {
+    matches!(name, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST)
 }
 
 pub fn flow_clean_orphan_branches(current_branch: &str) -> Result<String> {
