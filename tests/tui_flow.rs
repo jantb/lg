@@ -288,6 +288,72 @@ fn review_panel_expands_hunks_and_source_context() {
 }
 
 #[test]
+fn review_panel_styles_tree_titles_and_change_counts() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 12)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Full diff against main".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:entry:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: "src/main/kotlin/App.kt in fun greeting - updates greeting (+5 -3)".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+        ],
+    });
+
+    app.render().unwrap();
+    let buf = app.terminal.backend().buffer().clone();
+
+    assert!(
+        buf.content()
+            .iter()
+            .any(|cell| cell.symbol() == "s" && cell.fg == Color::LightCyan),
+        "file path should be highlighted"
+    );
+    assert!(
+        buf.content()
+            .iter()
+            .any(|cell| cell.symbol() == "+" && cell.fg == Color::LightGreen),
+        "addition count should be green"
+    );
+    assert!(
+        buf.content()
+            .iter()
+            .any(|cell| cell.symbol() == "-" && cell.fg == Color::LightRed),
+        "removal count should be red"
+    );
+}
+
+#[test]
+fn diff_highlighting_colors_markers_and_changed_text_separately() {
+    let added = lg::ui::highlight_diff_line("+added");
+    let removed = lg::ui::highlight_diff_line("-removed");
+
+    assert_eq!(added.spans[0].content.as_ref(), "+");
+    assert_eq!(added.spans[0].style.fg, Some(Color::Green));
+    assert_eq!(added.spans[1].content.as_ref(), "added");
+    assert_eq!(added.spans[1].style.fg, Some(Color::LightGreen));
+
+    assert_eq!(removed.spans[0].content.as_ref(), "-");
+    assert_eq!(removed.spans[0].style.fg, Some(Color::Red));
+    assert_eq!(removed.spans[1].content.as_ref(), "removed");
+    assert_eq!(removed.spans[1].style.fg, Some(Color::LightRed));
+}
+
+#[test]
 fn review_panel_explains_selected_subtree_with_ollama() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.focus = Pane::Main;

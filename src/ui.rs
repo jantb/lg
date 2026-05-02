@@ -315,32 +315,63 @@ pub fn framed_with_activity<'a>(
 
 /// Colorize a single diff line into a styled `Line`.
 pub fn highlight_diff_line(line: &str) -> Line<'_> {
-    let style = if matches!(line, "Message:" | "Files changed:" | "Patch:") {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else if line.starts_with("commit ") {
-        Style::default()
-            .fg(Color::Magenta)
-            .add_modifier(Modifier::BOLD)
-    } else if line.starts_with("Author:") || line.starts_with("Date:") {
-        Style::default().fg(Color::Gray)
-    } else if line.starts_with("+++") || line.starts_with("---") {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else if line.starts_with('+') {
-        Style::default().fg(Color::Green)
-    } else if line.starts_with('-') {
-        Style::default().fg(Color::Red)
-    } else if line.starts_with("@@") {
-        Style::default().fg(Color::Cyan)
-    } else if line.starts_with("diff --git ") {
-        Style::default()
-            .fg(Color::Magenta)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    Line::from(Span::styled(line, style))
+    if matches!(line, "Message:" | "Files changed:" | "Patch:") {
+        return Line::from(Span::styled(
+            line,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if line.starts_with("commit ") {
+        return Line::from(Span::styled(
+            line,
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if line.starts_with("Author:") || line.starts_with("Date:") {
+        return Line::from(Span::styled(line, Style::default().fg(Color::Gray)));
+    }
+    if line.starts_with("+++") || line.starts_with("---") {
+        return Line::from(Span::styled(
+            line,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if let Some(rest) = line.strip_prefix('+') {
+        return Line::from(vec![
+            Span::styled(
+                "+",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(rest.to_string(), Style::default().fg(Color::LightGreen)),
+        ]);
+    }
+    if let Some(rest) = line.strip_prefix('-') {
+        return Line::from(vec![
+            Span::styled(
+                "-",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(rest.to_string(), Style::default().fg(Color::LightRed)),
+        ]);
+    }
+    if line.starts_with("@@") {
+        return Line::from(Span::styled(line, Style::default().fg(Color::Cyan)));
+    }
+    if line.starts_with("diff --git ") {
+        return Line::from(Span::styled(
+            line,
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    Line::from(Span::styled(line, Style::default()))
 }

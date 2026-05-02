@@ -93,37 +93,22 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
             " "
         };
         let indent = review_indent(node.depth);
-        let style = if selected {
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD)
-        } else if node.depth == 0 {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else if node.title.ends_with('/') {
-            Style::default().fg(Color::Blue)
-        } else if is_test_review_node(&node.title) {
-            Style::default().fg(Color::LightMagenta)
-        } else if is_source_review_node(&node.title) {
-            Style::default().fg(Color::LightGreen)
-        } else {
-            Style::default()
-        };
-        lines.push(Line::from(Span::styled(
-            format!("{indent}{marker} {}", node.title),
-            style,
-        )));
+        lines.push(review_title_line(
+            &indent,
+            marker,
+            &node.title,
+            node.depth,
+            selected,
+        ));
 
         if expanded {
             for body in &node.body {
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{indent}  │ "),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                    ui::highlight_diff_line(body).spans.remove(0),
-                ]));
+                let mut spans = vec![Span::styled(
+                    format!("{indent}  │ "),
+                    Style::default().fg(Color::DarkGray),
+                )];
+                spans.extend(ui::highlight_diff_line(body).spans);
+                lines.push(Line::from(spans));
             }
             if state.review_context_open.contains(&node.id) {
                 lines.push(Line::from(Span::styled(
@@ -175,6 +160,172 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
         .wrap(Wrap { trim: false })
         .scroll((offset, 0));
     frame.render_widget(para, area);
+}
+
+fn review_title_line(
+    indent: &str,
+    marker: &str,
+    title: &str,
+    depth: u16,
+    selected: bool,
+) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        format!("{indent}{marker} "),
+        selected_style(
+            Style::default()
+                .fg(Color::LightBlue)
+                .add_modifier(Modifier::BOLD),
+            selected,
+        ),
+    )];
+    spans.extend(review_title_spans(title, depth, selected));
+    Line::from(spans)
+}
+
+fn review_title_spans(title: &str, depth: u16, selected: bool) -> Vec<Span<'static>> {
+    if depth == 0 {
+        return vec![Span::styled(
+            title.to_string(),
+            selected_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+                selected,
+            ),
+        )];
+    }
+
+    if let Some((path, rest)) = title.split_once(" in ")
+        && let Some((symbol, description)) = rest.split_once(" - ")
+    {
+        let mut spans = styled_file_path(path, selected);
+        spans.push(Span::styled(
+            " in ".to_string(),
+            selected_style(Style::default().fg(Color::DarkGray), selected),
+        ));
+        spans.push(Span::styled(
+            symbol.to_string(),
+            selected_style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+                selected,
+            ),
+        ));
+        spans.push(Span::styled(
+            " - ".to_string(),
+            selected_style(Style::default().fg(Color::DarkGray), selected),
+        ));
+        spans.extend(styled_review_description(description, selected));
+        return spans;
+    }
+
+    if let Some((location, description)) = title.split_once(" - ") {
+        let mut spans = styled_file_location(location, selected);
+        spans.push(Span::styled(
+            " - ".to_string(),
+            selected_style(Style::default().fg(Color::DarkGray), selected),
+        ));
+        spans.extend(styled_review_description(description, selected));
+        return spans;
+    }
+
+    styled_review_description(title, selected)
+}
+
+fn styled_file_location(location: &str, selected: bool) -> Vec<Span<'static>> {
+    let Some((path, line)) = location.rsplit_once(':') else {
+        return styled_file_path(location, selected);
+    };
+    if line.chars().all(|ch| ch.is_ascii_digit()) {
+        let mut spans = styled_file_path(path, selected);
+        spans.push(Span::styled(
+            format!(":{line}"),
+            selected_style(Style::default().fg(Color::LightBlue), selected),
+        ));
+        spans
+    } else {
+        styled_file_path(location, selected)
+    }
+}
+
+fn styled_file_path(path: &str, selected: bool) -> Vec<Span<'static>> {
+    let file_style = if is_test_review_node(path) {
+        Style::default()
+            .fg(Color::LightMagenta)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::LightCyan)
+            .add_modifier(Modifier::BOLD)
+    };
+    vec![Span::styled(
+        path.to_string(),
+        selected_style(file_style, selected),
+    )]
+}
+
+fn styled_review_description(description: &str, selected: bool) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut rest = description;
+    while let Some(start) = rest.find('(') {
+        let (prefix, tail) = rest.split_at(start);
+        if !prefix.is_empty() {
+            spans.push(Span::styled(
+                prefix.to_string(),
+                selected_style(Style::default().fg(Color::Gray), selected),
+            ));
+        }
+        if let Some(end) = tail.find(')') {
+            let token = &tail[..=end];
+            spans.extend(styled_change_token(token, selected));
+            rest = &tail[end + 1..];
+        } else {
+            spans.push(Span::styled(
+                tail.to_string(),
+                selected_style(Style::default().fg(Color::Gray), selected),
+            ));
+            return spans;
+        }
+    }
+    if !rest.is_empty() {
+        spans.push(Span::styled(
+            rest.to_string(),
+            selected_style(Style::default().fg(Color::Gray), selected),
+        ));
+    }
+    spans
+}
+
+fn styled_change_token(token: &str, selected: bool) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for part in token.split_inclusive(' ') {
+        let trimmed = part.trim_matches(|ch| ch == '(' || ch == ')' || ch == ' ');
+        let style = if trimmed.starts_with('+') {
+            Style::default()
+                .fg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD)
+        } else if trimmed.starts_with('-') {
+            Style::default()
+                .fg(Color::LightRed)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        spans.push(Span::styled(
+            part.to_string(),
+            selected_style(style, selected),
+        ));
+    }
+    spans
+}
+
+fn selected_style(style: Style, selected: bool) -> Style {
+    if selected {
+        style.bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+    } else {
+        style
+    }
 }
 
 fn review_indent(depth: u16) -> String {
@@ -305,14 +456,6 @@ fn is_test_review_node(title: &str) -> bool {
         || title.contains(" in src/test/")
         || title.starts_with("src/test/")
         || title.contains("/src/test/")
-}
-
-fn is_source_review_node(title: &str) -> bool {
-    title.starts_with("src/")
-        || title.contains(" in src/")
-        || title.ends_with(".rs")
-        || title.ends_with(".kt")
-        || title.ends_with(".kts")
 }
 
 fn visible_review_node_indices(state: &AppState) -> Vec<usize> {
