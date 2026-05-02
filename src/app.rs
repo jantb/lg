@@ -42,7 +42,7 @@ mod review_assist;
 mod spawn;
 mod workflow;
 
-pub(crate) use spawn::checkout_branch_async;
+pub(crate) use spawn::{checkout_branch_async, checkout_remote_branch_async};
 pub(crate) use workflow::{
     abort_conflict_operation, run_flow_action, validate_conflict_resolution,
 };
@@ -859,6 +859,9 @@ impl App {
         }
         if let Some(branches) = snapshot.branches {
             self.state.branches = branches;
+        }
+        if let Some(branches) = snapshot.remote_branches {
+            self.state.remote_branches = branches;
         }
         self.state.flow_branches_available = snapshot.flow_branches_available;
         if let Some(shas) = snapshot.unpushed_shas {

@@ -146,8 +146,8 @@ pub(super) fn select_mouse_row(
             }
         }
         Pane::Branches => {
-            if let Some(idx) = list_row_at(rects.branches, row, state.branches.len()) {
-                state.branches_idx = idx;
+            if let Some(idx) = list_row_at(rects.branches, row, state.branch_list_len()) {
+                *state.branch_list_idx_mut() = idx;
             }
         }
         Pane::Commits => {
@@ -172,12 +172,10 @@ pub(super) fn scroll_list(
             let len = state.tree_rows().len();
             scroll_index(&mut state.files_idx, len, scroll_down, amount)
         }
-        Pane::Branches => scroll_index(
-            &mut state.branches_idx,
-            state.branches.len(),
-            scroll_down,
-            amount,
-        ),
+        Pane::Branches => {
+            let len = state.branch_list_len();
+            scroll_index(state.branch_list_idx_mut(), len, scroll_down, amount)
+        }
         Pane::Commits => scroll_commits(state, scroll_down, amount),
         Pane::Status | Pane::Main => false,
     }
@@ -244,6 +242,7 @@ mod tests {
             is_current: false,
             upstream: None,
             upstream_gone: false,
+            last_commit_unix: None,
         }
     }
 

@@ -846,6 +846,57 @@ fn commit_on_empty_message_fails() {
 }
 
 #[test]
+fn remote_branches_can_be_listed_and_checked_out_locally() {
+    let dir = init_repo();
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+
+    fs::write(dir.path().join("README.md"), "main\n").unwrap();
+    stage_in(dir.path(), "README.md");
+    commit_in(dir.path(), "initial");
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+
+    git_ok(dir.path(), &["checkout", "-b", "feature/remote"]);
+    fs::write(dir.path().join("remote.txt"), "remote\n").unwrap();
+    stage_in(dir.path(), "remote.txt");
+    commit_in(dir.path(), "remote branch");
+    git_ok(dir.path(), &["push", "-u", "origin", "feature/remote"]);
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["branch", "-D", "feature/remote"]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    let remotes = lg::git::list_remote_branches().unwrap();
+    let remote = remotes
+        .iter()
+        .find(|branch| branch.name == "origin/feature/remote")
+        .expect("origin/feature/remote should be listed");
+    assert_eq!(remote.remote, "origin");
+    assert_eq!(remote.local_name, "feature/remote");
+    assert!(remote.last_commit_unix.is_some());
+
+    lg::git::checkout_remote_branch("origin/feature/remote").unwrap();
+    assert_eq!(head_branch(dir.path()), "feature/remote");
+
+    let upstream = git(
+        dir.path(),
+        &["rev-parse", "--abbrev-ref", "feature/remote@{upstream}"],
+    );
+    assert!(
+        upstream.status.success(),
+        "upstream was not configured: {}",
+        String::from_utf8_lossy(&upstream.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&upstream.stdout).trim(),
+        "origin/feature/remote"
+    );
+}
+
+#[test]
 fn release_flow_returns_to_original_branch_after_target_push() {
     let dir = init_repo();
     fs::write(dir.path().join("init.txt"), "init").unwrap();

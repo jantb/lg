@@ -16,8 +16,8 @@ pub use config::{
 };
 pub use flow::{
     abort_in_progress_operation, abort_in_progress_operation_with_return, checkout_branch,
-    conflicted_files, delete_local_branch, delete_remote_branch, flow_clean_orphan_branches,
-    flow_create_feature_branch, flow_merge_main_into_current,
+    checkout_remote_branch, conflicted_files, delete_local_branch, delete_remote_branch,
+    flow_clean_orphan_branches, flow_create_feature_branch, flow_merge_main_into_current,
     flow_merge_main_into_current_with_progress, flow_release_current,
     flow_release_current_with_progress, flow_reset_branch_from_main,
     flow_reset_branch_from_main_with_progress, stage_resolved_conflicts,
@@ -236,6 +236,15 @@ pub struct Branch {
     pub is_current: bool,
     pub upstream: Option<String>,
     pub upstream_gone: bool,
+    pub last_commit_unix: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteBranch {
+    pub name: String,
+    pub remote: String,
+    pub local_name: String,
+    pub last_commit_unix: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -323,17 +332,18 @@ pub fn status_entries() -> Result<Vec<FileEntry>> {
 pub fn list_branches() -> Result<Vec<Branch>> {
     let out = run(&[
         "branch",
-        "--format=%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)\x1f%(upstream:track)",
+        "--format=%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)\x1f%(upstream:track)\x1f%(committerdate:unix)",
     ])?;
     let text = String::from_utf8_lossy(&out.stdout);
     let branches = text
         .lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(4, '\x1f');
+            let mut parts = line.splitn(5, '\x1f');
             let name = parts.next()?.trim().to_owned();
             let head = parts.next()?.trim();
             let upstream = parts.next().unwrap_or("").trim();
             let track = parts.next().unwrap_or("").trim();
+            let last_commit_unix = parse_unix_timestamp(parts.next().unwrap_or("").trim());
             if name.is_empty() {
                 return None;
             }
@@ -342,10 +352,44 @@ pub fn list_branches() -> Result<Vec<Branch>> {
                 is_current: head == "*",
                 upstream: (!upstream.is_empty()).then(|| upstream.to_owned()),
                 upstream_gone: track.contains("gone"),
+                last_commit_unix,
             })
         })
         .collect();
     Ok(branches)
+}
+
+pub fn list_remote_branches() -> Result<Vec<RemoteBranch>> {
+    let out = run(&[
+        "for-each-ref",
+        "refs/remotes",
+        "--format=%(refname:short)\x1f%(committerdate:unix)",
+    ])?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let branches = text
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(2, '\x1f');
+            let name = parts.next()?.trim().to_owned();
+            if name.is_empty() || name.ends_with("/HEAD") {
+                return None;
+            }
+            let (remote, local_name) = name.split_once('/')?;
+            let remote = remote.to_owned();
+            let local_name = local_name.to_owned();
+            Some(RemoteBranch {
+                name,
+                remote,
+                local_name,
+                last_commit_unix: parse_unix_timestamp(parts.next().unwrap_or("").trim()),
+            })
+        })
+        .collect();
+    Ok(branches)
+}
+
+fn parse_unix_timestamp(value: &str) -> Option<i64> {
+    value.parse::<i64>().ok().filter(|ts| *ts > 0)
 }
 
 pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {

@@ -1,12 +1,12 @@
 use lg::{
     git::{
         AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry, ReleaseTargetStatus,
-        ReviewNode,
+        RemoteBranch, ReviewNode,
     },
     panel,
     state::{
-        AppState, AuthorField, Modal, Pane, PendingAction, ReleaseStatusJob, TreeKind, WorkflowJob,
-        build_tree_rows,
+        AppState, AuthorField, BranchView, Modal, Pane, PendingAction, ReleaseStatusJob, TreeKind,
+        WorkflowJob, build_tree_rows,
     },
 };
 use ratatui::{
@@ -50,12 +50,14 @@ fn add_flow_branches(state: &mut AppState) {
             is_current: false,
             upstream: None,
             upstream_gone: false,
+            last_commit_unix: None,
         },
         Branch {
             name: "release/next".into(),
             is_current: false,
             upstream: None,
             upstream_gone: false,
+            last_commit_unix: None,
         },
     ];
 }
@@ -102,12 +104,14 @@ fn scroll_handlers_clamp_stale_indices_before_moving() {
             is_current: true,
             upstream: None,
             upstream_gone: false,
+            last_commit_unix: None,
         },
         Branch {
             name: "feature".into(),
             is_current: false,
             upstream: None,
             upstream_gone: false,
+            last_commit_unix: None,
         },
     ];
     state.branches_idx = usize::MAX;
@@ -152,12 +156,14 @@ fn scroll_handlers_clamp_stale_indices_before_moving_up() {
             is_current: true,
             upstream: None,
             upstream_gone: false,
+            last_commit_unix: None,
         },
         Branch {
             name: "feature".into(),
             is_current: false,
             upstream: None,
             upstream_gone: false,
+            last_commit_unix: None,
         },
     ];
     state.branches_idx = usize::MAX;
@@ -305,12 +311,14 @@ fn branches_panel_shows_remote_and_missing_upstream_indicators() {
             is_current: true,
             upstream: Some("origin/feature/remote".into()),
             upstream_gone: false,
+            last_commit_unix: None,
         },
         Branch {
             name: "docs".into(),
             is_current: false,
             upstream: Some("origin/docs".into()),
             upstream_gone: true,
+            last_commit_unix: None,
         },
     ];
 
@@ -347,6 +355,7 @@ fn branches_panel_keeps_missing_upstream_visible_for_long_names() {
         is_current: false,
         upstream: Some("origin/removed".into()),
         upstream_gone: true,
+        last_commit_unix: None,
     }];
 
     let backend = TestBackend::new(42, 5);
@@ -367,6 +376,148 @@ fn branches_panel_keeps_missing_upstream_visible_for_long_names() {
     assert!(
         text.contains("(upstream gone)"),
         "status should remain visible for long branch names: {text}"
+    );
+}
+
+#[test]
+fn branches_panel_shows_time_since_last_commit() {
+    let mut state = AppState::new();
+    state.branches = vec![Branch {
+        name: "feature/recent".into(),
+        is_current: false,
+        upstream: None,
+        upstream_gone: false,
+        last_commit_unix: Some(chrono::Utc::now().timestamp() - 2 * 60 * 60),
+    }];
+
+    let backend = TestBackend::new(80, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::branches::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let text = buf
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(text.contains("2h"), "missing branch age: {text}");
+}
+
+#[test]
+fn branches_panel_toggles_remote_view() {
+    let mut state = AppState::new();
+    state.remote_branches = vec![RemoteBranch {
+        name: "origin/feature/remote".into(),
+        remote: "origin".into(),
+        local_name: "feature/remote".into(),
+        last_commit_unix: Some(chrono::Utc::now().timestamp() - 3 * 60),
+    }];
+
+    panel::branches::handle_key(&mut state, key(KeyCode::Char('r'))).unwrap();
+    assert_eq!(state.branch_view, BranchView::Remote);
+
+    let backend = TestBackend::new(80, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::branches::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let text = buf
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(
+        text.contains("Remote Branches"),
+        "missing remote title: {text}"
+    );
+    assert!(
+        text.contains("origin/feature/remote"),
+        "missing remote branch: {text}"
+    );
+    assert!(text.contains("3m"), "missing remote branch age: {text}");
+}
+
+#[test]
+fn remote_branch_view_hides_checked_out_branches() {
+    let mut state = AppState::new();
+    state.branch_view = BranchView::Remote;
+    state.branches = vec![Branch {
+        name: "feature/local".into(),
+        is_current: false,
+        upstream: Some("origin/feature/local".into()),
+        upstream_gone: false,
+        last_commit_unix: None,
+    }];
+    state.remote_branches = vec![
+        RemoteBranch {
+            name: "origin/feature/local".into(),
+            remote: "origin".into(),
+            local_name: "feature/local".into(),
+            last_commit_unix: None,
+        },
+        RemoteBranch {
+            name: "origin/feature/new".into(),
+            remote: "origin".into(),
+            local_name: "feature/new".into(),
+            last_commit_unix: None,
+        },
+    ];
+
+    let backend = TestBackend::new(80, 6);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::branches::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let text = buf
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(
+        !text.contains("origin/feature/local"),
+        "checked-out remote should be hidden: {text}"
+    );
+    assert!(
+        text.contains("origin/feature/new"),
+        "unchecked-out remote should remain visible: {text}"
+    );
+    assert_eq!(state.branch_list_len(), 1);
+    assert_eq!(state.selected_branch_ref(), Some("origin/feature/new"));
+}
+
+#[test]
+fn branches_shortcuts_show_remote_toggle() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 48)).unwrap();
+    app.state.focus = Pane::Branches;
+    app.render().unwrap();
+    let footer = buffer_text(&app);
+    assert!(
+        footer.contains("r remotes"),
+        "branches footer should show remote toggle: {footer}"
+    );
+
+    app.state.prev_focus = Pane::Branches;
+    app.state.modal = Modal::Help;
+    app.render().unwrap();
+    let help = buffer_text(&app);
+    assert!(
+        help.contains("Toggle local and remote branch views"),
+        "help should show remote toggle: {help}"
     );
 }
 

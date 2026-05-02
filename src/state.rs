@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 
 use crate::{
     config::{BRANCH_DEV, BRANCH_TEST},
-    git::{AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry},
+    git::{AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry, RemoteBranch},
 };
 
 mod tree;
@@ -114,6 +114,7 @@ pub enum RefreshMsg {
 pub struct RefreshSnapshot {
     pub files: Option<Vec<FileEntry>>,
     pub branches: Option<Vec<Branch>>,
+    pub remote_branches: Option<Vec<RemoteBranch>>,
     pub flow_branches_available: bool,
     pub commits: Option<Vec<Commit>>,
     pub unpushed_shas: Option<HashSet<String>>,
@@ -327,6 +328,7 @@ pub struct AppState {
 
     pub files: Vec<FileEntry>,
     pub branches: Vec<Branch>,
+    pub remote_branches: Vec<RemoteBranch>,
     pub commits: Vec<Commit>,
     pub commits_ref: Option<String>,
     pub current_branch_releases: BranchReleaseStatus,
@@ -336,6 +338,7 @@ pub struct AppState {
 
     pub files_idx: usize,
     pub branches_idx: usize,
+    pub remote_branches_idx: usize,
     pub commits_idx: usize,
 
     pub collapsed_dirs: HashSet<String>,
@@ -405,6 +408,13 @@ pub struct AppState {
     pub delete_branch_remote: bool,
     pub delete_branch_force: bool,
     pub delete_branch_field: DeleteBranchField,
+    pub branch_view: BranchView,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchView {
+    Local,
+    Remote,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -455,6 +465,7 @@ impl AppState {
 
             files: Vec::new(),
             branches: Vec::new(),
+            remote_branches: Vec::new(),
             commits: Vec::new(),
             commits_ref: None,
             current_branch_releases: BranchReleaseStatus::default(),
@@ -464,6 +475,7 @@ impl AppState {
 
             files_idx: 0,
             branches_idx: 0,
+            remote_branches_idx: 0,
             commits_idx: 0,
 
             collapsed_dirs: HashSet::new(),
@@ -533,6 +545,7 @@ impl AppState {
             delete_branch_remote: false,
             delete_branch_force: false,
             delete_branch_field: DeleteBranchField::Local,
+            branch_view: BranchView::Local,
         }
     }
 
@@ -609,6 +622,46 @@ impl AppState {
 
     pub fn branch_exists(&self, name: &str) -> bool {
         self.branches.iter().any(|branch| branch.name == name)
+    }
+
+    pub fn branch_list_len(&self) -> usize {
+        match self.branch_view {
+            BranchView::Local => self.branches.len(),
+            BranchView::Remote => self.visible_remote_branches().count(),
+        }
+    }
+
+    pub fn branch_list_idx_mut(&mut self) -> &mut usize {
+        match self.branch_view {
+            BranchView::Local => &mut self.branches_idx,
+            BranchView::Remote => &mut self.remote_branches_idx,
+        }
+    }
+
+    pub fn selected_branch_ref(&self) -> Option<&str> {
+        match self.branch_view {
+            BranchView::Local => self
+                .branches
+                .get(self.branches_idx)
+                .map(|branch| branch.name.as_str()),
+            BranchView::Remote => self
+                .visible_remote_branches()
+                .nth(self.remote_branches_idx)
+                .map(|branch| branch.name.as_str()),
+        }
+    }
+
+    pub fn visible_remote_branches(&self) -> impl Iterator<Item = &RemoteBranch> {
+        self.remote_branches
+            .iter()
+            .filter(|branch| !self.remote_branch_checked_out_locally(branch))
+    }
+
+    pub fn remote_branch_checked_out_locally(&self, remote: &RemoteBranch) -> bool {
+        self.branches.iter().any(|local| {
+            local.name == remote.local_name
+                || local.upstream.as_deref() == Some(remote.name.as_str())
+        })
     }
 
     pub fn flow_available(&self) -> bool {
@@ -691,6 +744,8 @@ impl AppState {
         let tree_len = self.tree_rows().len().max(1);
         self.files_idx = clamp_index(self.files_idx, tree_len).unwrap_or(0);
         clamp_idx(&mut self.branches_idx, self.branches.len());
+        let remote_len = self.visible_remote_branches().count();
+        clamp_idx(&mut self.remote_branches_idx, remote_len);
         clamp_idx(&mut self.commits_idx, self.commits.len());
         if self
             .commits

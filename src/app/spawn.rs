@@ -38,9 +38,8 @@ pub(super) fn selected_diff_source(state: &AppState) -> DiffSource {
             .map(|c| DiffSource::Commit(c.sha.clone()))
             .unwrap_or(DiffSource::None),
         Pane::Branches => state
-            .branches
-            .get(state.branches_idx)
-            .map(|b| DiffSource::Branch(b.name.clone()))
+            .selected_branch_ref()
+            .map(|branch| DiffSource::Branch(branch.to_string()))
             .unwrap_or(DiffSource::None),
         _ => DiffSource::None,
     }
@@ -49,9 +48,8 @@ pub(super) fn selected_diff_source(state: &AppState) -> DiffSource {
 pub(super) fn selected_commit_ref(state: &AppState) -> Option<String> {
     if state.focus == Pane::Branches {
         state
-            .branches
-            .get(state.branches_idx)
-            .map(|branch| branch.name.clone())
+            .selected_branch_ref()
+            .map(ToOwned::to_owned)
             .or_else(|| state.branch.clone())
     } else {
         state.branch.clone()
@@ -186,6 +184,34 @@ pub(crate) fn checkout_branch_async(state: &mut AppState, branch: String) {
         branch: branch.clone(),
     });
     state.set_status(format!("checking out {branch}\u{2026}"), false);
+}
+
+pub(crate) fn checkout_remote_branch_async(state: &mut AppState, remote_ref: String) {
+    if git_job_running(state) {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let target = remote_ref.clone();
+    let handle = std::thread::spawn(move || match crate::git::checkout_remote_branch(&target) {
+        Ok(out) => {
+            let line = out
+                .lines()
+                .rfind(|l| !l.trim().is_empty())
+                .unwrap_or("checked out")
+                .to_owned();
+            let _ = tx.send(CheckoutMsg::Done(line));
+        }
+        Err(e) => {
+            let _ = tx.send(CheckoutMsg::Error(e.to_string()));
+        }
+    });
+    state.checkout_job = Some(CheckoutJob {
+        rx,
+        handle: Some(handle),
+        spinner: 0,
+        branch: remote_ref.clone(),
+    });
+    state.set_status(format!("checking out {remote_ref}\u{2026}"), false);
 }
 
 pub(super) fn spawn_operation<F>(

@@ -22,6 +22,13 @@ pub(super) fn build_refresh_snapshot() -> RefreshSnapshot {
             None
         }
     };
+    let remote_branches = match crate::git::list_remote_branches() {
+        Ok(branches) => Some(branches),
+        Err(e) => {
+            errors.push(format!("git remote branch failed: {e}"));
+            None
+        }
+    };
     let unpushed_shas = match crate::git::unpushed_shas() {
         Ok(shas) => Some(shas),
         Err(e) => {
@@ -47,6 +54,7 @@ pub(super) fn build_refresh_snapshot() -> RefreshSnapshot {
     RefreshSnapshot {
         files,
         branches,
+        remote_branches,
         flow_branches_available: crate::git::flow_branches_available(),
         commits,
         unpushed_shas,
@@ -64,6 +72,10 @@ pub(super) fn prime_branches(state: &mut AppState) {
             .find(|branch| branch.is_current)
             .map(|branch| branch.name.clone());
         state.branches = branches;
+        state.clamp();
+    }
+    if let Ok(branches) = crate::git::list_remote_branches() {
+        state.remote_branches = branches;
         state.clamp();
     }
 }

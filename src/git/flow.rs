@@ -25,6 +25,21 @@ pub fn checkout_branch(name: &str) -> Result<String> {
     }
 }
 
+pub fn checkout_remote_branch(remote_ref: &str) -> Result<String> {
+    let out = Command::new("git")
+        .args(["switch", "--track", remote_ref])
+        .output()
+        .with_context(|| format!("failed to spawn git switch --track {remote_ref}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let combined = format!("{stdout}{stderr}");
+    if out.status.success() {
+        Ok(combined)
+    } else {
+        Err(anyhow::anyhow!("git switch failed: {}", combined.trim()))
+    }
+}
+
 pub fn flow_merge_main_into_current(current_branch: &str) -> Result<String> {
     flow_merge_main_into_current_with_progress(current_branch, &mut || {})
 }

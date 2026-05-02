@@ -58,7 +58,8 @@ const SECTIONS: &[Section] = &[
         pane: Some(Pane::Branches),
         bindings: &[
             ("j/k", "Move up/down"),
-            ("Enter", "Checkout branch"),
+            ("Enter", "Checkout branch or remote tracking branch"),
+            ("r", "Toggle local and remote branch views"),
             ("D", "Delete local/remote branch (modal)"),
             ("select", "Commit log follows branch"),
         ],
