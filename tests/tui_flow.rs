@@ -4,7 +4,10 @@ use lg::{
         ReviewNode,
     },
     panel,
-    state::{AppState, Modal, Pane, PendingAction, TreeKind, WorkflowJob, build_tree_rows},
+    state::{
+        AppState, Modal, Pane, PendingAction, ReleaseStatusJob, TreeKind, WorkflowJob,
+        build_tree_rows,
+    },
 };
 use ratatui::{
     Terminal,
@@ -12,7 +15,7 @@ use ratatui::{
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     style::{Color, Modifier},
 };
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::mpsc};
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -351,6 +354,44 @@ fn diff_highlighting_colors_markers_and_changed_text_separately() {
     assert_eq!(removed.spans[0].style.fg, Some(Color::Red));
     assert_eq!(removed.spans[1].content.as_ref(), "removed");
     assert_eq!(removed.spans[1].style.fg, Some(Color::LightRed));
+}
+
+#[test]
+fn diff_highlighting_tracks_kotlin_syntax_by_file() {
+    let lines = lg::ui::highlight_diff_text(
+        "diff --git a/Foo.kt b/Foo.kt\n+++ b/Foo.kt\n+suspend fun getBalance() = \"ok\"",
+    );
+    let added = lines.last().expect("added kotlin line");
+
+    assert_eq!(added.spans[0].content.as_ref(), "+");
+    assert_eq!(added.spans[0].style.fg, Some(Color::Green));
+    assert!(added.spans.iter().any(|span| {
+        span.content.as_ref() == "suspend"
+            && span.style.fg == Some(Color::Magenta)
+            && span.style.add_modifier.contains(Modifier::BOLD)
+    }));
+    assert!(added.spans.iter().any(|span| {
+        span.content.as_ref() == "\"ok\"" && span.style.fg == Some(Color::LightYellow)
+    }));
+}
+
+#[test]
+fn diff_highlighting_tracks_rust_syntax_by_file() {
+    let lines = lg::ui::highlight_diff_text(
+        "diff --git a/src/main.rs b/src/main.rs\n+++ b/src/main.rs\n+pub fn main() { let value = \"ok\"; }",
+    );
+    let added = lines.last().expect("added rust line");
+
+    assert!(added.spans.iter().any(|span| {
+        span.content.as_ref() == "pub"
+            && span.style.fg == Some(Color::Magenta)
+            && span.style.add_modifier.contains(Modifier::BOLD)
+    }));
+    assert!(added.spans.iter().any(|span| {
+        span.content.as_ref() == "fn"
+            && span.style.fg == Some(Color::Magenta)
+            && span.style.add_modifier.contains(Modifier::BOLD)
+    }));
 }
 
 #[test]
@@ -825,6 +866,37 @@ fn current_branch_panel_renders_environment_history() {
 }
 
 #[test]
+fn current_branch_panel_shows_deployment_status_loading() {
+    let mut state = AppState::new();
+    add_flow_branches(&mut state);
+    state.branch = Some("feature/loading".into());
+    let (_tx, rx) = mpsc::channel();
+    state.release_status_job = Some(ReleaseStatusJob {
+        rx,
+        spinner: 0,
+        branch: "feature/loading".into(),
+    });
+
+    let backend = TestBackend::new(90, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::environments::render(&state, frame.area(), frame);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(text.contains("checking"), "missing loading state: {text}");
+}
+
+#[test]
 fn current_branch_panel_hides_environment_history_without_release_branches() {
     let state = AppState::new();
     let backend = TestBackend::new(90, 8);
@@ -1001,6 +1073,31 @@ fn tree_groups_nested_files_under_folders() {
     assert_eq!(rows[3].path, "src/lib.rs");
     assert_eq!(rows[4].path, "src/util");
     assert_eq!(rows[5].path, "src/util/mod.rs");
+}
+
+#[test]
+fn tree_compacts_single_subdir_chains() {
+    let files = vec![
+        FileEntry {
+            path: "src/main/kotlin/org/example/inventory/App.kt".into(),
+            x: 'M',
+            y: ' ',
+        },
+        FileEntry {
+            path: "src/main/kotlin/org/example/inventory/Service.kt".into(),
+            x: ' ',
+            y: 'M',
+        },
+    ];
+    let rows = build_tree_rows(&files, &HashSet::new());
+
+    assert_eq!(rows[1].path, "src/main/kotlin/org/example/inventory");
+    assert_eq!(rows[1].label, "src/main/kotlin/org/example/inventory");
+    assert_eq!(rows[2].path, "src/main/kotlin/org/example/inventory/App.kt");
+    assert_eq!(
+        rows[3].path,
+        "src/main/kotlin/org/example/inventory/Service.kt"
+    );
 }
 
 #[test]

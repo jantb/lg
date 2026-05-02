@@ -1890,25 +1890,21 @@ fn rev_list(args: &[&str]) -> Result<Vec<String>> {
         .collect())
 }
 
-fn is_ancestor(ancestor: &str, descendant: &str) -> Result<bool> {
-    let out = Command::new("git")
-        .args(["merge-base", "--is-ancestor", ancestor, descendant])
-        .output()
-        .with_context(|| {
-            format!("failed to spawn git merge-base --is-ancestor {ancestor} {descendant}")
-        })?;
-    trace(&["merge-base", "--is-ancestor", ancestor, descendant], &out);
-    Ok(out.status.success())
-}
-
 fn first_containing_commit_date(target_ref: &str, commit: &str) -> Option<String> {
-    let commits = rev_list(&["--first-parent", "--reverse", target_ref]).ok()?;
-    for target_commit in commits {
-        if is_ancestor(commit, &target_commit).ok()? {
-            return commit_date(&target_commit).ok();
-        }
+    let first_parent = rev_list(&["--first-parent", "--reverse", target_ref]).ok()?;
+    if first_parent
+        .iter()
+        .any(|target_commit| target_commit == commit)
+    {
+        return commit_date(commit).ok();
     }
-    None
+
+    let range = format!("{commit}..{target_ref}");
+    let containing_path =
+        rev_list(&["--first-parent", "--reverse", "--ancestry-path", &range]).ok()?;
+    containing_path
+        .first()
+        .and_then(|target_commit| commit_date(target_commit).ok())
 }
 
 fn commit_date(commit: &str) -> Result<String> {

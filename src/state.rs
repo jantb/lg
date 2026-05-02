@@ -100,10 +100,28 @@ pub struct RefreshSnapshot {
     pub commits: Option<Vec<Commit>>,
     pub unpushed_shas: Option<HashSet<String>>,
     pub branch: Option<String>,
-    pub current_branch_releases: BranchReleaseStatus,
     pub remote_url: Option<String>,
     pub ahead_behind: Option<(u32, u32)>,
     pub errors: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum ReleaseStatusMsg {
+    Done {
+        branch: String,
+        status: BranchReleaseStatus,
+    },
+    Error {
+        branch: String,
+        message: String,
+    },
+}
+
+#[derive(Debug)]
+pub struct ReleaseStatusJob {
+    pub rx: Receiver<ReleaseStatusMsg>,
+    pub spinner: usize,
+    pub branch: String,
 }
 
 #[derive(Debug)]
@@ -314,11 +332,13 @@ fn emit_rows(
     for c in children {
         match c {
             Child::Dir(name, child) => {
-                let path = if prefix.is_empty() {
+                let initial_path = if prefix.is_empty() {
                     name.clone()
                 } else {
                     format!("{prefix}/{name}")
                 };
+                let (label, path, child) =
+                    compact_single_subdir_chain(name.clone(), initial_path, child, collapsed);
                 let (total, staged) = count_descendants(child, files);
                 let expanded = !collapsed.contains(&path);
                 rows.push(TreeRow {
@@ -329,7 +349,7 @@ fn emit_rows(
                     },
                     depth,
                     path: path.clone(),
-                    label: name.clone(),
+                    label,
                 });
                 if expanded {
                     emit_rows(child, &path, depth + 1, files, collapsed, rows);
@@ -352,6 +372,35 @@ fn emit_rows(
             }
         }
     }
+}
+
+fn compact_single_subdir_chain<'a>(
+    mut label: String,
+    mut path: String,
+    mut node: &'a DirNode,
+    collapsed: &HashSet<String>,
+) -> (String, String, &'a DirNode) {
+    if collapsed.contains(&path) {
+        return (label, path, node);
+    }
+
+    while node.files.is_empty() && node.subdirs.len() == 1 {
+        let (child_name, child) = node
+            .subdirs
+            .iter()
+            .next()
+            .expect("single subdir must exist");
+        label.push('/');
+        label.push_str(child_name);
+        path.push('/');
+        path.push_str(child_name);
+        node = child;
+        if collapsed.contains(&path) {
+            break;
+        }
+    }
+
+    (label, path, node)
 }
 
 pub fn build_tree_rows(files: &[FileEntry], collapsed: &HashSet<String>) -> Vec<TreeRow> {
@@ -385,6 +434,7 @@ pub struct AppState {
     pub commits: Vec<Commit>,
     pub commits_ref: Option<String>,
     pub current_branch_releases: BranchReleaseStatus,
+    pub current_branch_releases_ref: Option<String>,
     pub flow_branches_available: bool,
     pub unpushed_shas: HashSet<String>,
 
@@ -423,6 +473,7 @@ pub struct AppState {
     pub refresh_job: Option<RefreshJob>,
     pub refresh_pending: bool,
     pub refresh_pending_diff: bool,
+    pub release_status_job: Option<ReleaseStatusJob>,
     pub commit_log_job: Option<CommitLogJob>,
     pub diff_job: Option<DiffJob>,
     pub review_job: Option<ReviewJob>,
@@ -496,6 +547,7 @@ impl AppState {
             commits: Vec::new(),
             commits_ref: None,
             current_branch_releases: BranchReleaseStatus::default(),
+            current_branch_releases_ref: None,
             flow_branches_available: false,
             unpushed_shas: HashSet::new(),
 
@@ -534,6 +586,7 @@ impl AppState {
             refresh_job: None,
             refresh_pending: false,
             refresh_pending_diff: false,
+            release_status_job: None,
             commit_log_job: None,
             diff_job: None,
             review_job: None,
@@ -574,6 +627,8 @@ impl AppState {
             Some("fetching")
         } else if self.refresh_job.is_some() {
             Some("refreshing")
+        } else if self.release_status_job.is_some() {
+            Some("checking deployments")
         } else if self.commit_log_job.is_some() {
             Some("loading commits")
         } else if self.diff_job.is_some() {
@@ -731,6 +786,51 @@ mod tests {
         assert_eq!(rows[3].path, "src/lib.rs");
         assert_eq!(rows[4].path, "src/util");
         assert_eq!(rows[5].path, "src/util/mod.rs");
+    }
+
+    #[test]
+    fn tree_compacts_single_subdir_chains() {
+        let files = vec![
+            fe("src/main/kotlin/org/example/inventory/App.kt", 'M', ' '),
+            fe("src/main/kotlin/org/example/inventory/Service.kt", ' ', 'M'),
+        ];
+        let rows = build_tree_rows(&files, &HashSet::new());
+
+        assert_eq!(rows[1].path, "src/main/kotlin/org/example/inventory");
+        assert_eq!(rows[1].label, "src/main/kotlin/org/example/inventory");
+        match rows[1].kind {
+            TreeKind::Folder {
+                expanded,
+                total,
+                staged,
+            } => {
+                assert!(expanded);
+                assert_eq!(total, 2);
+                assert_eq!(staged, 1);
+            }
+            _ => panic!("expected compacted folder"),
+        }
+        assert_eq!(rows[2].path, "src/main/kotlin/org/example/inventory/App.kt");
+        assert_eq!(
+            rows[3].path,
+            "src/main/kotlin/org/example/inventory/Service.kt"
+        );
+    }
+
+    #[test]
+    fn tree_compaction_stops_at_collapsed_path() {
+        let files = vec![fe("src/main/kotlin/org/example/inventory/App.kt", 'M', ' ')];
+        let mut collapsed = HashSet::new();
+        collapsed.insert("src/main".to_string());
+        let rows = build_tree_rows(&files, &collapsed);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].path, "src/main");
+        assert_eq!(rows[1].label, "src/main");
+        match rows[1].kind {
+            TreeKind::Folder { expanded, .. } => assert!(!expanded),
+            _ => panic!("expected compacted collapsed folder"),
+        }
     }
 
     #[test]

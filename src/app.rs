@@ -26,15 +26,16 @@ use std::{
 
 use crate::{
     config::{
-        BACKGROUND_FETCH_INTERVAL_SECS, COMMIT_LIST_LIMIT, DEFAULT_PUSH_REMOTE,
-        STATUS_MSG_LIFETIME_SECS, TICK_MS,
+        BACKGROUND_FETCH_INTERVAL_SECS, BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST, COMMIT_LIST_LIMIT,
+        DEFAULT_PUSH_REMOTE, STATUS_MSG_LIFETIME_SECS, TICK_MS,
     },
     panel,
     state::{
         AppState, CheckoutJob, CheckoutMsg, CommitLogJob, CommitLogMsg, ConflictFollowup, DiffJob,
         DiffMsg, DiffSource, FetchJob, FetchMsg, FlowAction, GenMsg, Modal, OperationJob,
         OperationKind, OperationMsg, Pane, PendingAction, PushJob, PushMsg, RefreshJob, RefreshMsg,
-        RefreshSnapshot, ReviewAssistJob, ReviewJob, ReviewMsg, TreeKind, WorkflowJob, WorkflowMsg,
+        RefreshSnapshot, ReleaseStatusJob, ReleaseStatusMsg, ReviewAssistJob, ReviewJob, ReviewMsg,
+        TreeKind, WorkflowJob, WorkflowMsg,
     },
     ui,
 };
@@ -473,11 +474,6 @@ fn build_refresh_snapshot() -> RefreshSnapshot {
             None
         }
     };
-    let current_branch_releases = branch
-        .as_deref()
-        .and_then(|branch| crate::git::branch_release_status(branch).ok())
-        .unwrap_or_default();
-
     RefreshSnapshot {
         files,
         branches,
@@ -485,7 +481,6 @@ fn build_refresh_snapshot() -> RefreshSnapshot {
         commits,
         unpushed_shas,
         branch,
-        current_branch_releases,
         remote_url: crate::git::remote_url(DEFAULT_PUSH_REMOTE).ok(),
         ahead_behind: crate::git::counts_ahead_behind().ok(),
         errors,
@@ -1340,6 +1335,7 @@ impl App {
             self.drain_operation_job()?;
             self.drain_fetch_job();
             self.drain_refresh_job();
+            self.drain_release_status_job();
             self.drain_commit_log_job();
             self.drain_diff_job();
             self.drain_review_job();
@@ -1353,6 +1349,7 @@ impl App {
                 || self.state.operation_job.is_some()
                 || self.state.fetch_job.is_some()
                 || self.state.refresh_job.is_some()
+                || self.state.release_status_job.is_some()
                 || self.state.commit_log_job.is_some()
                 || self.state.diff_job.is_some()
                 || self.state.review_job.is_some()
@@ -1611,6 +1608,62 @@ impl App {
         });
     }
 
+    fn sync_release_status_to_branch(&mut self) {
+        let Some(branch) = self.state.branch.clone() else {
+            self.state.current_branch_releases = Default::default();
+            self.state.current_branch_releases_ref = None;
+            self.state.release_status_job = None;
+            return;
+        };
+        if !self.state.flow_available() {
+            self.state.current_branch_releases = Default::default();
+            self.state.current_branch_releases_ref = None;
+            self.state.release_status_job = None;
+            return;
+        }
+        if matches!(branch.as_str(), BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST) {
+            self.state.current_branch_releases = Default::default();
+            self.state.current_branch_releases_ref = Some(branch);
+            self.state.release_status_job = None;
+            return;
+        }
+        if self.state.current_branch_releases_ref.as_deref() == Some(branch.as_str()) {
+            return;
+        }
+        if self
+            .state
+            .release_status_job
+            .as_ref()
+            .is_some_and(|job| job.branch == branch)
+        {
+            return;
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let thread_branch = branch.clone();
+        std::thread::spawn(
+            move || match crate::git::branch_release_status(&thread_branch) {
+                Ok(status) => {
+                    let _ = tx.send(ReleaseStatusMsg::Done {
+                        branch: thread_branch,
+                        status,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(ReleaseStatusMsg::Error {
+                        branch: thread_branch,
+                        message: e.to_string(),
+                    });
+                }
+            },
+        );
+        self.state.release_status_job = Some(ReleaseStatusJob {
+            rx,
+            spinner: 0,
+            branch,
+        });
+    }
+
     fn drain_file_events(&mut self) -> Result<()> {
         let mut should_refresh = false;
         while let Ok(event) = self.file_events.try_recv() {
@@ -1643,7 +1696,13 @@ impl App {
         if let Some(shas) = snapshot.unpushed_shas {
             self.state.unpushed_shas = shas;
         }
+        let branch_before = self.state.branch.clone();
         self.state.branch = snapshot.branch;
+        if self.state.branch != branch_before {
+            self.state.current_branch_releases = Default::default();
+            self.state.current_branch_releases_ref = None;
+            self.state.release_status_job = None;
+        }
         let selected_ref = selected_commit_ref(&self.state);
         if let Some(commits) = snapshot.commits {
             if selected_ref.as_deref() == self.state.branch.as_deref() {
@@ -1651,7 +1710,6 @@ impl App {
                 self.state.commits_ref = selected_ref.clone();
             }
         }
-        self.state.current_branch_releases = snapshot.current_branch_releases;
         self.state.remote_url = snapshot.remote_url;
         self.state.ahead_behind = snapshot.ahead_behind;
         if let Some(error) = snapshot.errors.into_iter().next() {
@@ -1661,6 +1719,7 @@ impl App {
         if selected_ref.as_deref() != self.state.commits_ref.as_deref() {
             self.sync_commit_log_to_selection();
         }
+        self.sync_release_status_to_branch();
         if refresh_diff {
             self.start_diff_job(true);
         }
@@ -1703,6 +1762,35 @@ impl App {
                 self.state.diff_text = text;
                 self.state.diff_line_count =
                     self.state.diff_text.lines().count().min(u16::MAX as usize) as u16;
+            }
+        }
+    }
+
+    fn drain_release_status_job(&mut self) {
+        let mut finished = None;
+        if let Some(job) = self.state.release_status_job.as_mut() {
+            while let Ok(msg) = job.rx.try_recv() {
+                finished = Some(msg);
+            }
+            job.spinner = job.spinner.wrapping_add(1);
+        }
+        if let Some(msg) = finished {
+            self.state.release_status_job = None;
+            match msg {
+                ReleaseStatusMsg::Done { branch, status } => {
+                    if self.state.branch.as_deref() == Some(branch.as_str()) {
+                        self.state.current_branch_releases = status;
+                        self.state.current_branch_releases_ref = Some(branch);
+                    }
+                }
+                ReleaseStatusMsg::Error { branch, message } => {
+                    if self.state.branch.as_deref() == Some(branch.as_str()) {
+                        self.state.current_branch_releases = Default::default();
+                        self.state.current_branch_releases_ref = None;
+                        self.state
+                            .set_status(format!("deployment status failed: {message}"), true);
+                    }
+                }
             }
         }
     }
@@ -1808,6 +1896,7 @@ impl App {
         }
         if let Some(res) = finished {
             self.state.fetch_job = None;
+            self.state.current_branch_releases_ref = None;
             match res {
                 Ok(s) if s != "no remotes configured" => self.state.set_status(s, false),
                 Ok(_) => {}
@@ -1831,6 +1920,7 @@ impl App {
         if let Some(res) = finished {
             self.state.push_job = None;
             self.state.modal = Modal::None;
+            self.state.current_branch_releases_ref = None;
             match res {
                 Ok(s) => self.state.set_status(s, false),
                 Err(e) => self.state.set_status(e, true),
@@ -1853,6 +1943,7 @@ impl App {
         }
         if let Some(res) = finished {
             self.state.checkout_job = None;
+            self.state.current_branch_releases_ref = None;
             match res {
                 Ok(s) => self.state.set_status(s, false),
                 Err(e) => self.state.set_status(e, true),
@@ -1881,6 +1972,7 @@ impl App {
                 .map(|job| job.kind)
                 .unwrap_or(OperationKind::Worktree);
             self.state.operation_job = None;
+            self.state.current_branch_releases_ref = None;
             match res {
                 Ok(s) => {
                     self.state.set_status(s, false);
@@ -1913,6 +2005,7 @@ impl App {
         }
         if let Some(res) = finished {
             self.state.workflow_job = None;
+            self.state.current_branch_releases_ref = None;
             match res {
                 WorkflowMsg::Progress(_) => {}
                 WorkflowMsg::Done(s) => {

@@ -34,17 +34,15 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         state.activity_label().is_some(),
     );
 
-    let lines: Vec<ratatui::text::Line> = state
-        .diff_text
-        .split('\n')
-        .map(|line| {
-            if matches!(state.diff_source, DiffSource::Branch(_)) {
-                ui::highlight_log_line(line)
-            } else {
-                ui::highlight_diff_line(line)
-            }
-        })
-        .collect();
+    let lines: Vec<ratatui::text::Line> = if matches!(state.diff_source, DiffSource::Branch(_)) {
+        state
+            .diff_text
+            .split('\n')
+            .map(ui::highlight_log_line)
+            .collect()
+    } else {
+        ui::highlight_diff_text(&state.diff_text)
+    };
 
     let max_offset = state
         .diff_line_count

@@ -315,6 +315,28 @@ pub fn framed_with_activity<'a>(
 
 /// Colorize a single diff line into a styled `Line`.
 pub fn highlight_diff_line(line: &str) -> Line<'_> {
+    highlight_diff_line_for_syntax(line, None)
+}
+
+pub fn highlight_diff_text(text: &str) -> Vec<Line<'_>> {
+    let mut syntax = None;
+    text.split('\n')
+        .map(|line| {
+            if let Some(next) = diff_line_syntax(line) {
+                syntax = Some(next);
+            }
+            highlight_diff_line_for_syntax(line, syntax)
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+enum Syntax {
+    Kotlin,
+    Rust,
+}
+
+fn highlight_diff_line_for_syntax(line: &str, syntax: Option<Syntax>) -> Line<'_> {
     if matches!(line, "Message:" | "Files changed:" | "Patch:") {
         return Line::from(Span::styled(
             line,
@@ -343,24 +365,30 @@ pub fn highlight_diff_line(line: &str) -> Line<'_> {
         ));
     }
     if let Some(rest) = line.strip_prefix('+') {
-        return Line::from(vec![
-            Span::styled(
-                "+",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(rest.to_string(), Style::default().fg(Color::LightGreen)),
-        ]);
+        let mut spans = vec![Span::styled(
+            "+",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )];
+        spans.extend(highlight_code(
+            rest,
+            syntax,
+            Style::default().fg(Color::LightGreen),
+        ));
+        return Line::from(spans);
     }
     if let Some(rest) = line.strip_prefix('-') {
-        return Line::from(vec![
-            Span::styled(
-                "-",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(rest.to_string(), Style::default().fg(Color::LightRed)),
-        ]);
+        let mut spans = vec![Span::styled(
+            "-",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )];
+        spans.extend(highlight_code(
+            rest,
+            syntax,
+            Style::default().fg(Color::LightRed),
+        ));
+        return Line::from(spans);
     }
     if line.starts_with("@@") {
         return Line::from(Span::styled(line, Style::default().fg(Color::Cyan)));
@@ -373,7 +401,188 @@ pub fn highlight_diff_line(line: &str) -> Line<'_> {
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    Line::from(Span::styled(line, Style::default()))
+    Line::from(highlight_code(line, syntax, Style::default()))
+}
+
+fn diff_line_syntax(line: &str) -> Option<Syntax> {
+    if let Some(path) = line.strip_prefix("+++ b/") {
+        return path_syntax(path);
+    }
+    if let Some(path) = line.strip_prefix("diff --git ") {
+        let path = path.split_whitespace().nth(1)?.strip_prefix("b/")?;
+        return path_syntax(path);
+    }
+    None
+}
+
+fn path_syntax(path: &str) -> Option<Syntax> {
+    if path.ends_with(".rs") {
+        Some(Syntax::Rust)
+    } else if path.ends_with(".kt") || path.ends_with(".kts") {
+        Some(Syntax::Kotlin)
+    } else {
+        None
+    }
+}
+
+fn highlight_code(code: &str, syntax: Option<Syntax>, default_style: Style) -> Vec<Span<'static>> {
+    let Some(syntax) = syntax else {
+        return vec![Span::styled(code.to_string(), default_style)];
+    };
+
+    let mut spans = Vec::new();
+    let mut chars = code.char_indices().peekable();
+    let mut plain_start = 0usize;
+    while let Some((idx, ch)) = chars.next() {
+        if ch == '/' && chars.peek().is_some_and(|(_, next)| *next == '/') {
+            push_plain_code(&mut spans, code, plain_start, idx, default_style);
+            spans.push(Span::styled(
+                code[idx..].to_string(),
+                Style::default().fg(Color::DarkGray),
+            ));
+            return spans;
+        }
+        if ch == '"' {
+            push_plain_code(&mut spans, code, plain_start, idx, default_style);
+            let end = string_end(code, idx + ch.len_utf8());
+            spans.push(Span::styled(
+                code[idx..end].to_string(),
+                Style::default().fg(Color::LightYellow),
+            ));
+            while chars.peek().is_some_and(|(next_idx, _)| *next_idx < end) {
+                chars.next();
+            }
+            plain_start = end;
+            continue;
+        }
+        if is_ident_start(ch) {
+            let mut end = idx + ch.len_utf8();
+            while let Some((next_idx, next)) = chars.peek().copied() {
+                if !is_ident_continue(next) {
+                    break;
+                }
+                chars.next();
+                end = next_idx + next.len_utf8();
+            }
+            let ident = &code[idx..end];
+            if let Some(style) = keyword_style(ident, syntax) {
+                push_plain_code(&mut spans, code, plain_start, idx, default_style);
+                spans.push(Span::styled(ident.to_string(), style));
+                plain_start = end;
+            }
+        }
+    }
+    push_plain_code(&mut spans, code, plain_start, code.len(), default_style);
+    spans
+}
+
+fn push_plain_code(
+    spans: &mut Vec<Span<'static>>,
+    code: &str,
+    start: usize,
+    end: usize,
+    style: Style,
+) {
+    if start < end {
+        spans.push(Span::styled(code[start..end].to_string(), style));
+    }
+}
+
+fn string_end(code: &str, start: usize) -> usize {
+    let mut escaped = false;
+    for (idx, ch) in code[start..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            return start + idx + ch.len_utf8();
+        }
+    }
+    code.len()
+}
+
+fn is_ident_start(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+
+fn is_ident_continue(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphanumeric()
+}
+
+fn keyword_style(word: &str, syntax: Syntax) -> Option<Style> {
+    let keyword = match syntax {
+        Syntax::Rust => matches!(
+            word,
+            "as" | "async"
+                | "await"
+                | "break"
+                | "const"
+                | "continue"
+                | "crate"
+                | "dyn"
+                | "else"
+                | "enum"
+                | "false"
+                | "fn"
+                | "for"
+                | "if"
+                | "impl"
+                | "in"
+                | "let"
+                | "loop"
+                | "match"
+                | "mod"
+                | "move"
+                | "mut"
+                | "pub"
+                | "ref"
+                | "return"
+                | "self"
+                | "Self"
+                | "static"
+                | "struct"
+                | "super"
+                | "trait"
+                | "true"
+                | "type"
+                | "use"
+                | "where"
+                | "while"
+        ),
+        Syntax::Kotlin => matches!(
+            word,
+            "as" | "class"
+                | "data"
+                | "else"
+                | "false"
+                | "fun"
+                | "if"
+                | "in"
+                | "interface"
+                | "is"
+                | "null"
+                | "object"
+                | "override"
+                | "private"
+                | "return"
+                | "suspend"
+                | "true"
+                | "val"
+                | "var"
+                | "when"
+                | "while"
+        ),
+    };
+    keyword.then_some(
+        Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD),
+    )
 }
 
 pub fn highlight_log_line(line: &str) -> Line<'_> {
