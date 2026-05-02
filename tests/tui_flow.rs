@@ -1491,6 +1491,18 @@ fn branch_log_max_scroll_offset_ignores_trailing_newline() {
 }
 
 #[test]
+fn branch_log_scroll_bound_counts_wrapped_visual_rows() {
+    let mut state = AppState::new();
+    state.diff_source = lg::state::DiffSource::Branch("main".into());
+    state.diff_text = "0123456789abcdefghij\nshort\n".into();
+    state.diff_viewport_height = 1;
+    state.diff_viewport_width = 10;
+
+    assert_eq!(panel::main::max_scroll_offset(&state), 2);
+    assert_eq!(panel::main::rendered_line_count(&state), 3);
+}
+
+#[test]
 fn branch_log_fast_mouse_scroll_bursts_stay_in_bounds() {
     let mut state = AppState::new();
     state.diff_source = lg::state::DiffSource::Branch("main".into());
@@ -1513,6 +1525,26 @@ fn branch_log_fast_mouse_scroll_bursts_stay_in_bounds() {
         assert!(state.diff_offset <= max_offset);
     }
     assert_eq!(state.diff_offset, 0);
+}
+
+#[test]
+fn render_clamps_stale_branch_log_offset_before_next_mouse_burst() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 24)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Branch("main".into());
+    app.state.diff_text = "* commit abc1234\n| Author: Alice\n| message\n".into();
+    app.state.diff_offset = 500;
+
+    app.render().unwrap();
+
+    assert_eq!(
+        app.state.diff_offset,
+        panel::main::max_scroll_offset(&app.state)
+    );
+    for _ in 0..100 {
+        panel::main::scroll(&mut app.state, true, 3);
+        assert!(app.state.diff_offset <= panel::main::max_scroll_offset(&app.state));
+    }
 }
 
 // ── XY-rendering smoke test ───────────────────────────────────────────────────

@@ -15,7 +15,8 @@ use ratatui::{
     layout::Rect,
 };
 use std::{
-    io::Stdout,
+    fs::OpenOptions,
+    io::{Stdout, Write},
     sync::mpsc::Receiver,
     time::{Duration, Instant},
 };
@@ -98,6 +99,25 @@ fn first_status_line(s: &str) -> String {
         .collect()
 }
 
+fn trace_scroll(message: impl AsRef<str>) {
+    let Some(path) = std::env::var_os("LG_TRACE") else {
+        return;
+    };
+    let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = writeln!(f, "SCROLL {}", message.as_ref());
+}
+
+fn mouse_scroll_snapshot(state: &AppState, pane: Pane) -> (usize, usize) {
+    match pane {
+        Pane::Files => (state.files_idx, state.tree_rows().len()),
+        Pane::Branches => (state.branches_idx, state.branches.len()),
+        Pane::Commits => (state.commits_idx, state.commits.len()),
+        Pane::Status | Pane::Main => (0, 0),
+    }
+}
+
 // ─── HeadlessApp ─────────────────────────────────────────────────────────────
 
 impl<B: Backend> HeadlessApp<B>
@@ -130,6 +150,8 @@ where
             self.state.left_panel_heights,
         );
         self.state.diff_viewport_height = rects_pre.main.height.saturating_sub(2);
+        self.state.diff_viewport_width = rects_pre.main.width.saturating_sub(2);
+        self.clamp_main_scroll_offset();
 
         let state = &self.state;
         self.terminal.draw(|frame| {
@@ -163,6 +185,13 @@ where
             }
         })?;
         Ok(())
+    }
+
+    fn clamp_main_scroll_offset(&mut self) {
+        self.state.diff_offset = self
+            .state
+            .diff_offset
+            .min(panel::main::max_scroll_offset(&self.state));
     }
 
     pub fn send_key(&mut self, k: KeyEvent) -> Result<()> {
@@ -1230,6 +1259,8 @@ impl App {
             self.state.left_panel_heights,
         );
         self.state.diff_viewport_height = rects_pre.main.height.saturating_sub(2);
+        self.state.diff_viewport_width = rects_pre.main.width.saturating_sub(2);
+        self.clamp_main_scroll_offset();
 
         let state = &self.state;
         self.terminal.draw(|frame| {
@@ -1263,6 +1294,13 @@ impl App {
             }
         })?;
         Ok(())
+    }
+
+    fn clamp_main_scroll_offset(&mut self) {
+        self.state.diff_offset = self
+            .state
+            .diff_offset
+            .min(panel::main::max_scroll_offset(&self.state));
     }
 
     pub fn handle_key(&mut self, k: KeyEvent) -> Result<()> {
@@ -1521,6 +1559,7 @@ impl App {
             {
                 let focus_before = self.state.focus;
                 let commit_ref_before = selected_commit_ref(&self.state);
+                let (idx_before, len_before) = mouse_scroll_snapshot(&self.state, pane);
                 self.state.focus = pane;
                 let changed = mouse::scroll_list(
                     &mut self.state,
@@ -1528,6 +1567,15 @@ impl App {
                     matches!(m.kind, MouseEventKind::ScrollDown),
                     3,
                 );
+                let (idx_after, len_after) = mouse_scroll_snapshot(&self.state, pane);
+                trace_scroll(format!(
+                    "mouse pane={pane:?} dir={} amount=3 idx_before={idx_before} idx_after={idx_after} len_before={len_before} len_after={len_after} changed={changed} focus_before={focus_before:?}",
+                    if matches!(m.kind, MouseEventKind::ScrollDown) {
+                        "down"
+                    } else {
+                        "up"
+                    }
+                ));
                 if changed || focus_before != pane {
                     self.start_diff_job(false);
                 }
@@ -1545,6 +1593,8 @@ impl App {
         if !in_main {
             return Ok(());
         }
+        let offset_before = self.state.diff_offset;
+        let max_before = panel::main::max_scroll_offset(&self.state);
         match m.kind {
             MouseEventKind::ScrollDown => {
                 panel::main::scroll(&mut self.state, true, 3);
@@ -1553,6 +1603,27 @@ impl App {
                 panel::main::scroll(&mut self.state, false, 3);
             }
             _ => {}
+        }
+        if matches!(
+            m.kind,
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+        ) {
+            trace_scroll(format!(
+                "mouse pane=Main dir={} amount=3 offset_before={offset_before} offset_after={} max_before={max_before} max_after={} viewport={} width={} source={:?} text_lines={} visual_lines={} diff_line_count={}",
+                if matches!(m.kind, MouseEventKind::ScrollDown) {
+                    "down"
+                } else {
+                    "up"
+                },
+                self.state.diff_offset,
+                panel::main::max_scroll_offset(&self.state),
+                self.state.diff_viewport_height,
+                self.state.diff_viewport_width,
+                self.state.diff_source,
+                self.state.diff_text.lines().count(),
+                panel::main::rendered_line_count(&self.state),
+                self.state.diff_line_count,
+            ));
         }
         Ok(())
     }

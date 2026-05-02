@@ -49,7 +49,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         ui::highlight_diff_text(&state.diff_text)
     };
 
-    let max_offset = scroll_bound(lines.len(), state.diff_viewport_height);
+    let max_offset = max_scroll_offset(state);
     let offset = state.diff_offset.min(max_offset);
 
     let para = Paragraph::new(lines)
@@ -444,7 +444,7 @@ pub fn max_scroll_offset(state: &AppState) -> u16 {
     if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
         return scroll_bound(review_render_line_count(state), state.diff_viewport_height);
     }
-    scroll_bound(rendered_diff_line_count(state), state.diff_viewport_height)
+    scroll_bound(rendered_line_count(state), state.diff_viewport_height)
 }
 
 fn scroll_bound(line_count: usize, viewport_height: u16) -> u16 {
@@ -453,14 +453,28 @@ fn scroll_bound(line_count: usize, viewport_height: u16) -> u16 {
         .saturating_sub(viewport_height as usize) as u16
 }
 
-fn rendered_diff_line_count(state: &AppState) -> usize {
+pub fn rendered_line_count(state: &AppState) -> usize {
     if state.diff_text.is_empty() {
         return state.diff_line_count as usize;
     }
     if matches!(state.diff_source, DiffSource::Branch(_)) {
-        return log_render_lines(&state.diff_text).len();
+        return wrapped_line_count(
+            log_render_lines(&state.diff_text),
+            state.diff_viewport_width,
+        );
     }
     state.diff_text.lines().count()
+}
+
+fn wrapped_line_count<'a>(lines: impl IntoIterator<Item = &'a str>, viewport_width: u16) -> usize {
+    let lines = lines.into_iter();
+    if viewport_width == 0 {
+        return lines.count();
+    }
+    let width = viewport_width.max(1) as usize;
+    lines
+        .map(|line| line.chars().count().max(1).div_ceil(width))
+        .sum()
 }
 
 fn log_render_lines(text: &str) -> Vec<&str> {
