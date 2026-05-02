@@ -106,12 +106,16 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
         ));
 
         if expanded {
+            let syntax_path = review_node_path(&node.title);
             for body in &node.body {
                 let mut spans = vec![Span::styled(
                     format!("{indent}  │ "),
                     Style::default().fg(Color::DarkGray),
                 )];
-                spans.extend(ui::highlight_diff_line(body).spans);
+                let body_line = syntax_path
+                    .map(|path| ui::highlight_diff_line_for_path(body, path))
+                    .unwrap_or_else(|| ui::highlight_diff_line(body));
+                spans.extend(body_line.spans);
                 lines.push(Line::from(spans));
             }
             if state.review_context_open.contains(&node.id) {
@@ -248,6 +252,21 @@ fn styled_file_location(location: &str, selected: bool) -> Vec<Span<'static>> {
     } else {
         styled_file_path(location, selected)
     }
+}
+
+fn review_node_path(title: &str) -> Option<&str> {
+    let location = title
+        .split_once(" in ")
+        .map(|(path, _)| path)
+        .or_else(|| title.split_once(" - ").map(|(location, _)| location))
+        .unwrap_or(title);
+    let path = location
+        .rsplit_once(':')
+        .filter(|(_, line)| line.chars().all(|ch| ch.is_ascii_digit()))
+        .map(|(path, _)| path)
+        .unwrap_or(location)
+        .trim();
+    (!path.is_empty()).then_some(path)
 }
 
 fn styled_file_path(path: &str, selected: bool) -> Vec<Span<'static>> {

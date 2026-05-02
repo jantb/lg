@@ -318,6 +318,10 @@ pub fn highlight_diff_line(line: &str) -> Line<'_> {
     highlight_diff_line_for_syntax(line, None)
 }
 
+pub fn highlight_diff_line_for_path<'a>(line: &'a str, path: &str) -> Line<'a> {
+    highlight_diff_line_for_syntax(line, path_syntax(path))
+}
+
 pub fn highlight_diff_text(text: &str) -> Vec<Line<'_>> {
     let mut syntax = None;
     let mut line_numbers = None;
