@@ -1763,9 +1763,107 @@ fn commits_panel_marks_merge_commits() {
 
     assert!(text.contains("\u{25cb}"), "missing merge marker: {text}");
     assert!(
-        text.contains("\u{21a9}"),
-        "missing merge return arrow: {text}"
+        text.contains("\u{23e3}\u{2500}\u{256e}"),
+        "missing merge connector: {text}"
     );
+    assert!(
+        !text.contains("\u{21a9}"),
+        "old merge return arrow should not be rendered: {text}"
+    );
+}
+
+#[test]
+fn commits_panel_keeps_subjects_aligned_after_merge_connector() {
+    let mut state = AppState::new();
+    state.commits = vec![
+        Commit {
+            sha: "abc1234".into(),
+            author: "Alice Example".into(),
+            author_short: "AE".into(),
+            graph: "*".into(),
+            is_first_parent: true,
+            parent_count: 2,
+            subject: "merge branch".into(),
+        },
+        Commit {
+            sha: "def5678".into(),
+            author: "Bob Example".into(),
+            author_short: "BE".into(),
+            graph: "| *".into(),
+            is_first_parent: false,
+            parent_count: 1,
+            subject: "side branch".into(),
+        },
+    ];
+
+    let backend = TestBackend::new(80, 6);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |row_idx| {
+        let mut row = String::new();
+        for col in 0..buf.area.width {
+            row.push_str(buf[(col, row_idx)].symbol());
+        }
+        row
+    };
+    let cell_col = |row_idx, needle: &str| {
+        let needle_chars: Vec<char> = needle.chars().collect();
+        (0..buf.area.width).find(|start| {
+            needle_chars.iter().enumerate().all(|(offset, ch)| {
+                let col = start.saturating_add(offset as u16);
+                col < buf.area.width && buf[(col, row_idx)].symbol() == ch.to_string()
+            })
+        })
+    };
+    let merge_row = row_text(1);
+    let side_row = row_text(2);
+
+    assert_eq!(
+        cell_col(1, "merge branch"),
+        cell_col(2, "side branch"),
+        "subjects should use the same column:\n{merge_row}\n{side_row}"
+    );
+}
+
+#[test]
+fn commits_panel_highlights_selected_merge_connector() {
+    let mut state = AppState::new();
+    state.commits = vec![Commit {
+        sha: "abc1234".into(),
+        author: "Alice Example".into(),
+        author_short: "AE".into(),
+        graph: "*".into(),
+        is_first_parent: true,
+        parent_count: 2,
+        subject: "merge branch".into(),
+    }];
+    state.focus = Pane::Commits;
+    state.commits_idx = 0;
+
+    let backend = TestBackend::new(80, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, true);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let connector_start = (0..buf.area.width)
+        .find(|col| buf[(*col, 1)].symbol() == "\u{23e3}")
+        .expect("selected merge connector should include ⏣");
+    for (offset, symbol) in ["\u{23e3}", "\u{2500}", "\u{256e}"].iter().enumerate() {
+        let cell = &buf[(connector_start + offset as u16, 1)];
+        assert_eq!(cell.symbol(), *symbol);
+        assert_eq!(cell.fg, Color::Yellow);
+        assert_eq!(cell.bg, Color::DarkGray);
+    }
 }
 
 #[test]

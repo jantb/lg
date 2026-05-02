@@ -13,6 +13,8 @@ use crate::{
     ui,
 };
 
+const MERGE_CONNECTOR: &str = "\u{23e3}\u{2500}\u{256e}";
+
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let count = if state.commits.is_empty() {
         None
@@ -152,14 +154,8 @@ fn graph_spans(commit: &crate::git::Commit, width: usize) -> Vec<Span<'static>> 
         spans.push(Span::styled(symbol.to_string(), style));
         visible_col += 1;
 
-        if ch == '*' && commit.parent_count > 1 && visible_col < width {
-            spans.push(Span::styled(
-                "\u{21a9}",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            visible_col += 1;
+        if ch == '*' && commit.parent_count > 1 {
+            visible_col = push_merge_connector(&mut spans, visible_col, width);
         }
     }
 
@@ -177,10 +173,31 @@ fn graph_display_width(commit: &crate::git::Commit) -> usize {
         commit.graph.chars().count()
     };
     if commit.parent_count > 1 {
-        graph_width.max(2)
+        graph_width.max(1 + MERGE_CONNECTOR.chars().count())
     } else {
         graph_width
     }
+}
+
+fn push_merge_connector(
+    spans: &mut Vec<Span<'static>>,
+    mut visible_col: usize,
+    width: usize,
+) -> usize {
+    for ch in MERGE_CONNECTOR.chars() {
+        if visible_col >= width {
+            break;
+        }
+        spans.push(Span::styled(ch.to_string(), merge_connector_style()));
+        visible_col += 1;
+    }
+    visible_col
+}
+
+fn merge_connector_style() -> Style {
+    Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD)
 }
 
 fn graph_symbol(ch: char) -> char {
