@@ -426,14 +426,14 @@ fn diff_highlighting_colors_markers_and_changed_text_separately() {
     assert_eq!(added.spans[0].style.fg, Some(Color::Green));
     assert!(added.spans[0].style.bg.is_some());
     assert_eq!(added.spans[1].content.as_ref(), "added");
-    assert_eq!(added.spans[1].style.fg, Some(Color::LightGreen));
+    assert_eq!(added.spans[1].style.fg, Some(Color::Gray));
     assert_eq!(added.spans[1].style.bg, added.spans[0].style.bg);
 
     assert_eq!(removed.spans[0].content.as_ref(), "-");
     assert_eq!(removed.spans[0].style.fg, Some(Color::Red));
     assert!(removed.spans[0].style.bg.is_some());
     assert_eq!(removed.spans[1].content.as_ref(), "removed");
-    assert_eq!(removed.spans[1].style.fg, Some(Color::LightRed));
+    assert_eq!(removed.spans[1].style.fg, Some(Color::Gray));
     assert_eq!(removed.spans[1].style.bg, removed.spans[0].style.bg);
 }
 
@@ -448,7 +448,7 @@ fn diff_highlighting_tracks_kotlin_syntax_by_file() {
     assert_eq!(added.spans[0].style.fg, Some(Color::Green));
     assert!(added.spans.iter().any(|span| {
         span.content.as_ref() == "suspend"
-            && span.style.fg == Some(Color::Magenta)
+            && span.style.fg == Some(Color::Yellow)
             && span.style.bg == added.spans[0].style.bg
             && span.style.add_modifier.contains(Modifier::BOLD)
     }));
@@ -466,15 +466,34 @@ fn review_diff_line_highlighting_uses_node_file_syntax() {
 
     assert!(line.spans.iter().any(|span| {
         span.content.as_ref() == "private"
-            && span.style.fg == Some(Color::Magenta)
+            && span.style.fg == Some(Color::Yellow)
             && span.style.bg == line.spans[0].style.bg
             && span.style.add_modifier.contains(Modifier::BOLD)
     }));
     assert!(line.spans.iter().any(|span| {
         span.content.as_ref() == "val"
-            && span.style.fg == Some(Color::Magenta)
+            && span.style.fg == Some(Color::Yellow)
             && span.style.bg == line.spans[0].style.bg
             && span.style.add_modifier.contains(Modifier::BOLD)
+    }));
+    assert!(line.spans.iter().any(|span| {
+        span.content.as_ref() == "Logger"
+            && span.style.fg == Some(Color::LightCyan)
+            && span.style.bg == line.spans[0].style.bg
+    }));
+}
+
+#[test]
+fn diff_highlighting_marks_function_calls_without_addition_foreground() {
+    let line = lg::ui::highlight_diff_line_for_path(
+        "+    return mergeAccounts(hubFlow)",
+        "src/main/kotlin/org/example/service/ExampleService.kt",
+    );
+
+    assert!(line.spans.iter().any(|span| {
+        span.content.as_ref() == "mergeAccounts"
+            && span.style.fg == Some(Color::LightMagenta)
+            && span.style.bg == line.spans[0].style.bg
     }));
 }
 
@@ -487,12 +506,12 @@ fn diff_highlighting_tracks_rust_syntax_by_file() {
 
     assert!(added.spans.iter().any(|span| {
         span.content.as_ref() == "pub"
-            && span.style.fg == Some(Color::Magenta)
+            && span.style.fg == Some(Color::Yellow)
             && span.style.add_modifier.contains(Modifier::BOLD)
     }));
     assert!(added.spans.iter().any(|span| {
         span.content.as_ref() == "fn"
-            && span.style.fg == Some(Color::Magenta)
+            && span.style.fg == Some(Color::Yellow)
             && span.style.add_modifier.contains(Modifier::BOLD)
     }));
 }

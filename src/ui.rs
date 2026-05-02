@@ -395,7 +395,7 @@ fn highlight_diff_line_for_syntax(line: &str, syntax: Option<Syntax>) -> Line<'_
         ));
     }
     if let Some(rest) = line.strip_prefix('+') {
-        let base_style = Style::default().fg(Color::LightGreen).bg(DIFF_ADDED_BG);
+        let base_style = Style::default().fg(Color::Gray).bg(DIFF_ADDED_BG);
         let mut spans = vec![Span::styled(
             "+",
             Style::default()
@@ -407,7 +407,7 @@ fn highlight_diff_line_for_syntax(line: &str, syntax: Option<Syntax>) -> Line<'_
         return Line::from(spans);
     }
     if let Some(rest) = line.strip_prefix('-') {
-        let base_style = Style::default().fg(Color::LightRed).bg(DIFF_REMOVED_BG);
+        let base_style = Style::default().fg(Color::Gray).bg(DIFF_REMOVED_BG);
         let mut spans = vec![Span::styled(
             "-",
             Style::default()
@@ -575,7 +575,10 @@ fn highlight_code(code: &str, syntax: Option<Syntax>, default_style: Style) -> V
                 end = next_idx + next.len_utf8();
             }
             let ident = &code[idx..end];
-            if let Some(style) = keyword_style(ident, syntax, default_style) {
+            let style = keyword_style(ident, syntax, default_style)
+                .or_else(|| type_style(ident, default_style))
+                .or_else(|| function_style(code, end, default_style));
+            if let Some(style) = style {
                 push_plain_code(&mut spans, code, plain_start, idx, default_style);
                 spans.push(Span::styled(ident.to_string(), style));
                 plain_start = end;
@@ -631,6 +634,18 @@ fn color_style(color: Color, base: Style) -> Style {
     } else {
         style
     }
+}
+
+fn type_style(word: &str, base: Style) -> Option<Style> {
+    word.chars()
+        .next()
+        .is_some_and(char::is_uppercase)
+        .then_some(color_style(Color::LightCyan, base))
+}
+
+fn function_style(code: &str, ident_end: usize, base: Style) -> Option<Style> {
+    let next = code[ident_end..].chars().find(|ch| !ch.is_whitespace())?;
+    (next == '(').then_some(color_style(Color::LightMagenta, base))
 }
 
 fn keyword_style(word: &str, syntax: Syntax, base: Style) -> Option<Style> {
@@ -697,7 +712,7 @@ fn keyword_style(word: &str, syntax: Syntax, base: Style) -> Option<Style> {
                 | "while"
         ),
     };
-    keyword.then_some(color_style(Color::Magenta, base).add_modifier(Modifier::BOLD))
+    keyword.then_some(color_style(Color::Yellow, base).add_modifier(Modifier::BOLD))
 }
 
 pub fn highlight_log_line(line: &str) -> Line<'_> {
