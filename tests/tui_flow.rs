@@ -274,6 +274,21 @@ fn author_modal_uses_terminal_cursor_for_active_field() {
 }
 
 #[test]
+fn author_modal_shows_error_when_terminal_is_too_small() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(20, 6)).unwrap();
+    app.state.modal = Modal::Author;
+    app.state.author_field = AuthorField::Email;
+
+    app.render().unwrap();
+
+    let text = buffer_text(&app);
+    assert!(
+        text.contains("Terminal too small"),
+        "missing small-terminal message: {text}"
+    );
+}
+
+#[test]
 fn review_panel_expands_hunks_and_source_context() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.focus = Pane::Main;
@@ -643,6 +658,58 @@ fn review_panel_explains_selected_subtree_with_ollama() {
     assert!(
         rendered.contains("Explains the greeting change."),
         "{rendered}"
+    );
+}
+
+#[test]
+fn review_panel_renders_ollama_markdown() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(140, 32)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![ReviewNode {
+            id: "branch".into(),
+            parent: None,
+            depth: 0,
+            title: "Full diff against main".into(),
+            body: Vec::new(),
+            context: Vec::new(),
+        }],
+    });
+    app.state.review_assists.insert(
+        "branch".into(),
+        "# Summary\n- **BoldThing** calls `InlineCode`\n```kotlin\nfun runThing(value: String) = value\n```".into(),
+    );
+
+    app.render().unwrap();
+
+    let rendered = buffer_text(&app);
+    assert!(rendered.contains("Summary"), "{rendered}");
+    assert!(
+        rendered.contains("• BoldThing calls InlineCode"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("┌─ code kotlin"), "{rendered}");
+    assert!(rendered.contains("fun runThing"), "{rendered}");
+    assert!(!rendered.contains("**"), "{rendered}");
+    assert!(!rendered.contains("```"), "{rendered}");
+
+    let buf = app.terminal.backend().buffer();
+    assert!(
+        buf.content()
+            .iter()
+            .any(|cell| cell.symbol() == "B" && cell.modifier.contains(Modifier::BOLD)),
+        "bold markdown should be rendered with bold style"
+    );
+    assert!(
+        buf.content().iter().any(|cell| {
+            cell.symbol() == "f"
+                && cell.fg == Color::Yellow
+                && cell.modifier.contains(Modifier::BOLD)
+                && cell.bg != Color::Reset
+        }),
+        "kotlin code block should render highlighted code on a code background"
     );
 }
 
@@ -1544,7 +1611,11 @@ fn commits_panel_marks_merge_commits() {
         .map(|cell| cell.symbol())
         .collect::<String>();
 
-    assert!(text.contains("\u{25c6}"), "missing merge marker: {text}");
+    assert!(text.contains("\u{25cb}"), "missing merge marker: {text}");
+    assert!(
+        text.contains("\u{21a9}"),
+        "missing merge return arrow: {text}"
+    );
 }
 
 #[test]

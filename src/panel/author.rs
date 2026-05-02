@@ -18,6 +18,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let h = 10.min(area.height);
     let modal = ui::centered(area, w, h);
     frame.render_widget(Clear, modal);
+    if modal.width < 24 || modal.height < 8 {
+        frame.render_widget(
+            Paragraph::new("Terminal too small for author settings").block(ui::bordered("Author")),
+            modal,
+        );
+        return;
+    }
 
     let status = if state.author_has_subtree_rule {
         "subtree rule"

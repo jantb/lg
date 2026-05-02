@@ -8,5 +8,6 @@ pub mod files;
 pub mod flow;
 pub mod help;
 pub mod main;
+pub(crate) mod markdown;
 pub mod push;
 pub mod status;

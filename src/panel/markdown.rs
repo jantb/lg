@@ -1,0 +1,399 @@
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
+
+const CODE_BG: Color = Color::Rgb(28, 31, 38);
+
+#[derive(Clone, Copy)]
+enum Syntax {
+    Kotlin,
+    Rust,
+}
+
+pub fn render(text: &str, prefix: &str) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut code: Option<Option<Syntax>> = None;
+
+    for raw in text.lines() {
+        if let Some(lang) = code_fence_language(raw) {
+            if code.is_some() {
+                lines.push(code_rule(prefix, "└─"));
+                code = None;
+            } else {
+                let syntax = language_syntax(lang);
+                let label = if lang.is_empty() {
+                    "code".to_string()
+                } else {
+                    format!("code {lang}")
+                };
+                lines.push(code_rule(prefix, &format!("┌─ {label}")));
+                code = Some(syntax);
+            }
+            continue;
+        }
+
+        if let Some(syntax) = code {
+            let mut spans = prefixed(prefix);
+            spans.push(Span::styled("  ", Style::default().bg(CODE_BG)));
+            spans.extend(code_spans(
+                raw,
+                syntax,
+                Style::default().fg(Color::Gray).bg(CODE_BG),
+            ));
+            lines.push(Line::from(spans));
+            continue;
+        }
+
+        lines.push(markdown_line(raw, prefix));
+    }
+
+    if code.is_some() {
+        lines.push(code_rule(prefix, "└─"));
+    }
+
+    lines
+}
+
+fn markdown_line(raw: &str, prefix: &str) -> Line<'static> {
+    let trimmed = raw.trim_start();
+    let mut spans = prefixed(prefix);
+    let indent_len = raw.len().saturating_sub(trimmed.len());
+    if indent_len > 0 {
+        spans.push(Span::raw(" ".repeat(indent_len.min(8))));
+    }
+
+    if trimmed.is_empty() {
+        return Line::from(spans);
+    }
+
+    if let Some((level, heading)) = heading(trimmed) {
+        spans.push(Span::styled(
+            format!("{} ", "▸".repeat(level.min(3))),
+            Style::default().fg(Color::LightBlue),
+        ));
+        spans.extend(inline_spans(
+            heading,
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+        return Line::from(spans);
+    }
+
+    if let Some(rest) = unordered_bullet(trimmed) {
+        spans.push(Span::styled("• ", Style::default().fg(Color::Yellow)));
+        spans.extend(inline_spans(rest, Style::default().fg(Color::Gray)));
+        return Line::from(spans);
+    }
+
+    if let Some((number, rest)) = ordered_bullet(trimmed) {
+        spans.push(Span::styled(
+            format!("{number}. "),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.extend(inline_spans(rest, Style::default().fg(Color::Gray)));
+        return Line::from(spans);
+    }
+
+    spans.extend(inline_spans(trimmed, Style::default().fg(Color::Gray)));
+    Line::from(spans)
+}
+
+fn prefixed(prefix: &str) -> Vec<Span<'static>> {
+    vec![Span::styled(
+        prefix.to_string(),
+        Style::default().fg(Color::DarkGray),
+    )]
+}
+
+fn code_rule(prefix: &str, label: &str) -> Line<'static> {
+    let mut spans = prefixed(prefix);
+    spans.push(Span::styled(
+        format!(" {label} "),
+        Style::default()
+            .fg(Color::LightBlue)
+            .bg(CODE_BG)
+            .add_modifier(Modifier::BOLD),
+    ));
+    Line::from(spans)
+}
+
+fn code_fence_language(line: &str) -> Option<&str> {
+    line.trim_start().strip_prefix("```").map(str::trim)
+}
+
+fn language_syntax(lang: &str) -> Option<Syntax> {
+    match lang.to_ascii_lowercase().as_str() {
+        "rs" | "rust" => Some(Syntax::Rust),
+        "kt" | "kts" | "kotlin" => Some(Syntax::Kotlin),
+        _ => None,
+    }
+}
+
+fn heading(line: &str) -> Option<(usize, &str)> {
+    let level = line.chars().take_while(|ch| *ch == '#').count();
+    if level == 0 || !line[level..].starts_with(' ') {
+        return None;
+    }
+    Some((level, line[level + 1..].trim()))
+}
+
+fn unordered_bullet(line: &str) -> Option<&str> {
+    line.strip_prefix("- ")
+        .or_else(|| line.strip_prefix("* "))
+        .map(str::trim)
+}
+
+fn ordered_bullet(line: &str) -> Option<(&str, &str)> {
+    let (number, rest) = line.split_once(". ")?;
+    number
+        .chars()
+        .all(|ch| ch.is_ascii_digit())
+        .then_some((number, rest.trim()))
+}
+
+fn inline_spans(text: &str, base: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let bold = rest.find("**");
+        let code = rest.find('`');
+        match (bold, code) {
+            (Some(bold), Some(code)) if code < bold => {
+                push_inline_code(&mut spans, &mut rest, code, base);
+            }
+            (Some(bold), _) => {
+                push_bold(&mut spans, &mut rest, bold, base);
+            }
+            (None, Some(code)) => {
+                push_inline_code(&mut spans, &mut rest, code, base);
+            }
+            (None, None) => {
+                spans.push(Span::styled(rest.to_string(), base));
+                break;
+            }
+        }
+    }
+    spans
+}
+
+fn push_bold(spans: &mut Vec<Span<'static>>, rest: &mut &str, start: usize, base: Style) {
+    if start > 0 {
+        spans.push(Span::styled(rest[..start].to_string(), base));
+    }
+    let content_start = start + 2;
+    let Some(end) = rest[content_start..].find("**") else {
+        spans.push(Span::styled(rest[start..].to_string(), base));
+        *rest = "";
+        return;
+    };
+    let content_end = content_start + end;
+    spans.push(Span::styled(
+        rest[content_start..content_end].to_string(),
+        base.fg(Color::White).add_modifier(Modifier::BOLD),
+    ));
+    *rest = &rest[content_end + 2..];
+}
+
+fn push_inline_code(spans: &mut Vec<Span<'static>>, rest: &mut &str, start: usize, base: Style) {
+    if start > 0 {
+        spans.push(Span::styled(rest[..start].to_string(), base));
+    }
+    let content_start = start + 1;
+    let Some(end) = rest[content_start..].find('`') else {
+        spans.push(Span::styled(rest[start..].to_string(), base));
+        *rest = "";
+        return;
+    };
+    let content_end = content_start + end;
+    spans.push(Span::styled(
+        rest[content_start..content_end].to_string(),
+        Style::default()
+            .fg(Color::LightYellow)
+            .bg(Color::Rgb(42, 44, 52)),
+    ));
+    *rest = &rest[content_end + 1..];
+}
+
+fn code_spans(code: &str, syntax: Option<Syntax>, base: Style) -> Vec<Span<'static>> {
+    let Some(syntax) = syntax else {
+        return vec![Span::styled(code.to_string(), base)];
+    };
+
+    let mut spans = Vec::new();
+    let mut chars = code.char_indices().peekable();
+    let mut plain_start = 0usize;
+    while let Some((idx, ch)) = chars.next() {
+        if ch == '/' && chars.peek().is_some_and(|(_, next)| *next == '/') {
+            push_plain_code(&mut spans, code, plain_start, idx, base);
+            spans.push(Span::styled(
+                code[idx..].to_string(),
+                style_with_bg(Color::DarkGray, base),
+            ));
+            return spans;
+        }
+        if ch == '"' {
+            push_plain_code(&mut spans, code, plain_start, idx, base);
+            let end = string_end(code, idx + ch.len_utf8());
+            spans.push(Span::styled(
+                code[idx..end].to_string(),
+                style_with_bg(Color::LightYellow, base),
+            ));
+            while chars.peek().is_some_and(|(next_idx, _)| *next_idx < end) {
+                chars.next();
+            }
+            plain_start = end;
+            continue;
+        }
+        if is_ident_start(ch) {
+            let mut end = idx + ch.len_utf8();
+            while let Some((next_idx, next)) = chars.peek().copied() {
+                if !is_ident_continue(next) {
+                    break;
+                }
+                chars.next();
+                end = next_idx + next.len_utf8();
+            }
+            let ident = &code[idx..end];
+            let style = keyword_style(ident, syntax, base)
+                .or_else(|| type_style(ident, base))
+                .or_else(|| function_style(code, end, base));
+            if let Some(style) = style {
+                push_plain_code(&mut spans, code, plain_start, idx, base);
+                spans.push(Span::styled(ident.to_string(), style));
+                plain_start = end;
+            }
+        }
+    }
+    push_plain_code(&mut spans, code, plain_start, code.len(), base);
+    spans
+}
+
+fn push_plain_code(
+    spans: &mut Vec<Span<'static>>,
+    code: &str,
+    start: usize,
+    end: usize,
+    style: Style,
+) {
+    if start < end {
+        spans.push(Span::styled(code[start..end].to_string(), style));
+    }
+}
+
+fn string_end(code: &str, start: usize) -> usize {
+    let mut escaped = false;
+    for (idx, ch) in code[start..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            return start + idx + ch.len_utf8();
+        }
+    }
+    code.len()
+}
+
+fn is_ident_start(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+
+fn is_ident_continue(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphanumeric()
+}
+
+fn style_with_bg(color: Color, base: Style) -> Style {
+    let style = Style::default().fg(color);
+    if let Some(bg) = base.bg {
+        style.bg(bg)
+    } else {
+        style
+    }
+}
+
+fn type_style(word: &str, base: Style) -> Option<Style> {
+    word.chars()
+        .next()
+        .is_some_and(char::is_uppercase)
+        .then_some(style_with_bg(Color::LightCyan, base))
+}
+
+fn function_style(code: &str, ident_end: usize, base: Style) -> Option<Style> {
+    let next = code[ident_end..].chars().find(|ch| !ch.is_whitespace())?;
+    (next == '(').then_some(style_with_bg(Color::LightMagenta, base))
+}
+
+fn keyword_style(word: &str, syntax: Syntax, base: Style) -> Option<Style> {
+    let keyword = match syntax {
+        Syntax::Rust => matches!(
+            word,
+            "as" | "async"
+                | "await"
+                | "break"
+                | "const"
+                | "continue"
+                | "crate"
+                | "dyn"
+                | "else"
+                | "enum"
+                | "false"
+                | "fn"
+                | "for"
+                | "if"
+                | "impl"
+                | "in"
+                | "let"
+                | "loop"
+                | "match"
+                | "mod"
+                | "move"
+                | "mut"
+                | "pub"
+                | "ref"
+                | "return"
+                | "self"
+                | "Self"
+                | "static"
+                | "struct"
+                | "super"
+                | "trait"
+                | "true"
+                | "type"
+                | "use"
+                | "where"
+                | "while"
+        ),
+        Syntax::Kotlin => matches!(
+            word,
+            "as" | "class"
+                | "data"
+                | "else"
+                | "false"
+                | "fun"
+                | "if"
+                | "in"
+                | "interface"
+                | "is"
+                | "null"
+                | "object"
+                | "override"
+                | "private"
+                | "return"
+                | "suspend"
+                | "true"
+                | "val"
+                | "var"
+                | "when"
+                | "while"
+        ),
+    };
+    keyword.then_some(style_with_bg(Color::Yellow, base).add_modifier(Modifier::BOLD))
+}

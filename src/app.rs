@@ -10,12 +10,9 @@ use ratatui::crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
-    Frame, Terminal,
+    Terminal,
     backend::{Backend, CrosstermBackend},
-    layout::{Alignment, Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::Paragraph,
+    layout::Rect,
 };
 use std::{
     io::Stdout,
@@ -39,6 +36,9 @@ use crate::{
     },
     ui,
 };
+
+mod footer;
+mod mouse;
 
 const MAX_REVIEW_ASSIST_CONTEXT_BYTES: usize = 18_000;
 
@@ -266,155 +266,6 @@ fn selected_commit_ref(state: &AppState) -> Option<String> {
             .or_else(|| state.branch.clone())
     } else {
         state.branch.clone()
-    }
-}
-
-fn current_left_panel_heights(rects: &ui::LayoutRects) -> ui::LeftPanelHeights {
-    [
-        rects.status.height,
-        rects.environments.height,
-        rects.files.height,
-        rects.branches.height,
-        rects.commits.height,
-    ]
-}
-
-fn left_panel_rect(rects: &ui::LayoutRects, idx: usize) -> Rect {
-    match idx {
-        0 => rects.status,
-        1 => rects.environments,
-        2 => rects.files,
-        3 => rects.branches,
-        4 => rects.commits,
-        _ => rects.status,
-    }
-}
-
-fn left_panel_total_height(rects: &ui::LayoutRects) -> u16 {
-    rects
-        .status
-        .height
-        .saturating_add(rects.environments.height)
-        .saturating_add(rects.files.height)
-        .saturating_add(rects.branches.height)
-        .saturating_add(rects.commits.height)
-}
-
-fn row_divider_pair_at(
-    rects: &ui::LayoutRects,
-    show_environments: bool,
-    column: u16,
-    row: u16,
-) -> Option<(usize, usize)> {
-    let in_left = column >= rects.status.x
-        && column < rects.status.x.saturating_add(rects.status.width)
-        && row >= rects.status.y
-        && row < rects.footer.y;
-    if !in_left {
-        return None;
-    }
-
-    let pairs: &[(usize, usize)] = if show_environments {
-        &[(0, 1), (1, 2), (2, 3), (3, 4)]
-    } else {
-        &[(0, 2), (2, 3), (3, 4)]
-    };
-    pairs.iter().copied().find(|(_, lower_idx)| {
-        let lower = left_panel_rect(rects, *lower_idx);
-        lower.height > 0 && (row == lower.y || row.saturating_add(1) == lower.y)
-    })
-}
-
-fn resize_left_panel_pair(
-    state: &mut AppState,
-    rects: &ui::LayoutRects,
-    pair: (usize, usize),
-    row: u16,
-    show_environments: bool,
-) {
-    let total_height = left_panel_total_height(rects);
-    let mut heights = ui::normalize_left_panel_heights(
-        total_height,
-        show_environments,
-        Some(
-            state
-                .left_panel_heights
-                .unwrap_or_else(|| current_left_panel_heights(rects)),
-        ),
-    );
-    let (upper_idx, lower_idx) = pair;
-    let upper = left_panel_rect(rects, upper_idx);
-    let lower = left_panel_rect(rects, lower_idx);
-    let pair_total = heights[upper_idx].saturating_add(heights[lower_idx]);
-    let min_height = ui::left_panel_min_height(total_height, show_environments);
-    if pair_total <= min_height.saturating_mul(2) {
-        state.left_panel_heights = Some(heights);
-        return;
-    }
-
-    let desired_upper = if row < lower.y {
-        row.saturating_sub(upper.y).saturating_add(1)
-    } else {
-        row.saturating_sub(upper.y)
-    };
-    let upper_height = desired_upper
-        .max(min_height)
-        .min(pair_total.saturating_sub(min_height));
-    heights[upper_idx] = upper_height;
-    heights[lower_idx] = pair_total.saturating_sub(upper_height);
-    state.left_panel_heights = Some(ui::normalize_left_panel_heights(
-        total_height,
-        show_environments,
-        Some(heights),
-    ));
-}
-
-fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
-    column >= rect.x
-        && column < rect.x.saturating_add(rect.width)
-        && row >= rect.y
-        && row < rect.y.saturating_add(rect.height)
-}
-
-fn pane_at(rects: &ui::LayoutRects, column: u16, row: u16) -> Option<Pane> {
-    [
-        (Pane::Status, rects.status),
-        (Pane::Files, rects.files),
-        (Pane::Branches, rects.branches),
-        (Pane::Commits, rects.commits),
-        (Pane::Main, rects.main),
-    ]
-    .into_iter()
-    .find_map(|(pane, rect)| rect_contains(rect, column, row).then_some(pane))
-}
-
-fn list_row_at(area: Rect, row: u16, len: usize) -> Option<usize> {
-    if len == 0 || row <= area.y || row >= area.y.saturating_add(area.height).saturating_sub(1) {
-        return None;
-    }
-    let idx = row.saturating_sub(area.y).saturating_sub(1) as usize;
-    (idx < len).then_some(idx)
-}
-
-fn select_mouse_row(state: &mut AppState, pane: Pane, rects: &ui::LayoutRects, row: u16) {
-    match pane {
-        Pane::Files => {
-            let rows = state.tree_rows();
-            if let Some(idx) = list_row_at(rects.files, row, rows.len()) {
-                state.files_idx = idx;
-            }
-        }
-        Pane::Branches => {
-            if let Some(idx) = list_row_at(rects.branches, row, state.branches.len()) {
-                state.branches_idx = idx;
-            }
-        }
-        Pane::Commits => {
-            if let Some(idx) = list_row_at(rects.commits, row, state.commits.len()) {
-                state.commits_idx = idx;
-            }
-        }
-        Pane::Status | Pane::Main => {}
     }
 }
 
@@ -890,299 +741,6 @@ pub(crate) fn abort_conflict_operation(state: &mut AppState) {
     state.set_status("aborting git operation\u{2026}", false);
 }
 
-fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, &'static str)]) {
-    match state.focus {
-        Pane::Status => (
-            1,
-            "Status",
-            &[
-                ("f", "fetch"),
-                ("a", "author"),
-                ("p", "pull"),
-                ("F", "flow"),
-                ("?", "help"),
-                ("q", "quit"),
-            ],
-        ),
-        Pane::Files => (
-            2,
-            "Files",
-            &[
-                ("space", "stage"),
-                ("u", "unstage"),
-                ("A/U", "all"),
-                ("c", "commit"),
-                ("a", "author"),
-                ("p", "pull"),
-                ("P", "push"),
-                ("f", "fetch"),
-                ("F", "flow"),
-                ("?", "help"),
-            ],
-        ),
-        Pane::Branches => (
-            3,
-            "Branches",
-            &[
-                ("Enter", "checkout"),
-                ("p", "pull"),
-                ("a", "author"),
-                ("f", "fetch"),
-                ("F", "flow"),
-                ("?", "help"),
-            ],
-        ),
-        Pane::Commits => (
-            4,
-            "Commits",
-            &[
-                ("j/k", "navigate"),
-                ("Enter", "focus diff"),
-                ("p", "pull"),
-                ("a", "author"),
-                ("f", "fetch"),
-                ("F", "flow"),
-                ("?", "help"),
-            ],
-        ),
-        Pane::Main => {
-            if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
-                (
-                    0,
-                    "Review",
-                    &[
-                        ("j/k", "move"),
-                        ("Enter/space", "expand"),
-                        ("s", "source"),
-                        ("l", "explain"),
-                        ("g/G", "top/bot"),
-                        ("f", "fetch"),
-                        ("a", "author"),
-                        ("R", "refresh"),
-                        ("?", "help"),
-                    ],
-                )
-            } else {
-                (
-                    0,
-                    "Diff",
-                    &[
-                        ("R", "review"),
-                        ("j/k", "scroll"),
-                        ("g/G", "top/bot"),
-                        ("p", "pull"),
-                        ("a", "author"),
-                        ("f", "fetch"),
-                        ("F", "flow"),
-                        ("?", "help"),
-                    ],
-                )
-            }
-        }
-    }
-}
-
-fn draw_footer(frame: &mut Frame, area: Rect, state: &AppState) {
-    // Horizontal split: left flexible, right status area.
-    let chunks = Layout::horizontal([Constraint::Min(0), Constraint::Length(40)]).split(area);
-
-    // Left: modal-aware spec.
-    let left_spans: Vec<Span> = match state.modal {
-        Modal::None => {
-            let (n, name, pairs) = footer_spec(state);
-            let mut spans = vec![Span::styled(
-                format!("[{n}] {name} "),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )];
-            for (i, (key, label)) in pairs.iter().enumerate() {
-                if *key == "F" && !state.flow_available() {
-                    continue;
-                }
-                if *key == "p" && !state.pull_available() {
-                    continue;
-                }
-                spans.push(Span::styled(*key, Style::default().fg(Color::Yellow)));
-                spans.push(Span::raw(" "));
-                spans.push(Span::raw(*label));
-                if pairs.iter().skip(i + 1).any(|(next_key, _)| {
-                    (*next_key != "F" || state.flow_available())
-                        && (*next_key != "p" || state.pull_available())
-                }) {
-                    spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
-                }
-            }
-            spans
-        }
-        Modal::Commit => {
-            let pairs: &[(&str, &str)] = &[
-                ("Ctrl+S", "commit"),
-                ("Enter", "newline"),
-                ("Ctrl+R", "regen"),
-                ("Esc", "cancel"),
-            ];
-            let mut spans = vec![Span::styled(
-                "Commit modal ",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )];
-            for (i, (key, label)) in pairs.iter().enumerate() {
-                spans.push(Span::styled(*key, Style::default().fg(Color::Yellow)));
-                spans.push(Span::raw(" "));
-                spans.push(Span::raw(*label));
-                if i + 1 < pairs.len() {
-                    spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
-                }
-            }
-            spans
-        }
-        Modal::Push => {
-            let pairs: &[(&str, &str)] = &[("Enter", "push"), ("Esc", "cancel")];
-            let mut spans = vec![Span::styled(
-                "Push modal ",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )];
-            for (i, (key, label)) in pairs.iter().enumerate() {
-                spans.push(Span::styled(*key, Style::default().fg(Color::Yellow)));
-                spans.push(Span::raw(" "));
-                spans.push(Span::raw(*label));
-                if i + 1 < pairs.len() {
-                    spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
-                }
-            }
-            spans
-        }
-        Modal::Author => {
-            let pairs: &[(&str, &str)] = &[
-                ("Tab", "field"),
-                ("Enter", "save subtree"),
-                ("Ctrl+L", "save local"),
-                ("Ctrl+U", "clear subtree"),
-                ("Ctrl+X", "clear local"),
-                ("Esc", "cancel"),
-            ];
-            let mut spans = vec![Span::styled(
-                "Author ",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )];
-            for (i, (key, label)) in pairs.iter().enumerate() {
-                spans.push(Span::styled(*key, Style::default().fg(Color::Yellow)));
-                spans.push(Span::raw(" "));
-                spans.push(Span::raw(*label));
-                if i + 1 < pairs.len() {
-                    spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
-                }
-            }
-            spans
-        }
-        Modal::Help => {
-            let pairs: &[(&str, &str)] = &[("any key", "close")];
-            let mut spans = vec![Span::styled(
-                "Help ",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )];
-            for (i, (key, label)) in pairs.iter().enumerate() {
-                spans.push(Span::styled(*key, Style::default().fg(Color::Yellow)));
-                spans.push(Span::raw(" "));
-                spans.push(Span::raw(*label));
-                if i + 1 < pairs.len() {
-                    spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
-                }
-            }
-            spans
-        }
-        Modal::Flow => {
-            let pairs: &[(&str, &str)] = if state.flow_available() {
-                &[("j/k", "select"), ("Enter", "continue"), ("Esc", "back")]
-            } else {
-                &[("Esc", "back")]
-            };
-            let mut spans = vec![Span::styled(
-                "Flow ",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )];
-            for (i, (key, label)) in pairs.iter().enumerate() {
-                spans.push(Span::styled(*key, Style::default().fg(Color::Yellow)));
-                spans.push(Span::raw(" "));
-                spans.push(Span::raw(*label));
-                if i + 1 < pairs.len() {
-                    spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
-                }
-            }
-            spans
-        }
-        Modal::Conflict => {
-            let pairs: &[(&str, &str)] = &[("v", "validate"), ("a", "abort"), ("Esc", "close")];
-            let mut spans = vec![Span::styled(
-                "Conflict ",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            )];
-            for (i, (key, label)) in pairs.iter().enumerate() {
-                spans.push(Span::styled(*key, Style::default().fg(Color::Yellow)));
-                spans.push(Span::raw(" "));
-                spans.push(Span::raw(*label));
-                if i + 1 < pairs.len() {
-                    spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
-                }
-            }
-            spans
-        }
-    };
-
-    frame.render_widget(
-        Paragraph::new(Line::from(left_spans)).alignment(Alignment::Left),
-        chunks[0],
-    );
-
-    // Right: live status or branch name.
-    let (right_text, right_color) = match (&state.status, state.activity_label()) {
-        (Some(s), Some(label)) if !s.is_error => {
-            let spinner = crate::state::SPINNER_FRAMES
-                [state.animation_tick % crate::state::SPINNER_FRAMES.len()];
-            let text = if s.text.starts_with(label) {
-                format!("{spinner} {}", s.text)
-            } else {
-                format!("{spinner} {label}: {}", s.text)
-            };
-            (text, Color::Cyan)
-        }
-        (Some(s), _) => {
-            let icon = if s.is_error { "\u{2717}" } else { "\u{2713}" };
-            (
-                format!("{icon} {}", s.text),
-                if s.is_error { Color::Red } else { Color::Green },
-            )
-        }
-        (None, Some(label)) => {
-            let spinner = crate::state::SPINNER_FRAMES
-                [state.animation_tick % crate::state::SPINNER_FRAMES.len()];
-            (format!("{spinner} {label}\u{2026}"), Color::Cyan)
-        }
-        (None, None) => (
-            format!(
-                "\u{2022} {}",
-                state.branch.as_deref().unwrap_or("no branch")
-            ),
-            Color::DarkGray,
-        ),
-    };
-    frame.render_widget(
-        Paragraph::new(Span::styled(right_text, Style::default().fg(right_color)))
-            .alignment(Alignment::Right),
-        chunks[1],
-    );
-}
-
 // ─── HeadlessApp ─────────────────────────────────────────────────────────────
 
 impl<B: Backend> HeadlessApp<B>
@@ -1234,7 +792,7 @@ where
             panel::commits::render(state, rects.commits, frame, focused_pane == Pane::Commits);
             panel::main::render(state, rects.main, frame, focused_pane == Pane::Main);
 
-            draw_footer(frame, rects.footer, state);
+            footer::draw(frame, rects.footer, state);
 
             match state.modal {
                 Modal::None => {}
@@ -2277,7 +1835,7 @@ impl App {
             panel::commits::render(state, rects.commits, frame, focused_pane == Pane::Commits);
             panel::main::render(state, rects.main, frame, focused_pane == Pane::Main);
 
-            draw_footer(frame, rects.footer, state);
+            footer::draw(frame, rects.footer, state);
 
             match state.modal {
                 Modal::None => {}
@@ -2491,19 +2049,26 @@ impl App {
             MouseEventKind::Down(MouseButton::Left)
                 if !m.modifiers.contains(KeyModifiers::SHIFT) =>
             {
-                if let Some(pair) = row_divider_pair_at(&rects, show_environments, m.column, m.row)
+                if let Some(pair) =
+                    mouse::row_divider_pair_at(&rects, show_environments, m.column, m.row)
                 {
                     self.state.column_drag_active = false;
                     self.state.row_drag_active = Some(pair);
-                    self.state.left_panel_heights = Some(current_left_panel_heights(&rects));
-                    resize_left_panel_pair(&mut self.state, &rects, pair, m.row, show_environments);
+                    self.state.left_panel_heights = Some(mouse::current_left_panel_heights(&rects));
+                    mouse::resize_left_panel_pair(
+                        &mut self.state,
+                        &rects,
+                        pair,
+                        m.row,
+                        show_environments,
+                    );
                     return Ok(());
                 }
 
-                if let Some(pane) = pane_at(&rects, m.column, m.row) {
+                if let Some(pane) = mouse::pane_at(&rects, m.column, m.row) {
                     let commit_ref_before = selected_commit_ref(&self.state);
                     self.state.focus = pane;
-                    select_mouse_row(&mut self.state, pane, &rects, m.row);
+                    mouse::select_mouse_row(&mut self.state, pane, &rects, m.row);
                     if !matches!(pane, Pane::Main) {
                         self.start_diff_job(false);
                     }
@@ -2515,7 +2080,13 @@ impl App {
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(pair) = self.state.row_drag_active {
-                    resize_left_panel_pair(&mut self.state, &rects, pair, m.row, show_environments);
+                    mouse::resize_left_panel_pair(
+                        &mut self.state,
+                        &rects,
+                        pair,
+                        m.row,
+                        show_environments,
+                    );
                     return Ok(());
                 }
             }

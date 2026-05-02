@@ -38,7 +38,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         state
             .commits
             .iter()
-            .map(|commit| commit.graph.chars().count())
+            .map(graph_display_width)
             .max()
             .unwrap_or(1),
     );
@@ -134,8 +134,11 @@ fn graph_spans(commit: &crate::git::Commit, width: usize) -> Vec<Span<'static>> 
         commit.graph.as_str()
     };
 
-    for ch in graph.chars().take(width) {
-        let symbol = graph_symbol(ch, commit);
+    for ch in graph.chars() {
+        if visible_col >= width {
+            break;
+        }
+        let symbol = graph_symbol(ch);
         let color = if ch == '*' {
             commit_marker_color(commit)
         } else {
@@ -148,6 +151,16 @@ fn graph_spans(commit: &crate::git::Commit, width: usize) -> Vec<Span<'static>> 
         };
         spans.push(Span::styled(symbol.to_string(), style));
         visible_col += 1;
+
+        if ch == '*' && commit.parent_count > 1 && visible_col < width {
+            spans.push(Span::styled(
+                "\u{21a9}",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            visible_col += 1;
+        }
     }
 
     for _ in visible_col..width {
@@ -157,10 +170,21 @@ fn graph_spans(commit: &crate::git::Commit, width: usize) -> Vec<Span<'static>> 
     spans
 }
 
-fn graph_symbol(ch: char, commit: &crate::git::Commit) -> char {
+fn graph_display_width(commit: &crate::git::Commit) -> usize {
+    let graph_width = if commit.graph.trim().is_empty() {
+        1
+    } else {
+        commit.graph.chars().count()
+    };
+    if commit.parent_count > 1 {
+        graph_width.max(2)
+    } else {
+        graph_width
+    }
+}
+
+fn graph_symbol(ch: char) -> char {
     match ch {
-        '*' if commit.parent_count > 1 => '\u{25c6}',
-        '*' if commit.is_first_parent => '\u{25cb}',
         '*' => '\u{25cb}',
         '|' => '\u{2502}',
         '/' => '\u{2571}',
@@ -187,9 +211,7 @@ fn selected_style(style: Style, selected: bool) -> Style {
 }
 
 fn commit_marker_color(commit: &crate::git::Commit) -> Color {
-    if commit.parent_count > 1 {
-        Color::Yellow
-    } else if commit.is_first_parent {
+    if commit.is_first_parent {
         Color::LightGreen
     } else {
         Color::LightMagenta

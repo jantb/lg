@@ -10,6 +10,7 @@ use ratatui::{
 
 use crate::{
     config::DIFF_PAGE,
+    panel::markdown,
     state::{AppState, DiffSource, PendingAction},
     ui,
 };
@@ -139,12 +140,7 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
                         .fg(Color::LightCyan)
                         .add_modifier(Modifier::BOLD),
                 )));
-                for line in assist.lines() {
-                    lines.push(Line::from(Span::styled(
-                        format!("{indent}  │ {line}"),
-                        Style::default().fg(Color::Gray),
-                    )));
-                }
+                lines.extend(markdown::render(assist, &format!("{indent}  │ ")));
             }
             if has_body
                 || state.review_context_open.contains(&node.id)
