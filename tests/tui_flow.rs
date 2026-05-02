@@ -357,8 +357,19 @@ fn review_panel_expands_hunks_and_source_context() {
     app.render().unwrap();
     let context = buffer_text(&app);
     assert!(
-        context.contains("source context") && context.contains("2 |     fun greeting()"),
+        context.contains("source context")
+            && context.contains("diff")
+            && context.contains("source")
+            && context.contains("+    fun greeting() = \"hello review\"")
+            && context.contains("2 |     fun greeting()"),
         "source context should be visible: {context}"
+    );
+    let buf = app.terminal.backend().buffer();
+    assert!(
+        buf.content()
+            .iter()
+            .any(|cell| cell.symbol() == "c" && cell.fg == Color::Yellow),
+        "source context should syntax-highlight Kotlin keywords"
     );
 }
 

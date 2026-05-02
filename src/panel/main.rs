@@ -120,18 +120,7 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
                 lines.push(Line::from(spans));
             }
             if state.review_context_open.contains(&node.id) {
-                lines.push(Line::from(Span::styled(
-                    format!("{indent}  │ source context"),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                for context in &node.context {
-                    lines.push(Line::from(Span::styled(
-                        format!("{indent}  │ {context}"),
-                        Style::default().fg(Color::Gray),
-                    )));
-                }
+                lines.extend(review_source_context_lines(node, syntax_path, &indent));
             }
             if let Some(assist) = review_assist_text(state, &node.id) {
                 lines.push(Line::from(Span::styled(
@@ -344,6 +333,83 @@ fn selected_style(style: Style, selected: bool) -> Style {
     }
 }
 
+fn review_source_context_lines(
+    node: &crate::git::ReviewNode,
+    syntax_path: Option<&str>,
+    indent: &str,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![section_header(indent, "source context")];
+    if !node.body.is_empty() {
+        lines.push(section_header(indent, "diff"));
+        for body in &node.body {
+            let mut spans = context_prefix(indent);
+            let body_line = syntax_path
+                .map(|path| ui::highlight_diff_line_for_path(body, path))
+                .unwrap_or_else(|| ui::highlight_diff_line(body));
+            spans.extend(owned_spans(body_line));
+            lines.push(Line::from(spans));
+        }
+    }
+    if !node.context.is_empty() {
+        lines.push(section_header(indent, "source"));
+        for context in &node.context {
+            lines.push(source_context_line(context, syntax_path, indent));
+        }
+    }
+    lines
+}
+
+fn section_header(indent: &str, label: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("{indent}  │ {label}"),
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn context_prefix(indent: &str) -> Vec<Span<'static>> {
+    vec![Span::styled(
+        format!("{indent}  │ "),
+        Style::default().fg(Color::DarkGray),
+    )]
+}
+
+fn source_context_line(context: &str, syntax_path: Option<&str>, indent: &str) -> Line<'static> {
+    let mut spans = context_prefix(indent);
+    let Some((line_no, source)) = context.split_once(" | ") else {
+        spans.push(Span::styled(
+            context.to_string(),
+            Style::default().fg(Color::Gray),
+        ));
+        return Line::from(spans);
+    };
+
+    spans.push(Span::styled(
+        format!("{line_no} "),
+        Style::default().fg(Color::DarkGray),
+    ));
+    spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
+    if let Some(path) = syntax_path {
+        spans.extend(owned_spans(ui::highlight_source_line_for_path(
+            source, path,
+        )));
+    } else {
+        spans.push(Span::styled(
+            source.to_string(),
+            Style::default().fg(Color::Gray),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn owned_spans(line: Line<'_>) -> Vec<Span<'static>> {
+    line.spans
+        .into_iter()
+        .map(|span| Span::styled(span.content.into_owned(), span.style))
+        .collect()
+}
+
 fn review_indent(depth: u16) -> String {
     if depth == 0 {
         String::new()
@@ -539,7 +605,7 @@ fn review_node_line_count(state: &AppState, idx: usize) -> usize {
     let assist = review_assist_text(state, &node.id);
     count += node.body.len();
     if context_open {
-        count += 1 + node.context.len();
+        count += review_source_context_line_count(node);
     }
     if let Some(text) = assist {
         count += 1 + text.lines().count();
@@ -548,6 +614,11 @@ fn review_node_line_count(state: &AppState, idx: usize) -> usize {
         count += 1;
     }
     count
+}
+
+fn review_source_context_line_count(node: &crate::git::ReviewNode) -> usize {
+    1 + usize::from(!node.body.is_empty()) * (1 + node.body.len())
+        + usize::from(!node.context.is_empty()) * (1 + node.context.len())
 }
 
 fn ensure_review_selection_visible(state: &mut AppState) {

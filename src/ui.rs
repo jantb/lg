@@ -4,7 +4,10 @@ mod layout;
 mod log;
 
 pub use chrome::{bordered, framed, framed_with_activity};
-pub use diff::{highlight_diff_line, highlight_diff_line_for_path, highlight_diff_text};
+pub use diff::{
+    highlight_diff_line, highlight_diff_line_for_path, highlight_diff_text,
+    highlight_source_line_for_path,
+};
 pub use layout::{
     LEFT_PANEL_COUNT, LayoutRects, LeftPanelHeights, centered, clamp_left_column_width,
     default_left_panel_heights, left_panel_min_height, normalize_left_panel_heights, split_layout,

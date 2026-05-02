@@ -12,6 +12,14 @@ pub fn highlight_diff_line_for_path<'a>(line: &'a str, path: &str) -> Line<'a> {
     highlight_diff_line_for_syntax(line, path_syntax(path))
 }
 
+pub fn highlight_source_line_for_path<'a>(line: &'a str, path: &str) -> Line<'a> {
+    Line::from(highlight_code(
+        line,
+        path_syntax(path),
+        Style::default().fg(Color::Gray),
+    ))
+}
+
 pub fn highlight_diff_text(text: &str) -> Vec<Line<'_>> {
     let mut syntax = None;
     let mut line_numbers = None;
