@@ -12,6 +12,14 @@ mod tree;
 
 pub use tree::{TreeKind, TreeRow, build_tree_rows};
 
+pub fn clamp_index(idx: usize, len: usize) -> Option<usize> {
+    if len == 0 {
+        None
+    } else {
+        Some(idx.min(len - 1))
+    }
+}
+
 #[derive(Debug)]
 pub enum GenMsg {
     Thinking(String),
@@ -632,18 +640,10 @@ impl AppState {
 
     /// Clamp per-pane indices to their vec lengths; 0 when empty.
     pub fn clamp(&mut self) {
-        let clamp_idx = |idx: &mut usize, len: usize| {
-            if len == 0 {
-                *idx = 0;
-            } else if *idx >= len {
-                *idx = len - 1;
-            }
-        };
+        let clamp_idx = |idx: &mut usize, len: usize| *idx = clamp_index(*idx, len).unwrap_or(0);
         // files_idx indexes into the virtual tree-rows list (always >=1: AllChanges + descendants).
         let tree_len = self.tree_rows().len().max(1);
-        if self.files_idx >= tree_len {
-            self.files_idx = tree_len - 1;
-        }
+        self.files_idx = clamp_index(self.files_idx, tree_len).unwrap_or(0);
         clamp_idx(&mut self.branches_idx, self.branches.len());
         clamp_idx(&mut self.commits_idx, self.commits.len());
         if self

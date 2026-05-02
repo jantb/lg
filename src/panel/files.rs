@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use crate::{
-    state::{AppState, Modal, PendingAction, TreeKind},
+    state::{AppState, Modal, PendingAction, TreeKind, clamp_index},
     ui,
 };
 
@@ -31,11 +31,8 @@ pub(crate) fn code_span(c: char) -> Span<'static> {
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let rows = state.tree_rows();
     let total = rows.len();
-    let count = if total == 0 {
-        None
-    } else {
-        Some((state.files_idx + 1, total))
-    };
+    let selected_idx = clamp_index(state.files_idx, total);
+    let count = selected_idx.map(|idx| (idx + 1, total));
     let block = ui::framed_with_activity(
         2,
         "Files",
@@ -111,8 +108,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         .highlight_symbol("\u{203a} ");
 
     let mut list_state = ListState::default();
-    if focused {
-        list_state.select(Some(state.files_idx));
+    if focused && let Some(idx) = selected_idx {
+        list_state.select(Some(idx));
     }
 
     frame.render_stateful_widget(list, area, &mut list_state);
@@ -121,11 +118,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     let rows = state.tree_rows();
     let total = rows.len();
+    state.files_idx = clamp_index(state.files_idx, total).unwrap_or(0);
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            if state.files_idx + 1 < total {
-                state.files_idx += 1;
-            }
+            state.files_idx = state
+                .files_idx
+                .saturating_add(1)
+                .min(total.saturating_sub(1));
         }
         KeyCode::Char('k') | KeyCode::Up => {
             state.files_idx = state.files_idx.saturating_sub(1);

@@ -8,7 +8,11 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use crate::{app, state::AppState, ui};
+use crate::{
+    app,
+    state::{AppState, clamp_index},
+    ui,
+};
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let w = (area.width * 8 / 10).clamp(72, 140).min(area.width);
@@ -58,8 +62,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         )
         .highlight_symbol("\u{203a} ");
     let mut list_state = ListState::default();
-    if !state.conflicts.is_empty() {
-        list_state.select(Some(state.conflict_idx.min(state.conflicts.len() - 1)));
+    if let Some(idx) = clamp_index(state.conflict_idx, state.conflicts.len()) {
+        list_state.select(Some(idx));
     }
     frame.render_stateful_widget(list, body[0], &mut list_state);
 
@@ -99,11 +103,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
+    state.conflict_idx = clamp_index(state.conflict_idx, state.conflicts.len()).unwrap_or(0);
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            if state.conflict_idx + 1 < state.conflicts.len() {
-                state.conflict_idx += 1;
-            }
+            state.conflict_idx = state
+                .conflict_idx
+                .saturating_add(1)
+                .min(state.conflicts.len().saturating_sub(1));
         }
         KeyCode::Char('k') | KeyCode::Up => {
             state.conflict_idx = state.conflict_idx.saturating_sub(1);

@@ -50,9 +50,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         ui::highlight_diff_text(&state.diff_text)
     };
 
-    let max_offset = state
-        .diff_line_count
-        .saturating_sub(state.diff_viewport_height);
+    let max_offset = scroll_bound(lines.len(), state.diff_viewport_height);
     let offset = state.diff_offset.min(max_offset);
 
     let para = Paragraph::new(lines)
@@ -174,7 +172,7 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
     // re-read source files and re-parse diff overlays) and stays correct when
     // markdown::render word-wraps assist output into more lines than the raw
     // source had.
-    let max_offset = (lines.len() as u16).saturating_sub(state.diff_viewport_height);
+    let max_offset = scroll_bound(lines.len(), state.diff_viewport_height);
     let offset = state.diff_offset.min(max_offset);
     let para = Paragraph::new(lines)
         .block(block)
@@ -401,20 +399,22 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         return handle_review_key(state, key);
     }
 
-    let max_offset = state
-        .diff_line_count
-        .saturating_sub(state.diff_viewport_height);
+    let max_offset = max_scroll_offset(state);
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
+            state.diff_offset = state.diff_offset.min(max_offset);
             state.diff_offset = state.diff_offset.saturating_add(1).min(max_offset);
         }
         KeyCode::Char('k') | KeyCode::Up => {
+            state.diff_offset = state.diff_offset.min(max_offset);
             state.diff_offset = state.diff_offset.saturating_sub(1);
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.diff_offset = state.diff_offset.min(max_offset);
             state.diff_offset = state.diff_offset.saturating_add(DIFF_PAGE).min(max_offset);
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.diff_offset = state.diff_offset.min(max_offset);
             state.diff_offset = state.diff_offset.saturating_sub(DIFF_PAGE);
         }
         KeyCode::Char('g') => {
@@ -437,13 +437,15 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
 
 pub fn max_scroll_offset(state: &AppState) -> u16 {
     if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
-        return review_render_line_count(state)
-            .min(u16::MAX as usize)
-            .saturating_sub(state.diff_viewport_height as usize) as u16;
+        return scroll_bound(review_render_line_count(state), state.diff_viewport_height);
     }
-    state
-        .diff_line_count
-        .saturating_sub(state.diff_viewport_height)
+    scroll_bound(state.diff_line_count as usize, state.diff_viewport_height)
+}
+
+fn scroll_bound(line_count: usize, viewport_height: u16) -> u16 {
+    line_count
+        .min(u16::MAX as usize)
+        .saturating_sub(viewport_height as usize) as u16
 }
 
 fn handle_review_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
@@ -452,6 +454,7 @@ fn handle_review_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         state.diff_offset = 0;
         return Ok(());
     }
+    state.diff_offset = state.diff_offset.min(max_scroll_offset(state));
     let current_pos = visible
         .iter()
         .position(|idx| *idx == state.review_idx)

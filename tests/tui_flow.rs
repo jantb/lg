@@ -90,6 +90,56 @@ fn files_panel_k_moves_selection_up() {
 }
 
 #[test]
+fn scroll_handlers_clamp_stale_indices_before_moving() {
+    let mut state = make_state_with_files();
+    state.files_idx = usize::MAX;
+    panel::files::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    assert_eq!(state.files_idx, state.tree_rows().len() - 1);
+
+    state.branches = vec![
+        Branch {
+            name: "main".into(),
+            is_current: true,
+            upstream: None,
+            upstream_gone: false,
+        },
+        Branch {
+            name: "feature".into(),
+            is_current: false,
+            upstream: None,
+            upstream_gone: false,
+        },
+    ];
+    state.branches_idx = usize::MAX;
+    panel::branches::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    assert_eq!(state.branches_idx, 1);
+
+    state.commits = vec![Commit {
+        sha: "abc1234".into(),
+        author: "Alice Example".into(),
+        author_short: "AE".into(),
+        parents: vec!["parent".into()],
+        is_first_parent: true,
+        subject: "initial".into(),
+    }];
+    state.commits_idx = usize::MAX;
+    panel::commits::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    assert_eq!(state.commits_idx, 0);
+
+    state.conflicts = vec!["src/lib.rs".into()];
+    state.conflict_idx = usize::MAX;
+    panel::conflict::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    assert_eq!(state.conflict_idx, 0);
+
+    add_flow_branches(&mut state);
+    state.flow_branches_available = true;
+    state.branch = Some("feature/demo".into());
+    state.flow_idx = usize::MAX;
+    panel::flow::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    assert!(state.flow_idx < lg::state::FlowAction::ALL.len());
+}
+
+#[test]
 fn files_panel_o_opens_selected_source_file() {
     let mut state = make_state_with_files();
     state.files = vec![FileEntry {
@@ -1324,6 +1374,37 @@ fn diff_scroll_g_renders_non_blank_bottom_of_content() {
     assert!(still_has_content, "pane blanked after j past end");
 }
 
+#[test]
+fn branch_log_render_clamps_offset_to_rendered_lines() {
+    let mut state = AppState::new();
+    state.focus = Pane::Main;
+    state.diff_source = lg::state::DiffSource::Branch("main".into());
+    state.diff_text = "* commit abc1234\n| Author: Alice\n| message\n".into();
+    state.diff_line_count = 500;
+    state.diff_viewport_height = 4;
+    state.diff_offset = 500;
+
+    let backend = TestBackend::new(80, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::main::render(&state, frame.area(), frame, true);
+        })
+        .unwrap();
+
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(
+        rendered.contains("message"),
+        "missing log bottom: {rendered}"
+    );
+}
+
 // ── XY-rendering smoke test ───────────────────────────────────────────────────
 
 #[test]
@@ -1963,6 +2044,41 @@ fn commits_panel_shows_author_names_with_distinct_colors() {
     assert_ne!(buf[(11, 1)].fg, Color::Reset);
     assert_ne!(buf[(11, 2)].fg, Color::Reset);
     assert_ne!(buf[(11, 1)].fg, buf[(11, 2)].fg);
+}
+
+#[test]
+fn commits_panel_render_clamps_stale_selection() {
+    let mut state = AppState::new();
+    state.focus = Pane::Commits;
+    state.commits_idx = usize::MAX;
+    state.commits = vec![Commit {
+        sha: "abc1234".into(),
+        author: "Alice Example".into(),
+        author_short: "AE".into(),
+        parents: vec!["parent".into()],
+        is_first_parent: true,
+        subject: "initial".into(),
+    }];
+
+    let backend = TestBackend::new(80, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, true);
+        })
+        .unwrap();
+
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(
+        rendered.contains("abc1234"),
+        "missing commit row: {rendered}"
+    );
 }
 
 #[test]

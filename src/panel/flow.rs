@@ -11,7 +11,7 @@ use ratatui::{
 use crate::{
     app,
     config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST},
-    state::{AppState, FlowAction, Modal, SPINNER_FRAMES},
+    state::{AppState, FlowAction, Modal, SPINNER_FRAMES, clamp_index},
     ui,
 };
 
@@ -162,7 +162,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         )
         .highlight_symbol("\u{203a} ");
     let mut list_state = ListState::default();
-    list_state.select(Some(state.flow_idx.min(actions.len().saturating_sub(1))));
+    if let Some(idx) = clamp_index(state.flow_idx, actions.len()) {
+        list_state.select(Some(idx));
+    }
     frame.render_stateful_widget(list, chunks[1], &mut list_state);
 }
 
@@ -228,11 +230,15 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('j') | KeyCode::Down => {
             let actions = available_actions(state);
-            if state.flow_idx + 1 < actions.len() {
-                state.flow_idx += 1;
-            }
+            state.flow_idx = clamp_index(state.flow_idx, actions.len()).unwrap_or(0);
+            state.flow_idx = state
+                .flow_idx
+                .saturating_add(1)
+                .min(actions.len().saturating_sub(1));
         }
         KeyCode::Char('k') | KeyCode::Up => {
+            let actions = available_actions(state);
+            state.flow_idx = clamp_index(state.flow_idx, actions.len()).unwrap_or(0);
             state.flow_idx = state.flow_idx.saturating_sub(1);
         }
         KeyCode::Enter => {

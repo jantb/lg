@@ -10,16 +10,13 @@ use ratatui::{
 
 use crate::{
     app,
-    state::{AppState, SPINNER_FRAMES},
+    state::{AppState, SPINNER_FRAMES, clamp_index},
     ui,
 };
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
-    let count = if state.branches.is_empty() {
-        None
-    } else {
-        Some((state.branches_idx + 1, state.branches.len()))
-    };
+    let selected_idx = clamp_index(state.branches_idx, state.branches.len());
+    let count = selected_idx.map(|idx| (idx + 1, state.branches.len()));
     let block = ui::framed_with_activity(
         3,
         "Branches",
@@ -85,19 +82,21 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         .highlight_symbol("\u{203a} ");
 
     let mut list_state = ListState::default();
-    if focused && !state.branches.is_empty() {
-        list_state.select(Some(state.branches_idx));
+    if focused && let Some(idx) = selected_idx {
+        list_state.select(Some(idx));
     }
 
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
+    state.branches_idx = clamp_index(state.branches_idx, state.branches.len()).unwrap_or(0);
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            if !state.branches.is_empty() && state.branches_idx + 1 < state.branches.len() {
-                state.branches_idx += 1;
-            }
+            state.branches_idx = state
+                .branches_idx
+                .saturating_add(1)
+                .min(state.branches.len().saturating_sub(1));
         }
         KeyCode::Char('k') | KeyCode::Up => {
             if state.branches_idx > 0 {

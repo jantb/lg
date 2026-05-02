@@ -10,16 +10,13 @@ use ratatui::{
 
 use crate::{
     graph::{self, Pipe, SELECTED_COLOR},
-    state::{AppState, Pane},
+    state::{AppState, Pane, clamp_index},
     ui,
 };
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
-    let count = if state.commits.is_empty() {
-        None
-    } else {
-        Some((state.commits_idx + 1, state.commits.len()))
-    };
+    let selected_idx = selected_commit_index(state);
+    let count = selected_idx.map(|idx| (idx + 1, state.commits.len()));
     let title = state
         .commits_ref
         .as_deref()
@@ -44,7 +41,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let graph_width = visible_graph_width(area.width, max_pipe_width, hash_width);
 
     let selected_sha = if focused {
-        state.commits.get(state.commits_idx).map(|c| c.sha.as_str())
+        selected_idx.and_then(|idx| state.commits.get(idx).map(|c| c.sha.as_str()))
     } else {
         None
     };
@@ -54,7 +51,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         .iter()
         .enumerate()
         .map(|(idx, c)| {
-            let is_selected_row = focused && idx == state.commits_idx;
+            let is_selected_row = focused && Some(idx) == selected_idx;
             let subject_style = if state.unpushed_shas.contains(&c.sha) {
                 Style::default().fg(Color::Red)
             } else if c.is_first_parent {
@@ -105,24 +102,23 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let list = List::new(items).block(block);
 
     let mut list_state = ListState::default();
-    if focused && !state.commits.is_empty() {
-        list_state.select(Some(state.commits_idx));
+    if focused && let Some(idx) = selected_idx {
+        list_state.select(Some(idx));
     }
 
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
+    state.commits_idx = selected_commit_index(state).unwrap_or(0);
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            if state.commits_idx + 1 < state.commits.len() {
-                state.commits_idx += 1;
-            }
+            state.commits_idx = next_selectable_commit(state, state.commits_idx)
+                .unwrap_or(state.commits_idx.min(state.commits.len().saturating_sub(1)));
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            if state.commits_idx > 0 {
-                state.commits_idx -= 1;
-            }
+            state.commits_idx =
+                prev_selectable_commit(state, state.commits_idx).unwrap_or(state.commits_idx);
         }
         KeyCode::Enter => {
             state.focus = Pane::Main;
@@ -130,6 +126,37 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn selected_commit_index(state: &AppState) -> Option<usize> {
+    let idx = clamp_index(state.commits_idx, state.commits.len())?;
+    if !state.commits[idx].is_graph_row() {
+        return Some(idx);
+    }
+    state
+        .commits
+        .iter()
+        .enumerate()
+        .find_map(|(idx, commit)| (!commit.is_graph_row()).then_some(idx))
+}
+
+fn next_selectable_commit(state: &AppState, idx: usize) -> Option<usize> {
+    state
+        .commits
+        .iter()
+        .enumerate()
+        .skip(idx.saturating_add(1))
+        .find_map(|(candidate, commit)| (!commit.is_graph_row()).then_some(candidate))
+}
+
+fn prev_selectable_commit(state: &AppState, idx: usize) -> Option<usize> {
+    state
+        .commits
+        .iter()
+        .enumerate()
+        .take(idx)
+        .rev()
+        .find_map(|(candidate, commit)| (!commit.is_graph_row()).then_some(candidate))
 }
 
 fn visible_hash_width(commits: &[crate::git::Commit]) -> usize {
