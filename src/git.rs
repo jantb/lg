@@ -335,7 +335,7 @@ pub fn list_branches() -> Result<Vec<Branch>> {
         "--format=%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)\x1f%(upstream:track)\x1f%(committerdate:unix)",
     ])?;
     let text = String::from_utf8_lossy(&out.stdout);
-    let branches = text
+    let mut branches: Vec<_> = text
         .lines()
         .filter_map(|line| {
             let mut parts = line.splitn(5, '\x1f');
@@ -356,6 +356,11 @@ pub fn list_branches() -> Result<Vec<Branch>> {
             })
         })
         .collect();
+    sort_refs_by_recent_commit(
+        &mut branches,
+        |branch| branch.last_commit_unix,
+        |branch| branch.name.as_str(),
+    );
     Ok(branches)
 }
 
@@ -366,7 +371,7 @@ pub fn list_remote_branches() -> Result<Vec<RemoteBranch>> {
         "--format=%(refname:short)\x1f%(committerdate:unix)",
     ])?;
     let text = String::from_utf8_lossy(&out.stdout);
-    let branches = text
+    let mut branches: Vec<_> = text
         .lines()
         .filter_map(|line| {
             let mut parts = line.splitn(2, '\x1f');
@@ -385,11 +390,28 @@ pub fn list_remote_branches() -> Result<Vec<RemoteBranch>> {
             })
         })
         .collect();
+    sort_refs_by_recent_commit(
+        &mut branches,
+        |branch| branch.last_commit_unix,
+        |branch| branch.name.as_str(),
+    );
     Ok(branches)
 }
 
 fn parse_unix_timestamp(value: &str) -> Option<i64> {
     value.parse::<i64>().ok().filter(|ts| *ts > 0)
+}
+
+fn sort_refs_by_recent_commit<T, F, N>(refs: &mut [T], timestamp: F, name: N)
+where
+    F: Fn(&T) -> Option<i64>,
+    N: Fn(&T) -> &str,
+{
+    refs.sort_by(|a, b| {
+        timestamp(b)
+            .cmp(&timestamp(a))
+            .then_with(|| name(a).cmp(name(b)))
+    });
 }
 
 pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {

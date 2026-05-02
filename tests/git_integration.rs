@@ -130,6 +130,25 @@ fn commit_in(dir: &std::path::Path, msg: &str) {
     );
 }
 
+fn commit_in_at(dir: &std::path::Path, msg: &str, date: &str) {
+    let out = Command::new("git")
+        .args(["commit", "-m", msg])
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "Test User")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_AUTHOR_DATE", date)
+        .env("GIT_COMMITTER_NAME", "Test User")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_DATE", date)
+        .output()
+        .expect("git commit");
+    assert!(
+        out.status.success(),
+        "commit failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 fn commit_in_as(dir: &std::path::Path, msg: &str, author: &str, email: &str) {
     let out = Command::new("git")
         .args(["commit", "-m", msg])
@@ -846,6 +865,38 @@ fn commit_on_empty_message_fails() {
 }
 
 #[test]
+fn list_branches_orders_newest_commit_first() {
+    let dir = init_repo();
+    fs::write(dir.path().join("README.md"), "main\n").unwrap();
+    stage_in(dir.path(), "README.md");
+    commit_in(dir.path(), "initial");
+
+    git_ok(dir.path(), &["checkout", "-b", "older"]);
+    fs::write(dir.path().join("older.txt"), "older\n").unwrap();
+    stage_in(dir.path(), "older.txt");
+    commit_in_at(dir.path(), "older branch", "2026-01-01T00:00:00Z");
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", "newer"]);
+    fs::write(dir.path().join("newer.txt"), "newer\n").unwrap();
+    stage_in(dir.path(), "newer.txt");
+    commit_in_at(dir.path(), "newer branch", "2026-01-02T00:00:00Z");
+
+    let _cwd = CwdGuard::new(dir.path());
+    let branches = lg::git::list_branches().unwrap();
+    let names = branches
+        .iter()
+        .map(|branch| branch.name.as_str())
+        .collect::<Vec<_>>();
+    let newer = names.iter().position(|name| *name == "newer").unwrap();
+    let older = names.iter().position(|name| *name == "older").unwrap();
+    assert!(
+        newer < older,
+        "newer branch should sort before older branch: {names:?}"
+    );
+}
+
+#[test]
 fn remote_branches_can_be_listed_and_checked_out_locally() {
     let dir = init_repo();
     let bare = tempfile::tempdir().expect("bare tempdir");
@@ -893,6 +944,54 @@ fn remote_branches_can_be_listed_and_checked_out_locally() {
     assert_eq!(
         String::from_utf8_lossy(&upstream.stdout).trim(),
         "origin/feature/remote"
+    );
+}
+
+#[test]
+fn list_remote_branches_orders_newest_commit_first() {
+    let dir = init_repo();
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+
+    fs::write(dir.path().join("README.md"), "main\n").unwrap();
+    stage_in(dir.path(), "README.md");
+    commit_in(dir.path(), "initial");
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+
+    git_ok(dir.path(), &["checkout", "-b", "older"]);
+    fs::write(dir.path().join("older.txt"), "older\n").unwrap();
+    stage_in(dir.path(), "older.txt");
+    commit_in_at(dir.path(), "older remote branch", "2026-01-01T00:00:00Z");
+    git_ok(dir.path(), &["push", "-u", "origin", "older"]);
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", "newer"]);
+    fs::write(dir.path().join("newer.txt"), "newer\n").unwrap();
+    stage_in(dir.path(), "newer.txt");
+    commit_in_at(dir.path(), "newer remote branch", "2026-01-02T00:00:00Z");
+    git_ok(dir.path(), &["push", "-u", "origin", "newer"]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    let branches = lg::git::list_remote_branches().unwrap();
+    let names = branches
+        .iter()
+        .map(|branch| branch.name.as_str())
+        .collect::<Vec<_>>();
+    let newer = names
+        .iter()
+        .position(|name| *name == "origin/newer")
+        .unwrap();
+    let older = names
+        .iter()
+        .position(|name| *name == "origin/older")
+        .unwrap();
+    assert!(
+        newer < older,
+        "newer remote branch should sort before older remote branch: {names:?}"
     );
 }
 
