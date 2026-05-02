@@ -15,6 +15,11 @@ Prefer the terrarium MCP tools over direct shell commands for normal Rust build 
 - `cargo_update`
 - `cargo_upgrade_incompatible`
 - `make_install` (only when Makefile exists)
+- `make_run`
+- `docker_run`
+- `command_log_read`
+- `spenn_list_scenarios`
+- `spenn_run_scenario`
 - `git_status`
 - `git_unmerged`
 - `git_log`
@@ -25,6 +30,7 @@ Prefer the terrarium MCP tools over direct shell commands for normal Rust build 
 You are running inside a macOS sandbox with a deny-default policy. If you encounter a permission denied error or an operation blocked by the sandbox, call `report_violation` with a description of what was attempted and the error.
 
 Use the built-in git MCP tools for read-only repository inspection instead of direct shell `git` commands.
+For linked repositories, use the git tool `path` parameter to select the repository; use `pathspec` only for files inside that repository.
 When implementing a Rust feature, keep `Cargo.toml` aligned with the work. If dependencies or crate features changed, update `Cargo.toml` and refresh `Cargo.lock` with `cargo_update`.
 `cargo_test` can run the full suite, a single test, or a filtered subset.
 After implementing a Rust feature, run the tests with `cargo_test`.

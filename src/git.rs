@@ -278,15 +278,30 @@ pub struct Commit {
     pub sha: String,
     pub author: String,
     pub author_short: String,
-    pub graph: String,
+    pub parents: Vec<String>,
     pub is_first_parent: bool,
-    pub parent_count: usize,
     pub subject: String,
 }
 
 impl Commit {
+    pub fn parent_count(&self) -> usize {
+        self.parents.len()
+    }
+
     pub fn is_graph_row(&self) -> bool {
-        self.sha.is_empty()
+        false
+    }
+}
+
+impl crate::graph::CommitNode for Commit {
+    fn sha(&self) -> &str {
+        &self.sha
+    }
+    fn parents(&self) -> &[String] {
+        &self.parents
+    }
+    fn is_first_parent(&self) -> bool {
+        self.is_first_parent
     }
 }
 
@@ -513,44 +528,39 @@ pub fn list_commits_for_ref(reference: &str, limit: usize) -> Result<Vec<Commit>
     trace_enter("list_commits");
     let n = limit.to_string();
     let first_parent = first_parent_shas(reference, limit).unwrap_or_default();
-    let fmt = "--format=%x1f%h%x1f%an%x1f%P%x1f%s";
-    let result = run(&["log", "--graph", fmt, "-n", &n, reference]);
+    let fmt = "--format=%x1f%h%x1f%an%x1f%p%x1f%s";
+    let result = run(&["log", fmt, "-n", &n, reference]);
     match result {
         Ok(out) => {
             let text = String::from_utf8_lossy(&out.stdout);
             let mut commits = Vec::new();
-            let mut pending_graph_rows = Vec::new();
             for line in text.lines() {
-                if let Some(marker) = line.find('\x1f') {
-                    let graph = compact_graph_rows(&pending_graph_rows, &line[..marker]);
-                    pending_graph_rows.clear();
-                    let mut parts = line[marker + 1..].splitn(4, '\x1f');
-                    let Some(sha) = parts.next().map(str::trim).map(str::to_owned) else {
-                        continue;
-                    };
-                    let author = parts.next().unwrap_or("").trim().to_owned();
-                    let parents = parts.next().unwrap_or("").trim();
-                    let subject = parts.next().unwrap_or("").trim().to_owned();
-                    if sha.is_empty() {
-                        continue;
-                    }
-                    let is_first_parent = first_parent.contains(&sha);
-                    commits.push(Commit {
-                        sha,
-                        author_short: short_author_name(&author),
-                        author,
-                        graph,
-                        is_first_parent,
-                        parent_count: parents.split_whitespace().count(),
-                        subject,
-                    });
-                } else if !line.trim().is_empty() {
-                    if let Some(commit) = commits.last_mut() {
-                        commit.graph = compact_graph_rows(&[line.to_owned()], &commit.graph);
-                    } else {
-                        pending_graph_rows.push(line.to_owned());
-                    }
+                let Some(marker) = line.find('\x1f') else {
+                    continue;
+                };
+                let mut parts = line[marker + 1..].splitn(4, '\x1f');
+                let Some(sha) = parts.next().map(str::trim).map(str::to_owned) else {
+                    continue;
+                };
+                if sha.is_empty() {
+                    continue;
                 }
+                let author = parts.next().unwrap_or("").trim().to_owned();
+                let parents_str = parts.next().unwrap_or("").trim();
+                let subject = parts.next().unwrap_or("").trim().to_owned();
+                let parents: Vec<String> = parents_str
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect();
+                let is_first_parent = first_parent.contains(&sha);
+                commits.push(Commit {
+                    sha,
+                    author_short: short_author_name(&author),
+                    author,
+                    parents,
+                    is_first_parent,
+                    subject,
+                });
             }
             Ok(commits)
         }
@@ -562,58 +572,6 @@ pub fn list_commits_for_ref(reference: &str, limit: usize) -> Result<Vec<Commit>
                 Err(e)
             }
         }
-    }
-}
-
-fn compact_graph_rows(pending_rows: &[String], commit_graph: &str) -> String {
-    if pending_rows.is_empty() {
-        return commit_graph.to_owned();
-    }
-
-    let width = pending_rows
-        .iter()
-        .map(|row| row.chars().count())
-        .chain(std::iter::once(commit_graph.chars().count()))
-        .max()
-        .unwrap_or(0);
-    let mut cells = vec![' '; width];
-
-    for row in pending_rows {
-        for (idx, ch) in row.chars().enumerate() {
-            if ch != ' ' {
-                cells[idx] = compact_graph_char(cells[idx], folded_graph_row_char(ch));
-            }
-        }
-    }
-    for (idx, ch) in commit_graph.chars().enumerate() {
-        if ch != ' ' {
-            cells[idx] = compact_graph_char(cells[idx], ch);
-        }
-    }
-
-    while cells.last() == Some(&' ') {
-        cells.pop();
-    }
-    cells.into_iter().collect()
-}
-
-fn folded_graph_row_char(ch: char) -> char {
-    match ch {
-        '_' => '-',
-        other => other,
-    }
-}
-
-fn compact_graph_char(existing: char, incoming: char) -> char {
-    match (existing, incoming) {
-        ('*', _) | (_, '*') => '*',
-        (' ', ch) => ch,
-        (ch, ' ') => ch,
-        ('|', '/' | '\\') => incoming,
-        ('/' | '\\', '|') => existing,
-        ('_', '-') | ('-', '_') => '-',
-        (_, '-' | '_') => incoming,
-        (ch, _) => ch,
     }
 }
 

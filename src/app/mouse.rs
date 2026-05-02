@@ -252,22 +252,9 @@ mod tests {
             sha: sha.into(),
             author: "Test Author".into(),
             author_short: "TA".into(),
-            graph: "* ".into(),
+            parents: vec!["parent".into()],
             is_first_parent: true,
-            parent_count: 1,
             subject: "change".into(),
-        }
-    }
-
-    fn graph_row(graph: &str) -> Commit {
-        Commit {
-            sha: String::new(),
-            author: String::new(),
-            author_short: String::new(),
-            graph: graph.into(),
-            is_first_parent: false,
-            parent_count: 0,
-            subject: String::new(),
         }
     }
 
@@ -326,10 +313,10 @@ mod tests {
         assert!(scroll_list(&mut state, Pane::Files, false, 99));
         assert_eq!(state.files_idx, 0);
 
-        state.commits = vec![commit("a"), graph_row("|\\  "), commit("b"), commit("c")];
+        state.commits = vec![commit("a"), commit("b"), commit("c")];
         assert!(scroll_list(&mut state, Pane::Commits, true, 2));
-        assert_eq!(state.commits_idx, 3);
-        assert!(scroll_list(&mut state, Pane::Commits, false, 1));
         assert_eq!(state.commits_idx, 2);
+        assert!(scroll_list(&mut state, Pane::Commits, false, 1));
+        assert_eq!(state.commits_idx, 1);
     }
 }

@@ -9,21 +9,16 @@ use ratatui::{
 };
 
 use crate::{
+    graph::{self, Pipe, SELECTED_COLOR},
     state::{AppState, Pane},
     ui,
 };
 
-const MERGE_MARKER: char = '\u{23e3}';
-const MERGE_PAD: char = '\u{2007}';
-
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
-    let count = if real_commit_count(&state.commits) == 0 {
+    let count = if state.commits.is_empty() {
         None
     } else {
-        Some((
-            selected_commit_ordinal(&state.commits, state.commits_idx),
-            real_commit_count(&state.commits),
-        ))
+        Some((state.commits_idx + 1, state.commits.len()))
     };
     let title = state
         .commits_ref
@@ -39,28 +34,33 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         state.activity_label().is_some(),
     );
 
+    let pipe_sets = graph::pipe_sets(&state.commits);
     let hash_width = visible_hash_width(&state.commits);
-    let graph_width = visible_graph_width(
-        area.width,
+    let max_pipe_width = pipe_sets
+        .iter()
+        .map(|set| pipe_set_display_width(set))
+        .max()
+        .unwrap_or(2);
+    let graph_width = visible_graph_width(area.width, max_pipe_width, hash_width);
+
+    let selected_sha = if focused {
         state
             .commits
-            .iter()
-            .map(graph_display_width)
-            .max()
-            .unwrap_or(1),
-        hash_width,
-    );
+            .get(state.commits_idx)
+            .map(|c| c.sha.as_str())
+    } else {
+        None
+    };
 
     let items: Vec<ListItem> = state
         .commits
         .iter()
         .enumerate()
         .map(|(idx, c)| {
-            let graph_row = c.is_graph_row();
-            let selected = focused && idx == state.commits_idx && !graph_row;
+            let is_selected_row = focused && idx == state.commits_idx;
             let subject_style = if state.unpushed_shas.contains(&c.sha) {
                 Style::default().fg(Color::Red)
-            } else if c.is_first_parent || graph_row {
+            } else if c.is_first_parent {
                 Style::default()
             } else {
                 Style::default().fg(Color::Gray).add_modifier(Modifier::DIM)
@@ -69,36 +69,37 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
                 Style::default()
                     .fg(author_color(&c.author))
                     .add_modifier(Modifier::BOLD)
-            } else if graph_row {
-                Style::default().fg(Color::DarkGray)
             } else {
                 Style::default().fg(author_color(&c.author))
             };
             let mut spans = vec![
-                Span::styled(format!("{:<hash_width$} ", c.sha), hash_style(selected)),
+                Span::styled(format!("{:<hash_width$} ", c.sha), hash_style(is_selected_row)),
                 Span::styled(
                     format!("{:<2} ", c.author_short),
-                    selected_style(author_style, selected),
+                    selected_style(author_style, is_selected_row),
                 ),
             ];
+            let prev_sha = idx
+                .checked_sub(1)
+                .and_then(|i| state.commits.get(i))
+                .map(|c| c.sha.as_str());
             spans.extend(
-                graph_spans(c, graph_width)
+                graph_spans(&pipe_sets[idx], selected_sha, prev_sha, graph_width, c.is_first_parent)
                     .into_iter()
-                    .map(|span| selected_span(span, selected)),
+                    .map(|span| selected_span(span, is_selected_row)),
             );
-            spans.extend([Span::styled(
+            spans.push(Span::styled(
                 c.subject.clone(),
-                selected_style(subject_style, selected),
-            )]);
-            let line = Line::from(spans);
-            ListItem::new(line)
+                selected_style(subject_style, is_selected_row),
+            ));
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
     let list = List::new(items).block(block);
 
     let mut list_state = ListState::default();
-    if focused && !state.commits.is_empty() && !state.commits[state.commits_idx].is_graph_row() {
+    if focused && !state.commits.is_empty() {
         list_state.select(Some(state.commits_idx));
     }
 
@@ -108,13 +109,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            if let Some(next) = next_commit_idx(&state.commits, state.commits_idx) {
-                state.commits_idx = next;
+            if state.commits_idx + 1 < state.commits.len() {
+                state.commits_idx += 1;
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            if let Some(prev) = previous_commit_idx(&state.commits, state.commits_idx) {
-                state.commits_idx = prev;
+            if state.commits_idx > 0 {
+                state.commits_idx -= 1;
             }
         }
         KeyCode::Enter => {
@@ -125,47 +126,23 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-fn real_commit_count(commits: &[crate::git::Commit]) -> usize {
-    commits
-        .iter()
-        .filter(|commit| !commit.is_graph_row())
-        .count()
-}
-
-fn selected_commit_ordinal(commits: &[crate::git::Commit], idx: usize) -> usize {
-    commits
-        .iter()
-        .take(idx.saturating_add(1))
-        .filter(|commit| !commit.is_graph_row())
-        .count()
-        .max(1)
-}
-
-fn next_commit_idx(commits: &[crate::git::Commit], idx: usize) -> Option<usize> {
-    commits
-        .iter()
-        .enumerate()
-        .skip(idx.saturating_add(1))
-        .find_map(|(idx, commit)| (!commit.is_graph_row()).then_some(idx))
-}
-
-fn previous_commit_idx(commits: &[crate::git::Commit], idx: usize) -> Option<usize> {
-    commits
-        .iter()
-        .enumerate()
-        .take(idx)
-        .rev()
-        .find_map(|(idx, commit)| (!commit.is_graph_row()).then_some(idx))
-}
-
 fn visible_hash_width(commits: &[crate::git::Commit]) -> usize {
     commits
         .iter()
-        .filter(|commit| !commit.is_graph_row())
         .map(|commit| commit.sha.chars().count())
         .max()
         .unwrap_or(8)
         .max(8)
+}
+
+fn pipe_set_display_width(pipes: &[Pipe]) -> usize {
+    let max_pos = pipes
+        .iter()
+        .map(|p| p.from_pos.max(p.to_pos))
+        .max()
+        .unwrap_or(0);
+    // Each lane uses 2 chars (symbol + connector), trailing connector trimmed.
+    2 * (max_pos as usize + 1).max(1)
 }
 
 fn visible_graph_width(area_width: u16, max_graph_width: usize, hash_width: usize) -> usize {
@@ -173,127 +150,50 @@ fn visible_graph_width(area_width: u16, max_graph_width: usize, hash_width: usiz
     let fixed_columns = hash_width + 1 + 2 + 1;
     content_width
         .saturating_sub(fixed_columns + 12)
-        .clamp(1, max_graph_width.clamp(1, 14))
+        .clamp(1, max_graph_width.clamp(1, 28))
 }
 
-fn graph_spans(commit: &crate::git::Commit, width: usize) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    let graph = if commit.graph.trim().is_empty() {
-        "*"
-    } else {
-        commit.graph.as_str()
-    };
-    let (cells, merge_cols) = graph_cells(commit, graph);
-
-    for (visible_col, ch) in cells.into_iter().enumerate() {
-        if visible_col >= width {
+fn graph_spans(
+    pipes: &[Pipe],
+    selected_sha: Option<&str>,
+    prev_sha: Option<&str>,
+    width: usize,
+    bold: bool,
+) -> Vec<Span<'static>> {
+    let cells = graph::render_pipe_set(pipes, selected_sha, prev_sha);
+    let mut spans = Vec::with_capacity(cells.len() * 2 + 1);
+    let mut col = 0usize;
+    for (idx, cell) in cells.iter().enumerate() {
+        if col >= width {
             break;
         }
-        let is_merge_connector = merge_cols.contains(&visible_col);
-        let symbol = graph_symbol(ch);
-        let color = if is_merge_connector {
-            Color::Yellow
-        } else if ch == '*' {
-            commit_marker_color(commit)
-        } else {
-            graph_column_color(visible_col)
-        };
-        let style = if is_merge_connector || commit.is_first_parent || ch == '*' {
-            Style::default().fg(color).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(color)
-        };
-        spans.push(Span::styled(symbol.to_string(), style));
+        spans.push(Span::styled(
+            cell.symbol.to_string(),
+            cell_style(cell.symbol_color, bold, cell.symbol_color == SELECTED_COLOR),
+        ));
+        col += 1;
+        if idx + 1 < cells.len() && col < width {
+            spans.push(Span::styled(
+                cell.connector.to_string(),
+                cell_style(
+                    cell.connector_color,
+                    bold,
+                    cell.connector_color == SELECTED_COLOR,
+                ),
+            ));
+            col += 1;
+        }
     }
-
     spans.push(Span::raw(" "));
     spans
 }
 
-fn graph_cells(commit: &crate::git::Commit, graph: &str) -> (Vec<char>, Vec<usize>) {
-    let mut cells: Vec<char> = graph.chars().collect();
-    let Some(star_idx) = cells.iter().position(|ch| *ch == '*') else {
-        return (cells, Vec::new());
-    };
-    if commit.parent_count <= 1 {
-        normalize_join_row(&mut cells, star_idx);
-        return (cells, Vec::new());
+fn cell_style(color: Color, bold: bool, force_bold: bool) -> Style {
+    let mut s = Style::default().fg(color);
+    if bold || force_bold {
+        s = s.add_modifier(Modifier::BOLD);
     }
-
-    let end_idx = merge_connector_end(&cells, star_idx);
-    if cells.len() <= end_idx {
-        cells.resize(end_idx + 1, ' ');
-    }
-    cells[star_idx] = MERGE_MARKER;
-    for idx in star_idx + 1..end_idx {
-        cells[idx] = if idx == star_idx + 1 { MERGE_PAD } else { '-' };
-    }
-    cells[end_idx] = '\u{256e}';
-    (cells, (star_idx..=end_idx).collect())
-}
-
-fn normalize_join_row(cells: &mut [char], star_idx: usize) {
-    let Some(last_join_idx) = cells
-        .iter()
-        .rposition(|ch| matches!(*ch, '/' | '\\' | '-' | '_'))
-    else {
-        return;
-    };
-    if last_join_idx <= star_idx {
-        return;
-    }
-
-    for cell in &mut cells[star_idx + 1..last_join_idx] {
-        if *cell == ' ' {
-            *cell = '-';
-        }
-    }
-}
-
-fn merge_connector_end(cells: &[char], star_idx: usize) -> usize {
-    let folded_target = cells
-        .iter()
-        .enumerate()
-        .skip(star_idx + 1)
-        .rev()
-        .find_map(|(idx, ch)| (*ch != ' ').then_some(idx));
-    folded_target.unwrap_or(star_idx + 3).max(star_idx + 3)
-}
-
-fn graph_display_width(commit: &crate::git::Commit) -> usize {
-    let graph_width = if commit.graph.trim().is_empty() {
-        1
-    } else {
-        commit.graph.chars().count()
-    };
-    if commit.parent_count > 1 {
-        let merge_width = commit
-            .graph
-            .chars()
-            .position(|ch| ch == '*')
-            .map(|idx| {
-                let cells: Vec<char> = commit.graph.chars().collect();
-                merge_connector_end(&cells, idx) + 1
-            })
-            .unwrap_or(4);
-        graph_width.max(merge_width)
-    } else {
-        graph_width
-    }
-}
-
-fn graph_symbol(ch: char) -> char {
-    match ch {
-        '*' => '\u{25cb}',
-        MERGE_MARKER => MERGE_MARKER,
-        MERGE_PAD => ' ',
-        '|' => '\u{2502}',
-        '/' => '\u{256f}',
-        '\\' => '\u{256e}',
-        '\u{256e}' => '\u{256e}',
-        '-' | '_' => '\u{2500}',
-        other => other,
-    }
+    s
 }
 
 fn selected_span(span: Span<'static>, selected: bool) -> Span<'static> {
@@ -321,28 +221,6 @@ fn selected_style(style: Style, selected: bool) -> Style {
     } else {
         style
     }
-}
-
-fn commit_marker_color(commit: &crate::git::Commit) -> Color {
-    if commit.is_first_parent {
-        Color::LightGreen
-    } else {
-        Color::LightMagenta
-    }
-}
-
-fn graph_column_color(col: usize) -> Color {
-    const COLORS: &[Color] = &[
-        Color::LightGreen,
-        Color::LightMagenta,
-        Color::LightCyan,
-        Color::Yellow,
-        Color::Cyan,
-        Color::Magenta,
-        Color::LightBlue,
-        Color::LightYellow,
-    ];
-    COLORS[col % COLORS.len()]
 }
 
 fn author_color(author: &str) -> Color {

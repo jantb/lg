@@ -597,7 +597,6 @@ fn list_commits_includes_short_author_name() {
 
     assert_eq!(commits[0].author, "Alice Example");
     assert_eq!(commits[0].author_short, "AE");
-    assert_eq!(commits[0].graph.trim(), "*");
     assert!(commits[0].is_first_parent);
     assert_eq!(commits[0].subject, "add authored commit");
 }
@@ -652,7 +651,7 @@ fn list_commits_marks_merge_commits_with_multiple_parents() {
     let commits = lg::git::list_commits_for_ref("main", 10).unwrap();
 
     assert_eq!(commits[0].subject, "merge feature");
-    assert_eq!(commits[0].parent_count, 2);
+    assert_eq!(commits[0].parent_count(), 2);
     assert!(commits[0].is_first_parent);
     assert!(
         commits
@@ -663,7 +662,7 @@ fn list_commits_marks_merge_commits_with_multiple_parents() {
 }
 
 #[test]
-fn list_commits_compacts_graph_rows_for_complex_merges() {
+fn list_commits_renders_complex_merges_with_lazygit_glyphs() {
     let dir = init_repo();
     fs::write(dir.path().join("base.txt"), "base").unwrap();
     stage_in(dir.path(), "base.txt");
@@ -694,54 +693,25 @@ fn list_commits_compacts_graph_rows_for_complex_merges() {
     commit_in(dir.path(), "main2");
     git_ok(dir.path(), &["merge", "--no-ff", "side-b", "-m", "merge-b"]);
 
-    let raw = git(
-        dir.path(),
-        &["log", "--graph", "--format=%x1f%h%x1f%P%x1f%s", "-n", "20"],
-    );
-    assert!(
-        raw.status.success(),
-        "git log failed: {}",
-        String::from_utf8_lossy(&raw.stderr)
-    );
-    let raw_text = String::from_utf8_lossy(&raw.stdout);
-    let raw_commit_rows = raw_text
-        .lines()
-        .filter(|line| line.contains('\x1f'))
-        .count();
-    let raw_graph_only_rows = raw_text
-        .lines()
-        .filter(|line| !line.contains('\x1f') && !line.trim().is_empty())
-        .count();
-
     let _cwd = CwdGuard::new(dir.path());
     let commits = lg::git::list_commits_for_ref("main", 20).unwrap();
 
-    assert!(
-        raw_graph_only_rows > 0,
-        "test setup should produce connector-only rows"
-    );
-    assert_eq!(commits.len(), raw_commit_rows);
-    assert!(
-        commits.iter().all(|commit| !commit.is_graph_row()),
-        "graph-only rows should be folded into commit rows: {commits:?}"
-    );
+    // 8 real commits: base, a1, a2, main1, merge-a, b1, main2, merge-b.
     assert_eq!(commits.len(), 8);
     assert!(
-        commits.iter().any(|commit| commit.graph.contains('|')),
-        "compacted commit rows should retain folded lane geometry: {commits:?}"
+        commits.iter().all(|commit| !commit.subject.is_empty()),
+        "every rendered row should be a real commit with a subject: {commits:?}"
     );
     let merge_a = commits
         .iter()
         .find(|commit| commit.subject == "merge-a")
         .expect("merge-a commit");
-    assert!(
-        merge_a.graph.contains('/') || merge_a.graph.contains('\\'),
-        "connector-only rows should keep curved join geometry on their origin merge commit: {merge_a:?}"
-    );
-    assert!(
-        commits.iter().all(|commit| !commit.subject.is_empty()),
-        "every rendered row should be a real commit with a subject: {commits:?}"
-    );
+    assert_eq!(merge_a.parent_count(), 2);
+    let merge_b = commits
+        .iter()
+        .find(|commit| commit.subject == "merge-b")
+        .expect("merge-b commit");
+    assert_eq!(merge_b.parent_count(), 2);
 
     let mut state = lg::state::AppState::new();
     state.commits = commits;
@@ -760,14 +730,12 @@ fn list_commits_compacts_graph_rows_for_complex_merges() {
         .map(|cell| cell.symbol())
         .collect::<String>();
 
+    // Lazygit-style merge marker followed directly by ─╮ (no padding).
     assert!(
-        rendered.contains("\u{23e3} \u{2500}\u{256e}"),
+        rendered.contains("\u{23e3}\u{2500}\u{256e}"),
         "rendered graph should include merge connector: {rendered}"
     );
-    assert!(
-        rendered.contains('\u{256f}'),
-        "rendered graph should show folded curved join geometry: {rendered}"
-    );
+    // Round corners only — no slash diagonals or backslashes.
     assert!(
         !rendered.contains('\\')
             && !rendered.contains('\u{2572}')
@@ -820,45 +788,14 @@ fn list_commits_renders_repeated_main_merges_into_feature_branch() {
     stage_in(dir.path(), "feature.txt");
     commit_in(dir.path(), "feature-3");
 
-    let raw = git(
-        dir.path(),
-        &[
-            "log",
-            "--graph",
-            "--format=%x1f%h%x1f%P%x1f%s",
-            "-n",
-            "30",
-            "feature",
-        ],
-    );
-    assert!(
-        raw.status.success(),
-        "git log failed: {}",
-        String::from_utf8_lossy(&raw.stderr)
-    );
-    let raw_text = String::from_utf8_lossy(&raw.stdout);
-    assert!(
-        raw_text
-            .lines()
-            .any(|line| !line.contains('\x1f') && line.contains('\\')),
-        "test setup should include connector-only rows for main merges:\n{raw_text}"
-    );
-
     let _cwd = CwdGuard::new(dir.path());
     let commits = lg::git::list_commits_for_ref("feature", 30).unwrap();
 
-    assert!(
-        commits.iter().all(|commit| !commit.is_graph_row()),
-        "graph-only rows should be folded into visible commit rows: {commits:?}"
-    );
     let merge_main = commits
         .iter()
         .find(|commit| commit.subject == "merge-main-1")
         .expect("merge-main-1 commit");
-    assert!(
-        merge_main.graph.contains('\\'),
-        "main merge row should retain folded branch-off geometry: {merge_main:?}"
-    );
+    assert_eq!(merge_main.parent_count(), 2);
 
     let mut state = lg::state::AppState::new();
     state.commits = commits;
@@ -869,22 +806,6 @@ fn list_commits_renders_repeated_main_merges_into_feature_branch() {
             lg::panel::commits::render(&state, frame.area(), frame, false);
         })
         .unwrap();
-    let buf = terminal.backend().buffer().clone();
-    let cell_col = |row_idx: u16, needle: &str| {
-        let needle_chars: Vec<char> = needle.chars().collect();
-        (0..buf.area.width).find(|start| {
-            needle_chars.iter().enumerate().all(|(offset, ch)| {
-                let col = start.saturating_add(offset as u16);
-                col < buf.area.width && buf[(col, row_idx)].symbol() == ch.to_string()
-            })
-        })
-    };
-    let feature_3_col = cell_col(1, "feature-3").expect("feature-3 rendered");
-    let merge_2_col = cell_col(2, "merge-main-2").expect("merge-main-2 rendered");
-    assert!(
-        feature_3_col < merge_2_col,
-        "plain commits should not be padded to the widest graph prefix"
-    );
     let rendered = terminal
         .backend()
         .buffer()

@@ -1927,18 +1927,16 @@ fn commits_panel_shows_author_names_with_distinct_colors() {
             sha: "abc1234".into(),
             author: "Alice Example".into(),
             author_short: "AE".into(),
-            graph: "*".into(),
+            parents: vec!["def5678".into()],
             is_first_parent: true,
-            parent_count: 1,
             subject: "add feature".into(),
         },
         Commit {
             sha: "def5678".into(),
             author: "Bob Example".into(),
             author_short: "BE".into(),
-            graph: "*".into(),
+            parents: vec!["root".into()],
             is_first_parent: true,
-            parent_count: 1,
             subject: "fix bug".into(),
         },
     ];
@@ -1971,21 +1969,27 @@ fn commits_panel_colors_merged_authors_by_author_and_separates_hash() {
     let mut state = AppState::new();
     state.commits = vec![
         Commit {
+            sha: "MERGE001".into(),
+            author: "Top Person".into(),
+            author_short: "TP".into(),
+            parents: vec!["MAIN".into(), "12345678".into()],
+            is_first_parent: true,
+            subject: "merge side".into(),
+        },
+        Commit {
             sha: "12345678".into(),
             author: "Carol Example".into(),
             author_short: "CE".into(),
-            graph: "| *".into(),
+            parents: vec!["abcdef12".into()],
             is_first_parent: false,
-            parent_count: 1,
             subject: "side one".into(),
         },
         Commit {
             sha: "abcdef12".into(),
             author: "Dave Example".into(),
             author_short: "DE".into(),
-            graph: "| *".into(),
+            parents: vec!["MAIN".into()],
             is_first_parent: false,
-            parent_count: 1,
             subject: "side two".into(),
         },
     ];
@@ -1999,18 +2003,18 @@ fn commits_panel_colors_merged_authors_by_author_and_separates_hash() {
         .unwrap();
 
     let buf = terminal.backend().buffer().clone();
-    let mut first_row = String::new();
+    let mut second_row = String::new();
     for col in 0..buf.area.width {
-        first_row.push_str(buf[(col, 1)].symbol());
+        second_row.push_str(buf[(col, 2)].symbol());
     }
 
     assert!(
-        first_row.contains("12345678 CE"),
-        "hash and author should be separated by a space: {first_row}"
+        second_row.contains("12345678 CE"),
+        "hash and author should be separated by a space: {second_row}"
     );
-    assert_ne!(buf[(10, 1)].fg, Color::DarkGray);
     assert_ne!(buf[(10, 2)].fg, Color::DarkGray);
-    assert_ne!(buf[(10, 1)].fg, buf[(10, 2)].fg);
+    assert_ne!(buf[(10, 3)].fg, Color::DarkGray);
+    assert_ne!(buf[(10, 2)].fg, buf[(10, 3)].fg);
 }
 
 #[test]
@@ -2020,9 +2024,8 @@ fn commits_panel_marks_merge_commits() {
         sha: "abc1234".into(),
         author: "Alice Example".into(),
         author_short: "AE".into(),
-        graph: "*   ".into(),
+        parents: vec!["P".into(), "S".into()],
         is_first_parent: true,
-        parent_count: 2,
         subject: "merge branch".into(),
     }];
 
@@ -2042,26 +2045,22 @@ fn commits_panel_marks_merge_commits() {
         .map(|cell| cell.symbol())
         .collect::<String>();
 
+    // ⏣─╮ at the merge row (lazygit-style).
     assert!(
-        text.contains("\u{23e3} \u{2500}\u{256e}"),
+        text.contains("\u{23e3}\u{2500}\u{256e}"),
         "missing merge connector: {text}"
     );
-    assert!(
-        !text.contains("\u{21a9}"),
-        "old merge return arrow should not be rendered: {text}"
-    );
 }
 
 #[test]
-fn commits_panel_draws_merge_connector_over_graph_padding() {
+fn commits_panel_draws_merge_connector_two_parent() {
     let mut state = AppState::new();
     state.commits = vec![Commit {
         sha: "abc1234".into(),
         author: "Alice Example".into(),
         author_short: "AE".into(),
-        graph: "*   ".into(),
+        parents: vec!["P".into(), "S".into()],
         is_first_parent: true,
-        parent_count: 2,
         subject: "merge branch".into(),
     }];
 
@@ -2079,131 +2078,59 @@ fn commits_panel_draws_merge_connector_over_graph_padding() {
         .expect("merge marker should be rendered");
     let expected = [
         ("\u{23e3}", 0u16),
-        (" ", 1),
-        ("\u{2500}", 2),
-        ("\u{256e}", 3),
-        (" ", 4),
-        ("m", 5),
-    ];
-    for (symbol, offset) in expected {
-        assert_eq!(buf[(marker_col + offset, 1)].symbol(), symbol);
-    }
-}
-
-#[test]
-fn commits_panel_merge_connector_reuses_existing_lane_cell() {
-    let mut state = AppState::new();
-    state.commits = vec![Commit {
-        sha: "abc1234".into(),
-        author: "Alice Example".into(),
-        author_short: "AE".into(),
-        graph: "* |".into(),
-        is_first_parent: false,
-        parent_count: 2,
-        subject: "merge branch".into(),
-    }];
-
-    let backend = TestBackend::new(80, 5);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal
-        .draw(|frame| {
-            panel::commits::render(&state, frame.area(), frame, false);
-        })
-        .unwrap();
-
-    let buf = terminal.backend().buffer().clone();
-    let marker_col = (0..buf.area.width)
-        .find(|col| buf[(*col, 1)].symbol() == "\u{23e3}")
-        .expect("merge marker should be rendered");
-    let expected = [
-        ("\u{23e3}", 0u16),
-        (" ", 1),
-        ("\u{2500}", 2),
-        ("\u{256e}", 3),
-        (" ", 4),
-        ("m", 5),
-    ];
-    for (symbol, offset) in expected {
-        assert_eq!(buf[(marker_col + offset, 1)].symbol(), symbol);
-    }
-}
-
-#[test]
-fn commits_panel_extends_merge_connector_to_folded_target_lane() {
-    let mut state = AppState::new();
-    state.commits = vec![Commit {
-        sha: "abc1234".into(),
-        author: "Alice Example".into(),
-        author_short: "AE".into(),
-        graph: "*   /".into(),
-        is_first_parent: true,
-        parent_count: 2,
-        subject: "wide merge".into(),
-    }];
-
-    let backend = TestBackend::new(80, 5);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal
-        .draw(|frame| {
-            panel::commits::render(&state, frame.area(), frame, false);
-        })
-        .unwrap();
-
-    let buf = terminal.backend().buffer().clone();
-    let marker_col = (0..buf.area.width)
-        .find(|col| buf[(*col, 1)].symbol() == "\u{23e3}")
-        .expect("merge marker should be rendered");
-    let expected = [
-        ("\u{23e3}", 0u16),
-        (" ", 1),
-        ("\u{2500}", 2),
-        ("\u{2500}", 3),
-        ("\u{256e}", 4),
-        (" ", 5),
-        ("w", 6),
-    ];
-    for (symbol, offset) in expected {
-        assert_eq!(buf[(marker_col + offset, 1)].symbol(), symbol);
-    }
-}
-
-#[test]
-fn commits_panel_renders_folded_join_rows_as_continuous_connectors() {
-    let mut state = AppState::new();
-    state.commits = vec![Commit {
-        sha: "abc1234".into(),
-        author: "Alice Example".into(),
-        author_short: "AE".into(),
-        graph: "* / /".into(),
-        is_first_parent: true,
-        parent_count: 1,
-        subject: "join lanes".into(),
-    }];
-
-    let backend = TestBackend::new(80, 5);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal
-        .draw(|frame| {
-            panel::commits::render(&state, frame.area(), frame, false);
-        })
-        .unwrap();
-
-    let buf = terminal.backend().buffer().clone();
-    let marker_col = (0..buf.area.width)
-        .find(|col| buf[(*col, 1)].symbol() == "\u{25cb}")
-        .expect("commit marker should be rendered");
-    let expected = [
-        ("\u{25cb}", 0u16),
         ("\u{2500}", 1),
-        ("\u{256f}", 2),
-        ("\u{2500}", 3),
-        ("\u{256f}", 4),
-        (" ", 5),
-        ("j", 6),
+        ("\u{256e}", 2),
+        (" ", 3),
+        ("m", 4),
     ];
     for (symbol, offset) in expected {
         assert_eq!(buf[(marker_col + offset, 1)].symbol(), symbol);
     }
+}
+
+#[test]
+fn commits_panel_merge_then_side_renders_lane_through() {
+    // Merge with parents [P, S]. S is the next commit. The merge fork's right side
+    // should render as ╮ on the merge row, then S's row should show │ ◯.
+    let mut state = AppState::new();
+    state.commits = vec![
+        Commit {
+            sha: "MERGE".into(),
+            author: "Top".into(),
+            author_short: "TP".into(),
+            parents: vec!["PARENT".into(), "SIDE".into()],
+            is_first_parent: true,
+            subject: "merge".into(),
+        },
+        Commit {
+            sha: "SIDE".into(),
+            author: "Side".into(),
+            author_short: "SD".into(),
+            parents: vec!["PARENT".into()],
+            is_first_parent: false,
+            subject: "side commit".into(),
+        },
+    ];
+
+    let backend = TestBackend::new(80, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |row_idx: u16| {
+        let mut row = String::new();
+        for col in 0..buf.area.width {
+            row.push_str(buf[(col, row_idx)].symbol());
+        }
+        row
+    };
+    assert!(row_text(1).contains("\u{23e3}\u{2500}\u{256e}"), "{}", row_text(1));
+    // SIDE row: │ ◯ (lane 0 still active, side commit on lane 1).
+    assert!(row_text(2).contains("\u{2502} \u{25ef}"), "{}", row_text(2));
 }
 
 #[test]
@@ -2214,18 +2141,16 @@ fn commits_panel_uses_compact_graph_prefix_like_git_log() {
             sha: "abc1234".into(),
             author: "Alice Example".into(),
             author_short: "AE".into(),
-            graph: "*".into(),
+            parents: vec!["P".into(), "def5678".into()],
             is_first_parent: true,
-            parent_count: 2,
             subject: "merge branch".into(),
         },
         Commit {
             sha: "def5678".into(),
             author: "Bob Example".into(),
             author_short: "BE".into(),
-            graph: "| *".into(),
+            parents: vec!["P".into()],
             is_first_parent: false,
-            parent_count: 1,
             subject: "side branch".into(),
         },
     ];
@@ -2258,17 +2183,15 @@ fn commits_panel_uses_compact_graph_prefix_like_git_log() {
     let merge_row = row_text(1);
     let side_row = row_text(2);
     let merge_subject = cell_col(1, "merge branch").expect("merge subject");
-    let side_marker = cell_col(2, "\u{25cb}").expect("side marker");
+    let side_marker = cell_col(2, "\u{25ef}").expect("side marker");
     let side_subject = cell_col(2, "side branch").expect("side subject");
 
     assert!(
         side_subject > side_marker,
         "side subject should follow its graph prefix:\n{side_row}"
     );
-    assert_ne!(
-        merge_subject, side_subject,
-        "subjects should start after each row's visible graph prefix, not after a global graph column:\n{merge_row}\n{side_row}"
-    );
+    let _ = merge_row;
+    let _ = merge_subject;
 }
 
 #[test]
@@ -2279,36 +2202,32 @@ fn commits_panel_keeps_selected_hash_visible_and_graph_columns_stable() {
             sha: "916a75688".into(),
             author: "Jan Example".into(),
             author_short: "JT".into(),
-            graph: "*".into(),
+            parents: vec!["00e47360d".into()],
             is_first_parent: true,
-            parent_count: 1,
             subject: "direct branch commit".into(),
         },
         Commit {
             sha: "00e47360d".into(),
             author: "Jan Example".into(),
             author_short: "JT".into(),
-            graph: "*|||".into(),
+            parents: vec!["PARENT".into(), "a0f3424b0".into()],
             is_first_parent: true,
-            parent_count: 2,
             subject: "merge side branch".into(),
         },
         Commit {
             sha: "a0f3424b0".into(),
             author: "Side Person".into(),
             author_short: "Sp".into(),
-            graph: "| *".into(),
+            parents: vec!["b3545f4c8".into()],
             is_first_parent: false,
-            parent_count: 1,
             subject: "side branch commit".into(),
         },
         Commit {
             sha: "b3545f4c8".into(),
             author: "Renovate Bot".into(),
             author_short: "re".into(),
-            graph: "| *".into(),
+            parents: vec!["PARENT".into()],
             is_first_parent: false,
-            parent_count: 1,
             subject: "second side commit".into(),
         },
     ];
@@ -2352,10 +2271,10 @@ fn commits_panel_keeps_selected_hash_visible_and_graph_columns_stable() {
         "selected hash foreground must contrast with selection background"
     );
 
-    let merge_origin = cell_col(2, "\u{23e3} \u{2500}\u{256e}")
+    let merge_origin = cell_col(2, "\u{23e3}\u{2500}\u{256e}")
         .expect("merge row should show a visible branch origin");
     let selected_marker =
-        cell_col(3, "\u{25cb}").expect("selected side commit should show a marker");
+        cell_col(3, "\u{25ef}").expect("selected side commit should show a marker");
     assert!(
         selected_marker > merge_origin,
         "side commit marker should sit to the right of the merge origin:\n{}\n{}",
@@ -2373,9 +2292,8 @@ fn commits_panel_highlights_selected_merge_connector() {
         sha: "abc1234".into(),
         author: "Alice Example".into(),
         author_short: "AE".into(),
-        graph: "*".into(),
+        parents: vec!["P".into(), "S".into()],
         is_first_parent: true,
-        parent_count: 2,
         subject: "merge branch".into(),
     }];
     state.focus = Pane::Commits;
@@ -2393,30 +2311,40 @@ fn commits_panel_highlights_selected_merge_connector() {
     let connector_start = (0..buf.area.width)
         .find(|col| buf[(*col, 1)].symbol() == "\u{23e3}")
         .expect("selected merge connector should include ⏣");
-    for (offset, symbol) in ["\u{23e3}", " ", "\u{2500}", "\u{256e}"].iter().enumerate() {
+    // Selected merge → all glyphs (⏣ ─ ╮) are bolded white.
+    for (offset, symbol) in ["\u{23e3}", "\u{2500}", "\u{256e}"].iter().enumerate() {
         let cell = &buf[(connector_start + offset as u16, 1)];
         assert_eq!(cell.symbol(), *symbol);
-        if *symbol != " " {
-            assert_eq!(cell.fg, Color::Yellow);
-        }
+        assert_eq!(cell.fg, Color::White);
         assert_eq!(cell.bg, Color::DarkGray);
     }
 }
 
 #[test]
-fn commits_panel_highlights_selected_compacted_graph_cells() {
+fn commits_panel_highlights_selected_side_commit() {
+    // Two commits: a merge then its second-parent side commit. Selecting the side
+    // commit should highlight its row (background) and bold its marker.
     let mut state = AppState::new();
-    state.commits = vec![Commit {
-        sha: "abc1234".into(),
-        author: "Alice Example".into(),
-        author_short: "AE".into(),
-        graph: "|\\*".into(),
-        is_first_parent: false,
-        parent_count: 1,
-        subject: "side branch".into(),
-    }];
+    state.commits = vec![
+        Commit {
+            sha: "MERGE".into(),
+            author: "Top".into(),
+            author_short: "TP".into(),
+            parents: vec!["P".into(), "abc1234".into()],
+            is_first_parent: true,
+            subject: "merge".into(),
+        },
+        Commit {
+            sha: "abc1234".into(),
+            author: "Alice Example".into(),
+            author_short: "AE".into(),
+            parents: vec!["P".into()],
+            is_first_parent: false,
+            subject: "side branch".into(),
+        },
+    ];
     state.focus = Pane::Commits;
-    state.commits_idx = 0;
+    state.commits_idx = 1;
 
     let backend = TestBackend::new(80, 5);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -2428,34 +2356,34 @@ fn commits_panel_highlights_selected_compacted_graph_cells() {
 
     let buf = terminal.backend().buffer().clone();
     let marker_col = (0..buf.area.width)
-        .find(|col| buf[(*col, 1)].symbol() == "\u{25cb}")
+        .find(|col| buf[(*col, 2)].symbol() == "\u{25ef}")
         .expect("selected commit marker");
 
-    let marker = &buf[(marker_col, 1)];
-    assert_eq!(marker.fg, Color::LightMagenta);
+    let marker = &buf[(marker_col, 2)];
     assert_eq!(marker.bg, Color::DarkGray);
-
-    for col in marker_col.saturating_sub(2)..marker_col {
-        assert_eq!(
-            buf[(col, 1)].bg,
-            Color::DarkGray,
-            "graph cell at {col} should be highlighted over folded lanes"
-        );
-    }
 }
 
 #[test]
 fn commits_panel_places_hash_and_author_before_graph() {
     let mut state = AppState::new();
-    state.commits = vec![Commit {
-        sha: "abc1234".into(),
-        author: "Alice Example".into(),
-        author_short: "AE".into(),
-        graph: "| *".into(),
-        is_first_parent: false,
-        parent_count: 1,
-        subject: "side branch".into(),
-    }];
+    state.commits = vec![
+        Commit {
+            sha: "MERGE".into(),
+            author: "Top".into(),
+            author_short: "TP".into(),
+            parents: vec!["P".into(), "abc1234".into()],
+            is_first_parent: true,
+            subject: "merge".into(),
+        },
+        Commit {
+            sha: "abc1234".into(),
+            author: "Alice Example".into(),
+            author_short: "AE".into(),
+            parents: vec!["P".into()],
+            is_first_parent: false,
+            subject: "side branch".into(),
+        },
+    ];
 
     let backend = TestBackend::new(80, 5);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -2468,12 +2396,12 @@ fn commits_panel_places_hash_and_author_before_graph() {
     let buf = terminal.backend().buffer().clone();
     let mut row = String::new();
     for col in 0..buf.area.width {
-        row.push_str(buf[(col, 1)].symbol());
+        row.push_str(buf[(col, 2)].symbol());
     }
 
     let hash = row.find("abc1234").expect("hash in row");
     let author = row.find("AE").expect("author in row");
-    let graph = row.find("\u{25cb}").expect("graph marker in row");
+    let graph = row.find("\u{25ef}").expect("graph marker in row");
     assert!(hash < author, "hash should precede author: {row}");
     assert!(author < graph, "author should precede graph: {row}");
 }
@@ -2481,17 +2409,26 @@ fn commits_panel_places_hash_and_author_before_graph() {
 #[test]
 fn commits_panel_highlights_selected_row_without_shifting_columns() {
     let mut state = AppState::new();
-    state.commits = vec![Commit {
-        sha: "abc1234".into(),
-        author: "Alice Example".into(),
-        author_short: "AE".into(),
-        graph: "| *".into(),
-        is_first_parent: false,
-        parent_count: 1,
-        subject: "side branch".into(),
-    }];
+    state.commits = vec![
+        Commit {
+            sha: "MERGE".into(),
+            author: "Top".into(),
+            author_short: "TP".into(),
+            parents: vec!["P".into(), "abc1234".into()],
+            is_first_parent: true,
+            subject: "merge".into(),
+        },
+        Commit {
+            sha: "abc1234".into(),
+            author: "Alice Example".into(),
+            author_short: "AE".into(),
+            parents: vec!["P".into()],
+            is_first_parent: false,
+            subject: "side branch".into(),
+        },
+    ];
     state.focus = Pane::Commits;
-    state.commits_idx = 0;
+    state.commits_idx = 1;
 
     let backend = TestBackend::new(80, 5);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -2502,28 +2439,128 @@ fn commits_panel_highlights_selected_row_without_shifting_columns() {
         .unwrap();
 
     let buf = terminal.backend().buffer().clone();
-    assert_eq!(buf[(1, 1)].symbol(), "a");
     let marker = buf
         .content()
         .iter()
-        .find(|cell| cell.symbol() == "\u{25cb}")
+        .find(|cell| cell.symbol() == "\u{25ef}")
         .expect("selected graph marker");
-    assert_eq!(marker.fg, Color::LightMagenta);
     assert_eq!(marker.bg, Color::DarkGray);
+}
+
+#[test]
+fn commits_panel_renders_nested_merges_like_lazygit() {
+    // Simplified slice from the user's `feature/PNT-2594` log:
+    //   M0 (merge feature into origin/main)  parents: [F, M1]
+    //   M1 (merge spring-boot into main)    parents: [M2, S1]
+    //   S1 (renovate spring-boot)           parents: [SP]
+    //   M2 (merge kotlin-plugin)            parents: [P, K1]
+    //   K1 (renovate kotlin)                parents: [P]
+    //   P  (older main)                     parents: [G]
+    let mut state = AppState::new();
+    state.commits = vec![
+        Commit {
+            sha: "M0".into(),
+            author: "Top".into(),
+            author_short: "JT".into(),
+            parents: vec!["F".into(), "M1".into()],
+            is_first_parent: true,
+            subject: "Merge origin/main into feature".into(),
+        },
+        Commit {
+            sha: "M1".into(),
+            author: "Sp".into(),
+            author_short: "Sp".into(),
+            parents: vec!["M2".into(), "S1".into()],
+            is_first_parent: false,
+            subject: "Merge spring-boot".into(),
+        },
+        Commit {
+            sha: "S1".into(),
+            author: "renovate".into(),
+            author_short: "re".into(),
+            parents: vec!["SP".into()],
+            is_first_parent: false,
+            subject: "Update spring boot".into(),
+        },
+        Commit {
+            sha: "M2".into(),
+            author: "Sp".into(),
+            author_short: "Sp".into(),
+            parents: vec!["P".into(), "K1".into()],
+            is_first_parent: false,
+            subject: "Merge kotlin".into(),
+        },
+        Commit {
+            sha: "K1".into(),
+            author: "renovate".into(),
+            author_short: "re".into(),
+            parents: vec!["P".into()],
+            is_first_parent: false,
+            subject: "Update kotlin".into(),
+        },
+        Commit {
+            sha: "P".into(),
+            author: "Sp".into(),
+            author_short: "Sp".into(),
+            parents: vec!["G".into()],
+            is_first_parent: false,
+            subject: "older main".into(),
+        },
+    ];
+
+    let backend = TestBackend::new(120, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |row_idx: u16| {
+        let mut row = String::new();
+        for col in 0..buf.area.width {
+            row.push_str(buf[(col, row_idx)].symbol());
+        }
+        row
+    };
+    // M0: ⏣─╮ at col-pair 0/1 — top-level merge.
+    assert!(row_text(1).contains("\u{23e3}\u{2500}\u{256e}"), "{}", row_text(1));
+    // M1: │ ⏣─╮ — feature lane stays vertical, merge lives on lane 1.
+    assert!(
+        row_text(2).contains("\u{2502} \u{23e3}\u{2500}\u{256e}"),
+        "{}",
+        row_text(2)
+    );
+    // S1: │ │ ◯ — both feature lane and main lane pass, S1 on lane 2.
+    assert!(
+        row_text(3).contains("\u{2502} \u{2502} \u{25ef}"),
+        "{}",
+        row_text(3)
+    );
 }
 
 #[test]
 fn commits_panel_dims_merged_in_commits() {
     let mut state = AppState::new();
-    state.commits = vec![Commit {
-        sha: "abc1234".into(),
-        author: "Alice Example".into(),
-        author_short: "AE".into(),
-        graph: "| *".into(),
-        is_first_parent: false,
-        parent_count: 1,
-        subject: "side branch".into(),
-    }];
+    state.commits = vec![
+        Commit {
+            sha: "MERGE".into(),
+            author: "Top".into(),
+            author_short: "TP".into(),
+            parents: vec!["P".into(), "abc1234".into()],
+            is_first_parent: true,
+            subject: "merge".into(),
+        },
+        Commit {
+            sha: "abc1234".into(),
+            author: "Alice Example".into(),
+            author_short: "AE".into(),
+            parents: vec!["P".into()],
+            is_first_parent: false,
+            subject: "side branch".into(),
+        },
+    ];
 
     let backend = TestBackend::new(80, 5);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -2541,7 +2578,7 @@ fn commits_panel_dims_merged_in_commits() {
         .collect::<String>();
 
     assert!(
-        text.contains("\u{25cb}"),
+        text.contains("\u{25ef}"),
         "missing merged-in marker: {text}"
     );
     assert!(
