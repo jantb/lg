@@ -114,6 +114,37 @@ fn trace_scroll(message: impl AsRef<str>) {
     trace_event("SCROLL", message);
 }
 
+fn trace_lifecycle(message: impl AsRef<str>) {
+    trace_event("LIFECYCLE", message);
+}
+
+fn trace_state_summary(state: &AppState) -> String {
+    format!(
+        "focus={:?} modal={:?} should_quit={} diff_offset={} max_offset={} viewport={} width={} source={:?} pending_action={} jobs={{gen:{} push:{} checkout:{} op:{} fetch:{} refresh:{} release:{} commit_log:{} diff:{} review:{} assist:{} workflow:{}}}",
+        state.focus,
+        state.modal,
+        state.should_quit,
+        state.diff_offset,
+        panel::main::max_scroll_offset(state),
+        state.diff_viewport_height,
+        state.diff_viewport_width,
+        state.diff_source,
+        state.pending_action.is_some(),
+        state.generation.is_some(),
+        state.push_job.is_some(),
+        state.checkout_job.is_some(),
+        state.operation_job.is_some(),
+        state.fetch_job.is_some(),
+        state.refresh_job.is_some(),
+        state.release_status_job.is_some(),
+        state.commit_log_job.is_some(),
+        state.diff_job.is_some(),
+        state.review_job.is_some(),
+        state.review_assist_job.is_some(),
+        state.workflow_job.is_some(),
+    )
+}
+
 fn trace_panic(info: &std::panic::PanicHookInfo<'_>) {
     let payload = info
         .payload()
@@ -150,10 +181,15 @@ fn drain_pending_terminal_events() {
 }
 
 fn restore_terminal<W: Write>(output: &mut W) {
+    trace_lifecycle("restore_terminal begin");
     let _ = execute!(output, DisableMouseCapture);
+    trace_lifecycle("restore_terminal mouse_disabled");
     drain_pending_terminal_events();
+    trace_lifecycle("restore_terminal events_drained");
     let _ = execute!(output, LeaveAlternateScreen);
+    trace_lifecycle("restore_terminal left_alternate_screen");
     let _ = disable_raw_mode();
+    trace_lifecycle("restore_terminal raw_mode_disabled");
 }
 
 // ─── HeadlessApp ─────────────────────────────────────────────────────────────
@@ -345,11 +381,15 @@ where
 
 impl App {
     pub fn new() -> Result<Self> {
+        trace_lifecycle("app_new begin");
         if !crate::git::is_repo() {
+            trace_lifecycle("app_new not_git_repo");
             anyhow::bail!("not a git repository (or any parent up to mount point)");
         }
 
+        trace_lifecycle("app_new watch_current_dir begin");
         let (_file_watcher, file_events) = watch_current_dir()?;
+        trace_lifecycle("app_new watch_current_dir end");
 
         let prev_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
@@ -358,13 +398,19 @@ impl App {
             restore_terminal(&mut stdout);
             prev_hook(info);
         }));
+        trace_lifecycle("app_new panic_hook_installed");
 
+        trace_lifecycle("app_new enable_raw_mode begin");
         enable_raw_mode().context("enable raw mode")?;
+        trace_lifecycle("app_new enable_raw_mode end");
         let mut stdout = std::io::stdout();
+        trace_lifecycle("app_new enter_alt_mouse begin");
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture).context("enter alt screen")?;
+        trace_lifecycle("app_new enter_alt_mouse end");
 
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend).context("create terminal")?;
+        trace_lifecycle("app_new terminal_created");
 
         let mut app = Self {
             state: AppState::new(),
@@ -375,18 +421,45 @@ impl App {
                 - Duration::from_secs(BACKGROUND_FETCH_INTERVAL_SECS),
         };
         prime_branches(&mut app.state);
+        trace_lifecycle(format!(
+            "app_new prime_branches end {}",
+            trace_state_summary(&app.state)
+        ));
         app.start_refresh(true);
+        trace_lifecycle(format!(
+            "app_new start_refresh end {}",
+            trace_state_summary(&app.state)
+        ));
         app.start_fetch();
+        trace_lifecycle(format!(
+            "app_new start_fetch end {}",
+            trace_state_summary(&app.state)
+        ));
         Ok(app)
     }
 
     pub fn run(&mut self) -> Result<()> {
+        trace_lifecycle(format!("run enter {}", trace_state_summary(&self.state)));
+        let mut loop_iter: u64 = 0;
         loop {
+            loop_iter = loop_iter.saturating_add(1);
             if self.state.should_quit {
+                trace_lifecycle(format!(
+                    "run loop={loop_iter} quit_flag_seen {}",
+                    trace_state_summary(&self.state)
+                ));
                 break;
             }
 
+            trace_lifecycle(format!(
+                "run loop={loop_iter} render_begin {}",
+                trace_state_summary(&self.state)
+            ));
             self.render()?;
+            trace_lifecycle(format!(
+                "run loop={loop_iter} render_end {}",
+                trace_state_summary(&self.state)
+            ));
 
             self.drain_generation();
             self.drain_review_assist();
@@ -402,6 +475,10 @@ impl App {
             self.drain_workflow_job()?;
             self.drain_file_events()?;
             self.maybe_start_periodic_fetch();
+            trace_lifecycle(format!(
+                "run loop={loop_iter} drains_end {}",
+                trace_state_summary(&self.state)
+            ));
 
             let poll_ms = if self.state.generation.is_some()
                 || self.state.push_job.is_some()
@@ -420,18 +497,44 @@ impl App {
             } else {
                 TICK_MS
             };
+            trace_lifecycle(format!(
+                "run loop={loop_iter} poll_begin poll_ms={poll_ms} {}",
+                trace_state_summary(&self.state)
+            ));
             if event::poll(Duration::from_millis(poll_ms))? {
-                match event::read()? {
+                trace_lifecycle(format!("run loop={loop_iter} poll_ready"));
+                let input_event = event::read()?;
+                trace_lifecycle(format!("run loop={loop_iter} event={input_event:?}"));
+                match input_event {
                     Event::Key(k) => self.handle_key(k)?,
                     Event::Mouse(m) => self.handle_mouse(m)?,
-                    Event::Resize(_, _) => {}
-                    _ => {}
+                    Event::Resize(width, height) => {
+                        trace_lifecycle(format!(
+                            "run loop={loop_iter} resize width={width} height={height}"
+                        ));
+                    }
+                    other => {
+                        trace_lifecycle(format!("run loop={loop_iter} ignored_event={other:?}"));
+                    }
                 }
+                trace_lifecycle(format!(
+                    "run loop={loop_iter} event_handled {}",
+                    trace_state_summary(&self.state)
+                ));
+            } else {
+                trace_lifecycle(format!("run loop={loop_iter} poll_timeout"));
             }
 
             // Dispatch pending IO action.
             if let Some(action) = self.state.pending_action.take() {
+                trace_lifecycle(format!(
+                    "run loop={loop_iter} dispatch_pending action={action:?}"
+                ));
                 self.dispatch_pending(action);
+                trace_lifecycle(format!(
+                    "run loop={loop_iter} dispatch_pending_end {}",
+                    trace_state_summary(&self.state)
+                ));
             }
 
             // Expire stale status messages.
@@ -441,6 +544,7 @@ impl App {
                 }
             }
         }
+        trace_lifecycle(format!("run exit {}", trace_state_summary(&self.state)));
         Ok(())
     }
 
@@ -1343,7 +1447,12 @@ impl App {
     }
 
     pub fn handle_key(&mut self, k: KeyEvent) -> Result<()> {
+        trace_lifecycle(format!(
+            "handle_key begin key={k:?} {}",
+            trace_state_summary(&self.state)
+        ));
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
+            trace_lifecycle("handle_key quit_request reason=ctrl-c");
             self.state.should_quit = true;
             return Ok(());
         }
@@ -1394,6 +1503,7 @@ impl App {
                 return Ok(());
             }
             KeyCode::Char('q') | KeyCode::Esc => {
+                trace_lifecycle(format!("handle_key quit_request reason=key key={k:?}"));
                 self.state.should_quit = true;
                 return Ok(());
             }
@@ -1670,6 +1780,11 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
+        trace_lifecycle(format!(
+            "app_drop begin {}",
+            trace_state_summary(&self.state)
+        ));
         restore_terminal(self.terminal.backend_mut());
+        trace_lifecycle("app_drop end");
     }
 }
