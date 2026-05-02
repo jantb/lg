@@ -2168,7 +2168,46 @@ fn commits_panel_extends_merge_connector_to_folded_target_lane() {
 }
 
 #[test]
-fn commits_panel_keeps_subjects_aligned_after_merge_connector() {
+fn commits_panel_renders_folded_join_rows_as_continuous_connectors() {
+    let mut state = AppState::new();
+    state.commits = vec![Commit {
+        sha: "abc1234".into(),
+        author: "Alice Example".into(),
+        author_short: "AE".into(),
+        graph: "* / /".into(),
+        is_first_parent: true,
+        parent_count: 1,
+        subject: "join lanes".into(),
+    }];
+
+    let backend = TestBackend::new(80, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let marker_col = (0..buf.area.width)
+        .find(|col| buf[(*col, 1)].symbol() == "\u{25cb}")
+        .expect("commit marker should be rendered");
+    let expected = [
+        ("\u{25cb}", 0u16),
+        ("\u{2500}", 1),
+        ("\u{256f}", 2),
+        ("\u{2500}", 3),
+        ("\u{256f}", 4),
+        (" ", 5),
+        ("j", 6),
+    ];
+    for (symbol, offset) in expected {
+        assert_eq!(buf[(marker_col + offset, 1)].symbol(), symbol);
+    }
+}
+
+#[test]
+fn commits_panel_uses_compact_graph_prefix_like_git_log() {
     let mut state = AppState::new();
     state.commits = vec![
         Commit {
@@ -2218,11 +2257,17 @@ fn commits_panel_keeps_subjects_aligned_after_merge_connector() {
     };
     let merge_row = row_text(1);
     let side_row = row_text(2);
+    let merge_subject = cell_col(1, "merge branch").expect("merge subject");
+    let side_marker = cell_col(2, "\u{25cb}").expect("side marker");
+    let side_subject = cell_col(2, "side branch").expect("side subject");
 
-    assert_eq!(
-        cell_col(1, "merge branch"),
-        cell_col(2, "side branch"),
-        "subjects should use the same column:\n{merge_row}\n{side_row}"
+    assert!(
+        side_subject > side_marker,
+        "side subject should follow its graph prefix:\n{side_row}"
+    );
+    assert_ne!(
+        merge_subject, side_subject,
+        "subjects should start after each row's visible graph prefix, not after a global graph column:\n{merge_row}\n{side_row}"
     );
 }
 
@@ -2317,18 +2362,8 @@ fn commits_panel_keeps_selected_hash_visible_and_graph_columns_stable() {
         row_text(2),
         selected_row
     );
-    assert_eq!(
-        cell_col(1, "direct branch commit"),
-        cell_col(2, "merge side branch")
-    );
-    assert_eq!(
-        cell_col(2, "merge side branch"),
-        cell_col(3, "side branch commit")
-    );
-    assert_eq!(
-        cell_col(3, "side branch commit"),
-        cell_col(4, "second side commit")
-    );
+    assert!(cell_col(3, "side branch commit").is_some());
+    assert!(cell_col(4, "second side commit").is_some());
 }
 
 #[test]

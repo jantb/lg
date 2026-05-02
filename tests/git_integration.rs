@@ -781,6 +781,124 @@ fn list_commits_compacts_graph_rows_for_complex_merges() {
 }
 
 #[test]
+fn list_commits_renders_repeated_main_merges_into_feature_branch() {
+    let dir = init_repo();
+    fs::write(dir.path().join("base.txt"), "base").unwrap();
+    stage_in(dir.path(), "base.txt");
+    commit_in(dir.path(), "base");
+
+    git_ok(dir.path(), &["checkout", "-b", "feature"]);
+    fs::write(dir.path().join("feature.txt"), "feature-1").unwrap();
+    stage_in(dir.path(), "feature.txt");
+    commit_in(dir.path(), "feature-1");
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("main-1.txt"), "main-1").unwrap();
+    stage_in(dir.path(), "main-1.txt");
+    commit_in(dir.path(), "main-1");
+
+    git_ok(dir.path(), &["checkout", "feature"]);
+    git_ok(
+        dir.path(),
+        &["merge", "--no-ff", "main", "-m", "merge-main-1"],
+    );
+    fs::write(dir.path().join("feature.txt"), "feature-2").unwrap();
+    stage_in(dir.path(), "feature.txt");
+    commit_in(dir.path(), "feature-2");
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("main-2.txt"), "main-2").unwrap();
+    stage_in(dir.path(), "main-2.txt");
+    commit_in(dir.path(), "main-2");
+
+    git_ok(dir.path(), &["checkout", "feature"]);
+    git_ok(
+        dir.path(),
+        &["merge", "--no-ff", "main", "-m", "merge-main-2"],
+    );
+    fs::write(dir.path().join("feature.txt"), "feature-3").unwrap();
+    stage_in(dir.path(), "feature.txt");
+    commit_in(dir.path(), "feature-3");
+
+    let raw = git(
+        dir.path(),
+        &[
+            "log",
+            "--graph",
+            "--format=%x1f%h%x1f%P%x1f%s",
+            "-n",
+            "30",
+            "feature",
+        ],
+    );
+    assert!(
+        raw.status.success(),
+        "git log failed: {}",
+        String::from_utf8_lossy(&raw.stderr)
+    );
+    let raw_text = String::from_utf8_lossy(&raw.stdout);
+    assert!(
+        raw_text
+            .lines()
+            .any(|line| !line.contains('\x1f') && line.contains('\\')),
+        "test setup should include connector-only rows for main merges:\n{raw_text}"
+    );
+
+    let _cwd = CwdGuard::new(dir.path());
+    let commits = lg::git::list_commits_for_ref("feature", 30).unwrap();
+
+    assert!(
+        commits.iter().all(|commit| !commit.is_graph_row()),
+        "graph-only rows should be folded into visible commit rows: {commits:?}"
+    );
+    let merge_main = commits
+        .iter()
+        .find(|commit| commit.subject == "merge-main-1")
+        .expect("merge-main-1 commit");
+    assert!(
+        merge_main.graph.contains('\\'),
+        "main merge row should retain folded branch-off geometry: {merge_main:?}"
+    );
+
+    let mut state = lg::state::AppState::new();
+    state.commits = commits;
+    let backend = ratatui::backend::TestBackend::new(120, 20);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            lg::panel::commits::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let cell_col = |row_idx: u16, needle: &str| {
+        let needle_chars: Vec<char> = needle.chars().collect();
+        (0..buf.area.width).find(|start| {
+            needle_chars.iter().enumerate().all(|(offset, ch)| {
+                let col = start.saturating_add(offset as u16);
+                col < buf.area.width && buf[(col, row_idx)].symbol() == ch.to_string()
+            })
+        })
+    };
+    let feature_3_col = cell_col(1, "feature-3").expect("feature-3 rendered");
+    let merge_2_col = cell_col(2, "merge-main-2").expect("merge-main-2 rendered");
+    assert!(
+        feature_3_col < merge_2_col,
+        "plain commits should not be padded to the widest graph prefix"
+    );
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(
+        rendered.contains('\u{23e3}') && rendered.contains('\u{256e}'),
+        "rendered main merges should include visible merge connectors: {rendered}"
+    );
+}
+
+#[test]
 fn branch_log_renders_decorated_graph_log() {
     let dir = init_repo();
     fs::write(dir.path().join("a.txt"), "one").unwrap();

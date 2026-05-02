@@ -206,9 +206,6 @@ fn graph_spans(commit: &crate::git::Commit, width: usize) -> Vec<Span<'static>> 
         spans.push(Span::styled(symbol.to_string(), style));
     }
 
-    for _ in spans.len()..width {
-        spans.push(Span::raw(" "));
-    }
     spans.push(Span::raw(" "));
     spans
 }
@@ -219,6 +216,7 @@ fn graph_cells(commit: &crate::git::Commit, graph: &str) -> (Vec<char>, Vec<usiz
         return (cells, Vec::new());
     };
     if commit.parent_count <= 1 {
+        normalize_join_row(&mut cells, star_idx);
         return (cells, Vec::new());
     }
 
@@ -232,6 +230,24 @@ fn graph_cells(commit: &crate::git::Commit, graph: &str) -> (Vec<char>, Vec<usiz
     }
     cells[end_idx] = '\u{256e}';
     (cells, (star_idx..=end_idx).collect())
+}
+
+fn normalize_join_row(cells: &mut [char], star_idx: usize) {
+    let Some(last_join_idx) = cells
+        .iter()
+        .rposition(|ch| matches!(*ch, '/' | '\\' | '-' | '_'))
+    else {
+        return;
+    };
+    if last_join_idx <= star_idx {
+        return;
+    }
+
+    for cell in &mut cells[star_idx + 1..last_join_idx] {
+        if *cell == ' ' {
+            *cell = '-';
+        }
+    }
 }
 
 fn merge_connector_end(cells: &[char], star_idx: usize) -> usize {
