@@ -55,6 +55,9 @@ struct ReleaseStatusCacheKey {
 static RELEASE_STATUS_CACHE: OnceLock<Mutex<HashMap<ReleaseStatusCacheKey, BranchReleaseStatus>>> =
     OnceLock::new();
 
+const SAFETY_REF_PREFIX: &str = "lg/backup/";
+const SAFETY_REF_KEEP: usize = 20;
+
 fn release_status_cache() -> &'static Mutex<HashMap<ReleaseStatusCacheKey, BranchReleaseStatus>> {
     RELEASE_STATUS_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -273,6 +276,8 @@ pub struct Commit {
     pub sha: String,
     pub author: String,
     pub author_short: String,
+    pub graph: String,
+    pub is_first_parent: bool,
     pub parent_count: usize,
     pub subject: String,
 }
@@ -477,15 +482,18 @@ pub fn list_commits(limit: usize) -> Result<Vec<Commit>> {
 pub fn list_commits_for_ref(reference: &str, limit: usize) -> Result<Vec<Commit>> {
     trace_enter("list_commits");
     let n = limit.to_string();
-    let fmt = "--format=%h\x1f%an\x1f%P\x1f%s";
-    let result = run(&["log", fmt, "-n", &n, reference]);
+    let first_parent = first_parent_shas(reference, limit).unwrap_or_default();
+    let fmt = "--format=%x1f%h%x1f%an%x1f%P%x1f%s";
+    let result = run(&["log", "--graph", fmt, "-n", &n, reference]);
     match result {
         Ok(out) => {
             let text = String::from_utf8_lossy(&out.stdout);
             let commits = text
                 .lines()
                 .filter_map(|line| {
-                    let mut parts = line.splitn(4, '\x1f');
+                    let marker = line.find('\x1f')?;
+                    let graph = line[..marker].trim_end().to_owned();
+                    let mut parts = line[marker + 1..].splitn(4, '\x1f');
                     let sha = parts.next()?.trim().to_owned();
                     let author = parts.next().unwrap_or("").trim().to_owned();
                     let parents = parts.next().unwrap_or("").trim();
@@ -493,10 +501,13 @@ pub fn list_commits_for_ref(reference: &str, limit: usize) -> Result<Vec<Commit>
                     if sha.is_empty() {
                         return None;
                     }
+                    let is_first_parent = first_parent.contains(&sha);
                     Some(Commit {
                         sha,
                         author_short: short_author_name(&author),
                         author,
+                        graph,
+                        is_first_parent,
                         parent_count: parents.split_whitespace().count(),
                         subject,
                     })
@@ -513,6 +524,24 @@ pub fn list_commits_for_ref(reference: &str, limit: usize) -> Result<Vec<Commit>
             }
         }
     }
+}
+
+fn first_parent_shas(reference: &str, limit: usize) -> Result<HashSet<String>> {
+    let n = limit.to_string();
+    let out = run(&[
+        "rev-list",
+        "--first-parent",
+        "--abbrev-commit",
+        "-n",
+        &n,
+        reference,
+    ])?;
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|sha| !sha.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
 }
 
 fn short_author_name(author: &str) -> String {
@@ -1910,9 +1939,40 @@ fn create_safety_ref(label: &str) -> Result<String> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let name = format!("lg/backup/{clean_label}-{clean_branch}-{ts}");
+    let name = format!("{SAFETY_REF_PREFIX}{clean_label}-{clean_branch}-{ts}");
     run(&["branch", &name, "HEAD"])?;
+    prune_safety_refs(SAFETY_REF_KEEP)?;
     Ok(name)
+}
+
+fn prune_safety_refs(keep: usize) -> Result<usize> {
+    let out = run(&[
+        "for-each-ref",
+        "--format=%(refname:short)",
+        &format!("refs/heads/{SAFETY_REF_PREFIX}"),
+    ])?;
+    let mut refs: Vec<(String, u128)> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|name| name.starts_with(SAFETY_REF_PREFIX))
+        .filter_map(|name| safety_ref_timestamp(name).map(|ts| (name.to_string(), ts)))
+        .collect();
+    refs.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let mut deleted = 0usize;
+    for (name, _) in refs.into_iter().skip(keep) {
+        run(&["update-ref", "-d", &format!("refs/heads/{name}")])?;
+        deleted += 1;
+    }
+    Ok(deleted)
+}
+
+fn safety_ref_timestamp(name: &str) -> Option<u128> {
+    name.strip_prefix(SAFETY_REF_PREFIX)?
+        .rsplit_once('-')?
+        .1
+        .parse()
+        .ok()
 }
 
 pub fn unpushed_shas() -> Result<std::collections::HashSet<String>> {

@@ -10,7 +10,7 @@ use ratatui::{
     Terminal,
     backend::TestBackend,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
-    style::Color,
+    style::{Color, Modifier},
 };
 use std::collections::HashSet;
 
@@ -1114,6 +1114,8 @@ fn commits_panel_shows_author_names_with_distinct_colors() {
             sha: "abc1234".into(),
             author: "Alice Example".into(),
             author_short: "Alice".into(),
+            graph: "*".into(),
+            is_first_parent: true,
             parent_count: 1,
             subject: "add feature".into(),
         },
@@ -1121,6 +1123,8 @@ fn commits_panel_shows_author_names_with_distinct_colors() {
             sha: "def5678".into(),
             author: "Bob Example".into(),
             author_short: "Bob".into(),
+            graph: "*".into(),
+            is_first_parent: true,
             parent_count: 1,
             subject: "fix bug".into(),
         },
@@ -1156,6 +1160,8 @@ fn commits_panel_marks_merge_commits() {
         sha: "abc1234".into(),
         author: "Alice Example".into(),
         author_short: "Alice".into(),
+        graph: "*".into(),
+        is_first_parent: true,
         parent_count: 2,
         subject: "merge branch".into(),
     }];
@@ -1177,4 +1183,44 @@ fn commits_panel_marks_merge_commits() {
         .collect::<String>();
 
     assert!(text.contains("\u{25c6}"), "missing merge marker: {text}");
+}
+
+#[test]
+fn commits_panel_dims_merged_in_commits() {
+    let mut state = AppState::new();
+    state.commits = vec![Commit {
+        sha: "abc1234".into(),
+        author: "Alice Example".into(),
+        author_short: "Alice".into(),
+        graph: "| *".into(),
+        is_first_parent: false,
+        parent_count: 1,
+        subject: "side branch".into(),
+    }];
+
+    let backend = TestBackend::new(80, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let text = buf
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(
+        text.contains("\u{25cb}"),
+        "missing merged-in marker: {text}"
+    );
+    assert!(
+        buf.content()
+            .iter()
+            .any(|cell| cell.symbol() == "s" && cell.modifier.contains(Modifier::DIM)),
+        "merged-in subject should be dimmed"
+    );
 }

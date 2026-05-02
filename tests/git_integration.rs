@@ -471,6 +471,8 @@ fn list_commits_includes_short_author_name() {
 
     assert_eq!(commits[0].author, "Alice Example");
     assert_eq!(commits[0].author_short, "Alice");
+    assert_eq!(commits[0].graph.trim(), "*");
+    assert!(commits[0].is_first_parent);
     assert_eq!(commits[0].subject, "add authored commit");
 }
 
@@ -525,6 +527,13 @@ fn list_commits_marks_merge_commits_with_multiple_parents() {
 
     assert_eq!(commits[0].subject, "merge feature");
     assert_eq!(commits[0].parent_count, 2);
+    assert!(commits[0].is_first_parent);
+    assert!(
+        commits
+            .iter()
+            .any(|commit| commit.subject == "feature side" && !commit.is_first_parent),
+        "merged-in feature commit should not be on the first-parent branch: {commits:?}"
+    );
 }
 
 #[test]

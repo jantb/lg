@@ -33,36 +33,39 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         state.activity_label().is_some(),
     );
 
+    let graph_width = state
+        .commits
+        .iter()
+        .map(|commit| commit.graph.chars().count())
+        .max()
+        .unwrap_or(1)
+        .min(24);
+
     let items: Vec<ListItem> = state
         .commits
         .iter()
         .map(|c| {
             let subject_style = if state.unpushed_shas.contains(&c.sha) {
                 Style::default().fg(Color::Red)
+            } else if c.is_first_parent {
+                Style::default()
             } else {
-                Style::default()
+                Style::default().fg(Color::Gray).add_modifier(Modifier::DIM)
             };
-            let author_style = Style::default()
-                .fg(author_color(&c.author))
-                .add_modifier(Modifier::BOLD);
-            let merge_style = if c.parent_count > 1 {
+            let author_style = if c.is_first_parent {
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(author_color(&c.author))
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::DarkGray)
             };
-            let merge_marker = if c.parent_count > 1 {
-                "\u{25c6} "
-            } else {
-                "  "
-            };
-            let line = Line::from(vec![
-                Span::styled(merge_marker, merge_style),
+            let mut spans = graph_spans(c, graph_width);
+            spans.extend([
                 Span::styled(format!("{} ", c.sha), Style::default().fg(Color::DarkGray)),
                 Span::styled(format!("{:<12} ", c.author_short), author_style),
                 Span::styled(c.subject.clone(), subject_style),
             ]);
+            let line = Line::from(spans);
             ListItem::new(line)
         })
         .collect();
@@ -102,6 +105,75 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn graph_spans(commit: &crate::git::Commit, width: usize) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut visible_col = 0usize;
+    let graph = if commit.graph.trim().is_empty() {
+        "*"
+    } else {
+        commit.graph.as_str()
+    };
+
+    for ch in graph.chars().take(width) {
+        let symbol = graph_symbol(ch, commit);
+        let color = if ch == '*' {
+            commit_marker_color(commit)
+        } else {
+            graph_column_color(visible_col)
+        };
+        let style = if commit.is_first_parent || ch == '*' {
+            Style::default().fg(color).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(color)
+        };
+        spans.push(Span::styled(symbol.to_string(), style));
+        visible_col += 1;
+    }
+
+    for _ in visible_col..width {
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::raw(" "));
+    spans
+}
+
+fn graph_symbol(ch: char, commit: &crate::git::Commit) -> char {
+    match ch {
+        '*' if commit.parent_count > 1 => '\u{25c6}',
+        '*' if commit.is_first_parent => '\u{25cf}',
+        '*' => '\u{25cb}',
+        '|' => '\u{2502}',
+        '/' => '\u{2571}',
+        '\\' => '\u{2572}',
+        '-' | '_' => '\u{2500}',
+        other => other,
+    }
+}
+
+fn commit_marker_color(commit: &crate::git::Commit) -> Color {
+    if commit.parent_count > 1 {
+        Color::Yellow
+    } else if commit.is_first_parent {
+        Color::LightGreen
+    } else {
+        Color::LightMagenta
+    }
+}
+
+fn graph_column_color(col: usize) -> Color {
+    const COLORS: &[Color] = &[
+        Color::LightGreen,
+        Color::LightMagenta,
+        Color::LightCyan,
+        Color::Yellow,
+        Color::Cyan,
+        Color::Magenta,
+        Color::LightBlue,
+        Color::LightYellow,
+    ];
+    COLORS[col % COLORS.len()]
 }
 
 fn author_color(author: &str) -> Color {
