@@ -277,6 +277,7 @@ pub enum PendingAction {
     UnstageAll,
     StagePath(String),
     UnstagePath(String),
+    OpenFile(String),
 }
 
 pub struct AppState {
@@ -523,6 +524,7 @@ impl AppState {
                 Some(PendingAction::UnstageAll | PendingAction::UnstagePath(_)) => {
                     Some("unstaging")
                 }
+                Some(PendingAction::OpenFile(_)) => Some("opening file"),
                 None => None,
             }
         }

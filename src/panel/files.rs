@@ -170,6 +170,16 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Char('U') => {
             state.pending_action = Some(PendingAction::UnstageAll);
         }
+        KeyCode::Char('o') => {
+            if let Some(row) = rows.get(state.files_idx) {
+                if let TreeKind::File { entry_idx } = row.kind {
+                    let path = state.files[entry_idx].path.clone();
+                    state.pending_action = Some(PendingAction::OpenFile(path));
+                } else {
+                    state.set_status("select a file to open", false);
+                }
+            }
+        }
         KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
             if let Some(row) = rows.get(state.files_idx) {
                 if let TreeKind::Folder { expanded, .. } = row.kind {

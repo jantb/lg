@@ -13,7 +13,8 @@ use crate::{
     ui,
 };
 
-const MERGE_CONNECTOR: &str = "\u{23e3}\u{2500}\u{256e}";
+const MERGE_MARKER: char = '\u{23e3}';
+const MERGE_CONNECTOR: &str = "\u{2500}\u{256e}";
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let count = if state.commits.is_empty() {
@@ -145,8 +146,15 @@ fn graph_spans(commit: &crate::git::Commit, width: usize) -> Vec<Span<'static>> 
         if visible_col >= width {
             break;
         }
-        let symbol = graph_symbol(ch);
-        let color = if ch == '*' {
+        let is_merge_marker = ch == '*' && commit.parent_count > 1;
+        let symbol = if is_merge_marker {
+            MERGE_MARKER
+        } else {
+            graph_symbol(ch)
+        };
+        let color = if is_merge_marker {
+            Color::Yellow
+        } else if ch == '*' {
             commit_marker_color(commit)
         } else {
             graph_column_color(visible_col)

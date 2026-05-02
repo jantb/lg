@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -290,6 +290,13 @@ pub struct AuthorConfig {
     pub email: Option<String>,
     pub local_name: Option<String>,
     pub local_email: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdeOpenCommand {
+    pub program: String,
+    pub args: Vec<String>,
+    pub line: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -598,6 +605,84 @@ pub fn author_config() -> Result<AuthorConfig> {
 pub fn repo_root() -> Result<String> {
     let out = run(&["rev-parse", "--show-toplevel"])?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+pub fn ide_open_command(path: &str) -> Result<IdeOpenCommand> {
+    let root = repo_root()?;
+    let line = first_changed_line(path).unwrap_or(1);
+    build_ide_open_command(&root, path, line)
+        .ok_or_else(|| anyhow::anyhow!("no JetBrains IDE mapping for {path}"))
+}
+
+pub fn open_file_in_ide(path: &str) -> Result<String> {
+    let command = ide_open_command(path)?;
+    Command::new(&command.program)
+        .args(&command.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to launch {}", command.program))?;
+    Ok(format!(
+        "opened {path} in {} at line {}",
+        command.program, command.line
+    ))
+}
+
+fn build_ide_open_command(root: &str, path: &str, line: usize) -> Option<IdeOpenCommand> {
+    let program = ide_program_for_path(path)?;
+    let file = {
+        let path = Path::new(path);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            Path::new(root).join(path)
+        }
+    };
+    let line = line.max(1);
+    Some(IdeOpenCommand {
+        program: program.to_string(),
+        args: vec![
+            root.to_string(),
+            "--line".to_string(),
+            line.to_string(),
+            file.to_string_lossy().into_owned(),
+        ],
+        line,
+    })
+}
+
+fn ide_program_for_path(path: &str) -> Option<&'static str> {
+    match Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+    {
+        Some("kt" | "kts" | "java") => Some("idea"),
+        Some("rs") => Some("rustrover"),
+        _ => None,
+    }
+}
+
+fn first_changed_line(path: &str) -> Option<usize> {
+    let diff = file_diff(path).ok()?;
+    diff.lines().find_map(diff_hunk_start_line)
+}
+
+fn diff_hunk_start_line(line: &str) -> Option<usize> {
+    if !line.starts_with("@@ ") {
+        return None;
+    }
+    parse_hunk_side(line, '+').or_else(|| parse_hunk_side(line, '-'))
+}
+
+fn parse_hunk_side(line: &str, marker: char) -> Option<usize> {
+    let start = line.find(marker)? + marker.len_utf8();
+    let digits: String = line[start..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    let parsed = digits.parse::<usize>().ok()?;
+    (parsed > 0).then_some(parsed)
 }
 
 pub fn set_local_author(name: &str, email: &str) -> Result<()> {
@@ -2453,13 +2538,40 @@ pub fn counts_ahead_behind() -> Result<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileEntry, label_commit_patch, parse_porcelain, parse_porcelain_xy};
+    use super::{
+        FileEntry, build_ide_open_command, diff_hunk_start_line, label_commit_patch,
+        parse_porcelain, parse_porcelain_xy,
+    };
 
     #[test]
     fn parse_porcelain_empty() {
         let (u, s) = parse_porcelain(b"");
         assert!(u.is_empty());
         assert!(s.is_empty());
+    }
+
+    #[test]
+    fn ide_open_command_uses_jetbrains_launcher_for_source_type() {
+        let kotlin =
+            build_ide_open_command("/repo", "src/main/kotlin/App.kt", 42).expect("kotlin command");
+        assert_eq!(kotlin.program, "idea");
+        assert_eq!(
+            kotlin.args,
+            vec!["/repo", "--line", "42", "/repo/src/main/kotlin/App.kt"]
+        );
+
+        let rust = build_ide_open_command("/repo", "src/main.rs", 7).expect("rust command");
+        assert_eq!(rust.program, "rustrover");
+        assert_eq!(rust.args, vec!["/repo", "--line", "7", "/repo/src/main.rs"]);
+
+        assert!(build_ide_open_command("/repo", "README.md", 1).is_none());
+    }
+
+    #[test]
+    fn diff_hunk_start_line_reads_changed_line_number() {
+        assert_eq!(diff_hunk_start_line("@@ -12,3 +42,8 @@ fun main"), Some(42));
+        assert_eq!(diff_hunk_start_line("@@ -9,0 +0,0 @@ removed"), Some(9));
+        assert_eq!(diff_hunk_start_line("diff --git a/a b/a"), None);
     }
 
     #[test]

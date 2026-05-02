@@ -89,6 +89,24 @@ fn files_panel_k_moves_selection_up() {
     assert_eq!(state.files_idx, 1);
 }
 
+#[test]
+fn files_panel_o_opens_selected_source_file() {
+    let mut state = make_state_with_files();
+    state.files = vec![FileEntry {
+        path: "main.rs".into(),
+        x: ' ',
+        y: 'M',
+    }];
+    state.files_idx = 1;
+
+    panel::files::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::OpenFile("main.rs".into()))
+    );
+}
+
 // ── Focus cycling ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -834,6 +852,67 @@ fn branch_source_renders_log_view() {
 
     assert!(text.contains("Log"), "missing log title: {text}");
     assert!(text.contains("abc123"), "missing commit id: {text}");
+}
+
+#[test]
+fn diff_pane_o_opens_file_source() {
+    let mut state = AppState::new();
+    state.diff_source = lg::state::DiffSource::File("src/main.rs".into());
+
+    panel::main::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::OpenFile("src/main.rs".into()))
+    );
+}
+
+#[test]
+fn diff_pane_o_uses_diff_file_at_scroll_offset() {
+    let mut state = AppState::new();
+    state.diff_source = lg::state::DiffSource::All;
+    state.diff_offset = 4;
+    state.diff_text = [
+        "diff --git a/src/first.kt b/src/first.kt",
+        "--- a/src/first.kt",
+        "+++ b/src/first.kt",
+        "@@ -1 +1 @@",
+        "diff --git a/src/second.rs b/src/second.rs",
+        "--- a/src/second.rs",
+        "+++ b/src/second.rs",
+    ]
+    .join("\n");
+
+    panel::main::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::OpenFile("src/second.rs".into()))
+    );
+}
+
+#[test]
+fn review_pane_o_opens_selected_source_file() {
+    let mut state = AppState::new();
+    state.diff_source = lg::state::DiffSource::Review;
+    state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![ReviewNode {
+            id: "branch:file:0".into(),
+            parent: None,
+            depth: 0,
+            title: "src/main/kotlin/App.kt in fun main - updates greeting".into(),
+            body: Vec::new(),
+            context: Vec::new(),
+        }],
+    });
+
+    panel::main::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::OpenFile("src/main/kotlin/App.kt".into()))
+    );
 }
 
 #[test]
@@ -1839,7 +1918,6 @@ fn commits_panel_marks_merge_commits() {
         .map(|cell| cell.symbol())
         .collect::<String>();
 
-    assert!(text.contains("\u{25cb}"), "missing merge marker: {text}");
     assert!(
         text.contains("\u{23e3}\u{2500}\u{256e}"),
         "missing merge connector: {text}"
@@ -1873,13 +1951,13 @@ fn commits_panel_draws_merge_connector_over_graph_padding() {
 
     let buf = terminal.backend().buffer().clone();
     let marker_col = (0..buf.area.width)
-        .find(|col| buf[(*col, 1)].symbol() == "\u{25cb}")
+        .find(|col| buf[(*col, 1)].symbol() == "\u{23e3}")
         .expect("merge marker should be rendered");
     let expected = [
-        ("\u{25cb}", 0u16),
-        ("\u{23e3}", 1),
-        ("\u{2500}", 2),
-        ("\u{256e}", 3),
+        ("\u{23e3}", 0u16),
+        ("\u{2500}", 1),
+        ("\u{256e}", 2),
+        (" ", 3),
         (" ", 4),
         ("m", 5),
     ];

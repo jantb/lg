@@ -1126,6 +1126,10 @@ impl App {
                             },
                         );
                     }
+                    PendingAction::OpenFile(path) => match crate::git::open_file_in_ide(&path) {
+                        Ok(status) => self.state.set_status(status, false),
+                        Err(err) => self.state.set_status(format!("open failed: {err}"), true),
+                    },
                 }
             }
 

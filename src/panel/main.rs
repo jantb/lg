@@ -743,6 +743,13 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Char('G') => {
             state.diff_offset = max_offset;
         }
+        KeyCode::Char('o') => {
+            if let Some(path) = selected_diff_open_path(state) {
+                state.pending_action = Some(PendingAction::OpenFile(path));
+            } else {
+                state.set_status("no source file selected", false);
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -827,6 +834,13 @@ fn handle_review_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.pending_action = Some(PendingAction::ReviewAssist(node.id.clone()));
             }
         }
+        KeyCode::Char('o') => {
+            if let Some(path) = selected_review_open_path(state) {
+                state.pending_action = Some(PendingAction::OpenFile(path));
+            } else {
+                state.set_status("no source file selected", false);
+            }
+        }
         KeyCode::Char('g') => {
             if let Some(first) = visible.first() {
                 state.review_idx = *first;
@@ -842,6 +856,69 @@ fn handle_review_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn selected_diff_open_path(state: &AppState) -> Option<String> {
+    match &state.diff_source {
+        DiffSource::File(path) => Some(path.clone()),
+        DiffSource::Review => selected_review_open_path(state),
+        DiffSource::All | DiffSource::Folder(_) | DiffSource::Commit(_) => {
+            diff_path_at_offset(&state.diff_text, state.diff_offset)
+        }
+        DiffSource::None | DiffSource::Branch(_) => None,
+    }
+}
+
+fn selected_review_open_path(state: &AppState) -> Option<String> {
+    let review = state.review.as_ref()?;
+    let node = review.nodes.get(state.review_idx)?;
+    path_from_review_title(&node.title).or_else(|| {
+        node.body
+            .iter()
+            .chain(node.context.iter())
+            .find_map(|line| diff_path_from_line(line))
+    })
+}
+
+fn path_from_review_title(title: &str) -> Option<String> {
+    let path = title
+        .split(" in ")
+        .next()
+        .unwrap_or(title)
+        .split(':')
+        .next()
+        .unwrap_or(title)
+        .trim();
+    is_supported_source_path(path).then(|| path.to_string())
+}
+
+fn diff_path_at_offset(diff_text: &str, offset: u16) -> Option<String> {
+    let mut current = None;
+    for line in diff_text.lines().take(offset as usize + 1) {
+        if let Some(path) = diff_path_from_line(line) {
+            current = Some(path);
+        }
+    }
+    current.or_else(|| diff_text.lines().find_map(diff_path_from_line))
+}
+
+fn diff_path_from_line(line: &str) -> Option<String> {
+    let path = line
+        .strip_prefix("diff --git a/")
+        .and_then(|rest| rest.split_once(" b/").map(|(_, path)| path))
+        .or_else(|| line.strip_prefix("+++ b/"))
+        .or_else(|| line.strip_prefix("--- a/"))?
+        .trim();
+    (path != "/dev/null" && is_supported_source_path(path)).then(|| path.to_string())
+}
+
+fn is_supported_source_path(path: &str) -> bool {
+    matches!(
+        std::path::Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str()),
+        Some("kt" | "kts" | "java" | "rs")
+    )
 }
 
 fn first_drill_child<'a>(
