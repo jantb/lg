@@ -320,20 +320,46 @@ pub fn highlight_diff_line(line: &str) -> Line<'_> {
 
 pub fn highlight_diff_text(text: &str) -> Vec<Line<'_>> {
     let mut syntax = None;
+    let mut line_numbers = None;
     text.split('\n')
         .map(|line| {
             if let Some(next) = diff_line_syntax(line) {
                 syntax = Some(next);
             }
-            highlight_diff_line_for_syntax(line, syntax)
+            if let Some((old_line, new_line)) = parse_hunk_line_numbers(line) {
+                line_numbers = Some(DiffLineNumbers { old_line, new_line });
+                return highlight_diff_line_for_syntax(line, syntax);
+            }
+            let highlighted = highlight_diff_line_for_syntax(line, syntax);
+            if let Some(numbers) = line_numbers.as_mut()
+                && let Some(kind) = diff_content_kind(line)
+            {
+                return add_diff_line_numbers(highlighted, numbers, kind);
+            }
+            highlighted
         })
         .collect()
 }
+
+const DIFF_ADDED_BG: Color = Color::Rgb(24, 54, 34);
+const DIFF_REMOVED_BG: Color = Color::Rgb(60, 28, 38);
 
 #[derive(Clone, Copy)]
 enum Syntax {
     Kotlin,
     Rust,
+}
+
+struct DiffLineNumbers {
+    old_line: u32,
+    new_line: u32,
+}
+
+#[derive(Clone, Copy)]
+enum DiffContentKind {
+    Context,
+    Added,
+    Removed,
 }
 
 fn highlight_diff_line_for_syntax(line: &str, syntax: Option<Syntax>) -> Line<'_> {
@@ -365,29 +391,27 @@ fn highlight_diff_line_for_syntax(line: &str, syntax: Option<Syntax>) -> Line<'_
         ));
     }
     if let Some(rest) = line.strip_prefix('+') {
+        let base_style = Style::default().fg(Color::LightGreen).bg(DIFF_ADDED_BG);
         let mut spans = vec![Span::styled(
             "+",
             Style::default()
                 .fg(Color::Green)
+                .bg(DIFF_ADDED_BG)
                 .add_modifier(Modifier::BOLD),
         )];
-        spans.extend(highlight_code(
-            rest,
-            syntax,
-            Style::default().fg(Color::LightGreen),
-        ));
+        spans.extend(highlight_code(rest, syntax, base_style));
         return Line::from(spans);
     }
     if let Some(rest) = line.strip_prefix('-') {
+        let base_style = Style::default().fg(Color::LightRed).bg(DIFF_REMOVED_BG);
         let mut spans = vec![Span::styled(
             "-",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Red)
+                .bg(DIFF_REMOVED_BG)
+                .add_modifier(Modifier::BOLD),
         )];
-        spans.extend(highlight_code(
-            rest,
-            syntax,
-            Style::default().fg(Color::LightRed),
-        ));
+        spans.extend(highlight_code(rest, syntax, base_style));
         return Line::from(spans);
     }
     if line.starts_with("@@") {
@@ -402,6 +426,88 @@ fn highlight_diff_line_for_syntax(line: &str, syntax: Option<Syntax>) -> Line<'_
         ));
     }
     Line::from(highlight_code(line, syntax, Style::default()))
+}
+
+fn parse_hunk_line_numbers(line: &str) -> Option<(u32, u32)> {
+    let rest = line.strip_prefix("@@ ")?;
+    let mut parts = rest.split_whitespace();
+    let old = parts.next()?.strip_prefix('-')?;
+    let new = parts.next()?.strip_prefix('+')?;
+    Some((parse_hunk_start(old)?, parse_hunk_start(new)?))
+}
+
+fn parse_hunk_start(part: &str) -> Option<u32> {
+    part.split(',').next()?.parse().ok()
+}
+
+fn diff_content_kind(line: &str) -> Option<DiffContentKind> {
+    if line.starts_with("+++") || line.starts_with("---") {
+        return None;
+    }
+    if line.starts_with('+') {
+        Some(DiffContentKind::Added)
+    } else if line.starts_with('-') {
+        Some(DiffContentKind::Removed)
+    } else if line.starts_with(' ') || line.is_empty() {
+        Some(DiffContentKind::Context)
+    } else {
+        None
+    }
+}
+
+fn add_diff_line_numbers<'a>(
+    line: Line<'a>,
+    numbers: &mut DiffLineNumbers,
+    kind: DiffContentKind,
+) -> Line<'a> {
+    let (old, new, old_style, new_style) = match kind {
+        DiffContentKind::Context => {
+            let old = numbers.old_line;
+            let new = numbers.new_line;
+            numbers.old_line = numbers.old_line.saturating_add(1);
+            numbers.new_line = numbers.new_line.saturating_add(1);
+            (
+                Some(old),
+                Some(new),
+                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::DarkGray),
+            )
+        }
+        DiffContentKind::Added => {
+            let new = numbers.new_line;
+            numbers.new_line = numbers.new_line.saturating_add(1);
+            (
+                None,
+                Some(new),
+                Style::default().fg(Color::DarkGray).bg(DIFF_ADDED_BG),
+                Style::default().fg(Color::LightGreen).bg(DIFF_ADDED_BG),
+            )
+        }
+        DiffContentKind::Removed => {
+            let old = numbers.old_line;
+            numbers.old_line = numbers.old_line.saturating_add(1);
+            (
+                Some(old),
+                None,
+                Style::default().fg(Color::LightRed).bg(DIFF_REMOVED_BG),
+                Style::default().fg(Color::DarkGray).bg(DIFF_REMOVED_BG),
+            )
+        }
+    };
+    let mut spans = vec![
+        Span::styled(
+            format!("{:>4}", old.map_or(String::new(), |n| n.to_string())),
+            old_style,
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("{:>4}", new.map_or(String::new(), |n| n.to_string())),
+            new_style,
+        ),
+        Span::raw(" "),
+    ];
+    spans.extend(line.spans);
+    Line::from(spans)
 }
 
 fn diff_line_syntax(line: &str) -> Option<Syntax> {
@@ -438,7 +544,7 @@ fn highlight_code(code: &str, syntax: Option<Syntax>, default_style: Style) -> V
             push_plain_code(&mut spans, code, plain_start, idx, default_style);
             spans.push(Span::styled(
                 code[idx..].to_string(),
-                Style::default().fg(Color::DarkGray),
+                color_style(Color::DarkGray, default_style),
             ));
             return spans;
         }
@@ -447,7 +553,7 @@ fn highlight_code(code: &str, syntax: Option<Syntax>, default_style: Style) -> V
             let end = string_end(code, idx + ch.len_utf8());
             spans.push(Span::styled(
                 code[idx..end].to_string(),
-                Style::default().fg(Color::LightYellow),
+                color_style(Color::LightYellow, default_style),
             ));
             while chars.peek().is_some_and(|(next_idx, _)| *next_idx < end) {
                 chars.next();
@@ -465,7 +571,7 @@ fn highlight_code(code: &str, syntax: Option<Syntax>, default_style: Style) -> V
                 end = next_idx + next.len_utf8();
             }
             let ident = &code[idx..end];
-            if let Some(style) = keyword_style(ident, syntax) {
+            if let Some(style) = keyword_style(ident, syntax, default_style) {
                 push_plain_code(&mut spans, code, plain_start, idx, default_style);
                 spans.push(Span::styled(ident.to_string(), style));
                 plain_start = end;
@@ -514,7 +620,16 @@ fn is_ident_continue(ch: char) -> bool {
     ch == '_' || ch.is_ascii_alphanumeric()
 }
 
-fn keyword_style(word: &str, syntax: Syntax) -> Option<Style> {
+fn color_style(color: Color, base: Style) -> Style {
+    let style = Style::default().fg(color);
+    if let Some(bg) = base.bg {
+        style.bg(bg)
+    } else {
+        style
+    }
+}
+
+fn keyword_style(word: &str, syntax: Syntax, base: Style) -> Option<Style> {
     let keyword = match syntax {
         Syntax::Rust => matches!(
             word,
@@ -578,11 +693,7 @@ fn keyword_style(word: &str, syntax: Syntax) -> Option<Style> {
                 | "while"
         ),
     };
-    keyword.then_some(
-        Style::default()
-            .fg(Color::Magenta)
-            .add_modifier(Modifier::BOLD),
-    )
+    keyword.then_some(color_style(Color::Magenta, base).add_modifier(Modifier::BOLD))
 }
 
 pub fn highlight_log_line(line: &str) -> Line<'_> {

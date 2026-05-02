@@ -585,6 +585,39 @@ fn spawn_pull(state: &mut AppState) {
     });
 }
 
+fn open_author_modal(state: &mut AppState) {
+    let config = crate::git::author_config();
+    let root = crate::git::repo_root().unwrap_or_default();
+    match config {
+        Ok(config) => {
+            state.author_path_input = if state.author_path_input.trim().is_empty() {
+                root
+            } else {
+                state.author_path_input.clone()
+            };
+            state.author_name_input = config
+                .local_name
+                .clone()
+                .or(config.name)
+                .unwrap_or_default();
+            state.author_email_input = config
+                .local_email
+                .clone()
+                .or(config.email)
+                .unwrap_or_default();
+            state.author_has_local_override =
+                config.local_name.is_some() || config.local_email.is_some();
+            state.author_has_subtree_rule =
+                crate::git::subtree_author_rule_exists(&state.author_path_input);
+            state.author_field = crate::state::AuthorField::Path;
+            state.modal = Modal::Author;
+        }
+        Err(err) => {
+            state.set_status(format!("author config failed: {err}"), true);
+        }
+    }
+}
+
 pub(crate) fn checkout_branch_async(state: &mut AppState, branch: String) {
     if git_job_running(state) {
         return;
@@ -864,6 +897,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
             "Status",
             &[
                 ("f", "fetch"),
+                ("a", "author"),
                 ("p", "pull"),
                 ("F", "flow"),
                 ("?", "help"),
@@ -878,6 +912,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                 ("u", "unstage"),
                 ("A/U", "all"),
                 ("c", "commit"),
+                ("a", "author"),
                 ("p", "pull"),
                 ("P", "push"),
                 ("f", "fetch"),
@@ -891,6 +926,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
             &[
                 ("Enter", "checkout"),
                 ("p", "pull"),
+                ("a", "author"),
                 ("f", "fetch"),
                 ("F", "flow"),
                 ("?", "help"),
@@ -903,6 +939,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                 ("j/k", "navigate"),
                 ("Enter", "focus diff"),
                 ("p", "pull"),
+                ("a", "author"),
                 ("f", "fetch"),
                 ("F", "flow"),
                 ("?", "help"),
@@ -920,6 +957,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                         ("l", "explain"),
                         ("g/G", "top/bot"),
                         ("f", "fetch"),
+                        ("a", "author"),
                         ("R", "refresh"),
                         ("?", "help"),
                     ],
@@ -933,6 +971,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                         ("j/k", "scroll"),
                         ("g/G", "top/bot"),
                         ("p", "pull"),
+                        ("a", "author"),
                         ("f", "fetch"),
                         ("F", "flow"),
                         ("?", "help"),
@@ -1003,6 +1042,31 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &AppState) {
             let pairs: &[(&str, &str)] = &[("Enter", "push"), ("Esc", "cancel")];
             let mut spans = vec![Span::styled(
                 "Push modal ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )];
+            for (i, (key, label)) in pairs.iter().enumerate() {
+                spans.push(Span::styled(*key, Style::default().fg(Color::Yellow)));
+                spans.push(Span::raw(" "));
+                spans.push(Span::raw(*label));
+                if i + 1 < pairs.len() {
+                    spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
+                }
+            }
+            spans
+        }
+        Modal::Author => {
+            let pairs: &[(&str, &str)] = &[
+                ("Tab", "field"),
+                ("Enter", "save subtree"),
+                ("Ctrl+L", "save local"),
+                ("Ctrl+U", "clear subtree"),
+                ("Ctrl+X", "clear local"),
+                ("Esc", "cancel"),
+            ];
+            let mut spans = vec![Span::styled(
+                "Author ",
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -1176,6 +1240,7 @@ where
                 Modal::None => {}
                 Modal::Commit => panel::commit::render(state, area, frame),
                 Modal::Push => panel::push::render(state, area, frame),
+                Modal::Author => panel::author::render(state, area, frame),
                 Modal::Help => panel::help::render(state, area, frame),
                 Modal::Flow => panel::flow::render(state, area, frame),
                 Modal::Conflict => panel::conflict::render(state, area, frame),
@@ -1200,6 +1265,10 @@ where
             }
             Modal::Push => {
                 panel::push::handle_key(&mut self.state, k)?;
+                return self.render();
+            }
+            Modal::Author => {
+                panel::author::handle_key(&mut self.state, k)?;
                 return self.render();
             }
             Modal::Flow => {
@@ -1248,6 +1317,9 @@ where
             }
             KeyCode::Char('c') => {
                 self.state.open_commit_modal();
+            }
+            KeyCode::Char('a') => {
+                open_author_modal(&mut self.state);
             }
             KeyCode::Char('p') => {
                 if self.state.pull_available() {
@@ -1405,6 +1477,52 @@ impl App {
                     }
                     PendingAction::Pull => {
                         spawn_pull(&mut self.state);
+                    }
+                    PendingAction::SaveAuthor { name, email } => {
+                        match crate::git::set_local_author(&name, &email) {
+                            Ok(()) => {
+                                self.state.author_has_local_override = true;
+                                self.state.modal = Modal::None;
+                                self.state.set_status("saved repo author", false);
+                            }
+                            Err(err) => self
+                                .state
+                                .set_status(format!("author save failed: {err}"), true),
+                        }
+                    }
+                    PendingAction::ClearAuthor => match crate::git::clear_local_author() {
+                        Ok(()) => {
+                            self.state.author_has_local_override = false;
+                            self.state.modal = Modal::None;
+                            self.state.set_status("cleared repo author", false);
+                        }
+                        Err(err) => self
+                            .state
+                            .set_status(format!("author clear failed: {err}"), true),
+                    },
+                    PendingAction::SaveSubtreeAuthor { path, name, email } => {
+                        match crate::git::set_subtree_author(&path, &name, &email) {
+                            Ok(()) => {
+                                self.state.author_has_subtree_rule = true;
+                                self.state.modal = Modal::None;
+                                self.state.set_status("saved subtree author", false);
+                            }
+                            Err(err) => self
+                                .state
+                                .set_status(format!("author save failed: {err}"), true),
+                        }
+                    }
+                    PendingAction::ClearSubtreeAuthor { path } => {
+                        match crate::git::clear_subtree_author(&path) {
+                            Ok(()) => {
+                                self.state.author_has_subtree_rule = false;
+                                self.state.modal = Modal::None;
+                                self.state.set_status("cleared subtree author", false);
+                            }
+                            Err(err) => self
+                                .state
+                                .set_status(format!("author clear failed: {err}"), true),
+                        }
                     }
                     PendingAction::StageAll => {
                         spawn_operation(
@@ -2165,6 +2283,7 @@ impl App {
                 Modal::None => {}
                 Modal::Commit => panel::commit::render(state, area, frame),
                 Modal::Push => panel::push::render(state, area, frame),
+                Modal::Author => panel::author::render(state, area, frame),
                 Modal::Help => panel::help::render(state, area, frame),
                 Modal::Flow => panel::flow::render(state, area, frame),
                 Modal::Conflict => panel::conflict::render(state, area, frame),
@@ -2190,6 +2309,10 @@ impl App {
             }
             Modal::Push => {
                 panel::push::handle_key(&mut self.state, k)?;
+                return Ok(());
+            }
+            Modal::Author => {
+                panel::author::handle_key(&mut self.state, k)?;
                 return Ok(());
             }
             Modal::Flow => {
@@ -2262,6 +2385,10 @@ impl App {
             }
             KeyCode::Char('c') => {
                 self.state.open_commit_modal();
+                return Ok(());
+            }
+            KeyCode::Char('a') => {
+                open_author_modal(&mut self.state);
                 return Ok(());
             }
             KeyCode::Char('p') => {
@@ -2402,10 +2529,7 @@ impl App {
         if !in_main {
             return Ok(());
         }
-        let max_offset = self
-            .state
-            .diff_line_count
-            .saturating_sub(self.state.diff_viewport_height);
+        let max_offset = panel::main::max_scroll_offset(&self.state);
         match m.kind {
             MouseEventKind::ScrollDown => {
                 self.state.diff_offset = self.state.diff_offset.saturating_add(3).min(max_offset);

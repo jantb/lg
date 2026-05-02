@@ -154,10 +154,7 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
         }
     }
 
-    let max_offset = lines
-        .len()
-        .min(u16::MAX as usize)
-        .saturating_sub(state.diff_viewport_height as usize) as u16;
+    let max_offset = max_scroll_offset(state);
     let offset = state.diff_offset.min(max_offset);
     let para = Paragraph::new(lines)
         .block(block)
@@ -372,8 +369,23 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
+pub fn max_scroll_offset(state: &AppState) -> u16 {
+    if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
+        return review_render_line_count(state)
+            .min(u16::MAX as usize)
+            .saturating_sub(state.diff_viewport_height as usize) as u16;
+    }
+    state
+        .diff_line_count
+        .saturating_sub(state.diff_viewport_height)
+}
+
 fn handle_review_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     let visible = visible_review_node_indices(state);
+    if visible.is_empty() {
+        state.diff_offset = 0;
+        return Ok(());
+    }
     let current_pos = visible
         .iter()
         .position(|idx| *idx == state.review_idx)
@@ -382,13 +394,13 @@ fn handle_review_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Char('j') | KeyCode::Down => {
             if let Some(next) = visible.get(current_pos + 1) {
                 state.review_idx = *next;
-                state.diff_offset = state.diff_offset.saturating_add(1);
+                ensure_review_selection_visible(state);
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
             if current_pos > 0 {
                 state.review_idx = visible[current_pos - 1];
-                state.diff_offset = state.diff_offset.saturating_sub(1);
+                ensure_review_selection_visible(state);
             }
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
@@ -401,6 +413,7 @@ fn handle_review_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                     state.review_collapsed.insert(node.id.clone());
                 }
                 clamp_review_selection(state);
+                ensure_review_selection_visible(state);
             }
         }
         KeyCode::Char('s') => {
@@ -434,7 +447,7 @@ fn handle_review_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             if let Some(last) = visible.last() {
                 state.review_idx = *last;
             }
-            state.diff_offset = u16::MAX;
+            state.diff_offset = max_scroll_offset(state);
         }
         _ => {}
     }
@@ -475,6 +488,69 @@ fn visible_review_node_indices(state: &AppState) -> Vec<usize> {
     visible
 }
 
+fn review_render_line_count(state: &AppState) -> usize {
+    visible_review_node_indices(state)
+        .into_iter()
+        .map(|idx| review_node_line_count(state, idx))
+        .sum()
+}
+
+fn review_selected_line(state: &AppState) -> Option<usize> {
+    let mut line = 0usize;
+    for idx in visible_review_node_indices(state) {
+        if idx == state.review_idx {
+            return Some(line);
+        }
+        line += review_node_line_count(state, idx);
+    }
+    None
+}
+
+fn review_node_line_count(state: &AppState, idx: usize) -> usize {
+    let Some(review) = &state.review else {
+        return 0;
+    };
+    let Some(node) = review.nodes.get(idx) else {
+        return 0;
+    };
+    let expanded = !state.review_collapsed.contains(&node.id);
+    let mut count = 1usize;
+    if !expanded {
+        return count;
+    }
+
+    let has_body = !node.body.is_empty();
+    let context_open = state.review_context_open.contains(&node.id);
+    let assist = review_assist_text(state, &node.id);
+    count += node.body.len();
+    if context_open {
+        count += 1 + node.context.len();
+    }
+    if let Some(text) = assist {
+        count += 1 + text.lines().count();
+    }
+    if has_body || context_open || assist.is_some() {
+        count += 1;
+    }
+    count
+}
+
+fn ensure_review_selection_visible(state: &mut AppState) {
+    let Some(line) = review_selected_line(state) else {
+        state.diff_offset = 0;
+        return;
+    };
+    let viewport = state.diff_viewport_height.max(1) as usize;
+    let max_offset = max_scroll_offset(state) as usize;
+    let mut offset = (state.diff_offset as usize).min(max_offset);
+    if line < offset {
+        offset = line;
+    } else if line >= offset.saturating_add(viewport) {
+        offset = line.saturating_add(1).saturating_sub(viewport);
+    }
+    state.diff_offset = offset.min(max_offset).min(u16::MAX as usize) as u16;
+}
+
 fn ancestors_expanded(state: &AppState, node_id: &str) -> bool {
     let Some(review) = &state.review else {
         return false;
@@ -500,9 +576,11 @@ fn ancestors_expanded(state: &AppState, node_id: &str) -> bool {
 fn clamp_review_selection(state: &mut AppState) {
     let visible = visible_review_node_indices(state);
     if visible.contains(&state.review_idx) {
+        state.diff_offset = state.diff_offset.min(max_scroll_offset(state));
         return;
     }
     if let Some(first) = visible.first() {
         state.review_idx = *first;
     }
+    state.diff_offset = state.diff_offset.min(max_scroll_offset(state));
 }

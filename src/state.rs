@@ -218,9 +218,17 @@ pub enum Modal {
     None,
     Commit,
     Push,
+    Author,
     Help,
     Flow,
     Conflict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorField {
+    Path,
+    Name,
+    Email,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,6 +256,19 @@ pub enum PendingAction {
     Commit,
     Push,
     Pull,
+    SaveAuthor {
+        name: String,
+        email: String,
+    },
+    ClearAuthor,
+    SaveSubtreeAuthor {
+        path: String,
+        name: String,
+        email: String,
+    },
+    ClearSubtreeAuthor {
+        path: String,
+    },
     StageAll,
     UnstageAll,
     StagePath(String),
@@ -456,6 +477,12 @@ pub struct AppState {
     pub review_assists: HashMap<String, String>,
 
     pub commit_message: String,
+    pub author_path_input: String,
+    pub author_name_input: String,
+    pub author_email_input: String,
+    pub author_field: AuthorField,
+    pub author_has_local_override: bool,
+    pub author_has_subtree_rule: bool,
     pub branch: Option<String>,
     pub remote_url: Option<String>,
     pub ahead_behind: Option<(u32, u32)>,
@@ -569,6 +596,12 @@ impl AppState {
             review_assists: HashMap::new(),
 
             commit_message: String::new(),
+            author_path_input: String::new(),
+            author_name_input: String::new(),
+            author_email_input: String::new(),
+            author_field: AuthorField::Path,
+            author_has_local_override: false,
+            author_has_subtree_rule: false,
             branch: None,
             remote_url: None,
             ahead_behind: None,
@@ -646,6 +679,12 @@ impl AppState {
                 Some(PendingAction::Commit) => Some("committing"),
                 Some(PendingAction::Push) => Some("starting push"),
                 Some(PendingAction::Pull) => Some("starting pull"),
+                Some(
+                    PendingAction::SaveAuthor { .. }
+                    | PendingAction::ClearAuthor
+                    | PendingAction::SaveSubtreeAuthor { .. }
+                    | PendingAction::ClearSubtreeAuthor { .. },
+                ) => Some("saving author"),
                 Some(PendingAction::StageAll | PendingAction::StagePath(_)) => Some("staging"),
                 Some(PendingAction::UnstageAll | PendingAction::UnstagePath(_)) => {
                     Some("unstaging")

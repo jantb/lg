@@ -1,3 +1,4 @@
+pub mod author;
 pub mod branches;
 pub mod commit;
 pub mod commits;

@@ -470,7 +470,7 @@ fn list_commits_includes_short_author_name() {
     let commits = lg::git::list_commits(10).unwrap();
 
     assert_eq!(commits[0].author, "Alice Example");
-    assert_eq!(commits[0].author_short, "Alice");
+    assert_eq!(commits[0].author_short, "AE");
     assert_eq!(commits[0].graph.trim(), "*");
     assert!(commits[0].is_first_parent);
     assert_eq!(commits[0].subject, "add authored commit");

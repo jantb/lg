@@ -5,7 +5,7 @@ use lg::{
     },
     panel,
     state::{
-        AppState, Modal, Pane, PendingAction, ReleaseStatusJob, TreeKind, WorkflowJob,
+        AppState, AuthorField, Modal, Pane, PendingAction, ReleaseStatusJob, TreeKind, WorkflowJob,
         build_tree_rows,
     },
 };
@@ -217,6 +217,49 @@ fn help_overlay_closes_on_any_key() {
 }
 
 #[test]
+fn author_modal_saves_subtree_rule_from_fields() {
+    let mut state = AppState::new();
+    state.modal = Modal::Author;
+    state.author_path_input = "/tmp/example-work".into();
+    state.author_name_input = "Example User".into();
+    state.author_email_input = "example@example.com".into();
+    state.author_field = AuthorField::Email;
+
+    panel::author::handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::SaveSubtreeAuthor {
+            path: "/tmp/example-work".into(),
+            name: "Example User".into(),
+            email: "example@example.com".into(),
+        })
+    );
+}
+
+#[test]
+fn author_modal_can_save_repo_local_author() {
+    let mut state = AppState::new();
+    state.modal = Modal::Author;
+    state.author_name_input = "Example User".into();
+    state.author_email_input = "example@example.com".into();
+
+    panel::author::handle_key(
+        &mut state,
+        KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::SaveAuthor {
+            name: "Example User".into(),
+            email: "example@example.com".into(),
+        })
+    );
+}
+
+#[test]
 fn review_panel_expands_hunks_and_source_context() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.focus = Pane::Main;
@@ -291,6 +334,40 @@ fn review_panel_expands_hunks_and_source_context() {
 }
 
 #[test]
+fn review_navigation_keeps_selection_visible_without_early_scroll() {
+    let mut state = AppState::new();
+    state.focus = Pane::Main;
+    state.diff_source = lg::state::DiffSource::Review;
+    state.diff_viewport_height = 5;
+    state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: (0..12)
+            .map(|idx| ReviewNode {
+                id: format!("node:{idx}"),
+                parent: None,
+                depth: 0,
+                title: format!("src/module/File{idx}.rs - updates item"),
+                body: Vec::new(),
+                context: Vec::new(),
+            })
+            .collect(),
+    });
+
+    panel::main::handle_key(&mut state, key(KeyCode::Down)).unwrap();
+    assert_eq!(state.review_idx, 1);
+    assert_eq!(state.diff_offset, 0, "first down should not scroll");
+
+    for _ in 0..4 {
+        panel::main::handle_key(&mut state, key(KeyCode::Down)).unwrap();
+    }
+    assert_eq!(state.review_idx, 5);
+    assert_eq!(
+        state.diff_offset, 1,
+        "offset should advance only when selection reaches the bottom"
+    );
+}
+
+#[test]
 fn review_panel_styles_tree_titles_and_change_counts() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 12)).unwrap();
     app.state.focus = Pane::Main;
@@ -347,13 +424,17 @@ fn diff_highlighting_colors_markers_and_changed_text_separately() {
 
     assert_eq!(added.spans[0].content.as_ref(), "+");
     assert_eq!(added.spans[0].style.fg, Some(Color::Green));
+    assert!(added.spans[0].style.bg.is_some());
     assert_eq!(added.spans[1].content.as_ref(), "added");
     assert_eq!(added.spans[1].style.fg, Some(Color::LightGreen));
+    assert_eq!(added.spans[1].style.bg, added.spans[0].style.bg);
 
     assert_eq!(removed.spans[0].content.as_ref(), "-");
     assert_eq!(removed.spans[0].style.fg, Some(Color::Red));
+    assert!(removed.spans[0].style.bg.is_some());
     assert_eq!(removed.spans[1].content.as_ref(), "removed");
     assert_eq!(removed.spans[1].style.fg, Some(Color::LightRed));
+    assert_eq!(removed.spans[1].style.bg, removed.spans[0].style.bg);
 }
 
 #[test]
@@ -368,6 +449,7 @@ fn diff_highlighting_tracks_kotlin_syntax_by_file() {
     assert!(added.spans.iter().any(|span| {
         span.content.as_ref() == "suspend"
             && span.style.fg == Some(Color::Magenta)
+            && span.style.bg == added.spans[0].style.bg
             && span.style.add_modifier.contains(Modifier::BOLD)
     }));
     assert!(added.spans.iter().any(|span| {
@@ -392,6 +474,24 @@ fn diff_highlighting_tracks_rust_syntax_by_file() {
             && span.style.fg == Some(Color::Magenta)
             && span.style.add_modifier.contains(Modifier::BOLD)
     }));
+}
+
+#[test]
+fn diff_highlighting_adds_old_and_new_line_numbers_inside_hunks() {
+    let lines = lg::ui::highlight_diff_text(
+        "diff --git a/src/main.rs b/src/main.rs\n@@ -10,2 +20,2 @@\n context\n-old\n+new",
+    );
+    let context = &lines[2];
+    let removed = &lines[3];
+    let added = &lines[4];
+
+    assert_eq!(context.spans[0].content.as_ref(), "  10");
+    assert_eq!(context.spans[2].content.as_ref(), "  20");
+    assert_eq!(removed.spans[0].content.as_ref(), "  11");
+    assert_eq!(removed.spans[2].content.as_ref(), "    ");
+    assert_eq!(added.spans[0].content.as_ref(), "    ");
+    assert_eq!(added.spans[2].content.as_ref(), "  21");
+    assert_eq!(added.spans[4].content.as_ref(), "+");
 }
 
 #[test]
@@ -1321,7 +1421,7 @@ fn commits_panel_shows_author_names_with_distinct_colors() {
         Commit {
             sha: "abc1234".into(),
             author: "Alice Example".into(),
-            author_short: "Alice".into(),
+            author_short: "AE".into(),
             graph: "*".into(),
             is_first_parent: true,
             parent_count: 1,
@@ -1330,7 +1430,7 @@ fn commits_panel_shows_author_names_with_distinct_colors() {
         Commit {
             sha: "def5678".into(),
             author: "Bob Example".into(),
-            author_short: "Bob".into(),
+            author_short: "BE".into(),
             graph: "*".into(),
             is_first_parent: true,
             parent_count: 1,
@@ -1354,8 +1454,8 @@ fn commits_panel_shows_author_names_with_distinct_colors() {
         }
     }
 
-    assert!(text.contains("Alice"), "missing first author: {text}");
-    assert!(text.contains("Bob"), "missing second author: {text}");
+    assert!(text.contains("AE"), "missing first author: {text}");
+    assert!(text.contains("BE"), "missing second author: {text}");
     assert_ne!(buf[(11, 1)].fg, Color::Reset);
     assert_ne!(buf[(11, 2)].fg, Color::Reset);
     assert_ne!(buf[(11, 1)].fg, buf[(11, 2)].fg);
@@ -1367,7 +1467,7 @@ fn commits_panel_marks_merge_commits() {
     state.commits = vec![Commit {
         sha: "abc1234".into(),
         author: "Alice Example".into(),
-        author_short: "Alice".into(),
+        author_short: "AE".into(),
         graph: "*".into(),
         is_first_parent: true,
         parent_count: 2,
@@ -1394,12 +1494,46 @@ fn commits_panel_marks_merge_commits() {
 }
 
 #[test]
+fn commits_panel_places_hash_and_author_before_graph() {
+    let mut state = AppState::new();
+    state.commits = vec![Commit {
+        sha: "abc1234".into(),
+        author: "Alice Example".into(),
+        author_short: "AE".into(),
+        graph: "| *".into(),
+        is_first_parent: false,
+        parent_count: 1,
+        subject: "side branch".into(),
+    }];
+
+    let backend = TestBackend::new(80, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut row = String::new();
+    for col in 0..buf.area.width {
+        row.push_str(buf[(col, 1)].symbol());
+    }
+
+    let hash = row.find("abc1234").expect("hash in row");
+    let author = row.find("AE").expect("author in row");
+    let graph = row.find("\u{25cb}").expect("graph marker in row");
+    assert!(hash < author, "hash should precede author: {row}");
+    assert!(author < graph, "author should precede graph: {row}");
+}
+
+#[test]
 fn commits_panel_dims_merged_in_commits() {
     let mut state = AppState::new();
     state.commits = vec![Commit {
         sha: "abc1234".into(),
         author: "Alice Example".into(),
-        author_short: "Alice".into(),
+        author_short: "AE".into(),
         graph: "| *".into(),
         is_first_parent: false,
         parent_count: 1,

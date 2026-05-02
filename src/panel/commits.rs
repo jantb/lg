@@ -33,13 +33,15 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         state.activity_label().is_some(),
     );
 
-    let graph_width = state
-        .commits
-        .iter()
-        .map(|commit| commit.graph.chars().count())
-        .max()
-        .unwrap_or(1)
-        .min(24);
+    let graph_width = visible_graph_width(
+        area.width,
+        state
+            .commits
+            .iter()
+            .map(|commit| commit.graph.chars().count())
+            .max()
+            .unwrap_or(1),
+    );
 
     let items: Vec<ListItem> = state
         .commits
@@ -59,12 +61,12 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
             } else {
                 Style::default().fg(Color::DarkGray)
             };
-            let mut spans = graph_spans(c, graph_width);
-            spans.extend([
+            let mut spans = vec![
                 Span::styled(format!("{} ", c.sha), Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("{:<12} ", c.author_short), author_style),
-                Span::styled(c.subject.clone(), subject_style),
-            ]);
+                Span::styled(format!("{:<2} ", c.author_short), author_style),
+            ];
+            spans.extend(graph_spans(c, graph_width));
+            spans.extend([Span::styled(c.subject.clone(), subject_style)]);
             let line = Line::from(spans);
             ListItem::new(line)
         })
@@ -105,6 +107,14 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn visible_graph_width(area_width: u16, max_graph_width: usize) -> usize {
+    let content_width = area_width.saturating_sub(2) as usize;
+    let fixed_columns = 8 + 1 + 2 + 1;
+    content_width
+        .saturating_sub(fixed_columns + 12)
+        .clamp(1, max_graph_width.clamp(1, 14))
 }
 
 fn graph_spans(commit: &crate::git::Commit, width: usize) -> Vec<Span<'static>> {
