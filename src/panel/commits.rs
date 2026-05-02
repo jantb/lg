@@ -46,7 +46,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let items: Vec<ListItem> = state
         .commits
         .iter()
-        .map(|c| {
+        .enumerate()
+        .map(|(idx, c)| {
+            let selected = focused && idx == state.commits_idx;
             let subject_style = if state.unpushed_shas.contains(&c.sha) {
                 Style::default().fg(Color::Red)
             } else if c.is_first_parent {
@@ -62,24 +64,30 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
                 Style::default().fg(Color::DarkGray)
             };
             let mut spans = vec![
-                Span::styled(format!("{} ", c.sha), Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("{:<2} ", c.author_short), author_style),
+                Span::styled(
+                    format!("{} ", c.sha),
+                    selected_style(Style::default().fg(Color::DarkGray), selected),
+                ),
+                Span::styled(
+                    format!("{:<2} ", c.author_short),
+                    selected_style(author_style, selected),
+                ),
             ];
-            spans.extend(graph_spans(c, graph_width));
-            spans.extend([Span::styled(c.subject.clone(), subject_style)]);
+            spans.extend(
+                graph_spans(c, graph_width)
+                    .into_iter()
+                    .map(|span| selected_span(span, selected)),
+            );
+            spans.extend([Span::styled(
+                c.subject.clone(),
+                selected_style(subject_style, selected),
+            )]);
             let line = Line::from(spans);
             ListItem::new(line)
         })
         .collect();
 
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("\u{203a} ");
+    let list = List::new(items).block(block);
 
     let mut list_state = ListState::default();
     if focused && !state.commits.is_empty() {
@@ -152,13 +160,29 @@ fn graph_spans(commit: &crate::git::Commit, width: usize) -> Vec<Span<'static>> 
 fn graph_symbol(ch: char, commit: &crate::git::Commit) -> char {
     match ch {
         '*' if commit.parent_count > 1 => '\u{25c6}',
-        '*' if commit.is_first_parent => '\u{25cf}',
+        '*' if commit.is_first_parent => '\u{25cb}',
         '*' => '\u{25cb}',
         '|' => '\u{2502}',
         '/' => '\u{2571}',
         '\\' => '\u{2572}',
         '-' | '_' => '\u{2500}',
         other => other,
+    }
+}
+
+fn selected_span(span: Span<'static>, selected: bool) -> Span<'static> {
+    if selected {
+        Span::styled(span.content, selected_style(span.style, true))
+    } else {
+        span
+    }
+}
+
+fn selected_style(style: Style, selected: bool) -> Style {
+    if selected {
+        style.bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+    } else {
+        style
     }
 }
 

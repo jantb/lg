@@ -260,6 +260,20 @@ fn author_modal_can_save_repo_local_author() {
 }
 
 #[test]
+fn author_modal_uses_terminal_cursor_for_active_field() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state.modal = Modal::Author;
+    app.state.author_path_input = "/tmp/example".into();
+    app.state.author_name_input = "Example User".into();
+    app.state.author_email_input = "a@b".into();
+    app.state.author_field = AuthorField::Email;
+
+    app.render().unwrap();
+
+    app.terminal.backend_mut().assert_cursor_position((24, 15));
+}
+
+#[test]
 fn review_panel_expands_hunks_and_source_context() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.focus = Pane::Main;
@@ -1565,6 +1579,40 @@ fn commits_panel_places_hash_and_author_before_graph() {
     let graph = row.find("\u{25cb}").expect("graph marker in row");
     assert!(hash < author, "hash should precede author: {row}");
     assert!(author < graph, "author should precede graph: {row}");
+}
+
+#[test]
+fn commits_panel_highlights_selected_row_without_shifting_columns() {
+    let mut state = AppState::new();
+    state.commits = vec![Commit {
+        sha: "abc1234".into(),
+        author: "Alice Example".into(),
+        author_short: "AE".into(),
+        graph: "| *".into(),
+        is_first_parent: false,
+        parent_count: 1,
+        subject: "side branch".into(),
+    }];
+    state.focus = Pane::Commits;
+    state.commits_idx = 0;
+
+    let backend = TestBackend::new(80, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, true);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(buf[(1, 1)].symbol(), "a");
+    let marker = buf
+        .content()
+        .iter()
+        .find(|cell| cell.symbol() == "\u{25cb}")
+        .expect("selected graph marker");
+    assert_eq!(marker.fg, Color::LightMagenta);
+    assert_eq!(marker.bg, Color::DarkGray);
 }
 
 #[test]
