@@ -1127,3 +1127,124 @@ fn short_oid(oid: &str) -> &str {
 fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_new_hunk_start_reads_added_side() {
+        assert_eq!(parse_new_hunk_start("@@ -12,3 +42,8 @@ fn main"), Some(42));
+        assert_eq!(parse_new_hunk_start("@@ -1 +1 @@"), Some(1));
+        assert_eq!(parse_new_hunk_start("not a hunk"), None);
+    }
+
+    #[test]
+    fn is_import_line_recognises_per_language() {
+        assert!(is_import_line("foo.rs", "use std::fs;"));
+        assert!(is_import_line("foo.rs", "extern crate serde;"));
+        assert!(!is_import_line("foo.rs", "let x = 1;"));
+
+        assert!(is_import_line("foo.kt", "import a.b.C"));
+        assert!(is_import_line("foo.kt", "package a.b"));
+        // Public modifier in front of an import still counts.
+        assert!(is_import_line("foo.kt", "public import a.b.C"));
+    }
+
+    #[test]
+    fn is_import_only_hunk_returns_true_only_when_all_changes_are_imports() {
+        let imports = vec![
+            "@@ -1 +1 @@".to_string(),
+            "+use std::fs;".to_string(),
+            "-use std::io;".to_string(),
+        ];
+        assert!(is_import_only_hunk("foo.rs", &imports));
+
+        let mixed = vec![
+            "@@ -1 +1 @@".to_string(),
+            "+use std::fs;".to_string(),
+            "+let x = 1;".to_string(),
+        ];
+        assert!(!is_import_only_hunk("foo.rs", &mixed));
+
+        // No actual changes (only headers / context) → false.
+        let empty = vec!["@@ -1 +1 @@".to_string(), " context".to_string()];
+        assert!(!is_import_only_hunk("foo.rs", &empty));
+    }
+
+    #[test]
+    fn describe_hunk_picks_operation_word_from_added_removed() {
+        let patch = vec!["+let foo = 1;".to_string()];
+        let desc = describe_hunk(&patch, 1, 0);
+        assert!(desc.starts_with("adds "));
+        assert!(desc.contains("(+1 -0)"));
+
+        let patch = vec!["-let bar = 1;".to_string()];
+        let desc = describe_hunk(&patch, 0, 1);
+        assert!(desc.starts_with("removes "));
+
+        let patch = vec!["+a".to_string(), "-b".to_string()];
+        let desc = describe_hunk(&patch, 1, 1);
+        assert!(desc.starts_with("updates "));
+    }
+
+    #[test]
+    fn rust_item_label_extracts_named_items() {
+        assert_eq!(rust_item_label("fn render() {"), Some("fn render".into()));
+        assert_eq!(
+            rust_item_label("pub async fn build() -> Result<()> {"),
+            Some("async fn build".into())
+        );
+        assert_eq!(
+            rust_item_label("pub(crate) struct AppState {"),
+            Some("struct AppState".into())
+        );
+        assert_eq!(rust_item_label("let x = 1;"), None);
+    }
+
+    #[test]
+    fn kotlin_item_label_strips_visibility_and_modifier_prefixes() {
+        assert_eq!(
+            kotlin_item_label("private fun handle(): Int {"),
+            Some("fun handle".into())
+        );
+        assert_eq!(
+            kotlin_item_label("data class Point(val x: Int)"),
+            Some("data class Point".into())
+        );
+        assert_eq!(
+            kotlin_item_label("companion object {"),
+            Some("companion object".into())
+        );
+        assert_eq!(kotlin_item_label("val n = 1"), None);
+    }
+
+    #[test]
+    fn callable_symbol_name_strips_signature_punctuation() {
+        assert_eq!(callable_symbol_name("fn foo()"), Some("foo".into()));
+        assert_eq!(
+            callable_symbol_name("async fn build<T>(x: T)"),
+            Some("build".into())
+        );
+        assert_eq!(
+            callable_symbol_name("fun handle(x: Int)"),
+            Some("handle".into())
+        );
+        assert_eq!(callable_symbol_name("struct AppState"), None);
+    }
+
+    #[test]
+    fn line_references_callable_only_matches_whole_idents() {
+        assert!(line_references_callable("    foo();", "foo"));
+        assert!(line_references_callable("foo + 1", "foo"));
+        // No match when surrounded by ident chars.
+        assert!(!line_references_callable("foobar();", "foo"));
+        assert!(!line_references_callable("let _foo = 1;", "foo"));
+    }
+
+    #[test]
+    fn truncate_review_text_appends_ellipsis_when_cut() {
+        assert_eq!(truncate_review_text("short", 10), "short");
+        assert_eq!(truncate_review_text("0123456789xyz", 10), "0123456789...");
+    }
+}

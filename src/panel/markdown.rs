@@ -488,3 +488,109 @@ fn keyword_style(word: &str, syntax: Syntax, base: Style) -> Option<Style> {
     };
     keyword.then_some(style_with_bg(Color::Yellow, base).add_modifier(Modifier::BOLD))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn word_wrap_keeps_short_text_in_one_chunk() {
+        assert_eq!(
+            word_wrap("hello world", 40),
+            vec!["hello world".to_string()]
+        );
+    }
+
+    #[test]
+    fn word_wrap_breaks_at_word_boundary() {
+        assert_eq!(
+            word_wrap("alpha beta gamma delta", 11),
+            vec!["alpha beta".to_string(), "gamma delta".to_string()],
+        );
+    }
+
+    #[test]
+    fn word_wrap_keeps_oversize_word_on_its_own_line() {
+        // A word longer than `width` should not be split mid-character;
+        // it lives alone on its line so styling (bold/code) stays intact.
+        assert_eq!(
+            word_wrap("ab supercalifragilistic done", 6),
+            vec![
+                "ab".to_string(),
+                "supercalifragilistic".to_string(),
+                "done".to_string(),
+            ],
+        );
+    }
+
+    #[test]
+    fn word_wrap_handles_empty_input() {
+        assert_eq!(word_wrap("", 40), vec![String::new()]);
+    }
+
+    #[test]
+    fn bullet_wrap_hangs_continuation_under_bullet_text() {
+        // Width is small enough to force a wrap; the bullet marker must only
+        // appear on the first line, and the wrapped continuation must align
+        // with the bullet text (i.e. start with the prefix + two spaces, not
+        // the bullet itself).
+        let lines = render(
+            "- alpha beta gamma delta epsilon",
+            "│ ",
+            18, // 18 - 2 (prefix) - 2 (marker) = 14 cols of body
+        );
+        assert!(lines.len() >= 2, "expected wrapped output, got {lines:?}");
+        assert_eq!(line_text(&lines[0]), "│ • alpha beta");
+        // All continuation lines align with the bullet text: prefix + two
+        // spaces (the width of "• "), no bullet glyph repeated.
+        for line in &lines[1..] {
+            let text = line_text(line);
+            assert!(
+                text.starts_with("│   "),
+                "expected hanging indent under '• ', got {text:?}",
+            );
+            assert!(
+                !text.contains('•'),
+                "continuation line should not repeat the bullet: {text:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn ordered_bullet_wrap_uses_marker_width_for_hanging_indent() {
+        let lines = render("10. one two three four five", "", 12);
+        assert!(lines.len() >= 2);
+        assert!(line_text(&lines[0]).starts_with("10. "));
+        // Continuation aligns with first character after "10. " (4 spaces).
+        for line in &lines[1..] {
+            assert!(
+                line_text(line).starts_with("    "),
+                "expected hanging indent under '10. ', got {:?}",
+                line_text(line)
+            );
+        }
+    }
+
+    #[test]
+    fn plain_paragraph_is_emitted_as_single_line() {
+        // Non-bullet/heading lines still produce one Line so existing rendering
+        // (and ratatui's wrap) keep working.
+        let lines = render("just a paragraph", "│ ", 80);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(line_text(&lines[0]), "│ just a paragraph");
+    }
+
+    #[test]
+    fn heading_includes_marker_and_text() {
+        let lines = render("## Section title", "", 80);
+        assert_eq!(lines.len(), 1);
+        assert!(line_text(&lines[0]).contains("Section title"));
+    }
+}

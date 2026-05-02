@@ -185,6 +185,32 @@ pub fn flow_create_feature_branch(current_branch: &str, new_branch: &str) -> Res
     Ok(format!("created {new_branch} from {start_point}"))
 }
 
+pub fn delete_local_branch(name: &str, force: bool) -> Result<String> {
+    if name.is_empty() {
+        anyhow::bail!("branch name must not be empty");
+    }
+    let flag = if force { "-D" } else { "-d" };
+    let out = run(&["branch", flag, name])?;
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("deleted")
+        .to_owned())
+}
+
+pub fn delete_remote_branch(name: &str) -> Result<String> {
+    if name.is_empty() {
+        anyhow::bail!("branch name must not be empty");
+    }
+    run_combined(&["push", DEFAULT_PUSH_REMOTE, "--delete", name]).map(|text| {
+        text.lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("deleted")
+            .to_owned()
+    })
+}
+
 pub fn flow_clean_orphan_branches(current_branch: &str) -> Result<String> {
     run(&["fetch"])?;
     let branches = orphan_branches()?;

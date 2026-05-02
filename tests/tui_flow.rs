@@ -1427,6 +1427,7 @@ fn current_branch_panel_renders_environment_history() {
     add_flow_branches(&mut state);
     state.branch = Some("feature/released".into());
     state.current_branch_releases = BranchReleaseStatus {
+        main: None,
         develop: Some(ReleaseTargetStatus {
             released_at: "2026-04-29 14:20".into(),
             missing_commits: 2,

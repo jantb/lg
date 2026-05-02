@@ -18,8 +18,9 @@ pub use config::{
 };
 pub use flow::{
     abort_in_progress_operation, abort_in_progress_operation_with_return, checkout_branch,
-    conflicted_files, flow_clean_orphan_branches, flow_create_feature_branch,
-    flow_merge_main_into_current, flow_merge_main_into_current_with_progress, flow_release_current,
+    conflicted_files, delete_local_branch, delete_remote_branch, flow_clean_orphan_branches,
+    flow_create_feature_branch, flow_merge_main_into_current,
+    flow_merge_main_into_current_with_progress, flow_release_current,
     flow_release_current_with_progress, flow_reset_branch_from_main,
     flow_reset_branch_from_main_with_progress, stage_resolved_conflicts,
     validate_conflict_resolution_with_followup,
@@ -277,6 +278,7 @@ pub struct Branch {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BranchReleaseStatus {
+    pub main: Option<ReleaseTargetStatus>,
     pub develop: Option<ReleaseTargetStatus>,
     pub test: Option<ReleaseTargetStatus>,
 }
@@ -419,7 +421,19 @@ pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
 
     let unique_commits = rev_list(&["--reverse", branch, &format!("^{base_ref}")])?;
     if unique_commits.is_empty() {
-        let status = BranchReleaseStatus::default();
+        // Branch tip is reachable from main (regular or rebase merge); record
+        // the merge date so the deployment panel can show it as merged.
+        let released_at = first_containing_commit_date(&base_ref, branch)
+            .or_else(|| commit_date(branch).ok())
+            .unwrap_or_else(|| "unknown".to_string());
+        let status = BranchReleaseStatus {
+            main: Some(ReleaseTargetStatus {
+                released_at,
+                missing_commits: 0,
+            }),
+            develop: None,
+            test: None,
+        };
         if let Ok(mut cache) = release_status_cache().lock() {
             cache.insert(key, status.clone());
         }
@@ -427,6 +441,7 @@ pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
     }
 
     let status = BranchReleaseStatus {
+        main: None,
         develop: release_target_status(branch, &unique_commits, &base_ref, develop_ref.as_deref())?,
         test: release_target_status(branch, &unique_commits, &base_ref, test_ref.as_deref())?,
     };

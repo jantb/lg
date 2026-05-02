@@ -33,6 +33,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     }
 
     lines.push(env_line(
+        "main",
+        state.current_branch_releases.main.as_ref(),
+        Color::Magenta,
+        state.animation_tick,
+        release_status_loading(state),
+    ));
+    lines.push(env_line(
         "dev",
         state.current_branch_releases.develop.as_ref(),
         Color::Cyan,

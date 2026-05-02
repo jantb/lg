@@ -45,6 +45,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
             "Branches",
             &[
                 ("Enter", "checkout"),
+                ("D", "delete"),
                 ("p", "pull"),
                 ("a", "author"),
                 ("f", "fetch"),
@@ -148,6 +149,16 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
         Modal::Conflict => modal_spans(
             "Conflict ",
             &[("v", "validate"), ("a", "abort"), ("Esc", "close")],
+            Color::Red,
+        ),
+        Modal::DeleteBranch => modal_spans(
+            "Delete branch ",
+            &[
+                ("Tab", "field"),
+                ("Space", "toggle"),
+                ("Enter", "confirm"),
+                ("Esc", "cancel"),
+            ],
             Color::Red,
         ),
     };

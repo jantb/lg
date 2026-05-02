@@ -159,6 +159,7 @@ where
                 Modal::Help => panel::help::render(state, area, frame),
                 Modal::Flow => panel::flow::render(state, area, frame),
                 Modal::Conflict => panel::conflict::render(state, area, frame),
+                Modal::DeleteBranch => panel::delete_branch::render(state, area, frame),
             }
         })?;
         Ok(())
@@ -192,6 +193,10 @@ where
             }
             Modal::Conflict => {
                 panel::conflict::handle_key(&mut self.state, k)?;
+                return self.render();
+            }
+            Modal::DeleteBranch => {
+                panel::delete_branch::handle_key(&mut self.state, k)?;
                 return self.render();
             }
             Modal::None => {}
@@ -507,6 +512,31 @@ impl App {
                 Ok(status) => self.state.set_status(status, false),
                 Err(err) => self.state.set_status(format!("open failed: {err}"), true),
             },
+            PendingAction::DeleteBranch {
+                name,
+                delete_local,
+                delete_remote,
+                force,
+            } => {
+                self.state.modal = Modal::None;
+                spawn_operation(
+                    &mut self.state,
+                    "deleting branch",
+                    OperationKind::Worktree,
+                    move || {
+                        let mut report = Vec::new();
+                        if delete_remote {
+                            let line = crate::git::delete_remote_branch(&name)?;
+                            report.push(format!("remote: {line}"));
+                        }
+                        if delete_local {
+                            let line = crate::git::delete_local_branch(&name, force)?;
+                            report.push(format!("local: {line}"));
+                        }
+                        Ok(report.join(" | "))
+                    },
+                );
+            }
         }
     }
 
@@ -1220,6 +1250,7 @@ impl App {
                 Modal::Help => panel::help::render(state, area, frame),
                 Modal::Flow => panel::flow::render(state, area, frame),
                 Modal::Conflict => panel::conflict::render(state, area, frame),
+                Modal::DeleteBranch => panel::delete_branch::render(state, area, frame),
             }
         })?;
         Ok(())
@@ -1254,6 +1285,10 @@ impl App {
             }
             Modal::Conflict => {
                 panel::conflict::handle_key(&mut self.state, k)?;
+                return Ok(());
+            }
+            Modal::DeleteBranch => {
+                panel::delete_branch::handle_key(&mut self.state, k)?;
                 return Ok(());
             }
             Modal::None => {}

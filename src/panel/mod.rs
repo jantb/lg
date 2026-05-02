@@ -3,6 +3,7 @@ pub mod branches;
 pub mod commit;
 pub mod commits;
 pub mod conflict;
+pub mod delete_branch;
 pub mod environments;
 pub mod files;
 pub mod flow;

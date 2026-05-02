@@ -226,6 +226,14 @@ pub enum Modal {
     Help,
     Flow,
     Conflict,
+    DeleteBranch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteBranchField {
+    Local,
+    Remote,
+    Force,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +291,12 @@ pub enum PendingAction {
     },
     OpenProject,
     OpenFile(String),
+    DeleteBranch {
+        name: String,
+        delete_local: bool,
+        delete_remote: bool,
+        force: bool,
+    },
 }
 
 pub struct AppState {
@@ -361,6 +375,12 @@ pub struct AppState {
     pub conflict_idx: usize,
     pub conflict_log: String,
     pub conflict_followup: Option<ConflictFollowup>,
+
+    pub delete_branch_target: String,
+    pub delete_branch_local: bool,
+    pub delete_branch_remote: bool,
+    pub delete_branch_force: bool,
+    pub delete_branch_field: DeleteBranchField,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -480,6 +500,12 @@ impl AppState {
             conflict_idx: 0,
             conflict_log: String::new(),
             conflict_followup: None,
+
+            delete_branch_target: String::new(),
+            delete_branch_local: true,
+            delete_branch_remote: false,
+            delete_branch_force: false,
+            delete_branch_field: DeleteBranchField::Local,
         }
     }
 
@@ -532,6 +558,7 @@ impl AppState {
                 Some(PendingAction::IgnorePath { .. }) => Some("updating gitignore"),
                 Some(PendingAction::OpenProject) => Some("opening project"),
                 Some(PendingAction::OpenFile(_)) => Some("opening file"),
+                Some(PendingAction::DeleteBranch { .. }) => Some("deleting branch"),
                 None => None,
             }
         }
@@ -588,6 +615,17 @@ impl AppState {
             self.set_status("generating\u{2026}", false);
             self.pending_action = Some(PendingAction::GenerateMessage);
         }
+    }
+
+    pub fn open_delete_branch_modal(&mut self, branch: &Branch) {
+        self.delete_branch_target = branch.name.clone();
+        self.delete_branch_local = true;
+        // Default: also delete the remote when one is tracked, so a single
+        // confirm cleans up both. Skip the toggle when there is no remote.
+        self.delete_branch_remote = branch.upstream.is_some() && !branch.upstream_gone;
+        self.delete_branch_force = false;
+        self.delete_branch_field = DeleteBranchField::Local;
+        self.modal = Modal::DeleteBranch;
     }
 
     /// Clamp per-pane indices to their vec lengths; 0 when empty.

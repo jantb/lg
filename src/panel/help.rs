@@ -59,6 +59,7 @@ const SECTIONS: &[Section] = &[
         bindings: &[
             ("j/k", "Move up/down"),
             ("Enter", "Checkout branch"),
+            ("D", "Delete local/remote branch (modal)"),
             ("select", "Commit log follows branch"),
         ],
     },

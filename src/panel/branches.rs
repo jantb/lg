@@ -112,6 +112,16 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 }
             }
         }
+        KeyCode::Char('D') => {
+            if let Some(b) = state.branches.get(state.branches_idx) {
+                if b.is_current {
+                    state.set_status("cannot delete the current branch", true);
+                } else {
+                    let snapshot = b.clone();
+                    state.open_delete_branch_modal(&snapshot);
+                }
+            }
+        }
         _ => {}
     }
     Ok(())
