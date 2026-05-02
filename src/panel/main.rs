@@ -41,9 +41,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     );
 
     let lines: Vec<ratatui::text::Line> = if matches!(state.diff_source, DiffSource::Branch(_)) {
-        state
-            .diff_text
-            .split('\n')
+        log_render_lines(&state.diff_text)
+            .into_iter()
             .map(ui::highlight_log_line)
             .collect()
     } else {
@@ -402,20 +401,16 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     let max_offset = max_scroll_offset(state);
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            state.diff_offset = state.diff_offset.min(max_offset);
-            state.diff_offset = state.diff_offset.saturating_add(1).min(max_offset);
+            scroll(state, true, 1);
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            state.diff_offset = state.diff_offset.min(max_offset);
-            state.diff_offset = state.diff_offset.saturating_sub(1);
+            scroll(state, false, 1);
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.diff_offset = state.diff_offset.min(max_offset);
-            state.diff_offset = state.diff_offset.saturating_add(DIFF_PAGE).min(max_offset);
+            scroll(state, true, DIFF_PAGE);
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.diff_offset = state.diff_offset.min(max_offset);
-            state.diff_offset = state.diff_offset.saturating_sub(DIFF_PAGE);
+            scroll(state, false, DIFF_PAGE);
         }
         KeyCode::Char('g') => {
             state.diff_offset = 0;
@@ -435,6 +430,16 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
+pub fn scroll(state: &mut AppState, scroll_down: bool, amount: u16) {
+    let max_offset = max_scroll_offset(state);
+    let offset = state.diff_offset.min(max_offset);
+    state.diff_offset = if scroll_down {
+        offset.saturating_add(amount).min(max_offset)
+    } else {
+        offset.saturating_sub(amount)
+    };
+}
+
 pub fn max_scroll_offset(state: &AppState) -> u16 {
     if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
         return scroll_bound(review_render_line_count(state), state.diff_viewport_height);
@@ -452,7 +457,19 @@ fn rendered_diff_line_count(state: &AppState) -> usize {
     if state.diff_text.is_empty() {
         return state.diff_line_count as usize;
     }
+    if matches!(state.diff_source, DiffSource::Branch(_)) {
+        return log_render_lines(&state.diff_text).len();
+    }
     state.diff_text.lines().count()
+}
+
+fn log_render_lines(text: &str) -> Vec<&str> {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() && !text.is_empty() {
+        vec![text]
+    } else {
+        lines
+    }
 }
 
 fn handle_review_key(state: &mut AppState, key: KeyEvent) -> Result<()> {

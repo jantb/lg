@@ -349,4 +349,35 @@ mod tests {
         assert!(scroll_list(&mut state, Pane::Commits, false, 1));
         assert_eq!(state.commits_idx, 1);
     }
+
+    #[test]
+    fn scroll_list_fast_mouse_bursts_stay_in_bounds() {
+        let mut state = AppState::new();
+        state.branches = vec![branch("one"), branch("two"), branch("three")];
+
+        for _ in 0..20 {
+            scroll_list(&mut state, Pane::Branches, true, 3);
+            assert!(state.branches_idx < state.branches.len());
+        }
+        assert_eq!(state.branches_idx, state.branches.len() - 1);
+
+        for _ in 0..20 {
+            scroll_list(&mut state, Pane::Branches, false, 3);
+            assert!(state.branches_idx < state.branches.len());
+        }
+        assert_eq!(state.branches_idx, 0);
+
+        state.commits = vec![commit("a"), commit("b"), commit("c"), commit("d")];
+        for _ in 0..20 {
+            scroll_list(&mut state, Pane::Commits, true, 3);
+            assert!(state.commits_idx < state.commits.len());
+        }
+        assert_eq!(state.commits_idx, state.commits.len() - 1);
+
+        for _ in 0..20 {
+            scroll_list(&mut state, Pane::Commits, false, 3);
+            assert!(state.commits_idx < state.commits.len());
+        }
+        assert_eq!(state.commits_idx, 0);
+    }
 }

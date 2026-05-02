@@ -1480,6 +1480,41 @@ fn branch_log_scroll_up_clamps_stale_offset_to_rendered_lines() {
     assert_eq!(state.diff_offset, 0);
 }
 
+#[test]
+fn branch_log_max_scroll_offset_ignores_trailing_newline() {
+    let mut state = AppState::new();
+    state.diff_source = lg::state::DiffSource::Branch("main".into());
+    state.diff_text = "* commit abc1234\n| Author: Alice\n| message\n".into();
+    state.diff_viewport_height = 2;
+
+    assert_eq!(panel::main::max_scroll_offset(&state), 1);
+}
+
+#[test]
+fn branch_log_fast_mouse_scroll_bursts_stay_in_bounds() {
+    let mut state = AppState::new();
+    state.diff_source = lg::state::DiffSource::Branch("main".into());
+    state.diff_text = (0..50)
+        .map(|i| format!("* commit {i:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    state.diff_text.push('\n');
+    state.diff_viewport_height = 5;
+    let max_offset = panel::main::max_scroll_offset(&state);
+
+    for _ in 0..100 {
+        panel::main::scroll(&mut state, true, 3);
+        assert!(state.diff_offset <= max_offset);
+    }
+    assert_eq!(state.diff_offset, max_offset);
+
+    for _ in 0..100 {
+        panel::main::scroll(&mut state, false, 3);
+        assert!(state.diff_offset <= max_offset);
+    }
+    assert_eq!(state.diff_offset, 0);
+}
+
 // ── XY-rendering smoke test ───────────────────────────────────────────────────
 
 #[test]

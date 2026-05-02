@@ -1545,13 +1545,12 @@ impl App {
         if !in_main {
             return Ok(());
         }
-        let max_offset = panel::main::max_scroll_offset(&self.state);
         match m.kind {
             MouseEventKind::ScrollDown => {
-                self.state.diff_offset = self.state.diff_offset.saturating_add(3).min(max_offset);
+                panel::main::scroll(&mut self.state, true, 3);
             }
             MouseEventKind::ScrollUp => {
-                self.state.diff_offset = self.state.diff_offset.min(max_offset).saturating_sub(3);
+                panel::main::scroll(&mut self.state, false, 3);
             }
             _ => {}
         }
