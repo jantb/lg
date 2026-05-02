@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Receiver;
+use std::thread::JoinHandle;
 
 use chrono::{DateTime, Utc};
 
@@ -31,6 +32,7 @@ pub enum GenMsg {
 #[derive(Debug)]
 pub struct Generation {
     pub rx: Receiver<GenMsg>,
+    pub handle: Option<JoinHandle<()>>,
     pub output: String,
     pub spinner: usize,
 }
@@ -49,6 +51,7 @@ pub enum PushMsg {
 #[derive(Debug)]
 pub struct PushJob {
     pub rx: Receiver<PushMsg>,
+    pub handle: Option<JoinHandle<()>>,
     pub spinner: usize,
     pub branch: String,
     pub remote: String,
@@ -63,6 +66,7 @@ pub enum CheckoutMsg {
 #[derive(Debug)]
 pub struct CheckoutJob {
     pub rx: Receiver<CheckoutMsg>,
+    pub handle: Option<JoinHandle<()>>,
     pub spinner: usize,
     pub branch: String,
 }
@@ -82,6 +86,7 @@ pub enum OperationKind {
 #[derive(Debug)]
 pub struct OperationJob {
     pub rx: Receiver<OperationMsg>,
+    pub handle: Option<JoinHandle<()>>,
     pub spinner: usize,
     pub label: &'static str,
     pub kind: OperationKind,
@@ -96,6 +101,7 @@ pub enum FetchMsg {
 #[derive(Debug)]
 pub struct FetchJob {
     pub rx: Receiver<FetchMsg>,
+    pub handle: Option<JoinHandle<()>>,
     pub spinner: usize,
 }
 
@@ -132,6 +138,7 @@ pub enum ReleaseStatusMsg {
 #[derive(Debug)]
 pub struct ReleaseStatusJob {
     pub rx: Receiver<ReleaseStatusMsg>,
+    pub handle: Option<JoinHandle<()>>,
     pub spinner: usize,
     pub branch: String,
 }
@@ -151,6 +158,7 @@ pub enum CommitLogMsg {
 #[derive(Debug)]
 pub struct CommitLogJob {
     pub rx: Receiver<CommitLogMsg>,
+    pub handle: Option<JoinHandle<()>>,
     pub spinner: usize,
     pub branch: String,
 }
@@ -158,6 +166,7 @@ pub struct CommitLogJob {
 #[derive(Debug)]
 pub struct RefreshJob {
     pub rx: Receiver<RefreshMsg>,
+    pub handle: Option<JoinHandle<()>>,
     pub spinner: usize,
     pub refresh_diff: bool,
 }
@@ -170,6 +179,7 @@ pub enum DiffMsg {
 #[derive(Debug)]
 pub struct DiffJob {
     pub rx: Receiver<DiffMsg>,
+    pub handle: Option<JoinHandle<()>>,
     pub spinner: usize,
     pub source: DiffSource,
 }
@@ -183,12 +193,14 @@ pub enum ReviewMsg {
 #[derive(Debug)]
 pub struct ReviewJob {
     pub rx: Receiver<ReviewMsg>,
+    pub handle: Option<JoinHandle<()>>,
     pub spinner: usize,
 }
 
 #[derive(Debug)]
 pub struct ReviewAssistJob {
     pub rx: Receiver<GenMsg>,
+    pub handle: Option<JoinHandle<()>>,
     pub node_id: String,
     pub output: String,
     pub spinner: usize,
@@ -204,6 +216,7 @@ pub enum WorkflowMsg {
 #[derive(Debug)]
 pub struct WorkflowJob {
     pub rx: Receiver<WorkflowMsg>,
+    pub handle: Option<JoinHandle<()>>,
     pub spinner: usize,
     pub label: String,
     pub steps: Vec<String>,
@@ -370,6 +383,7 @@ pub struct AppState {
     pub review_job: Option<ReviewJob>,
     pub review_assist_job: Option<ReviewAssistJob>,
     pub workflow_job: Option<WorkflowJob>,
+    pub deferred_threads: Vec<JoinHandle<()>>,
 
     pub left_column_width: Option<u16>,
     pub column_drag_active: bool,
@@ -497,6 +511,7 @@ impl AppState {
             review_job: None,
             review_assist_job: None,
             workflow_job: None,
+            deferred_threads: Vec::new(),
 
             left_column_width: None,
             column_drag_active: false,
@@ -605,12 +620,41 @@ impl AppState {
         self.branch.is_some() && self.ahead_behind.is_some_and(|(_, behind)| behind > 0)
     }
 
-    pub fn start_generation(&mut self, rx: Receiver<GenMsg>) {
+    pub fn start_generation(&mut self, rx: Receiver<GenMsg>, handle: JoinHandle<()>) {
         self.generation = Some(Generation {
             rx,
+            handle: Some(handle),
             output: String::new(),
             spinner: 0,
         });
+    }
+
+    pub fn defer_thread_join(&mut self, handle: Option<JoinHandle<()>>) {
+        if let Some(handle) = handle {
+            self.deferred_threads.push(handle);
+        }
+    }
+
+    pub fn reap_deferred_threads(&mut self) {
+        let mut i = 0;
+        while i < self.deferred_threads.len() {
+            if self.deferred_threads[i].is_finished() {
+                let handle = self.deferred_threads.swap_remove(i);
+                let _ = handle.join();
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    pub fn take_deferred_threads(&mut self) -> Vec<JoinHandle<()>> {
+        std::mem::take(&mut self.deferred_threads)
+    }
+
+    pub fn cancel_generation(&mut self) {
+        if let Some(mut generation) = self.generation.take() {
+            self.defer_thread_join(generation.handle.take());
+        }
     }
 
     pub fn set_status(&mut self, text: impl Into<String>, is_error: bool) {

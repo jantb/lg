@@ -188,7 +188,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Esc => {
             if generating {
-                state.generation = None;
+                state.cancel_generation();
                 state.set_status("generation cancelled", false);
             } else {
                 state.modal = Modal::None;

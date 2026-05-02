@@ -17,6 +17,7 @@ use ratatui::{
 use std::{
     io::{Stdout, Write},
     sync::mpsc::Receiver,
+    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
@@ -61,6 +62,12 @@ pub struct App {
     file_events: Receiver<notify::Result<notify::Event>>,
     _file_watcher: RecommendedWatcher,
     last_fetch_started: Instant,
+}
+
+fn join_worker(handle: Option<JoinHandle<()>>) {
+    if let Some(handle) = handle {
+        let _ = handle.join();
+    }
 }
 
 /// Headless app backed by a generic [`Backend`]; used by tests and the harness.
@@ -372,6 +379,7 @@ impl App {
             self.drain_diff_job();
             self.drain_review_job();
             self.drain_workflow_job()?;
+            self.state.reap_deferred_threads();
             self.drain_file_events()?;
             self.maybe_start_periodic_fetch();
 
@@ -421,10 +429,10 @@ impl App {
             PendingAction::GenerateMessage => match crate::git::staged_diff() {
                 Ok(diff) => {
                     let (tx, rx) = std::sync::mpsc::channel();
-                    std::thread::spawn(move || {
+                    let handle = std::thread::spawn(move || {
                         crate::ollama::stream_commit_message(diff, tx);
                     });
-                    self.state.start_generation(rx);
+                    self.state.start_generation(rx, handle);
                     self.state.set_status("generating\u{2026}", false);
                 }
                 Err(e) => {
@@ -592,11 +600,12 @@ impl App {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             let _ = tx.send(RefreshMsg::Done(Box::new(build_refresh_snapshot())));
         });
         self.state.refresh_job = Some(RefreshJob {
             rx,
+            handle: Some(handle),
             spinner: 0,
             refresh_diff,
         });
@@ -611,7 +620,7 @@ impl App {
         }
         self.last_fetch_started = Instant::now();
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || match crate::git::fetch_updates() {
+        let handle = std::thread::spawn(move || match crate::git::fetch_updates() {
             Ok(s) => {
                 let _ = tx.send(FetchMsg::Done(s));
             }
@@ -619,13 +628,29 @@ impl App {
                 let _ = tx.send(FetchMsg::Error(e.to_string()));
             }
         });
-        self.state.fetch_job = Some(FetchJob { rx, spinner: 0 });
+        self.state.fetch_job = Some(FetchJob {
+            rx,
+            handle: Some(handle),
+            spinner: 0,
+        });
     }
 
     fn maybe_start_periodic_fetch(&mut self) {
         if self.last_fetch_started.elapsed() >= Duration::from_secs(BACKGROUND_FETCH_INTERVAL_SECS)
         {
             self.start_fetch();
+        }
+    }
+
+    fn defer_diff_job(&mut self) {
+        if let Some(mut job) = self.state.diff_job.take() {
+            self.state.defer_thread_join(job.handle.take());
+        }
+    }
+
+    fn defer_release_status_job(&mut self) {
+        if let Some(mut job) = self.state.release_status_job.take() {
+            self.state.defer_thread_join(job.handle.take());
         }
     }
 
@@ -657,7 +682,7 @@ impl App {
         self.state.diff_line_count =
             self.state.diff_text.lines().count().min(u16::MAX as usize) as u16;
         if matches!(source, DiffSource::None) {
-            self.state.diff_job = None;
+            self.defer_diff_job();
             return;
         }
         // Cap in-flight diff workers to one. When the running job finishes,
@@ -680,9 +705,10 @@ impl App {
                 });
             });
         match spawn_result {
-            Ok(_) => {
+            Ok(handle) => {
                 self.state.diff_job = Some(DiffJob {
                     rx,
+                    handle: Some(handle),
                     spinner: 0,
                     source,
                 });
@@ -716,7 +742,7 @@ impl App {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let thread_branch = branch.clone();
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             match crate::git::list_commits_for_ref(&thread_branch, COMMIT_LIST_LIMIT) {
                 Ok(commits) => {
                     let _ = tx.send(CommitLogMsg::Done {
@@ -738,6 +764,7 @@ impl App {
         self.state.commits_idx = 0;
         self.state.commit_log_job = Some(CommitLogJob {
             rx,
+            handle: Some(handle),
             spinner: 0,
             branch,
         });
@@ -747,19 +774,19 @@ impl App {
         let Some(branch) = self.state.branch.clone() else {
             self.state.current_branch_releases = Default::default();
             self.state.current_branch_releases_ref = None;
-            self.state.release_status_job = None;
+            self.defer_release_status_job();
             return;
         };
         if !self.state.flow_available() {
             self.state.current_branch_releases = Default::default();
             self.state.current_branch_releases_ref = None;
-            self.state.release_status_job = None;
+            self.defer_release_status_job();
             return;
         }
         if matches!(branch.as_str(), BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST) {
             self.state.current_branch_releases = Default::default();
             self.state.current_branch_releases_ref = Some(branch);
-            self.state.release_status_job = None;
+            self.defer_release_status_job();
             return;
         }
         if self.state.current_branch_releases_ref.as_deref() == Some(branch.as_str()) {
@@ -776,24 +803,26 @@ impl App {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let thread_branch = branch.clone();
-        std::thread::spawn(
-            move || match crate::git::branch_release_status(&thread_branch) {
-                Ok(status) => {
-                    let _ = tx.send(ReleaseStatusMsg::Done {
-                        branch: thread_branch,
-                        status,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(ReleaseStatusMsg::Error {
-                        branch: thread_branch,
-                        message: e.to_string(),
-                    });
-                }
-            },
-        );
+        let handle =
+            std::thread::spawn(
+                move || match crate::git::branch_release_status(&thread_branch) {
+                    Ok(status) => {
+                        let _ = tx.send(ReleaseStatusMsg::Done {
+                            branch: thread_branch,
+                            status,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(ReleaseStatusMsg::Error {
+                            branch: thread_branch,
+                            message: e.to_string(),
+                        });
+                    }
+                },
+            );
         self.state.release_status_job = Some(ReleaseStatusJob {
             rx,
+            handle: Some(handle),
             spinner: 0,
             branch,
         });
@@ -840,7 +869,7 @@ impl App {
         if self.state.branch != branch_before {
             self.state.current_branch_releases = Default::default();
             self.state.current_branch_releases_ref = None;
-            self.state.release_status_job = None;
+            self.defer_release_status_job();
         }
         let selected_ref = selected_commit_ref(&self.state);
         if let Some(commits) = snapshot.commits {
@@ -866,10 +895,12 @@ impl App {
 
     fn drain_refresh_job(&mut self) {
         let mut finished = None;
+        let mut handle = None;
         if let Some(job) = self.state.refresh_job.as_mut() {
             while let Ok(msg) = job.rx.try_recv() {
                 let RefreshMsg::Done(snapshot) = msg;
                 finished = Some((*snapshot, job.refresh_diff));
+                handle = job.handle.take();
             }
             job.spinner = job.spinner.wrapping_add(1);
         }
@@ -877,6 +908,7 @@ impl App {
             let pending_refresh = self.state.refresh_pending;
             let pending_diff = self.state.refresh_pending_diff;
             self.state.refresh_job = None;
+            join_worker(handle);
             self.state.refresh_pending = false;
             self.state.refresh_pending_diff = false;
             self.apply_refresh_snapshot(snapshot, refresh_diff);
@@ -888,15 +920,18 @@ impl App {
 
     fn drain_diff_job(&mut self) {
         let mut finished = None;
+        let mut handle = None;
         if let Some(job) = self.state.diff_job.as_mut() {
             while let Ok(msg) = job.rx.try_recv() {
                 let DiffMsg::Done { source, text } = msg;
                 finished = Some((source, text));
+                handle = job.handle.take();
             }
             job.spinner = job.spinner.wrapping_add(1);
         }
         if let Some((source, text)) = finished {
             self.state.diff_job = None;
+            join_worker(handle);
             if source == self.state.diff_source {
                 self.state.diff_text = text;
                 self.state.diff_line_count =
@@ -910,14 +945,17 @@ impl App {
 
     fn drain_release_status_job(&mut self) {
         let mut finished = None;
+        let mut handle = None;
         if let Some(job) = self.state.release_status_job.as_mut() {
             while let Ok(msg) = job.rx.try_recv() {
                 finished = Some(msg);
+                handle = job.handle.take();
             }
             job.spinner = job.spinner.wrapping_add(1);
         }
         if let Some(msg) = finished {
             self.state.release_status_job = None;
+            join_worker(handle);
             match msg {
                 ReleaseStatusMsg::Done { branch, status } => {
                     if self.state.branch.as_deref() == Some(branch.as_str()) {
@@ -939,14 +977,17 @@ impl App {
 
     fn drain_commit_log_job(&mut self) {
         let mut finished = None;
+        let mut handle = None;
         if let Some(job) = self.state.commit_log_job.as_mut() {
             while let Ok(msg) = job.rx.try_recv() {
                 finished = Some(msg);
+                handle = job.handle.take();
             }
             job.spinner = job.spinner.wrapping_add(1);
         }
         if let Some(msg) = finished {
             self.state.commit_log_job = None;
+            join_worker(handle);
             match msg {
                 CommitLogMsg::Done { branch, commits } => {
                     if self.state.commits_ref.as_deref() == Some(branch.as_str()) {
@@ -970,17 +1011,20 @@ impl App {
     fn drain_review_job(&mut self) {
         let mut finished: Option<std::result::Result<Box<crate::git::AssistedReview>, String>> =
             None;
+        let mut handle = None;
         if let Some(job) = self.state.review_job.as_mut() {
             while let Ok(msg) = job.rx.try_recv() {
                 match msg {
                     ReviewMsg::Done(review) => finished = Some(Ok(review)),
                     ReviewMsg::Error(err) => finished = Some(Err(err)),
                 }
+                handle = job.handle.take();
             }
             job.spinner = job.spinner.wrapping_add(1);
         }
         if let Some(result) = finished {
             self.state.review_job = None;
+            join_worker(handle);
             match result {
                 Ok(review) => {
                     let report = review.report.clone();
@@ -1027,17 +1071,20 @@ impl App {
 
     fn drain_fetch_job(&mut self) {
         let mut finished: Option<std::result::Result<String, String>> = None;
+        let mut handle = None;
         if let Some(job) = self.state.fetch_job.as_mut() {
             while let Ok(msg) = job.rx.try_recv() {
                 match msg {
                     FetchMsg::Done(s) => finished = Some(Ok(s)),
                     FetchMsg::Error(s) => finished = Some(Err(s)),
                 }
+                handle = job.handle.take();
             }
             job.spinner = job.spinner.wrapping_add(1);
         }
         if let Some(res) = finished {
             self.state.fetch_job = None;
+            join_worker(handle);
             self.state.current_branch_releases_ref = None;
             match res {
                 Ok(s) if s != "no remotes configured" => self.state.set_status(s, false),
@@ -1050,17 +1097,20 @@ impl App {
 
     fn drain_push_job(&mut self) -> Result<()> {
         let mut finished: Option<std::result::Result<String, String>> = None;
+        let mut handle = None;
         if let Some(job) = self.state.push_job.as_mut() {
             while let Ok(msg) = job.rx.try_recv() {
                 match msg {
                     PushMsg::Done(s) => finished = Some(Ok(s)),
                     PushMsg::Error(s) => finished = Some(Err(s)),
                 }
+                handle = job.handle.take();
             }
             job.spinner = job.spinner.wrapping_add(1);
         }
         if let Some(res) = finished {
             self.state.push_job = None;
+            join_worker(handle);
             self.state.modal = Modal::None;
             self.state.current_branch_releases_ref = None;
             match res {
@@ -1074,17 +1124,20 @@ impl App {
 
     fn drain_checkout_job(&mut self) -> Result<()> {
         let mut finished: Option<std::result::Result<String, String>> = None;
+        let mut handle = None;
         if let Some(job) = self.state.checkout_job.as_mut() {
             while let Ok(msg) = job.rx.try_recv() {
                 match msg {
                     CheckoutMsg::Done(s) => finished = Some(Ok(s)),
                     CheckoutMsg::Error(s) => finished = Some(Err(s)),
                 }
+                handle = job.handle.take();
             }
             job.spinner = job.spinner.wrapping_add(1);
         }
         if let Some(res) = finished {
             self.state.checkout_job = None;
+            join_worker(handle);
             self.state.current_branch_releases_ref = None;
             match res {
                 Ok(s) => self.state.set_status(s, false),
@@ -1097,12 +1150,14 @@ impl App {
 
     fn drain_operation_job(&mut self) -> Result<()> {
         let mut finished: Option<std::result::Result<String, String>> = None;
+        let mut handle = None;
         if let Some(job) = self.state.operation_job.as_mut() {
             while let Ok(msg) = job.rx.try_recv() {
                 match msg {
                     OperationMsg::Done(s) => finished = Some(Ok(s)),
                     OperationMsg::Error(s) => finished = Some(Err(s)),
                 }
+                handle = job.handle.take();
             }
             job.spinner = job.spinner.wrapping_add(1);
         }
@@ -1114,6 +1169,7 @@ impl App {
                 .map(|job| job.kind)
                 .unwrap_or(OperationKind::Worktree);
             self.state.operation_job = None;
+            join_worker(handle);
             self.state.current_branch_releases_ref = None;
             match res {
                 Ok(s) => {
@@ -1142,6 +1198,7 @@ impl App {
     fn drain_workflow_job(&mut self) -> Result<()> {
         let mut finished: Option<WorkflowMsg> = None;
         let mut finished_label: Option<String> = None;
+        let mut handle = None;
         if let Some(job) = self.state.workflow_job.as_mut() {
             while let Ok(msg) = job.rx.try_recv() {
                 match msg {
@@ -1151,11 +1208,15 @@ impl App {
                         finished = Some(msg)
                     }
                 }
+                if finished.is_some() {
+                    handle = job.handle.take();
+                }
             }
             job.spinner = job.spinner.wrapping_add(1);
         }
         if let Some(res) = finished {
             self.state.workflow_job = None;
+            join_worker(handle);
             self.state.current_branch_releases_ref = None;
             match res {
                 WorkflowMsg::Progress(_) => {}
@@ -1205,6 +1266,7 @@ impl App {
 
     fn drain_generation(&mut self) {
         let mut drained: Vec<GenMsg> = Vec::new();
+        let mut handle = None;
         if let Some(g) = self.state.generation.as_ref() {
             while let Ok(msg) = g.rx.try_recv() {
                 drained.push(msg);
@@ -1219,16 +1281,23 @@ impl App {
                     }
                 }
                 GenMsg::Done(final_msg) => {
+                    if let Some(g) = self.state.generation.as_mut() {
+                        handle = g.handle.take();
+                    }
                     self.state.commit_message = final_msg;
                     self.state.generation = None;
                     self.state.set_status("message generated", false);
                 }
                 GenMsg::Error(e) => {
+                    if let Some(g) = self.state.generation.as_mut() {
+                        handle = g.handle.take();
+                    }
                     self.state.generation = None;
                     self.state.set_status(e, true);
                 }
             }
         }
+        join_worker(handle);
         if let Some(g) = self.state.generation.as_mut() {
             g.spinner = g.spinner.wrapping_add(1);
         }
@@ -1236,6 +1305,7 @@ impl App {
 
     fn drain_review_assist(&mut self) {
         let mut drained: Vec<GenMsg> = Vec::new();
+        let mut handle = None;
         if let Some(job) = self.state.review_assist_job.as_ref() {
             while let Ok(msg) = job.rx.try_recv() {
                 drained.push(msg);
@@ -1253,12 +1323,18 @@ impl App {
                     }
                 }
                 GenMsg::Done(final_msg) => {
+                    if let Some(job) = self.state.review_assist_job.as_mut() {
+                        handle = job.handle.take();
+                    }
                     if let Some(job) = self.state.review_assist_job.take() {
                         self.state.review_assists.insert(job.node_id, final_msg);
                     }
                     self.state.set_status("review explanation ready", false);
                 }
                 GenMsg::Error(error) => {
+                    if let Some(job) = self.state.review_assist_job.as_mut() {
+                        handle = job.handle.take();
+                    }
                     if let Some(job) = self.state.review_assist_job.take() {
                         self.state
                             .review_assists
@@ -1268,6 +1344,7 @@ impl App {
                 }
             }
         }
+        join_worker(handle);
         if let Some(job) = self.state.review_assist_job.as_mut() {
             job.spinner = job.spinner.wrapping_add(1);
         }
@@ -1629,10 +1706,57 @@ impl App {
         }
         Ok(())
     }
+
+    fn join_background_jobs(&mut self) {
+        let mut handles = Vec::new();
+        handles.extend(self.state.take_deferred_threads());
+
+        if let Some(job) = self.state.generation.as_mut() {
+            handles.extend(job.handle.take());
+        }
+        if let Some(job) = self.state.push_job.as_mut() {
+            handles.extend(job.handle.take());
+        }
+        if let Some(job) = self.state.checkout_job.as_mut() {
+            handles.extend(job.handle.take());
+        }
+        if let Some(job) = self.state.operation_job.as_mut() {
+            handles.extend(job.handle.take());
+        }
+        if let Some(job) = self.state.fetch_job.as_mut() {
+            handles.extend(job.handle.take());
+        }
+        if let Some(job) = self.state.refresh_job.as_mut() {
+            handles.extend(job.handle.take());
+        }
+        if let Some(job) = self.state.release_status_job.as_mut() {
+            handles.extend(job.handle.take());
+        }
+        if let Some(job) = self.state.commit_log_job.as_mut() {
+            handles.extend(job.handle.take());
+        }
+        if let Some(job) = self.state.diff_job.as_mut() {
+            handles.extend(job.handle.take());
+        }
+        if let Some(job) = self.state.review_job.as_mut() {
+            handles.extend(job.handle.take());
+        }
+        if let Some(job) = self.state.review_assist_job.as_mut() {
+            handles.extend(job.handle.take());
+        }
+        if let Some(job) = self.state.workflow_job.as_mut() {
+            handles.extend(job.handle.take());
+        }
+
+        for handle in handles {
+            join_worker(Some(handle));
+        }
+    }
 }
 
 impl Drop for App {
     fn drop(&mut self) {
         restore_terminal(self.terminal.backend_mut());
+        self.join_background_jobs();
     }
 }

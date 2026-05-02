@@ -85,7 +85,7 @@ pub(super) fn spawn_push(state: &mut AppState) {
     let (tx, rx) = std::sync::mpsc::channel();
     let tbranch = branch.clone();
     let tremote = remote.clone();
-    std::thread::spawn(move || match crate::git::push(&tremote, &tbranch) {
+    let handle = std::thread::spawn(move || match crate::git::push(&tremote, &tbranch) {
         Ok(out) => {
             let line = out
                 .lines()
@@ -100,6 +100,7 @@ pub(super) fn spawn_push(state: &mut AppState) {
     });
     state.push_job = Some(PushJob {
         rx,
+        handle: Some(handle),
         spinner: 0,
         branch,
         remote,
@@ -165,7 +166,7 @@ pub(crate) fn checkout_branch_async(state: &mut AppState, branch: String) {
     }
     let (tx, rx) = std::sync::mpsc::channel();
     let target = branch.clone();
-    std::thread::spawn(move || match crate::git::checkout_branch(&target) {
+    let handle = std::thread::spawn(move || match crate::git::checkout_branch(&target) {
         Ok(out) => {
             let line = out
                 .lines()
@@ -180,6 +181,7 @@ pub(crate) fn checkout_branch_async(state: &mut AppState, branch: String) {
     });
     state.checkout_job = Some(CheckoutJob {
         rx,
+        handle: Some(handle),
         spinner: 0,
         branch: branch.clone(),
     });
@@ -198,7 +200,7 @@ pub(super) fn spawn_operation<F>(
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || match work() {
+    let handle = std::thread::spawn(move || match work() {
         Ok(s) => {
             let _ = tx.send(OperationMsg::Done(s));
         }
@@ -208,6 +210,7 @@ pub(super) fn spawn_operation<F>(
     });
     state.operation_job = Some(OperationJob {
         rx,
+        handle: Some(handle),
         spinner: 0,
         label,
         kind,

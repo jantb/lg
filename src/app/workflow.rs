@@ -19,7 +19,7 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
     let thread_steps = steps.clone();
     state.conflict_followup = conflict_followup_for_flow(action, &current);
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         let mut step_idx = 0usize;
         let mut progress = || {
             let _ = tx.send(WorkflowMsg::Progress(step_idx));
@@ -70,6 +70,7 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
 
     state.workflow_job = Some(WorkflowJob {
         rx,
+        handle: Some(handle),
         spinner: 0,
         label,
         steps,
@@ -166,7 +167,7 @@ pub(crate) fn validate_conflict_resolution(state: &mut AppState) {
     }
     let followup = state.conflict_followup.clone();
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         match crate::git::validate_conflict_resolution_with_followup(
             followup.as_ref().and_then(|f| f.push_branch.as_deref()),
             followup.as_ref().and_then(|f| f.return_branch.as_deref()),
@@ -181,6 +182,7 @@ pub(crate) fn validate_conflict_resolution(state: &mut AppState) {
     });
     state.workflow_job = Some(WorkflowJob {
         rx,
+        handle: Some(handle),
         spinner: 0,
         label: "validate conflict resolution".to_string(),
         steps: vec![
@@ -203,7 +205,7 @@ pub(crate) fn abort_conflict_operation(state: &mut AppState) {
         .as_ref()
         .and_then(|f| f.return_branch.clone());
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         match crate::git::abort_in_progress_operation_with_return(return_branch.as_deref()) {
             Ok(s) => {
                 let _ = tx.send(WorkflowMsg::Done(s));
@@ -215,6 +217,7 @@ pub(crate) fn abort_conflict_operation(state: &mut AppState) {
     });
     state.workflow_job = Some(WorkflowJob {
         rx,
+        handle: Some(handle),
         spinner: 0,
         label: "abort merge".to_string(),
         steps: Vec::new(),

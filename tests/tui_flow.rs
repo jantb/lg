@@ -1617,6 +1617,7 @@ fn status_panel_shows_active_generation() {
     let (_tx, rx) = std::sync::mpsc::channel::<lg::state::GenMsg>();
     state.generation = Some(lg::state::Generation {
         rx,
+        handle: None,
         output: String::new(),
         spinner: 0,
     });
@@ -1702,6 +1703,7 @@ fn current_branch_panel_shows_deployment_status_loading() {
     let (_tx, rx) = mpsc::channel();
     state.release_status_job = Some(ReleaseStatusJob {
         rx,
+        handle: None,
         spinner: 0,
         branch: "feature/loading".into(),
     });
@@ -1761,6 +1763,7 @@ fn flow_modal_renders_running_workflow_steps() {
     let (_tx, rx) = std::sync::mpsc::channel();
     state.workflow_job = Some(WorkflowJob {
         rx,
+        handle: None,
         spinner: 1,
         label: "Release current branch into release/next".into(),
         steps: vec![
@@ -2000,6 +2003,7 @@ fn push_modal_renders_spinner_when_job_running() {
     let (_tx, rx) = std::sync::mpsc::channel::<PushMsg>();
     state.push_job = Some(PushJob {
         rx,
+        handle: None,
         spinner: 0,
         branch: "feature/x".into(),
         remote: "origin".into(),
@@ -2036,6 +2040,7 @@ fn push_modal_handle_key_is_noop_while_running() {
     let (_tx, rx) = std::sync::mpsc::channel::<PushMsg>();
     state.push_job = Some(PushJob {
         rx,
+        handle: None,
         spinner: 0,
         branch: "main".into(),
         remote: "origin".into(),

@@ -7,17 +7,22 @@ pub(super) fn spawn_assisted_review(state: &mut AppState) {
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(
-        move || match crate::git::build_assisted_review_against_main() {
-            Ok(review) => {
-                let _ = tx.send(ReviewMsg::Done(Box::new(review)));
-            }
-            Err(e) => {
-                let _ = tx.send(ReviewMsg::Error(e.to_string()));
-            }
-        },
-    );
-    state.review_job = Some(ReviewJob { rx, spinner: 0 });
+    let handle =
+        std::thread::spawn(
+            move || match crate::git::build_assisted_review_against_main() {
+                Ok(review) => {
+                    let _ = tx.send(ReviewMsg::Done(Box::new(review)));
+                }
+                Err(e) => {
+                    let _ = tx.send(ReviewMsg::Error(e.to_string()));
+                }
+            },
+        );
+    state.review_job = Some(ReviewJob {
+        rx,
+        handle: Some(handle),
+        spinner: 0,
+    });
     state.focus = Pane::Main;
     state.diff_source = DiffSource::Review;
     state.diff_offset = 0;
@@ -26,7 +31,9 @@ pub(super) fn spawn_assisted_review(state: &mut AppState) {
     state.review_collapsed.clear();
     state.review_context_open.clear();
     state.review_assists.clear();
-    state.review_assist_job = None;
+    if let Some(mut job) = state.review_assist_job.take() {
+        state.defer_thread_join(job.handle.take());
+    }
     state.diff_text = "building assisted review against main...".to_string();
     state.diff_line_count = 1;
     state.set_status("building review...", false);
@@ -38,11 +45,12 @@ pub(super) fn spawn_review_assist(state: &mut AppState, node_id: String) {
         return;
     };
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         crate::ollama::stream_review_assist(context, tx);
     });
     state.review_assist_job = Some(ReviewAssistJob {
         rx,
+        handle: Some(handle),
         node_id,
         output: String::new(),
         spinner: 0,
