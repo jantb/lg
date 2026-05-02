@@ -99,21 +99,33 @@ fn first_status_line(s: &str) -> String {
 }
 
 fn drain_pending_terminal_events() {
-    for _ in 0..1024 {
-        match event::poll(Duration::from_millis(0)) {
-            Ok(true) => {
-                let _ = event::read();
+    // Drain in two passes with a brief wait between, since the terminal
+    // may keep flushing in-flight mouse-event escape sequences for a few
+    // milliseconds after DisableMouseCapture is sent. Without this drain
+    // those bytes leak into the shell's stdin after we exit and print
+    // as raw escape characters at the prompt.
+    for pass in 0..2 {
+        for _ in 0..16384 {
+            match event::poll(Duration::from_millis(0)) {
+                Ok(true) => {
+                    let _ = event::read();
+                }
+                _ => break,
             }
-            _ => break,
+        }
+        if pass == 0 {
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
 }
 
 fn restore_terminal<W: Write>(output: &mut W) {
     let _ = execute!(output, DisableMouseCapture);
+    let _ = output.flush();
     drain_pending_terminal_events();
     let _ = execute!(output, LeaveAlternateScreen);
     let _ = disable_raw_mode();
+    let _ = output.flush();
 }
 
 // ─── HeadlessApp ─────────────────────────────────────────────────────────────
@@ -648,20 +660,38 @@ impl App {
             self.state.diff_job = None;
             return;
         }
+        // Cap in-flight diff workers to one. When the running job finishes,
+        // drain_diff_job re-triggers for the latest selection. Without this
+        // bound, fast scrolling spawns one OS thread + git subprocess per key
+        // press; if scrolling outpaces git show, threads pile up and an
+        // eventual std::thread::spawn failure aborts the process.
+        if self.state.diff_job.is_some() {
+            return;
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let thread_source = source.clone();
-        std::thread::spawn(move || {
-            let text = load_diff_text(&thread_source);
-            let _ = tx.send(DiffMsg::Done {
-                source: thread_source,
-                text,
+        let spawn_result = std::thread::Builder::new()
+            .name("lg-diff".into())
+            .spawn(move || {
+                let text = load_diff_text(&thread_source);
+                let _ = tx.send(DiffMsg::Done {
+                    source: thread_source,
+                    text,
+                });
             });
-        });
-        self.state.diff_job = Some(DiffJob {
-            rx,
-            spinner: 0,
-            source,
-        });
+        match spawn_result {
+            Ok(_) => {
+                self.state.diff_job = Some(DiffJob {
+                    rx,
+                    spinner: 0,
+                    source,
+                });
+            }
+            Err(err) => {
+                self.state
+                    .set_status(format!("diff worker spawn failed: {err}"), true);
+            }
+        }
     }
 
     fn sync_commit_log_to_selection(&mut self) {
@@ -871,6 +901,9 @@ impl App {
                 self.state.diff_text = text;
                 self.state.diff_line_count =
                     self.state.diff_text.lines().count().min(u16::MAX as usize) as u16;
+            } else {
+                // Worker finished a stale selection. Kick off the right one.
+                self.start_diff_job(true);
             }
         }
     }
