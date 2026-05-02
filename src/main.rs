@@ -3,5 +3,9 @@ fn main() -> anyhow::Result<()> {
         print!("{}", lg::git::assisted_review_against_main()?);
         return Ok(());
     }
-    lg::app::App::new()?.run()
+    let result = lg::app::App::new().and_then(|mut app| app.run());
+    if let Err(err) = &result {
+        lg::app::trace_event("ERROR", format!("{err:#}"));
+    }
+    result
 }

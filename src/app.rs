@@ -15,6 +15,7 @@ use ratatui::{
     layout::Rect,
 };
 use std::{
+    backtrace::Backtrace,
     fs::OpenOptions,
     io::{Stdout, Write},
     sync::mpsc::Receiver,
@@ -99,14 +100,33 @@ fn first_status_line(s: &str) -> String {
         .collect()
 }
 
-fn trace_scroll(message: impl AsRef<str>) {
+pub fn trace_event(kind: &str, message: impl AsRef<str>) {
     let Some(path) = std::env::var_os("LG_TRACE") else {
         return;
     };
     let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) else {
         return;
     };
-    let _ = writeln!(f, "SCROLL {}", message.as_ref());
+    let _ = writeln!(f, "{kind} {}", message.as_ref());
+}
+
+fn trace_scroll(message: impl AsRef<str>) {
+    trace_event("SCROLL", message);
+}
+
+fn trace_panic(info: &std::panic::PanicHookInfo<'_>) {
+    let payload = info
+        .payload()
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("<non-string panic payload>");
+    let location = info
+        .location()
+        .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+        .unwrap_or_else(|| "<unknown location>".into());
+    trace_event("PANIC", format!("location={location} payload={payload:?}"));
+    trace_event("BACKTRACE", format!("{}", Backtrace::force_capture()));
 }
 
 fn mouse_scroll_snapshot(state: &AppState, pane: Pane) -> (usize, usize) {
@@ -333,6 +353,7 @@ impl App {
 
         let prev_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
+            trace_panic(info);
             let mut stdout = std::io::stdout();
             restore_terminal(&mut stdout);
             prev_hook(info);
