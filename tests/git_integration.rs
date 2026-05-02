@@ -70,6 +70,49 @@ fn unstage_in(dir: &std::path::Path, path: &str) {
     }
 }
 
+#[test]
+fn add_to_gitignore_appends_file_and_folder_entries_once() {
+    let dir = init_repo();
+    let _cwd = CwdGuard::new(dir.path());
+
+    assert_eq!(
+        lg::git::add_to_gitignore("./logs/debug.log", false).unwrap(),
+        "ignored logs/debug.log"
+    );
+    assert_eq!(
+        lg::git::add_to_gitignore("tmp/cache", true).unwrap(),
+        "ignored tmp/cache/"
+    );
+    assert_eq!(
+        lg::git::add_to_gitignore("tmp/cache/", true).unwrap(),
+        "tmp/cache/ already ignored"
+    );
+
+    let ignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert_eq!(ignore, "logs/debug.log\ntmp/cache/\n");
+}
+
+#[test]
+fn project_open_command_opens_rust_repo_root() {
+    let dir = init_repo();
+    fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"sample\"\n",
+    )
+    .unwrap();
+    let _cwd = CwdGuard::new(dir.path());
+
+    let command = lg::git::project_open_command().unwrap();
+
+    assert_eq!(command.program, "rustrover");
+    assert_eq!(command.args.len(), 1);
+    assert_eq!(
+        fs::canonicalize(&command.args[0]).unwrap(),
+        fs::canonicalize(dir.path()).unwrap()
+    );
+    assert_eq!(command.line, 1);
+}
+
 fn commit_in(dir: &std::path::Path, msg: &str) {
     let out = Command::new("git")
         .args(["commit", "-m", msg])
@@ -684,10 +727,8 @@ fn list_commits_compacts_graph_rows_for_complex_merges() {
     );
     assert_eq!(commits.len(), 8);
     assert!(
-        commits
-            .iter()
-            .any(|commit| commit.graph.contains('\\') || commit.graph.contains('/')),
-        "compacted commit rows should retain diagonal connector geometry: {commits:?}"
+        commits.iter().any(|commit| commit.graph.contains('|')),
+        "compacted commit rows should retain folded lane geometry: {commits:?}"
     );
     assert!(
         commits.iter().all(|commit| !commit.subject.is_empty()),

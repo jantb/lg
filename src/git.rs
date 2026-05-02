@@ -577,7 +577,7 @@ fn compact_graph_rows(pending_rows: &[String], commit_graph: &str) -> String {
     for row in pending_rows {
         for (idx, ch) in row.chars().enumerate() {
             if ch != ' ' {
-                cells[idx] = compact_graph_char(cells[idx], ch);
+                cells[idx] = compact_graph_char(cells[idx], folded_graph_row_char(ch));
             }
         }
     }
@@ -591,6 +591,14 @@ fn compact_graph_rows(pending_rows: &[String], commit_graph: &str) -> String {
         cells.pop();
     }
     cells.into_iter().collect()
+}
+
+fn folded_graph_row_char(ch: char) -> char {
+    match ch {
+        '/' | '\\' => '|',
+        '_' => '-',
+        other => other,
+    }
 }
 
 fn compact_graph_char(existing: char, incoming: char) -> char {
@@ -663,6 +671,38 @@ pub fn repo_root() -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+pub fn add_to_gitignore(path: &str, is_dir: bool) -> Result<String> {
+    let root = repo_root()?;
+    let entry = gitignore_entry(path, is_dir);
+    let ignore_path = Path::new(&root).join(".gitignore");
+    let existing = fs::read_to_string(&ignore_path).unwrap_or_default();
+    if existing.lines().any(|line| line.trim() == entry) {
+        return Ok(format!("{entry} already ignored"));
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&ignore_path)
+        .with_context(|| format!("failed to open {}", ignore_path.display()))?;
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        writeln!(file)?;
+    }
+    writeln!(file, "{entry}")?;
+    Ok(format!("ignored {entry}"))
+}
+
+fn gitignore_entry(path: &str, is_dir: bool) -> String {
+    let mut entry = path
+        .trim_start_matches("./")
+        .trim_end_matches('/')
+        .to_string();
+    if is_dir && !entry.ends_with('/') {
+        entry.push('/');
+    }
+    entry
+}
+
 pub fn ide_open_command(path: &str) -> Result<IdeOpenCommand> {
     let root = repo_root()?;
     let line = first_changed_line(path).unwrap_or(1);
@@ -683,6 +723,32 @@ pub fn open_file_in_ide(path: &str) -> Result<String> {
         "opened {path} in {} at line {}",
         command.program, command.line
     ))
+}
+
+pub fn project_open_command() -> Result<IdeOpenCommand> {
+    let root = repo_root()?;
+    Ok(build_project_open_command(&root))
+}
+
+pub fn open_project_in_ide() -> Result<String> {
+    let command = project_open_command()?;
+    Command::new(&command.program)
+        .args(&command.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to launch {}", command.program))?;
+    Ok(format!("opened project in {}", command.program))
+}
+
+fn build_project_open_command(root: &str) -> IdeOpenCommand {
+    let program = ide_program_for_project(Path::new(root));
+    IdeOpenCommand {
+        program: program.to_string(),
+        args: vec![root.to_string()],
+        line: 1,
+    }
 }
 
 fn build_ide_open_command(root: &str, path: &str, line: usize) -> Option<IdeOpenCommand> {
@@ -717,6 +783,35 @@ fn ide_program_for_path(path: &str) -> Option<&'static str> {
         Some("rs") => Some("rustrover"),
         _ => None,
     }
+}
+
+fn ide_program_for_project(root: &Path) -> &'static str {
+    if root.join("Cargo.toml").exists() || project_contains_extension(root, "rs") {
+        return "rustrover";
+    }
+    "idea"
+}
+
+fn project_contains_extension(root: &Path, extension: &str) -> bool {
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_name = path.file_name().and_then(|name| name.to_str());
+            if matches!(file_name, Some(".git" | "target" | "build" | ".gradle")) {
+                continue;
+            }
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().and_then(|value| value.to_str()) == Some(extension) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn first_changed_line(path: &str) -> Option<usize> {

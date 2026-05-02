@@ -277,6 +277,11 @@ pub enum PendingAction {
     UnstageAll,
     StagePath(String),
     UnstagePath(String),
+    IgnorePath {
+        path: String,
+        is_dir: bool,
+    },
+    OpenProject,
     OpenFile(String),
 }
 
@@ -524,6 +529,8 @@ impl AppState {
                 Some(PendingAction::UnstageAll | PendingAction::UnstagePath(_)) => {
                     Some("unstaging")
                 }
+                Some(PendingAction::IgnorePath { .. }) => Some("updating gitignore"),
+                Some(PendingAction::OpenProject) => Some("opening project"),
                 Some(PendingAction::OpenFile(_)) => Some("opening file"),
                 None => None,
             }

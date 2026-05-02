@@ -39,6 +39,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         state.activity_label().is_some(),
     );
 
+    let hash_width = visible_hash_width(&state.commits);
     let graph_width = visible_graph_width(
         area.width,
         state
@@ -47,6 +48,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
             .map(graph_display_width)
             .max()
             .unwrap_or(1),
+        hash_width,
     );
 
     let items: Vec<ListItem> = state
@@ -74,7 +76,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
             };
             let mut spans = vec![
                 Span::styled(
-                    format!("{:<9}", c.sha),
+                    format!("{:<hash_width$} ", c.sha),
                     selected_style(Style::default().fg(Color::DarkGray), selected),
                 ),
                 Span::styled(
@@ -159,9 +161,19 @@ fn previous_commit_idx(commits: &[crate::git::Commit], idx: usize) -> Option<usi
         .find_map(|(idx, commit)| (!commit.is_graph_row()).then_some(idx))
 }
 
-fn visible_graph_width(area_width: u16, max_graph_width: usize) -> usize {
+fn visible_hash_width(commits: &[crate::git::Commit]) -> usize {
+    commits
+        .iter()
+        .filter(|commit| !commit.is_graph_row())
+        .map(|commit| commit.sha.chars().count())
+        .max()
+        .unwrap_or(8)
+        .max(8)
+}
+
+fn visible_graph_width(area_width: u16, max_graph_width: usize, hash_width: usize) -> usize {
     let content_width = area_width.saturating_sub(2) as usize;
-    let fixed_columns = 8 + 1 + 2 + 1;
+    let fixed_columns = hash_width + 1 + 2 + 1;
     content_width
         .saturating_sub(fixed_columns + 12)
         .clamp(1, max_graph_width.clamp(1, 14))

@@ -1127,6 +1127,21 @@ impl App {
                             },
                         );
                     }
+                    PendingAction::IgnorePath { path, is_dir } => {
+                        match crate::git::add_to_gitignore(&path, is_dir) {
+                            Ok(status) => {
+                                self.state.set_status(status, false);
+                                self.start_refresh_with_status(false, false);
+                            }
+                            Err(err) => self
+                                .state
+                                .set_status(format!("gitignore update failed: {err}"), true),
+                        }
+                    }
+                    PendingAction::OpenProject => match crate::git::open_project_in_ide() {
+                        Ok(status) => self.state.set_status(status, false),
+                        Err(err) => self.state.set_status(format!("open failed: {err}"), true),
+                    },
                     PendingAction::OpenFile(path) => match crate::git::open_file_in_ide(&path) {
                         Ok(status) => self.state.set_status(status, false),
                         Err(err) => self.state.set_status(format!("open failed: {err}"), true),

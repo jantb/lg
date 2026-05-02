@@ -107,6 +107,56 @@ fn files_panel_o_opens_selected_source_file() {
     );
 }
 
+#[test]
+fn files_panel_o_opens_project_from_top_level_or_folder() {
+    let mut state = make_state_with_files();
+
+    panel::files::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
+    assert_eq!(state.pending_action, Some(PendingAction::OpenProject));
+
+    state.pending_action = None;
+    state.files = vec![FileEntry {
+        path: "src/main.rs".into(),
+        x: ' ',
+        y: 'M',
+    }];
+    state.files_idx = 1;
+
+    panel::files::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
+    assert_eq!(state.pending_action, Some(PendingAction::OpenProject));
+}
+
+#[test]
+fn files_panel_i_ignores_selected_file_or_folder() {
+    let mut state = AppState::new();
+    state.files = vec![FileEntry {
+        path: "src/main.rs".into(),
+        x: '?',
+        y: '?',
+    }];
+
+    state.files_idx = 1;
+    panel::files::handle_key(&mut state, key(KeyCode::Char('i'))).unwrap();
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::IgnorePath {
+            path: "src".into(),
+            is_dir: true,
+        })
+    );
+
+    state.pending_action = None;
+    state.files_idx = 2;
+    panel::files::handle_key(&mut state, key(KeyCode::Char('i'))).unwrap();
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::IgnorePath {
+            path: "src/main.rs".into(),
+            is_dir: false,
+        })
+    );
+}
+
 // ── Focus cycling ─────────────────────────────────────────────────────────────
 
 #[test]
