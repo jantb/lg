@@ -257,6 +257,8 @@ pub struct FileEntry {
 pub struct Branch {
     pub name: String,
     pub is_current: bool,
+    pub upstream: Option<String>,
+    pub upstream_gone: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -377,20 +379,27 @@ pub fn status_entries() -> Result<Vec<FileEntry>> {
 
 pub fn list_branches() -> Result<Vec<Branch>> {
     trace_enter("list_branches");
-    let out = run(&["branch", "--format=%(refname:short)\x1f%(HEAD)"])?;
+    let out = run(&[
+        "branch",
+        "--format=%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)\x1f%(upstream:track)",
+    ])?;
     let text = String::from_utf8_lossy(&out.stdout);
     let branches = text
         .lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(2, '\x1f');
+            let mut parts = line.splitn(4, '\x1f');
             let name = parts.next()?.trim().to_owned();
             let head = parts.next()?.trim();
+            let upstream = parts.next().unwrap_or("").trim();
+            let track = parts.next().unwrap_or("").trim();
             if name.is_empty() {
                 return None;
             }
             Some(Branch {
                 name,
                 is_current: head == "*",
+                upstream: (!upstream.is_empty()).then(|| upstream.to_owned()),
+                upstream_gone: track.contains("gone"),
             })
         })
         .collect();

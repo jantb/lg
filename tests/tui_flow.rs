@@ -48,10 +48,14 @@ fn add_flow_branches(state: &mut AppState) {
         Branch {
             name: "develop".into(),
             is_current: false,
+            upstream: None,
+            upstream_gone: false,
         },
         Branch {
             name: "release/next".into(),
             is_current: false,
+            upstream: None,
+            upstream_gone: false,
         },
     ];
 }
@@ -112,6 +116,80 @@ fn numeric_keys_set_focus() {
     assert_eq!(app.state.focus, Pane::Branches);
     app.send_key(key(KeyCode::Char('0'))).unwrap();
     assert_eq!(app.state.focus, Pane::Main);
+}
+
+#[test]
+fn branches_panel_shows_remote_and_missing_upstream_indicators() {
+    let mut state = AppState::new();
+    state.branches = vec![
+        Branch {
+            name: "feature/remote".into(),
+            is_current: true,
+            upstream: Some("origin/feature/remote".into()),
+            upstream_gone: false,
+        },
+        Branch {
+            name: "docs".into(),
+            is_current: false,
+            upstream: Some("origin/docs".into()),
+            upstream_gone: true,
+        },
+    ];
+
+    let backend = TestBackend::new(80, 6);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::branches::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let text = buf
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(
+        text.contains("\u{2713}"),
+        "missing remote indicator: {text}"
+    );
+    assert!(
+        text.contains("(upstream gone)"),
+        "missing upstream gone indicator: {text}"
+    );
+}
+
+#[test]
+fn branches_panel_keeps_missing_upstream_visible_for_long_names() {
+    let mut state = AppState::new();
+    state.branches = vec![Branch {
+        name: "feature/very-long-branch-name-that-would-otherwise-hide-status".into(),
+        is_current: false,
+        upstream: Some("origin/removed".into()),
+        upstream_gone: true,
+    }];
+
+    let backend = TestBackend::new(42, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::branches::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let text = buf
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(
+        text.contains("(upstream gone)"),
+        "status should remain visible for long branch names: {text}"
+    );
 }
 
 #[test]

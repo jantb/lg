@@ -29,6 +29,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         state.activity_label().is_some(),
     );
 
+    let row_width = area.width.saturating_sub(4) as usize;
     let items: Vec<ListItem> = state
         .branches
         .iter()
@@ -39,7 +40,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
                 .is_some_and(|job| job.branch == b.name)
             {
                 let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
-                Line::from(vec![
+                let mut spans = vec![
                     Span::styled(
                         format!("{spinner} "),
                         Style::default()
@@ -47,21 +48,28 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        b.name.clone(),
+                        visible_branch_name(b, 2, row_width),
                         Style::default()
                             .fg(Color::Cyan)
                             .add_modifier(Modifier::BOLD),
                     ),
-                ])
+                ];
+                append_branch_status(&mut spans, b);
+                Line::from(spans)
             } else if b.is_current {
-                Line::from(Span::styled(
-                    format!("* {}", b.name),
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ))
+                let mut spans = vec![Span::styled(
+                    format!("* {}", visible_branch_name(b, 2, row_width)),
+                    current_branch_style(),
+                )];
+                append_branch_status(&mut spans, b);
+                Line::from(spans)
             } else {
-                Line::from(Span::raw(format!("  {}", b.name)))
+                let mut spans = vec![Span::styled(
+                    format!("  {}", visible_branch_name(b, 2, row_width)),
+                    Style::default(),
+                )];
+                append_branch_status(&mut spans, b);
+                Line::from(spans)
             };
             ListItem::new(line)
         })
@@ -107,4 +115,62 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn visible_branch_name(
+    branch: &crate::git::Branch,
+    prefix_width: usize,
+    row_width: usize,
+) -> String {
+    let status_width = branch_status_width(branch);
+    let max_name_width = row_width
+        .saturating_sub(prefix_width)
+        .saturating_sub(status_width);
+    truncate_chars(&branch.name, max_name_width)
+}
+
+fn append_branch_status(spans: &mut Vec<Span<'static>>, branch: &crate::git::Branch) {
+    if branch.upstream_gone {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            "(upstream gone)",
+            Style::default()
+                .fg(Color::LightMagenta)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else if branch.upstream.is_some() {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            "\u{2713}",
+            Style::default()
+                .fg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+}
+
+fn branch_status_width(branch: &crate::git::Branch) -> usize {
+    if branch.upstream_gone {
+        " (upstream gone)".chars().count()
+    } else if branch.upstream.is_some() {
+        " \u{2713}".chars().count()
+    } else {
+        0
+    }
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let mut out: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() && max_chars > 0 {
+        out.pop();
+        out.push('\u{2026}');
+    }
+    out
+}
+
+fn current_branch_style() -> Style {
+    Style::default()
+        .fg(Color::Green)
+        .add_modifier(Modifier::BOLD)
 }
