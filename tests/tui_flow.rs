@@ -363,6 +363,33 @@ fn help_overlay_closes_on_any_key() {
 }
 
 #[test]
+fn main_footer_and_help_call_out_review_mode() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 60)).unwrap();
+    app.state.focus = Pane::Main;
+    app.render().unwrap();
+
+    let footer = buffer_text(&app);
+    assert!(
+        footer.contains("review mode"),
+        "main footer should name review mode: {footer}"
+    );
+
+    app.state.modal = Modal::Help;
+    app.state.prev_focus = Pane::Main;
+    app.render().unwrap();
+
+    let help = buffer_text(&app);
+    assert!(
+        help.contains("Review mode"),
+        "help should include a Review mode section: {help}"
+    );
+    assert!(
+        help.contains("Enter review mode against main"),
+        "help should describe how to enter review mode: {help}"
+    );
+}
+
+#[test]
 fn author_modal_saves_subtree_rule_from_fields() {
     let mut state = AppState::new();
     state.modal = Modal::Author;
@@ -2156,6 +2183,111 @@ fn commits_panel_keeps_subjects_aligned_after_merge_connector() {
         cell_col(1, "merge branch"),
         cell_col(2, "side branch"),
         "subjects should use the same column:\n{merge_row}\n{side_row}"
+    );
+}
+
+#[test]
+fn commits_panel_keeps_selected_hash_visible_and_graph_columns_stable() {
+    let mut state = AppState::new();
+    state.commits = vec![
+        Commit {
+            sha: "916a75688".into(),
+            author: "Jan Example".into(),
+            author_short: "JT".into(),
+            graph: "*".into(),
+            is_first_parent: true,
+            parent_count: 1,
+            subject: "direct branch commit".into(),
+        },
+        Commit {
+            sha: "00e47360d".into(),
+            author: "Jan Example".into(),
+            author_short: "JT".into(),
+            graph: "*|||".into(),
+            is_first_parent: true,
+            parent_count: 2,
+            subject: "merge side branch".into(),
+        },
+        Commit {
+            sha: "a0f3424b0".into(),
+            author: "Side Person".into(),
+            author_short: "Sp".into(),
+            graph: "| *".into(),
+            is_first_parent: false,
+            parent_count: 1,
+            subject: "side branch commit".into(),
+        },
+        Commit {
+            sha: "b3545f4c8".into(),
+            author: "Renovate Bot".into(),
+            author_short: "re".into(),
+            graph: "| *".into(),
+            is_first_parent: false,
+            parent_count: 1,
+            subject: "second side commit".into(),
+        },
+    ];
+    state.focus = Pane::Commits;
+    state.commits_idx = 2;
+
+    let backend = TestBackend::new(100, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, true);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |row_idx| {
+        let mut row = String::new();
+        for col in 0..buf.area.width {
+            row.push_str(buf[(col, row_idx)].symbol());
+        }
+        row
+    };
+    let cell_col = |row_idx, needle: &str| {
+        let needle_chars: Vec<char> = needle.chars().collect();
+        (0..buf.area.width).find(|start| {
+            needle_chars.iter().enumerate().all(|(offset, ch)| {
+                let col = start.saturating_add(offset as u16);
+                col < buf.area.width && buf[(col, row_idx)].symbol() == ch.to_string()
+            })
+        })
+    };
+
+    let selected_row = row_text(3);
+    assert!(
+        selected_row.contains("a0f3424b0 Sp"),
+        "selected hash and author should remain visible: {selected_row}"
+    );
+    assert_ne!(
+        buf[(1, 3)].fg,
+        buf[(1, 3)].bg,
+        "selected hash foreground must contrast with selection background"
+    );
+
+    let merge_origin = cell_col(2, "\u{23e3}\u{2500}\u{256e}")
+        .expect("merge row should show a visible branch origin");
+    let selected_marker =
+        cell_col(3, "\u{25cb}").expect("selected side commit should show a marker");
+    assert!(
+        selected_marker > merge_origin,
+        "side commit marker should sit to the right of the merge origin:\n{}\n{}",
+        row_text(2),
+        selected_row
+    );
+    assert_eq!(
+        cell_col(1, "direct branch commit"),
+        cell_col(2, "merge side branch")
+    );
+    assert_eq!(
+        cell_col(2, "merge side branch"),
+        cell_col(3, "side branch commit")
+    );
+    assert_eq!(
+        cell_col(3, "side branch commit"),
+        cell_col(4, "second side commit")
     );
 }
 

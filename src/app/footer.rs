@@ -89,7 +89,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                     0,
                     "Diff",
                     &[
-                        ("R", "review"),
+                        ("R", "review mode"),
                         ("o", "open IDE"),
                         ("j/k", "scroll"),
                         ("g/G", "top/bot"),

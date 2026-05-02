@@ -730,6 +730,14 @@ fn list_commits_compacts_graph_rows_for_complex_merges() {
         commits.iter().any(|commit| commit.graph.contains('|')),
         "compacted commit rows should retain folded lane geometry: {commits:?}"
     );
+    let merge_a = commits
+        .iter()
+        .find(|commit| commit.subject == "merge-a")
+        .expect("merge-a commit");
+    assert!(
+        merge_a.graph.chars().filter(|ch| *ch == '|').count() >= 3,
+        "connector-only rows should be folded into their origin merge commit, not the next side commit: {merge_a:?}"
+    );
     assert!(
         commits.iter().all(|commit| !commit.subject.is_empty()),
         "every rendered row should be a real commit with a subject: {commits:?}"
@@ -755,6 +763,10 @@ fn list_commits_compacts_graph_rows_for_complex_merges() {
     assert!(
         rendered.contains("\u{23e3}\u{2500}\u{256e}"),
         "rendered graph should include merge connector: {rendered}"
+    );
+    assert!(
+        rendered.contains("\u{23e3}\u{2500}\u{256e}\u{2502}"),
+        "rendered graph should show folded branch origins continuing into a lane: {rendered}"
     );
     assert!(
         !rendered.contains('\\')

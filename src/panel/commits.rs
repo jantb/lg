@@ -75,10 +75,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
                 Style::default().fg(author_color(&c.author))
             };
             let mut spans = vec![
-                Span::styled(
-                    format!("{:<hash_width$} ", c.sha),
-                    selected_style(Style::default().fg(Color::DarkGray), selected),
-                ),
+                Span::styled(format!("{:<hash_width$} ", c.sha), hash_style(selected)),
                 Span::styled(
                     format!("{:<2} ", c.author_short),
                     selected_style(author_style, selected),
@@ -275,6 +272,17 @@ fn selected_span(span: Span<'static>, selected: bool) -> Span<'static> {
         Span::styled(span.content, selected_style(span.style, true))
     } else {
         span
+    }
+}
+
+fn hash_style(selected: bool) -> Style {
+    if selected {
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
     }
 }
 

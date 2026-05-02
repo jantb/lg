@@ -545,7 +545,11 @@ pub fn list_commits_for_ref(reference: &str, limit: usize) -> Result<Vec<Commit>
                         subject,
                     });
                 } else if !line.trim().is_empty() {
-                    pending_graph_rows.push(line.to_owned());
+                    if let Some(commit) = commits.last_mut() {
+                        commit.graph = compact_graph_rows(&[line.to_owned()], &commit.graph);
+                    } else {
+                        pending_graph_rows.push(line.to_owned());
+                    }
                 }
             }
             Ok(commits)
