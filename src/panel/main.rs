@@ -7,6 +7,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
 };
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     config::DIFF_PAGE,
@@ -339,6 +340,24 @@ fn review_source_context_lines(
     indent: &str,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![section_header(indent, "source context")];
+
+    if let Some(path) = syntax_path
+        && let Some(mut source) = full_source_with_inline_diff(path, &node.body, indent)
+    {
+        lines.append(&mut source);
+        return lines;
+    }
+
+    lines.extend(fallback_source_context_lines(node, syntax_path, indent));
+    lines
+}
+
+fn fallback_source_context_lines(
+    node: &crate::git::ReviewNode,
+    syntax_path: Option<&str>,
+    indent: &str,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
     if !node.body.is_empty() {
         lines.push(section_header(indent, "diff"));
         for body in &node.body {
@@ -359,6 +378,117 @@ fn review_source_context_lines(
     lines
 }
 
+fn full_source_with_inline_diff(
+    path: &str,
+    body: &[String],
+    indent: &str,
+) -> Option<Vec<Line<'static>>> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let overlay = inline_diff_overlay(body);
+    let mut lines = vec![section_header(indent, "source")];
+
+    for (idx, source) in text.lines().enumerate() {
+        let line_no = idx + 1;
+        if let Some(removed) = overlay.removed_before.get(&line_no) {
+            for removed_line in removed {
+                lines.push(source_line(
+                    path,
+                    indent,
+                    removed_line.old_line,
+                    '-',
+                    &removed_line.text,
+                ));
+            }
+        }
+        let marker = if overlay.added_lines.contains(&line_no) {
+            '+'
+        } else {
+            '|'
+        };
+        lines.push(source_line(path, indent, Some(line_no), marker, source));
+    }
+
+    let eof_line = text.lines().count() + 1;
+    if let Some(removed) = overlay.removed_before.get(&eof_line) {
+        for removed_line in removed {
+            lines.push(source_line(
+                path,
+                indent,
+                removed_line.old_line,
+                '-',
+                &removed_line.text,
+            ));
+        }
+    }
+
+    Some(lines)
+}
+
+#[derive(Default)]
+struct InlineDiffOverlay {
+    removed_before: BTreeMap<usize, Vec<RemovedSourceLine>>,
+    added_lines: BTreeSet<usize>,
+}
+
+struct RemovedSourceLine {
+    old_line: Option<usize>,
+    text: String,
+}
+
+fn inline_diff_overlay(body: &[String]) -> InlineDiffOverlay {
+    let mut overlay = InlineDiffOverlay::default();
+    let mut old_line = 0usize;
+    let mut new_line = 0usize;
+    let mut in_hunk = false;
+
+    for line in body {
+        if let Some((old_start, new_start)) = parse_hunk_header(line) {
+            old_line = old_start;
+            new_line = new_start;
+            in_hunk = true;
+            continue;
+        }
+        if !in_hunk {
+            continue;
+        }
+        if line.starts_with("\\ No newline") {
+            continue;
+        }
+        if let Some(source) = line.strip_prefix(' ') {
+            old_line = old_line.saturating_add(1);
+            new_line = new_line.saturating_add(1);
+            let _ = source;
+        } else if let Some(source) = line.strip_prefix('-') {
+            overlay
+                .removed_before
+                .entry(new_line.max(1))
+                .or_default()
+                .push(RemovedSourceLine {
+                    old_line: Some(old_line),
+                    text: source.to_string(),
+                });
+            old_line = old_line.saturating_add(1);
+        } else if line.starts_with('+') {
+            overlay.added_lines.insert(new_line.max(1));
+            new_line = new_line.saturating_add(1);
+        }
+    }
+
+    overlay
+}
+
+fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
+    let rest = line.strip_prefix("@@ ")?;
+    let mut parts = rest.split_whitespace();
+    let old = parts.next()?.strip_prefix('-')?;
+    let new = parts.next()?.strip_prefix('+')?;
+    Some((parse_hunk_start(old)?, parse_hunk_start(new)?))
+}
+
+fn parse_hunk_start(part: &str) -> Option<usize> {
+    part.split(',').next()?.parse().ok()
+}
+
 fn section_header(indent: &str, label: &str) -> Line<'static> {
     Line::from(Span::styled(
         format!("{indent}  │ {label}"),
@@ -366,6 +496,61 @@ fn section_header(indent: &str, label: &str) -> Line<'static> {
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
     ))
+}
+
+fn source_line(
+    path: &str,
+    indent: &str,
+    line_no: Option<usize>,
+    marker: char,
+    source: &str,
+) -> Line<'static> {
+    let mut spans = context_prefix(indent);
+    let (line_style, marker_style, bg) = match marker {
+        '+' => (
+            Style::default()
+                .fg(Color::LightGreen)
+                .bg(Color::Rgb(24, 54, 34)),
+            Style::default()
+                .fg(Color::Green)
+                .bg(Color::Rgb(24, 54, 34))
+                .add_modifier(Modifier::BOLD),
+            Some(Color::Rgb(24, 54, 34)),
+        ),
+        '-' => (
+            Style::default()
+                .fg(Color::LightRed)
+                .bg(Color::Rgb(60, 28, 38)),
+            Style::default()
+                .fg(Color::Red)
+                .bg(Color::Rgb(60, 28, 38))
+                .add_modifier(Modifier::BOLD),
+            Some(Color::Rgb(60, 28, 38)),
+        ),
+        _ => (
+            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::DarkGray),
+            None,
+        ),
+    };
+    spans.push(Span::styled(
+        format!("{:>5} ", line_no.map_or(String::new(), |n| n.to_string())),
+        line_style,
+    ));
+    spans.push(Span::styled(format!("{marker} "), marker_style));
+    let code = ui::highlight_source_line_for_path(source, path);
+    spans.extend(apply_optional_bg(owned_spans(code), bg));
+    Line::from(spans)
+}
+
+fn apply_optional_bg(spans: Vec<Span<'static>>, bg: Option<Color>) -> Vec<Span<'static>> {
+    let Some(bg) = bg else {
+        return spans;
+    };
+    spans
+        .into_iter()
+        .map(|span| Span::styled(span.content, span.style.bg(bg)))
+        .collect()
 }
 
 fn context_prefix(indent: &str) -> Vec<Span<'static>> {
@@ -617,6 +802,17 @@ fn review_node_line_count(state: &AppState, idx: usize) -> usize {
 }
 
 fn review_source_context_line_count(node: &crate::git::ReviewNode) -> usize {
+    if let Some(path) = review_node_path(&node.title)
+        && let Ok(text) = std::fs::read_to_string(path)
+    {
+        let removed_count = inline_diff_overlay(&node.body)
+            .removed_before
+            .values()
+            .map(Vec::len)
+            .sum::<usize>();
+        return 2 + text.lines().count() + removed_count;
+    }
+
     1 + usize::from(!node.body.is_empty()) * (1 + node.body.len())
         + usize::from(!node.context.is_empty()) * (1 + node.context.len())
 }

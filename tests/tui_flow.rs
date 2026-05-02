@@ -290,6 +290,15 @@ fn author_modal_shows_error_when_terminal_is_too_small() {
 
 #[test]
 fn review_panel_expands_hunks_and_source_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_path = dir.path().join("App.kt");
+    std::fs::write(
+        &source_path,
+        "class App {\n    fun greeting() = \"hello review\"\n    val untouched = 1\n}\n",
+    )
+    .unwrap();
+    let source_path = source_path.display().to_string();
+
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
@@ -308,7 +317,7 @@ fn review_panel_expands_hunks_and_source_context() {
                 id: "branch:entry:0".into(),
                 parent: Some("branch".into()),
                 depth: 1,
-                title: "src/main/kotlin/App.kt:2 in fun greeting - updates greeting (+1 -1)".into(),
+                title: format!("{source_path}:2 in fun greeting - updates greeting (+1 -1)"),
                 body: Vec::new(),
                 context: Vec::new(),
             },
@@ -316,12 +325,14 @@ fn review_panel_expands_hunks_and_source_context() {
                 id: "branch:hunk:0".into(),
                 parent: Some("branch:entry:0".into()),
                 depth: 2,
-                title: "src/main/kotlin/App.kt:2 - updates greeting (+1 -1)".into(),
+                title: format!("{source_path}:2 - updates greeting (+1 -1)"),
                 body: vec![
                     "effect: updates greeting (+1 -1)".into(),
                     "@@ -1,3 +1,3 @@".into(),
+                    " class App {".into(),
                     "-    fun greeting() = \"hello\"".into(),
                     "+    fun greeting() = \"hello review\"".into(),
+                    "     val untouched = 1".into(),
                 ],
                 context: vec![
                     "    1 | class App {".into(),
@@ -358,10 +369,11 @@ fn review_panel_expands_hunks_and_source_context() {
     let context = buffer_text(&app);
     assert!(
         context.contains("source context")
-            && context.contains("diff")
             && context.contains("source")
+            && !context.contains("│ diff")
+            && context.contains("-     fun greeting() = \"hello\"")
             && context.contains("+    fun greeting() = \"hello review\"")
-            && context.contains("2 |     fun greeting()"),
+            && context.contains("3 |     val untouched = 1"),
         "source context should be visible: {context}"
     );
     let buf = app.terminal.backend().buffer();
