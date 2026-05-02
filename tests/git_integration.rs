@@ -620,7 +620,7 @@ fn list_commits_marks_merge_commits_with_multiple_parents() {
 }
 
 #[test]
-fn list_commits_preserves_graph_rows_for_complex_merges() {
+fn list_commits_compacts_graph_rows_for_complex_merges() {
     let dir = init_repo();
     fs::write(dir.path().join("base.txt"), "base").unwrap();
     stage_in(dir.path(), "base.txt");
@@ -660,40 +660,38 @@ fn list_commits_preserves_graph_rows_for_complex_merges() {
         "git log failed: {}",
         String::from_utf8_lossy(&raw.stderr)
     );
-    let expected_graphs = String::from_utf8_lossy(&raw.stdout)
+    let raw_text = String::from_utf8_lossy(&raw.stdout);
+    let raw_commit_rows = raw_text
         .lines()
-        .map(|line| {
-            line.find('\x1f')
-                .map(|marker| line[..marker].to_string())
-                .unwrap_or_else(|| line.to_string())
-        })
-        .filter(|graph| !graph.trim().is_empty())
-        .collect::<Vec<_>>();
+        .filter(|line| line.contains('\x1f'))
+        .count();
+    let raw_graph_only_rows = raw_text
+        .lines()
+        .filter(|line| !line.contains('\x1f') && !line.trim().is_empty())
+        .count();
 
     let _cwd = CwdGuard::new(dir.path());
     let commits = lg::git::list_commits_for_ref("main", 20).unwrap();
-    let actual_graphs = commits
-        .iter()
-        .map(|commit| commit.graph.clone())
-        .collect::<Vec<_>>();
 
-    assert_eq!(actual_graphs, expected_graphs);
     assert!(
-        commits.iter().any(lg::git::Commit::is_graph_row),
-        "expected graph-only continuation rows: {commits:?}"
+        raw_graph_only_rows > 0,
+        "test setup should produce connector-only rows"
     );
+    assert_eq!(commits.len(), raw_commit_rows);
+    assert!(
+        commits.iter().all(|commit| !commit.is_graph_row()),
+        "graph-only rows should be folded into commit rows: {commits:?}"
+    );
+    assert_eq!(commits.len(), 8);
     assert!(
         commits
             .iter()
-            .any(|commit| commit.is_graph_row() && commit.graph.contains('\\')),
-        "expected diagonal connector rows: {commits:?}"
+            .any(|commit| commit.graph.contains('\\') || commit.graph.contains('/')),
+        "compacted commit rows should retain diagonal connector geometry: {commits:?}"
     );
-    assert_eq!(
-        commits
-            .iter()
-            .filter(|commit| !commit.is_graph_row())
-            .count(),
-        8
+    assert!(
+        commits.iter().all(|commit| !commit.subject.is_empty()),
+        "every rendered row should be a real commit with a subject: {commits:?}"
     );
 
     let mut state = lg::state::AppState::new();
@@ -718,8 +716,10 @@ fn list_commits_preserves_graph_rows_for_complex_merges() {
         "rendered graph should include merge connector: {rendered}"
     );
     assert!(
-        rendered.contains("\u{2572}"),
-        "rendered graph should preserve diagonal connector rows: {rendered}"
+        !rendered.contains('\\')
+            && !rendered.contains('\u{2572}')
+            && !rendered.contains('\u{2571}'),
+        "rendered graph should use curved connector glyphs instead of slash diagonals: {rendered}"
     );
     assert!(
         rendered.contains("merge-a") && rendered.contains("a2"),

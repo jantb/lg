@@ -519,9 +519,11 @@ pub fn list_commits_for_ref(reference: &str, limit: usize) -> Result<Vec<Commit>
         Ok(out) => {
             let text = String::from_utf8_lossy(&out.stdout);
             let mut commits = Vec::new();
+            let mut pending_graph_rows = Vec::new();
             for line in text.lines() {
                 if let Some(marker) = line.find('\x1f') {
-                    let graph = line[..marker].to_owned();
+                    let graph = compact_graph_rows(&pending_graph_rows, &line[..marker]);
+                    pending_graph_rows.clear();
                     let mut parts = line[marker + 1..].splitn(4, '\x1f');
                     let Some(sha) = parts.next().map(str::trim).map(str::to_owned) else {
                         continue;
@@ -543,15 +545,7 @@ pub fn list_commits_for_ref(reference: &str, limit: usize) -> Result<Vec<Commit>
                         subject,
                     });
                 } else if !line.trim().is_empty() {
-                    commits.push(Commit {
-                        sha: String::new(),
-                        author: String::new(),
-                        author_short: String::new(),
-                        graph: line.to_owned(),
-                        is_first_parent: false,
-                        parent_count: 0,
-                        subject: String::new(),
-                    });
+                    pending_graph_rows.push(line.to_owned());
                 }
             }
             Ok(commits)
@@ -564,6 +558,51 @@ pub fn list_commits_for_ref(reference: &str, limit: usize) -> Result<Vec<Commit>
                 Err(e)
             }
         }
+    }
+}
+
+fn compact_graph_rows(pending_rows: &[String], commit_graph: &str) -> String {
+    if pending_rows.is_empty() {
+        return commit_graph.to_owned();
+    }
+
+    let width = pending_rows
+        .iter()
+        .map(|row| row.chars().count())
+        .chain(std::iter::once(commit_graph.chars().count()))
+        .max()
+        .unwrap_or(0);
+    let mut cells = vec![' '; width];
+
+    for row in pending_rows {
+        for (idx, ch) in row.chars().enumerate() {
+            if ch != ' ' {
+                cells[idx] = compact_graph_char(cells[idx], ch);
+            }
+        }
+    }
+    for (idx, ch) in commit_graph.chars().enumerate() {
+        if ch != ' ' {
+            cells[idx] = compact_graph_char(cells[idx], ch);
+        }
+    }
+
+    while cells.last() == Some(&' ') {
+        cells.pop();
+    }
+    cells.into_iter().collect()
+}
+
+fn compact_graph_char(existing: char, incoming: char) -> char {
+    match (existing, incoming) {
+        ('*', _) | (_, '*') => '*',
+        (' ', ch) => ch,
+        (ch, ' ') => ch,
+        ('|', '/' | '\\') => incoming,
+        ('/' | '\\', '|') => existing,
+        ('_', '-') | ('-', '_') => '-',
+        (_, '-' | '_') => incoming,
+        (ch, _) => ch,
     }
 }
 

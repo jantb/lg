@@ -67,12 +67,14 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
                 Style::default()
                     .fg(author_color(&c.author))
                     .add_modifier(Modifier::BOLD)
-            } else {
+            } else if graph_row {
                 Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default().fg(author_color(&c.author))
             };
             let mut spans = vec![
                 Span::styled(
-                    format!("{:<8}", c.sha),
+                    format!("{:<9}", c.sha),
                     selected_style(Style::default().fg(Color::DarkGray), selected),
                 ),
                 Span::styled(
@@ -248,8 +250,8 @@ fn graph_symbol(ch: char) -> char {
         '*' => '\u{25cb}',
         MERGE_MARKER => MERGE_MARKER,
         '|' => '\u{2502}',
-        '/' => '\u{2571}',
-        '\\' => '\u{2572}',
+        '/' => '\u{256f}',
+        '\\' => '\u{256e}',
         '\u{256e}' => '\u{256e}',
         '-' | '_' => '\u{2500}',
         other => other,

@@ -1889,16 +1889,51 @@ fn commits_panel_shows_author_names_with_distinct_colors() {
     assert_ne!(buf[(11, 1)].fg, buf[(11, 2)].fg);
 }
 
-fn graph_row(graph: &str) -> Commit {
-    Commit {
-        sha: String::new(),
-        author: String::new(),
-        author_short: String::new(),
-        graph: graph.into(),
-        is_first_parent: false,
-        parent_count: 0,
-        subject: String::new(),
+#[test]
+fn commits_panel_colors_merged_authors_by_author_and_separates_hash() {
+    let mut state = AppState::new();
+    state.commits = vec![
+        Commit {
+            sha: "12345678".into(),
+            author: "Carol Example".into(),
+            author_short: "CE".into(),
+            graph: "| *".into(),
+            is_first_parent: false,
+            parent_count: 1,
+            subject: "side one".into(),
+        },
+        Commit {
+            sha: "abcdef12".into(),
+            author: "Dave Example".into(),
+            author_short: "DE".into(),
+            graph: "| *".into(),
+            is_first_parent: false,
+            parent_count: 1,
+            subject: "side two".into(),
+        },
+    ];
+
+    let backend = TestBackend::new(80, 6);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut first_row = String::new();
+    for col in 0..buf.area.width {
+        first_row.push_str(buf[(col, 1)].symbol());
     }
+
+    assert!(
+        first_row.contains("12345678 CE"),
+        "hash and author should be separated by a space: {first_row}"
+    );
+    assert_ne!(buf[(10, 1)].fg, Color::DarkGray);
+    assert_ne!(buf[(10, 2)].fg, Color::DarkGray);
+    assert_ne!(buf[(10, 1)].fg, buf[(10, 2)].fg);
 }
 
 #[test]
@@ -1937,70 +1972,6 @@ fn commits_panel_marks_merge_commits() {
     assert!(
         !text.contains("\u{21a9}"),
         "old merge return arrow should not be rendered: {text}"
-    );
-}
-
-#[test]
-fn commits_panel_renders_graph_continuation_rows_without_selection() {
-    let mut state = AppState::new();
-    state.commits = vec![
-        Commit {
-            sha: "abc1234".into(),
-            author: "Alice Example".into(),
-            author_short: "AE".into(),
-            graph: "*   ".into(),
-            is_first_parent: true,
-            parent_count: 2,
-            subject: "merge branch".into(),
-        },
-        graph_row("|\\  "),
-        Commit {
-            sha: "def5678".into(),
-            author: "Bob Example".into(),
-            author_short: "BE".into(),
-            graph: "| *".into(),
-            is_first_parent: false,
-            parent_count: 1,
-            subject: "side branch".into(),
-        },
-    ];
-    state.focus = Pane::Commits;
-    state.commits_idx = 0;
-
-    let backend = TestBackend::new(80, 7);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal
-        .draw(|frame| {
-            panel::commits::render(&state, frame.area(), frame, true);
-        })
-        .unwrap();
-
-    let buf = terminal.backend().buffer().clone();
-    let row_text = |row_idx| {
-        let mut row = String::new();
-        for col in 0..buf.area.width {
-            row.push_str(buf[(col, row_idx)].symbol());
-        }
-        row
-    };
-    let continuation = row_text(2);
-
-    assert!(
-        continuation.contains("\u{2502}\u{2572}"),
-        "missing continuation graph row: {continuation}"
-    );
-    assert!(
-        !continuation.contains("abc1234") && !continuation.contains("def5678"),
-        "graph row should not render commit columns: {continuation}"
-    );
-    assert!(
-        (1..buf.area.width - 1).all(|col| buf[(col, 2)].bg != Color::DarkGray),
-        "graph continuation row should not be highlighted: {continuation}"
-    );
-    assert!(
-        (1..buf.area.width - 1).any(|col| buf[(col, 1)].bg == Color::DarkGray),
-        "selected commit row should be highlighted: {}",
-        row_text(1)
     );
 }
 
@@ -2170,6 +2141,47 @@ fn commits_panel_highlights_selected_merge_connector() {
         assert_eq!(cell.symbol(), *symbol);
         assert_eq!(cell.fg, Color::Yellow);
         assert_eq!(cell.bg, Color::DarkGray);
+    }
+}
+
+#[test]
+fn commits_panel_highlights_selected_compacted_graph_cells() {
+    let mut state = AppState::new();
+    state.commits = vec![Commit {
+        sha: "abc1234".into(),
+        author: "Alice Example".into(),
+        author_short: "AE".into(),
+        graph: "|\\*".into(),
+        is_first_parent: false,
+        parent_count: 1,
+        subject: "side branch".into(),
+    }];
+    state.focus = Pane::Commits;
+    state.commits_idx = 0;
+
+    let backend = TestBackend::new(80, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, true);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let marker_col = (0..buf.area.width)
+        .find(|col| buf[(*col, 1)].symbol() == "\u{25cb}")
+        .expect("selected commit marker");
+
+    let marker = &buf[(marker_col, 1)];
+    assert_eq!(marker.fg, Color::LightMagenta);
+    assert_eq!(marker.bg, Color::DarkGray);
+
+    for col in marker_col.saturating_sub(2)..marker_col {
+        assert_eq!(
+            buf[(col, 1)].bg,
+            Color::DarkGray,
+            "graph cell at {col} should be highlighted over folded lanes"
+        );
     }
 }
 
