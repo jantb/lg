@@ -64,7 +64,7 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
     )
     .title_bottom(
         Line::from(Span::styled(
-            "j/k move  Enter/space expand  f source  l explain  g/G top/bottom  R refresh",
+            "j/k move  Enter/space expand  s source  l explain  g/G top/bottom  R refresh",
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::DIM),
@@ -248,7 +248,7 @@ fn handle_review_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 clamp_review_selection(state);
             }
         }
-        KeyCode::Char('f') => {
+        KeyCode::Char('s') => {
             if let Some(review) = &state.review
                 && let Some(node) = review.nodes.get(state.review_idx)
                 && !node.context.is_empty()

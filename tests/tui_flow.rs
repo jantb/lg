@@ -278,7 +278,7 @@ fn review_panel_expands_hunks_and_source_context() {
         "expanded hunk should show patch: {expanded}"
     );
 
-    panel::main::handle_key(&mut app.state, key(KeyCode::Char('f'))).unwrap();
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
     app.render().unwrap();
     let context = buffer_text(&app);
     assert!(
@@ -1073,6 +1073,37 @@ fn layout_accepts_resized_left_column_width() {
     assert_eq!(resized.status.width, 40);
     assert_eq!(resized.main.x, 40);
     assert_eq!(resized.main.width, 80);
+}
+
+#[test]
+fn layout_accepts_resized_left_panel_heights() {
+    let area = ratatui::layout::Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let resized = lg::ui::split_layout_with_sizes(area, true, Some(40), Some([4, 6, 5, 4, 4]));
+
+    assert_eq!(resized.status.height, 4);
+    assert_eq!(resized.environments.height, 6);
+    assert_eq!(resized.files.height, 5);
+    assert_eq!(resized.branches.height, 4);
+    assert_eq!(resized.commits.height, 4);
+}
+
+#[test]
+fn hidden_environment_layout_merges_saved_environment_height_into_files() {
+    let area = ratatui::layout::Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let resized = lg::ui::split_layout_with_sizes(area, false, Some(40), Some([4, 6, 5, 4, 4]));
+
+    assert_eq!(resized.environments.height, 0);
+    assert_eq!(resized.files.height, 11);
 }
 
 #[test]

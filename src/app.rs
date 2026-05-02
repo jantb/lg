@@ -268,6 +268,155 @@ fn selected_commit_ref(state: &AppState) -> Option<String> {
     }
 }
 
+fn current_left_panel_heights(rects: &ui::LayoutRects) -> ui::LeftPanelHeights {
+    [
+        rects.status.height,
+        rects.environments.height,
+        rects.files.height,
+        rects.branches.height,
+        rects.commits.height,
+    ]
+}
+
+fn left_panel_rect(rects: &ui::LayoutRects, idx: usize) -> Rect {
+    match idx {
+        0 => rects.status,
+        1 => rects.environments,
+        2 => rects.files,
+        3 => rects.branches,
+        4 => rects.commits,
+        _ => rects.status,
+    }
+}
+
+fn left_panel_total_height(rects: &ui::LayoutRects) -> u16 {
+    rects
+        .status
+        .height
+        .saturating_add(rects.environments.height)
+        .saturating_add(rects.files.height)
+        .saturating_add(rects.branches.height)
+        .saturating_add(rects.commits.height)
+}
+
+fn row_divider_pair_at(
+    rects: &ui::LayoutRects,
+    show_environments: bool,
+    column: u16,
+    row: u16,
+) -> Option<(usize, usize)> {
+    let in_left = column >= rects.status.x
+        && column < rects.status.x.saturating_add(rects.status.width)
+        && row >= rects.status.y
+        && row < rects.footer.y;
+    if !in_left {
+        return None;
+    }
+
+    let pairs: &[(usize, usize)] = if show_environments {
+        &[(0, 1), (1, 2), (2, 3), (3, 4)]
+    } else {
+        &[(0, 2), (2, 3), (3, 4)]
+    };
+    pairs.iter().copied().find(|(_, lower_idx)| {
+        let lower = left_panel_rect(rects, *lower_idx);
+        lower.height > 0 && (row == lower.y || row.saturating_add(1) == lower.y)
+    })
+}
+
+fn resize_left_panel_pair(
+    state: &mut AppState,
+    rects: &ui::LayoutRects,
+    pair: (usize, usize),
+    row: u16,
+    show_environments: bool,
+) {
+    let total_height = left_panel_total_height(rects);
+    let mut heights = ui::normalize_left_panel_heights(
+        total_height,
+        show_environments,
+        Some(
+            state
+                .left_panel_heights
+                .unwrap_or_else(|| current_left_panel_heights(rects)),
+        ),
+    );
+    let (upper_idx, lower_idx) = pair;
+    let upper = left_panel_rect(rects, upper_idx);
+    let lower = left_panel_rect(rects, lower_idx);
+    let pair_total = heights[upper_idx].saturating_add(heights[lower_idx]);
+    let min_height = ui::left_panel_min_height(total_height, show_environments);
+    if pair_total <= min_height.saturating_mul(2) {
+        state.left_panel_heights = Some(heights);
+        return;
+    }
+
+    let desired_upper = if row < lower.y {
+        row.saturating_sub(upper.y).saturating_add(1)
+    } else {
+        row.saturating_sub(upper.y)
+    };
+    let upper_height = desired_upper
+        .max(min_height)
+        .min(pair_total.saturating_sub(min_height));
+    heights[upper_idx] = upper_height;
+    heights[lower_idx] = pair_total.saturating_sub(upper_height);
+    state.left_panel_heights = Some(ui::normalize_left_panel_heights(
+        total_height,
+        show_environments,
+        Some(heights),
+    ));
+}
+
+fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
+    column >= rect.x
+        && column < rect.x.saturating_add(rect.width)
+        && row >= rect.y
+        && row < rect.y.saturating_add(rect.height)
+}
+
+fn pane_at(rects: &ui::LayoutRects, column: u16, row: u16) -> Option<Pane> {
+    [
+        (Pane::Status, rects.status),
+        (Pane::Files, rects.files),
+        (Pane::Branches, rects.branches),
+        (Pane::Commits, rects.commits),
+        (Pane::Main, rects.main),
+    ]
+    .into_iter()
+    .find_map(|(pane, rect)| rect_contains(rect, column, row).then_some(pane))
+}
+
+fn list_row_at(area: Rect, row: u16, len: usize) -> Option<usize> {
+    if len == 0 || row <= area.y || row >= area.y.saturating_add(area.height).saturating_sub(1) {
+        return None;
+    }
+    let idx = row.saturating_sub(area.y).saturating_sub(1) as usize;
+    (idx < len).then_some(idx)
+}
+
+fn select_mouse_row(state: &mut AppState, pane: Pane, rects: &ui::LayoutRects, row: u16) {
+    match pane {
+        Pane::Files => {
+            let rows = state.tree_rows();
+            if let Some(idx) = list_row_at(rects.files, row, rows.len()) {
+                state.files_idx = idx;
+            }
+        }
+        Pane::Branches => {
+            if let Some(idx) = list_row_at(rects.branches, row, state.branches.len()) {
+                state.branches_idx = idx;
+            }
+        }
+        Pane::Commits => {
+            if let Some(idx) = list_row_at(rects.commits, row, state.commits.len()) {
+                state.commits_idx = idx;
+            }
+        }
+        Pane::Status | Pane::Main => {}
+    }
+}
+
 fn load_diff_text(source: &DiffSource) -> String {
     match source {
         DiffSource::None | DiffSource::Branch(_) | DiffSource::Review => String::new(),
@@ -418,6 +567,25 @@ fn spawn_push(state: &mut AppState) {
         remote,
     });
     state.set_status("pushing\u{2026}", false);
+}
+
+fn spawn_pull(state: &mut AppState) {
+    if git_job_running(state) {
+        return;
+    }
+    if !state.pull_available() {
+        state.set_status("nothing to pull", false);
+        return;
+    }
+    let branch = state.branch.clone().unwrap_or_default();
+    spawn_operation(state, "pulling", OperationKind::Worktree, move || {
+        let out = crate::git::pull(DEFAULT_PUSH_REMOTE, &branch)?;
+        Ok(out
+            .lines()
+            .rfind(|line| !line.trim().is_empty())
+            .unwrap_or("pulled")
+            .to_owned())
+    });
 }
 
 pub(crate) fn checkout_branch_async(state: &mut AppState, branch: String) {
@@ -694,7 +862,17 @@ pub(crate) fn abort_conflict_operation(state: &mut AppState) {
 
 fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, &'static str)]) {
     match state.focus {
-        Pane::Status => (1, "Status", &[("F", "flow"), ("?", "help"), ("q", "quit")]),
+        Pane::Status => (
+            1,
+            "Status",
+            &[
+                ("f", "fetch"),
+                ("p", "pull"),
+                ("F", "flow"),
+                ("?", "help"),
+                ("q", "quit"),
+            ],
+        ),
         Pane::Files => (
             2,
             "Files",
@@ -703,7 +881,9 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                 ("u", "unstage"),
                 ("A/U", "all"),
                 ("c", "commit"),
-                ("p/P", "push"),
+                ("p", "pull"),
+                ("P", "push"),
+                ("f", "fetch"),
                 ("F", "flow"),
                 ("?", "help"),
             ],
@@ -711,7 +891,13 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
         Pane::Branches => (
             3,
             "Branches",
-            &[("Enter", "checkout"), ("F", "flow"), ("?", "help")],
+            &[
+                ("Enter", "checkout"),
+                ("p", "pull"),
+                ("f", "fetch"),
+                ("F", "flow"),
+                ("?", "help"),
+            ],
         ),
         Pane::Commits => (
             4,
@@ -719,6 +905,8 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
             &[
                 ("j/k", "navigate"),
                 ("Enter", "focus diff"),
+                ("p", "pull"),
+                ("f", "fetch"),
                 ("F", "flow"),
                 ("?", "help"),
             ],
@@ -731,9 +919,10 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                     &[
                         ("j/k", "move"),
                         ("Enter/space", "expand"),
-                        ("f", "source"),
+                        ("s", "source"),
                         ("l", "explain"),
                         ("g/G", "top/bot"),
+                        ("f", "fetch"),
                         ("R", "refresh"),
                         ("?", "help"),
                     ],
@@ -746,6 +935,8 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                         ("R", "review"),
                         ("j/k", "scroll"),
                         ("g/G", "top/bot"),
+                        ("p", "pull"),
+                        ("f", "fetch"),
                         ("F", "flow"),
                         ("?", "help"),
                     ],
@@ -773,14 +964,16 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &AppState) {
                 if *key == "F" && !state.flow_available() {
                     continue;
                 }
+                if *key == "p" && !state.pull_available() {
+                    continue;
+                }
                 spans.push(Span::styled(*key, Style::default().fg(Color::Yellow)));
                 spans.push(Span::raw(" "));
                 spans.push(Span::raw(*label));
-                if pairs
-                    .iter()
-                    .skip(i + 1)
-                    .any(|(next_key, _)| *next_key != "F" || state.flow_available())
-                {
+                if pairs.iter().skip(i + 1).any(|(next_key, _)| {
+                    (*next_key != "F" || state.flow_available())
+                        && (*next_key != "p" || state.pull_available())
+                }) {
                     spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
                 }
             }
@@ -954,18 +1147,23 @@ where
             width: size.width,
             height: size.height,
         };
-        let rects_pre = ui::split_layout_with_width(
+        let rects_pre = ui::split_layout_with_sizes(
             area,
             self.state.flow_available(),
             self.state.left_column_width,
+            self.state.left_panel_heights,
         );
         self.state.diff_viewport_height = rects_pre.main.height.saturating_sub(2);
 
         let state = &self.state;
         self.terminal.draw(|frame| {
             let area = frame.area();
-            let rects =
-                ui::split_layout_with_width(area, state.flow_available(), state.left_column_width);
+            let rects = ui::split_layout_with_sizes(
+                area,
+                state.flow_available(),
+                state.left_column_width,
+                state.left_panel_heights,
+            );
             let focused_pane = state.focus;
 
             panel::status::render(state, rects.status, frame, focused_pane == Pane::Status);
@@ -1055,7 +1253,15 @@ where
                 self.state.open_commit_modal();
             }
             KeyCode::Char('p') => {
-                self.state.modal = Modal::Push;
+                if self.state.pull_available() {
+                    self.state.pending_action = Some(PendingAction::Pull);
+                } else {
+                    self.state.set_status("nothing to pull", false);
+                }
+            }
+            KeyCode::Char('f') => {
+                self.state
+                    .set_status("fetch unavailable in headless", false);
             }
             KeyCode::Char('P') => {
                 if self.state.unpushed_shas.is_empty() {
@@ -1197,6 +1403,9 @@ impl App {
                     }
                     PendingAction::Push => {
                         spawn_push(&mut self.state);
+                    }
+                    PendingAction::Pull => {
+                        spawn_pull(&mut self.state);
                     }
                     PendingAction::StageAll => {
                         spawn_operation(
@@ -1827,18 +2036,23 @@ impl App {
             width: size.width,
             height: size.height,
         };
-        let rects_pre = ui::split_layout_with_width(
+        let rects_pre = ui::split_layout_with_sizes(
             area,
             self.state.flow_available(),
             self.state.left_column_width,
+            self.state.left_panel_heights,
         );
         self.state.diff_viewport_height = rects_pre.main.height.saturating_sub(2);
 
         let state = &self.state;
         self.terminal.draw(|frame| {
             let area = frame.area();
-            let rects =
-                ui::split_layout_with_width(area, state.flow_available(), state.left_column_width);
+            let rects = ui::split_layout_with_sizes(
+                area,
+                state.flow_available(),
+                state.left_column_width,
+                state.left_panel_heights,
+            );
             let focused_pane = state.focus;
 
             panel::status::render(state, rects.status, frame, focused_pane == Pane::Status);
@@ -1954,8 +2168,11 @@ impl App {
                 return Ok(());
             }
             KeyCode::Char('p') => {
-                self.start_refresh(false);
-                self.state.modal = Modal::Push;
+                spawn_pull(&mut self.state);
+                return Ok(());
+            }
+            KeyCode::Char('f') => {
+                self.start_fetch();
                 return Ok(());
             }
             KeyCode::Char('P') => {
@@ -2007,10 +2224,11 @@ impl App {
             width: size.width,
             height: size.height,
         };
-        let rects = ui::split_layout_with_width(
+        let rects = ui::split_layout_with_sizes(
             area,
             self.state.flow_available(),
             self.state.left_column_width,
+            self.state.left_panel_heights,
         );
         let divider_col = rects.main.x.saturating_sub(1);
         let on_divider = m.row >= rects.status.y
@@ -2022,6 +2240,7 @@ impl App {
                 if on_divider && !m.modifiers.contains(KeyModifiers::SHIFT) =>
             {
                 self.state.column_drag_active = true;
+                self.state.row_drag_active = None;
                 self.state.left_column_width = Some(ui::clamp_left_column_width(
                     rects.status.width.saturating_add(rects.main.width),
                     m.column.saturating_sub(area.x).saturating_add(1),
@@ -2037,7 +2256,44 @@ impl App {
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 self.state.column_drag_active = false;
+                self.state.row_drag_active = None;
                 return Ok(());
+            }
+            _ => {}
+        }
+
+        let show_environments = self.state.flow_available();
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left)
+                if !m.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                if let Some(pair) = row_divider_pair_at(&rects, show_environments, m.column, m.row)
+                {
+                    self.state.column_drag_active = false;
+                    self.state.row_drag_active = Some(pair);
+                    self.state.left_panel_heights = Some(current_left_panel_heights(&rects));
+                    resize_left_panel_pair(&mut self.state, &rects, pair, m.row, show_environments);
+                    return Ok(());
+                }
+
+                if let Some(pane) = pane_at(&rects, m.column, m.row) {
+                    let commit_ref_before = selected_commit_ref(&self.state);
+                    self.state.focus = pane;
+                    select_mouse_row(&mut self.state, pane, &rects, m.row);
+                    if !matches!(pane, Pane::Main) {
+                        self.start_diff_job(false);
+                    }
+                    if selected_commit_ref(&self.state) != commit_ref_before {
+                        self.sync_commit_log_to_selection();
+                    }
+                    return Ok(());
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(pair) = self.state.row_drag_active {
+                    resize_left_panel_pair(&mut self.state, &rects, pair, m.row, show_environments);
+                    return Ok(());
+                }
             }
             _ => {}
         }

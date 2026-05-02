@@ -194,7 +194,11 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char('p') => {
-            state.modal = Modal::Push;
+            if state.pull_available() {
+                state.pending_action = Some(PendingAction::Pull);
+            } else {
+                state.set_status("nothing to pull", false);
+            }
         }
         _ => {}
     }

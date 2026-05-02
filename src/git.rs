@@ -229,6 +229,13 @@ pub fn push(remote: &str, branch: &str) -> Result<String> {
     }
 }
 
+pub fn pull(remote: &str, branch: &str) -> Result<String> {
+    if branch.trim().is_empty() {
+        anyhow::bail!("branch name must not be empty");
+    }
+    run_combined(&["pull", "--ff-only", remote, branch])
+}
+
 pub fn staged_diff() -> Result<String> {
     let out = run(&["diff", "--cached"])?;
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())

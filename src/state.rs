@@ -229,6 +229,7 @@ pub enum PendingAction {
     ReviewAssist(String),
     Commit,
     Push,
+    Pull,
     StageAll,
     UnstageAll,
     StagePath(String),
@@ -430,6 +431,8 @@ pub struct AppState {
 
     pub left_column_width: Option<u16>,
     pub column_drag_active: bool,
+    pub left_panel_heights: Option<crate::ui::LeftPanelHeights>,
+    pub row_drag_active: Option<(usize, usize)>,
 
     pub flow_idx: usize,
     pub flow_confirm: Option<FlowAction>,
@@ -539,6 +542,8 @@ impl AppState {
 
             left_column_width: None,
             column_drag_active: false,
+            left_panel_heights: None,
+            row_drag_active: None,
 
             flow_idx: 0,
             flow_confirm: None,
@@ -585,6 +590,7 @@ impl AppState {
                 Some(PendingAction::ReviewAssist(_)) => Some("starting explanation"),
                 Some(PendingAction::Commit) => Some("committing"),
                 Some(PendingAction::Push) => Some("starting push"),
+                Some(PendingAction::Pull) => Some("starting pull"),
                 Some(PendingAction::StageAll | PendingAction::StagePath(_)) => Some("staging"),
                 Some(PendingAction::UnstageAll | PendingAction::UnstagePath(_)) => {
                     Some("unstaging")
@@ -617,6 +623,10 @@ impl AppState {
     pub fn flow_available(&self) -> bool {
         self.flow_branches_available
             || (self.branch_exists(BRANCH_DEV) && self.branch_exists(BRANCH_TEST))
+    }
+
+    pub fn pull_available(&self) -> bool {
+        self.branch.is_some() && self.ahead_behind.is_some_and(|(_, behind)| behind > 0)
     }
 
     pub fn start_generation(&mut self, rx: Receiver<GenMsg>) {
