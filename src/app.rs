@@ -2093,6 +2093,32 @@ impl App {
             _ => {}
         }
 
+        if matches!(
+            m.kind,
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+        ) {
+            if let Some(pane @ (Pane::Files | Pane::Branches | Pane::Commits)) =
+                mouse::pane_at(&rects, m.column, m.row)
+            {
+                let focus_before = self.state.focus;
+                let commit_ref_before = selected_commit_ref(&self.state);
+                self.state.focus = pane;
+                let changed = mouse::scroll_list(
+                    &mut self.state,
+                    pane,
+                    matches!(m.kind, MouseEventKind::ScrollDown),
+                    3,
+                );
+                if changed || focus_before != pane {
+                    self.start_diff_job(false);
+                }
+                if selected_commit_ref(&self.state) != commit_ref_before {
+                    self.sync_commit_log_to_selection();
+                }
+                return Ok(());
+            }
+        }
+
         let in_main = m.column >= rects.main.x
             && m.column < rects.main.x + rects.main.width
             && m.row >= rects.main.y

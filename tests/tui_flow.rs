@@ -1817,7 +1817,7 @@ fn commits_panel_marks_merge_commits() {
         sha: "abc1234".into(),
         author: "Alice Example".into(),
         author_short: "AE".into(),
-        graph: "*".into(),
+        graph: "*   ".into(),
         is_first_parent: true,
         parent_count: 2,
         subject: "merge branch".into(),
@@ -1848,6 +1848,44 @@ fn commits_panel_marks_merge_commits() {
         !text.contains("\u{21a9}"),
         "old merge return arrow should not be rendered: {text}"
     );
+}
+
+#[test]
+fn commits_panel_draws_merge_connector_over_graph_padding() {
+    let mut state = AppState::new();
+    state.commits = vec![Commit {
+        sha: "abc1234".into(),
+        author: "Alice Example".into(),
+        author_short: "AE".into(),
+        graph: "*   ".into(),
+        is_first_parent: true,
+        parent_count: 2,
+        subject: "merge branch".into(),
+    }];
+
+    let backend = TestBackend::new(80, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let marker_col = (0..buf.area.width)
+        .find(|col| buf[(*col, 1)].symbol() == "\u{25cb}")
+        .expect("merge marker should be rendered");
+    let expected = [
+        ("\u{25cb}", 0u16),
+        ("\u{23e3}", 1),
+        ("\u{2500}", 2),
+        ("\u{256e}", 3),
+        (" ", 4),
+        ("m", 5),
+    ];
+    for (symbol, offset) in expected {
+        assert_eq!(buf[(marker_col + offset, 1)].symbol(), symbol);
+    }
 }
 
 #[test]

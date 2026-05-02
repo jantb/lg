@@ -130,6 +130,7 @@ fn visible_graph_width(area_width: u16, max_graph_width: usize) -> usize {
 fn graph_spans(commit: &crate::git::Commit, width: usize) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut visible_col = 0usize;
+    let mut skip_graph_padding = 0usize;
     let graph = if commit.graph.trim().is_empty() {
         "*"
     } else {
@@ -137,6 +138,10 @@ fn graph_spans(commit: &crate::git::Commit, width: usize) -> Vec<Span<'static>> 
     };
 
     for ch in graph.chars() {
+        if skip_graph_padding > 0 && ch == ' ' {
+            skip_graph_padding -= 1;
+            continue;
+        }
         if visible_col >= width {
             break;
         }
@@ -155,7 +160,9 @@ fn graph_spans(commit: &crate::git::Commit, width: usize) -> Vec<Span<'static>> 
         visible_col += 1;
 
         if ch == '*' && commit.parent_count > 1 {
+            let before_connector = visible_col;
             visible_col = push_merge_connector(&mut spans, visible_col, width);
+            skip_graph_padding = visible_col.saturating_sub(before_connector);
         }
     }
 

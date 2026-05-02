@@ -509,7 +509,7 @@ pub fn list_commits_for_ref(reference: &str, limit: usize) -> Result<Vec<Commit>
                 .lines()
                 .filter_map(|line| {
                     let marker = line.find('\x1f')?;
-                    let graph = line[..marker].trim_end().to_owned();
+                    let graph = line[..marker].to_owned();
                     let mut parts = line[marker + 1..].splitn(4, '\x1f');
                     let sha = parts.next()?.trim().to_owned();
                     let author = parts.next().unwrap_or("").trim().to_owned();
