@@ -44,10 +44,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let graph_width = visible_graph_width(area.width, max_pipe_width, hash_width);
 
     let selected_sha = if focused {
-        state
-            .commits
-            .get(state.commits_idx)
-            .map(|c| c.sha.as_str())
+        state.commits.get(state.commits_idx).map(|c| c.sha.as_str())
     } else {
         None
     };
@@ -73,7 +70,10 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
                 Style::default().fg(author_color(&c.author))
             };
             let mut spans = vec![
-                Span::styled(format!("{:<hash_width$} ", c.sha), hash_style(is_selected_row)),
+                Span::styled(
+                    format!("{:<hash_width$} ", c.sha),
+                    hash_style(is_selected_row),
+                ),
                 Span::styled(
                     format!("{:<2} ", c.author_short),
                     selected_style(author_style, is_selected_row),
@@ -84,9 +84,15 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
                 .and_then(|i| state.commits.get(i))
                 .map(|c| c.sha.as_str());
             spans.extend(
-                graph_spans(&pipe_sets[idx], selected_sha, prev_sha, graph_width, c.is_first_parent)
-                    .into_iter()
-                    .map(|span| selected_span(span, is_selected_row)),
+                graph_spans(
+                    &pipe_sets[idx],
+                    selected_sha,
+                    prev_sha,
+                    graph_width,
+                    c.is_first_parent,
+                )
+                .into_iter()
+                .map(|span| selected_span(span, is_selected_row)),
             );
             spans.push(Span::styled(
                 c.subject.clone(),

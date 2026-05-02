@@ -139,9 +139,9 @@ pub const PALETTE: &[Color] = &[
 ];
 
 pub fn color_for(hash: &str) -> Color {
-    let h = hash
-        .bytes()
-        .fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
+    let h = hash.bytes().fold(0xcbf29ce484222325u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
+    });
     PALETTE[h as usize % PALETTE.len()]
 }
 
@@ -175,7 +175,10 @@ fn next_pipes<C: CommitNode>(prev: &[Pipe], commit: &C) -> Vec<Pipe> {
     let max_pos = prev.iter().map(|p| p.to_pos).max().unwrap_or(0);
 
     // Filter out pipes that already terminated.
-    let current: Vec<&Pipe> = prev.iter().filter(|p| p.kind != PipeKind::Terminates).collect();
+    let current: Vec<&Pipe> = prev
+        .iter()
+        .filter(|p| p.kind != PipeKind::Terminates)
+        .collect();
 
     // Where does this commit land? At the position of the first prev pipe whose `to`
     // equals our hash; otherwise to the right of all existing lanes (covers `--all`).
@@ -393,7 +396,11 @@ pub fn render_pipe_set(
     }
 
     // Mark commit/merge symbol.
-    cells[commit_pos as usize].kind = if is_merge { CellKind::Merge } else { CellKind::Commit };
+    cells[commit_pos as usize].kind = if is_merge {
+        CellKind::Merge
+    } else {
+        CellKind::Commit
+    };
 
     cells.iter().map(render_cell).collect()
 }
@@ -524,7 +531,19 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "◯", "◯", "◯", "⏣─╮", "│ ◯", "◯─╯", "◯", "⏣─╮", "│ ◯", "│ ◯", "◯ │", "◯ │", "◯ │",
+                "◯",
+                "◯",
+                "◯",
+                "⏣─╮",
+                "│ ◯",
+                "◯─╯",
+                "◯",
+                "⏣─╮",
+                "│ ◯",
+                "│ ◯",
+                "◯ │",
+                "◯ │",
+                "◯ │",
                 "◯─╯",
             ]
         );
@@ -541,10 +560,7 @@ mod tests {
             c("6", &["7"]),
         ];
         let lines = render_dag(&commits);
-        assert_eq!(
-            lines,
-            vec!["◯", "⏣─╮", "│ ⏣─╮", "◯─╯ │", "◯───╯", "◯",]
-        );
+        assert_eq!(lines, vec!["◯", "⏣─╮", "│ ⏣─╮", "◯─╯ │", "◯───╯", "◯",]);
     }
 
     #[test]
@@ -689,20 +705,14 @@ mod tests {
             c("6", &["8"]),
         ];
         let lines = render_dag(&commits);
-        assert_eq!(
-            lines,
-            vec!["⏣─╮", "│ ◯", "⏣─│", "⏣─│─╮", "◯ │ │"]
-        );
+        assert_eq!(lines, vec!["⏣─╮", "│ ◯", "⏣─│", "⏣─│─╮", "◯ │ │"]);
     }
 
     #[test]
     fn selection_no_visible_body_does_not_paint_consecutive_row() {
         // When prev commit is selected and the current row has no pipe whose `from` is
         // the selected SHA on a visible body, the highlight doesn't carry over.
-        let commits = [
-            c("S", &["P"]),
-            c("P", &["G"]),
-        ];
+        let commits = [c("S", &["P"]), c("P", &["G"])];
         let sets = pipe_sets(&commits);
         let row1 = render_pipe_set(&sets[1], Some("S"), Some("S"));
         // P's row: a single ◯, but no visible body originating from S → no highlight.
@@ -714,11 +724,7 @@ mod tests {
         // Merge with parents [P, R]. Select the merge → second-parent pipe to col 1
         // is bolded white. Then on the next row (a side commit S whose parent is R),
         // the lane stays highlighted as it continues down.
-        let commits = [
-            c("M", &["P", "R"]),
-            c("S", &["R"]),
-            c("R", &["G"]),
-        ];
+        let commits = [c("M", &["P", "R"]), c("S", &["R"]), c("R", &["G"])];
         let sets = pipe_sets(&commits);
         let row0 = render_pipe_set(&sets[0], Some("M"), None);
         // Both starts originate from M → highlight covers ⏣─╮.

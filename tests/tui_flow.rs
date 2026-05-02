@@ -2128,7 +2128,11 @@ fn commits_panel_merge_then_side_renders_lane_through() {
         }
         row
     };
-    assert!(row_text(1).contains("\u{23e3}\u{2500}\u{256e}"), "{}", row_text(1));
+    assert!(
+        row_text(1).contains("\u{23e3}\u{2500}\u{256e}"),
+        "{}",
+        row_text(1)
+    );
     // SIDE row: │ ◯ (lane 0 still active, side commit on lane 1).
     assert!(row_text(2).contains("\u{2502} \u{25ef}"), "{}", row_text(2));
 }
@@ -2525,7 +2529,11 @@ fn commits_panel_renders_nested_merges_like_lazygit() {
         row
     };
     // M0: ⏣─╮ at col-pair 0/1 — top-level merge.
-    assert!(row_text(1).contains("\u{23e3}\u{2500}\u{256e}"), "{}", row_text(1));
+    assert!(
+        row_text(1).contains("\u{23e3}\u{2500}\u{256e}"),
+        "{}",
+        row_text(1)
+    );
     // M1: │ ⏣─╮ — feature lane stays vertical, merge lives on lane 1.
     assert!(
         row_text(2).contains("\u{2502} \u{23e3}\u{2500}\u{256e}"),

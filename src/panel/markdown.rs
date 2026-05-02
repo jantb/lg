@@ -11,7 +11,7 @@ enum Syntax {
     Rust,
 }
 
-pub fn render(text: &str, prefix: &str) -> Vec<Line<'static>> {
+pub fn render(text: &str, prefix: &str, wrap_width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut code: Option<Option<Syntax>> = None;
 
@@ -45,7 +45,7 @@ pub fn render(text: &str, prefix: &str) -> Vec<Line<'static>> {
             continue;
         }
 
-        lines.push(markdown_line(raw, prefix));
+        lines.extend(markdown_lines(raw, prefix, wrap_width));
     }
 
     if code.is_some() {
@@ -55,19 +55,24 @@ pub fn render(text: &str, prefix: &str) -> Vec<Line<'static>> {
     lines
 }
 
-fn markdown_line(raw: &str, prefix: &str) -> Line<'static> {
+fn markdown_lines(raw: &str, prefix: &str, wrap_width: u16) -> Vec<Line<'static>> {
     let trimmed = raw.trim_start();
-    let mut spans = prefixed(prefix);
-    let indent_len = raw.len().saturating_sub(trimmed.len());
-    if indent_len > 0 {
-        spans.push(Span::raw(" ".repeat(indent_len.min(8))));
-    }
+    let indent_len = raw.len().saturating_sub(trimmed.len()).min(8);
+    let prefix_width = prefix.chars().count() + indent_len;
 
     if trimmed.is_empty() {
-        return Line::from(spans);
+        let mut spans = prefixed(prefix);
+        if indent_len > 0 {
+            spans.push(Span::raw(" ".repeat(indent_len)));
+        }
+        return vec![Line::from(spans)];
     }
 
     if let Some((level, heading)) = heading(trimmed) {
+        let mut spans = prefixed(prefix);
+        if indent_len > 0 {
+            spans.push(Span::raw(" ".repeat(indent_len)));
+        }
         spans.push(Span::styled(
             format!("{} ", "▸".repeat(level.min(3))),
             Style::default().fg(Color::LightBlue),
@@ -78,28 +83,114 @@ fn markdown_line(raw: &str, prefix: &str) -> Line<'static> {
                 .fg(Color::LightCyan)
                 .add_modifier(Modifier::BOLD),
         ));
-        return Line::from(spans);
+        return vec![Line::from(spans)];
     }
 
     if let Some(rest) = unordered_bullet(trimmed) {
-        spans.push(Span::styled("• ", Style::default().fg(Color::Yellow)));
-        spans.extend(inline_spans(rest, Style::default().fg(Color::Gray)));
-        return Line::from(spans);
+        let marker = Span::styled("• ", Style::default().fg(Color::Yellow));
+        return wrap_with_marker(
+            prefix,
+            indent_len,
+            marker,
+            2,
+            rest,
+            wrap_width,
+            prefix_width,
+        );
     }
 
     if let Some((number, rest)) = ordered_bullet(trimmed) {
-        spans.push(Span::styled(
-            format!("{number}. "),
+        let marker_text = format!("{number}. ");
+        let marker_width = marker_text.chars().count();
+        let marker = Span::styled(
+            marker_text,
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
-        ));
-        spans.extend(inline_spans(rest, Style::default().fg(Color::Gray)));
-        return Line::from(spans);
+        );
+        return wrap_with_marker(
+            prefix,
+            indent_len,
+            marker,
+            marker_width,
+            rest,
+            wrap_width,
+            prefix_width,
+        );
     }
 
+    let mut spans = prefixed(prefix);
+    if indent_len > 0 {
+        spans.push(Span::raw(" ".repeat(indent_len)));
+    }
     spans.extend(inline_spans(trimmed, Style::default().fg(Color::Gray)));
-    Line::from(spans)
+    vec![Line::from(spans)]
+}
+
+fn wrap_with_marker(
+    prefix: &str,
+    indent_len: usize,
+    marker: Span<'static>,
+    marker_width: usize,
+    content: &str,
+    wrap_width: u16,
+    prefix_width: usize,
+) -> Vec<Line<'static>> {
+    let available = (wrap_width as usize)
+        .saturating_sub(prefix_width)
+        .saturating_sub(marker_width)
+        .max(1);
+    let chunks = word_wrap(content, available);
+    let style = Style::default().fg(Color::Gray);
+
+    chunks
+        .into_iter()
+        .enumerate()
+        .map(|(idx, chunk)| {
+            let mut spans = prefixed(prefix);
+            if indent_len > 0 {
+                spans.push(Span::raw(" ".repeat(indent_len)));
+            }
+            if idx == 0 {
+                spans.push(marker.clone());
+            } else {
+                spans.push(Span::raw(" ".repeat(marker_width)));
+            }
+            spans.extend(inline_spans(&chunk, style));
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn word_wrap(text: &str, width: usize) -> Vec<String> {
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+    for word in text.split_whitespace() {
+        let w = word.chars().count();
+        if current.is_empty() {
+            current.push_str(word);
+            current_width = w;
+        } else if current_width + 1 + w <= width {
+            current.push(' ');
+            current.push_str(word);
+            current_width += 1 + w;
+        } else {
+            out.push(std::mem::take(&mut current));
+            current.push_str(word);
+            current_width = w;
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
 }
 
 fn prefixed(prefix: &str) -> Vec<Span<'static>> {

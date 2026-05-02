@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
-use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::RecommendedWatcher;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::{
     event::{
@@ -16,7 +16,6 @@ use ratatui::{
 };
 use std::{
     io::Stdout,
-    path::{Component, Path},
     sync::mpsc::Receiver,
     time::{Duration, Instant},
 };
@@ -24,23 +23,37 @@ use std::{
 use crate::{
     config::{
         BACKGROUND_FETCH_INTERVAL_SECS, BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST, COMMIT_LIST_LIMIT,
-        DEFAULT_PUSH_REMOTE, STATUS_MSG_LIFETIME_SECS, TICK_MS,
+        STATUS_MSG_LIFETIME_SECS, TICK_MS,
     },
     panel,
     state::{
-        AppState, CheckoutJob, CheckoutMsg, CommitLogJob, CommitLogMsg, ConflictFollowup, DiffJob,
-        DiffMsg, DiffSource, FetchJob, FetchMsg, FlowAction, GenMsg, Modal, OperationJob,
-        OperationKind, OperationMsg, Pane, PendingAction, PushJob, PushMsg, RefreshJob, RefreshMsg,
-        RefreshSnapshot, ReleaseStatusJob, ReleaseStatusMsg, ReviewAssistJob, ReviewJob, ReviewMsg,
-        TreeKind, WorkflowJob, WorkflowMsg,
+        AppState, CheckoutMsg, CommitLogJob, CommitLogMsg, DiffJob, DiffMsg, DiffSource, FetchJob,
+        FetchMsg, GenMsg, Modal, OperationKind, OperationMsg, Pane, PendingAction, PushMsg,
+        RefreshJob, RefreshMsg, ReleaseStatusJob, ReleaseStatusMsg, ReviewMsg, WorkflowMsg,
     },
     ui,
 };
 
 mod footer;
 mod mouse;
+mod refresh;
+mod review_assist;
+mod spawn;
+mod workflow;
 
-const MAX_REVIEW_ASSIST_CONTEXT_BYTES: usize = 18_000;
+pub(crate) use spawn::checkout_branch_async;
+pub(crate) use workflow::{
+    abort_conflict_operation, run_flow_action, validate_conflict_resolution,
+};
+
+use refresh::{
+    build_refresh_snapshot, prime_branches, should_refresh_for_fs_event, watch_current_dir,
+};
+use review_assist::{spawn_assisted_review, spawn_review_assist};
+use spawn::{
+    git_job_running, load_diff_text, open_author_modal, selected_commit_ref, selected_diff_source,
+    spawn_operation, spawn_pull, spawn_push,
+};
 
 pub struct App {
     pub state: AppState,
@@ -55,8 +68,6 @@ pub struct HeadlessApp<B: Backend> {
     pub state: AppState,
     pub terminal: Terminal<B>,
 }
-
-// ─── free helpers ────────────────────────────────────────────────────────────
 
 fn next_pane(p: Pane) -> Pane {
     match p {
@@ -85,661 +96,6 @@ fn first_status_line(s: &str) -> String {
         .chars()
         .take(120)
         .collect()
-}
-
-fn git_job_running(state: &AppState) -> bool {
-    state.push_job.is_some()
-        || state.checkout_job.is_some()
-        || state.operation_job.is_some()
-        || state.fetch_job.is_some()
-        || state.workflow_job.is_some()
-}
-
-fn spawn_assisted_review(state: &mut AppState) {
-    if state.review_job.is_some() {
-        return;
-    }
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(
-        move || match crate::git::build_assisted_review_against_main() {
-            Ok(review) => {
-                let _ = tx.send(ReviewMsg::Done(Box::new(review)));
-            }
-            Err(e) => {
-                let _ = tx.send(ReviewMsg::Error(e.to_string()));
-            }
-        },
-    );
-    state.review_job = Some(ReviewJob { rx, spinner: 0 });
-    state.focus = Pane::Main;
-    state.diff_source = DiffSource::Review;
-    state.diff_offset = 0;
-    state.review = None;
-    state.review_idx = 0;
-    state.review_collapsed.clear();
-    state.review_context_open.clear();
-    state.review_assists.clear();
-    state.review_assist_job = None;
-    state.diff_text = "building assisted review against main...".to_string();
-    state.diff_line_count = 1;
-    state.set_status("building review...", false);
-}
-
-fn spawn_review_assist(state: &mut AppState, node_id: String) {
-    let Some(context) = review_assist_context(state, &node_id) else {
-        state.set_status("no review item selected", true);
-        return;
-    };
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        crate::ollama::stream_review_assist(context, tx);
-    });
-    state.review_assist_job = Some(ReviewAssistJob {
-        rx,
-        node_id,
-        output: String::new(),
-        spinner: 0,
-    });
-    state.set_status("explaining review item...", false);
-}
-
-fn review_assist_context(state: &AppState, node_id: &str) -> Option<String> {
-    let review = state.review.as_ref()?;
-    let selected = review.nodes.iter().find(|node| node.id == node_id)?;
-    let mut out = String::new();
-    push_review_assist_line(
-        &mut out,
-        "Full diff against main, selected drilldown subtree:",
-    );
-    push_review_assist_line(&mut out, &format!("selected: {}", selected.title));
-    push_review_assist_line(&mut out, "");
-
-    for (idx, node) in review.nodes.iter().enumerate() {
-        if !review_node_in_subtree(review, idx, node_id) {
-            continue;
-        }
-        if out.len() >= MAX_REVIEW_ASSIST_CONTEXT_BYTES {
-            push_review_assist_line(&mut out, "... review subtree truncated ...");
-            break;
-        }
-        let indent = "  ".repeat(node.depth as usize);
-        push_review_assist_line(&mut out, &format!("{indent}- {}", node.title));
-        for body in &node.body {
-            push_review_assist_line(&mut out, &format!("{indent}  {body}"));
-        }
-        if !node.context.is_empty() {
-            push_review_assist_line(&mut out, &format!("{indent}  source context:"));
-            for context in &node.context {
-                push_review_assist_line(&mut out, &format!("{indent}  {context}"));
-            }
-        }
-    }
-
-    Some(out)
-}
-
-fn review_node_in_subtree(
-    review: &crate::git::AssistedReview,
-    mut idx: usize,
-    root_id: &str,
-) -> bool {
-    loop {
-        let Some(node) = review.nodes.get(idx) else {
-            return false;
-        };
-        if node.id == root_id {
-            return true;
-        }
-        let Some(parent) = &node.parent else {
-            return false;
-        };
-        let Some(parent_idx) = review
-            .nodes
-            .iter()
-            .position(|candidate| &candidate.id == parent)
-        else {
-            return false;
-        };
-        idx = parent_idx;
-    }
-}
-
-fn push_review_assist_line(out: &mut String, line: &str) {
-    if out.len() >= MAX_REVIEW_ASSIST_CONTEXT_BYTES {
-        return;
-    }
-    let remaining = MAX_REVIEW_ASSIST_CONTEXT_BYTES - out.len();
-    if line.len() < remaining {
-        out.push_str(line);
-        out.push('\n');
-        return;
-    }
-    let take = remaining.saturating_sub(1);
-    let mut added = 0usize;
-    for ch in line.chars() {
-        if ch.len_utf8() > take.saturating_sub(added) {
-            break;
-        }
-        out.push(ch);
-        added += ch.len_utf8();
-    }
-    out.push('\n');
-}
-
-fn selected_diff_source(state: &AppState) -> DiffSource {
-    match state.focus {
-        Pane::Files => {
-            let rows = state.tree_rows();
-            match rows.get(state.files_idx) {
-                Some(row) => match &row.kind {
-                    TreeKind::AllChanges => DiffSource::All,
-                    TreeKind::Folder { .. } => DiffSource::Folder(row.path.clone()),
-                    TreeKind::File { entry_idx } => state
-                        .files
-                        .get(*entry_idx)
-                        .map(|f| DiffSource::File(f.path.clone()))
-                        .unwrap_or(DiffSource::None),
-                },
-                None => DiffSource::None,
-            }
-        }
-        Pane::Commits => state
-            .commits
-            .get(state.commits_idx)
-            .filter(|c| !c.is_graph_row())
-            .map(|c| DiffSource::Commit(c.sha.clone()))
-            .unwrap_or(DiffSource::None),
-        Pane::Branches => state
-            .branches
-            .get(state.branches_idx)
-            .map(|b| DiffSource::Branch(b.name.clone()))
-            .unwrap_or(DiffSource::None),
-        _ => DiffSource::None,
-    }
-}
-
-fn selected_commit_ref(state: &AppState) -> Option<String> {
-    if state.focus == Pane::Branches {
-        state
-            .branches
-            .get(state.branches_idx)
-            .map(|branch| branch.name.clone())
-            .or_else(|| state.branch.clone())
-    } else {
-        state.branch.clone()
-    }
-}
-
-fn load_diff_text(source: &DiffSource) -> String {
-    match source {
-        DiffSource::None | DiffSource::Review => String::new(),
-        DiffSource::All => crate::git::all_diffs().unwrap_or_else(|e| format!("error: {e}")),
-        DiffSource::File(path) => {
-            crate::git::file_diff(path).unwrap_or_else(|e| format!("error: {e}"))
-        }
-        DiffSource::Folder(path) => {
-            crate::git::folder_diff(path).unwrap_or_else(|e| format!("error: {e}"))
-        }
-        DiffSource::Commit(sha) => {
-            crate::git::show_commit(sha).unwrap_or_else(|e| format!("error: {e}"))
-        }
-        DiffSource::Branch(branch) => crate::git::branch_log(branch, COMMIT_LIST_LIMIT)
-            .unwrap_or_else(|e| format!("error: {e}")),
-    }
-}
-
-fn build_refresh_snapshot() -> RefreshSnapshot {
-    let mut errors = Vec::new();
-    let files = match crate::git::status_entries() {
-        Ok(files) => Some(files),
-        Err(e) => {
-            errors.push(format!("git status failed: {e}"));
-            None
-        }
-    };
-    let branches = match crate::git::list_branches() {
-        Ok(branches) => Some(branches),
-        Err(e) => {
-            errors.push(format!("git branch failed: {e}"));
-            None
-        }
-    };
-    let unpushed_shas = match crate::git::unpushed_shas() {
-        Ok(shas) => Some(shas),
-        Err(e) => {
-            errors.push(format!("unpushed check failed: {e}"));
-            None
-        }
-    };
-    let branch = crate::git::head_branch().ok().or_else(|| {
-        branches.as_ref().and_then(|branches| {
-            branches
-                .iter()
-                .find(|branch| branch.is_current)
-                .map(|branch| branch.name.clone())
-        })
-    });
-    let commits = match crate::git::list_commits(COMMIT_LIST_LIMIT) {
-        Ok(commits) => Some(commits),
-        Err(e) => {
-            errors.push(format!("git log failed: {e}"));
-            None
-        }
-    };
-    RefreshSnapshot {
-        files,
-        branches,
-        flow_branches_available: crate::git::flow_branches_available(),
-        commits,
-        unpushed_shas,
-        branch,
-        remote_url: crate::git::remote_url(DEFAULT_PUSH_REMOTE).ok(),
-        ahead_behind: crate::git::counts_ahead_behind().ok(),
-        errors,
-    }
-}
-
-fn prime_branches(state: &mut AppState) {
-    if let Ok(branches) = crate::git::list_branches() {
-        state.branch = branches
-            .iter()
-            .find(|branch| branch.is_current)
-            .map(|branch| branch.name.clone());
-        state.branches = branches;
-        state.clamp();
-    }
-}
-
-fn path_has_ignored_component(path: &Path) -> bool {
-    path.components().any(|component| match component {
-        Component::Normal(name) => name
-            .to_str()
-            .is_some_and(|name| matches!(name, ".git" | "target")),
-        _ => false,
-    })
-}
-
-fn should_refresh_for_fs_event(event: &notify::Event) -> bool {
-    if matches!(event.kind, EventKind::Access(_)) {
-        return false;
-    }
-    if event.paths.is_empty() {
-        return true;
-    }
-    event
-        .paths
-        .iter()
-        .any(|path| !path_has_ignored_component(path))
-}
-
-fn watch_current_dir() -> Result<(RecommendedWatcher, Receiver<notify::Result<notify::Event>>)> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let mut watcher = notify::recommended_watcher(move |event| {
-        let _ = tx.send(event);
-    })
-    .context("start file watcher")?;
-
-    let cwd = std::env::current_dir().context("resolve current directory")?;
-    watcher
-        .watch(&cwd, RecursiveMode::Recursive)
-        .with_context(|| format!("watch {}", cwd.display()))?;
-
-    Ok((watcher, rx))
-}
-
-fn spawn_push(state: &mut AppState) {
-    if git_job_running(state) {
-        return;
-    }
-    let branch = state.branch.clone().unwrap_or_default();
-    let remote = DEFAULT_PUSH_REMOTE.to_string();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let tbranch = branch.clone();
-    let tremote = remote.clone();
-    std::thread::spawn(move || match crate::git::push(&tremote, &tbranch) {
-        Ok(out) => {
-            let line = out
-                .lines()
-                .rfind(|l| !l.trim().is_empty())
-                .unwrap_or("pushed")
-                .to_owned();
-            let _ = tx.send(PushMsg::Done(line));
-        }
-        Err(e) => {
-            let _ = tx.send(PushMsg::Error(e.to_string()));
-        }
-    });
-    state.push_job = Some(PushJob {
-        rx,
-        spinner: 0,
-        branch,
-        remote,
-    });
-    state.set_status("pushing\u{2026}", false);
-}
-
-fn spawn_pull(state: &mut AppState) {
-    if git_job_running(state) {
-        return;
-    }
-    if !state.pull_available() {
-        state.set_status("nothing to pull", false);
-        return;
-    }
-    let branch = state.branch.clone().unwrap_or_default();
-    spawn_operation(state, "pulling", OperationKind::Worktree, move || {
-        let out = crate::git::pull(DEFAULT_PUSH_REMOTE, &branch)?;
-        Ok(out
-            .lines()
-            .rfind(|line| !line.trim().is_empty())
-            .unwrap_or("pulled")
-            .to_owned())
-    });
-}
-
-fn open_author_modal(state: &mut AppState) {
-    let config = crate::git::author_config();
-    let root = crate::git::repo_root().unwrap_or_default();
-    match config {
-        Ok(config) => {
-            state.author_path_input = if state.author_path_input.trim().is_empty() {
-                root
-            } else {
-                state.author_path_input.clone()
-            };
-            state.author_name_input = config
-                .local_name
-                .clone()
-                .or(config.name)
-                .unwrap_or_default();
-            state.author_email_input = config
-                .local_email
-                .clone()
-                .or(config.email)
-                .unwrap_or_default();
-            state.author_has_local_override =
-                config.local_name.is_some() || config.local_email.is_some();
-            state.author_has_subtree_rule =
-                crate::git::subtree_author_rule_exists(&state.author_path_input);
-            state.author_field = crate::state::AuthorField::Path;
-            state.modal = Modal::Author;
-        }
-        Err(err) => {
-            state.set_status(format!("author config failed: {err}"), true);
-        }
-    }
-}
-
-pub(crate) fn checkout_branch_async(state: &mut AppState, branch: String) {
-    if git_job_running(state) {
-        return;
-    }
-    let (tx, rx) = std::sync::mpsc::channel();
-    let target = branch.clone();
-    std::thread::spawn(move || match crate::git::checkout_branch(&target) {
-        Ok(out) => {
-            let line = out
-                .lines()
-                .rfind(|l| !l.trim().is_empty())
-                .unwrap_or("checked out")
-                .to_owned();
-            let _ = tx.send(CheckoutMsg::Done(line));
-        }
-        Err(e) => {
-            let _ = tx.send(CheckoutMsg::Error(e.to_string()));
-        }
-    });
-    state.checkout_job = Some(CheckoutJob {
-        rx,
-        spinner: 0,
-        branch: branch.clone(),
-    });
-    state.set_status(format!("checking out {branch}\u{2026}"), false);
-}
-
-fn spawn_operation<F>(state: &mut AppState, label: &'static str, kind: OperationKind, work: F)
-where
-    F: FnOnce() -> Result<String> + Send + 'static,
-{
-    if git_job_running(state) {
-        return;
-    }
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || match work() {
-        Ok(s) => {
-            let _ = tx.send(OperationMsg::Done(s));
-        }
-        Err(e) => {
-            let _ = tx.send(OperationMsg::Error(e.to_string()));
-        }
-    });
-    state.operation_job = Some(OperationJob {
-        rx,
-        spinner: 0,
-        label,
-        kind,
-    });
-    state.set_status(format!("{label}\u{2026}"), false);
-}
-
-pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: Option<String>) {
-    if git_job_running(state) {
-        return;
-    }
-    if !state.flow_available() {
-        state.modal = Modal::None;
-        state.set_status("flow unavailable: missing develop or release/next", true);
-        return;
-    }
-
-    let current = state.branch.clone().unwrap_or_default();
-    let label = action.label().to_owned();
-    let steps = workflow_steps(action, &current, input.as_deref());
-    let thread_steps = steps.clone();
-    state.conflict_followup = conflict_followup_for_flow(action, &current);
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut step_idx = 0usize;
-        let mut progress = || {
-            let _ = tx.send(WorkflowMsg::Progress(step_idx));
-            step_idx += 1;
-        };
-        let res = match action {
-            FlowAction::MergeMain => {
-                crate::git::flow_merge_main_into_current_with_progress(&current, &mut progress)
-            }
-            FlowAction::ReleaseDev => crate::git::flow_release_current_with_progress(
-                &current,
-                crate::config::BRANCH_DEV,
-                &mut progress,
-            ),
-            FlowAction::ReleaseTest => crate::git::flow_release_current_with_progress(
-                &current,
-                crate::config::BRANCH_TEST,
-                &mut progress,
-            ),
-            FlowAction::ResetDev => crate::git::flow_reset_branch_from_main_with_progress(
-                &current,
-                crate::config::BRANCH_DEV,
-                &mut progress,
-            ),
-            FlowAction::ResetTest => crate::git::flow_reset_branch_from_main_with_progress(
-                &current,
-                crate::config::BRANCH_TEST,
-                &mut progress,
-            ),
-            FlowAction::NewFeature => {
-                for _ in &thread_steps {
-                    progress();
-                }
-                crate::git::flow_create_feature_branch(&current, &input.unwrap_or_default())
-            }
-            FlowAction::CleanOrphans => {
-                for _ in &thread_steps {
-                    progress();
-                }
-                crate::git::flow_clean_orphan_branches(&current)
-            }
-        };
-        match res {
-            Ok(s) => {
-                let _ = tx.send(WorkflowMsg::Done(s));
-            }
-            Err(e) => {
-                let _ = tx.send(WorkflowMsg::Error(e.to_string()));
-            }
-        }
-    });
-
-    state.workflow_job = Some(WorkflowJob {
-        rx,
-        spinner: 0,
-        label,
-        steps,
-        current_step: None,
-    });
-    state.set_status("running flow workflow\u{2026}", false);
-}
-
-fn conflict_followup_for_flow(action: FlowAction, current: &str) -> Option<ConflictFollowup> {
-    match action {
-        FlowAction::MergeMain => Some(ConflictFollowup {
-            push_branch: Some(current.to_string()),
-            return_branch: Some(current.to_string()),
-        }),
-        FlowAction::ReleaseDev => Some(ConflictFollowup {
-            push_branch: Some(crate::config::BRANCH_DEV.to_string()),
-            return_branch: Some(current.to_string()),
-        }),
-        FlowAction::ReleaseTest => Some(ConflictFollowup {
-            push_branch: Some(crate::config::BRANCH_TEST.to_string()),
-            return_branch: Some(current.to_string()),
-        }),
-        FlowAction::ResetDev
-        | FlowAction::ResetTest
-        | FlowAction::NewFeature
-        | FlowAction::CleanOrphans => None,
-    }
-}
-
-fn workflow_steps(action: FlowAction, current: &str, input: Option<&str>) -> Vec<String> {
-    match action {
-        FlowAction::MergeMain => vec![
-            "stash current changes".into(),
-            "create safety backup".into(),
-            "fetch origin".into(),
-            "checkout main".into(),
-            "update main from origin/main".into(),
-            format!("checkout {current}"),
-            format!("merge origin/{} into {current}", crate::config::BRANCH_MAIN),
-            format!("push {current}"),
-            "restore stashed changes".into(),
-        ],
-        FlowAction::ReleaseDev => release_steps(current, crate::config::BRANCH_DEV),
-        FlowAction::ReleaseTest => release_steps(current, crate::config::BRANCH_TEST),
-        FlowAction::ResetDev => reset_steps(current, crate::config::BRANCH_DEV),
-        FlowAction::ResetTest => reset_steps(current, crate::config::BRANCH_TEST),
-        FlowAction::NewFeature => vec![format!(
-            "create {}",
-            input.filter(|s| !s.is_empty()).unwrap_or("new branch")
-        )],
-        FlowAction::CleanOrphans => vec!["scan branches".into(), "delete orphan branches".into()],
-    }
-}
-
-fn release_steps(current: &str, target: &str) -> Vec<String> {
-    vec![
-        "stash current changes".into(),
-        "create safety backup".into(),
-        format!("push {current}"),
-        "fetch origin".into(),
-        format!("sync {target} from origin/{target}"),
-        format!("checkout {target}"),
-        format!("merge origin/{}", crate::config::BRANCH_MAIN),
-        format!("merge origin/{current}"),
-        format!("push HEAD to origin/{target}"),
-        format!("checkout {current}"),
-        "restore stashed changes".into(),
-    ]
-}
-
-fn reset_steps(current: &str, target: &str) -> Vec<String> {
-    let mut steps = vec!["fetch origin".into()];
-    if current != target {
-        steps.push(format!("checkout {target}"));
-    }
-    steps.extend([
-        "create safety backup".into(),
-        format!("reset {target} to origin/{}", crate::config::BRANCH_MAIN),
-        format!("force push {target}"),
-    ]);
-    if current != target {
-        steps.push(format!("checkout {current}"));
-    }
-    steps
-}
-
-pub(crate) fn validate_conflict_resolution(state: &mut AppState) {
-    if state.workflow_job.is_some() {
-        return;
-    }
-    let followup = state.conflict_followup.clone();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        match crate::git::validate_conflict_resolution_with_followup(
-            followup.as_ref().and_then(|f| f.push_branch.as_deref()),
-            followup.as_ref().and_then(|f| f.return_branch.as_deref()),
-        ) {
-            Ok(s) => {
-                let _ = tx.send(WorkflowMsg::Done(s));
-            }
-            Err(e) => {
-                let _ = tx.send(WorkflowMsg::Error(e.to_string()));
-            }
-        }
-    });
-    state.workflow_job = Some(WorkflowJob {
-        rx,
-        spinner: 0,
-        label: "validate conflict resolution".to_string(),
-        steps: vec![
-            "detect conflict state".to_string(),
-            "continue Git operation if needed".to_string(),
-            "push release branch if needed".to_string(),
-            "return to feature branch if needed".to_string(),
-        ],
-        current_step: None,
-    });
-    state.set_status("validating conflict resolution\u{2026}", false);
-}
-
-pub(crate) fn abort_conflict_operation(state: &mut AppState) {
-    if state.workflow_job.is_some() {
-        return;
-    }
-    let return_branch = state
-        .conflict_followup
-        .as_ref()
-        .and_then(|f| f.return_branch.clone());
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        match crate::git::abort_in_progress_operation_with_return(return_branch.as_deref()) {
-            Ok(s) => {
-                let _ = tx.send(WorkflowMsg::Done(s));
-            }
-            Err(e) => {
-                let _ = tx.send(WorkflowMsg::Error(e.to_string()));
-            }
-        }
-    });
-    state.workflow_job = Some(WorkflowJob {
-        rx,
-        spinner: 0,
-        label: "abort merge".to_string(),
-        steps: Vec::new(),
-        current_step: None,
-    });
-    state.set_status("aborting git operation\u{2026}", false);
 }
 
 // ─── HeadlessApp ─────────────────────────────────────────────────────────────
@@ -1002,151 +358,7 @@ impl App {
 
             // Dispatch pending IO action.
             if let Some(action) = self.state.pending_action.take() {
-                match action {
-                    PendingAction::GenerateMessage => match crate::git::staged_diff() {
-                        Ok(diff) => {
-                            let (tx, rx) = std::sync::mpsc::channel();
-                            std::thread::spawn(move || {
-                                crate::ollama::stream_commit_message(diff, tx);
-                            });
-                            self.state.start_generation(rx);
-                            self.state.set_status("generating\u{2026}", false);
-                        }
-                        Err(e) => {
-                            self.state.set_status(e.to_string(), true);
-                        }
-                    },
-                    PendingAction::ReviewAssist(node_id) => {
-                        spawn_review_assist(&mut self.state, node_id);
-                    }
-                    PendingAction::Commit => {
-                        let msg = self.state.commit_message.clone();
-                        spawn_operation(
-                            &mut self.state,
-                            "committing",
-                            OperationKind::Commit,
-                            move || {
-                                let out = crate::git::commit(&msg)?;
-                                Ok(out.lines().next().unwrap_or("committed").to_owned())
-                            },
-                        );
-                    }
-                    PendingAction::Push => {
-                        spawn_push(&mut self.state);
-                    }
-                    PendingAction::Pull => {
-                        spawn_pull(&mut self.state);
-                    }
-                    PendingAction::SaveAuthor { name, email } => {
-                        match crate::git::set_local_author(&name, &email) {
-                            Ok(()) => {
-                                self.state.author_has_local_override = true;
-                                self.state.modal = Modal::None;
-                                self.state.set_status("saved repo author", false);
-                            }
-                            Err(err) => self
-                                .state
-                                .set_status(format!("author save failed: {err}"), true),
-                        }
-                    }
-                    PendingAction::ClearAuthor => match crate::git::clear_local_author() {
-                        Ok(()) => {
-                            self.state.author_has_local_override = false;
-                            self.state.modal = Modal::None;
-                            self.state.set_status("cleared repo author", false);
-                        }
-                        Err(err) => self
-                            .state
-                            .set_status(format!("author clear failed: {err}"), true),
-                    },
-                    PendingAction::SaveSubtreeAuthor { path, name, email } => {
-                        match crate::git::set_subtree_author(&path, &name, &email) {
-                            Ok(()) => {
-                                self.state.author_has_subtree_rule = true;
-                                self.state.modal = Modal::None;
-                                self.state.set_status("saved subtree author", false);
-                            }
-                            Err(err) => self
-                                .state
-                                .set_status(format!("author save failed: {err}"), true),
-                        }
-                    }
-                    PendingAction::ClearSubtreeAuthor { path } => {
-                        match crate::git::clear_subtree_author(&path) {
-                            Ok(()) => {
-                                self.state.author_has_subtree_rule = false;
-                                self.state.modal = Modal::None;
-                                self.state.set_status("cleared subtree author", false);
-                            }
-                            Err(err) => self
-                                .state
-                                .set_status(format!("author clear failed: {err}"), true),
-                        }
-                    }
-                    PendingAction::StageAll => {
-                        spawn_operation(
-                            &mut self.state,
-                            "staging",
-                            OperationKind::Worktree,
-                            || {
-                                crate::git::stage_all()?;
-                                Ok("staged all".to_string())
-                            },
-                        );
-                    }
-                    PendingAction::UnstageAll => {
-                        spawn_operation(
-                            &mut self.state,
-                            "unstaging",
-                            OperationKind::Worktree,
-                            || {
-                                crate::git::unstage_all()?;
-                                Ok("unstaged all".to_string())
-                            },
-                        );
-                    }
-                    PendingAction::StagePath(path) => {
-                        spawn_operation(
-                            &mut self.state,
-                            "staging",
-                            OperationKind::Worktree,
-                            move || {
-                                crate::git::stage(&path)?;
-                                Ok(format!("staged {path}"))
-                            },
-                        );
-                    }
-                    PendingAction::UnstagePath(path) => {
-                        spawn_operation(
-                            &mut self.state,
-                            "unstaging",
-                            OperationKind::Worktree,
-                            move || {
-                                crate::git::unstage(&path)?;
-                                Ok(format!("unstaged {path}"))
-                            },
-                        );
-                    }
-                    PendingAction::IgnorePath { path, is_dir } => {
-                        match crate::git::add_to_gitignore(&path, is_dir) {
-                            Ok(status) => {
-                                self.state.set_status(status, false);
-                                self.start_refresh_with_status(false, false);
-                            }
-                            Err(err) => self
-                                .state
-                                .set_status(format!("gitignore update failed: {err}"), true),
-                        }
-                    }
-                    PendingAction::OpenProject => match crate::git::open_project_in_ide() {
-                        Ok(status) => self.state.set_status(status, false),
-                        Err(err) => self.state.set_status(format!("open failed: {err}"), true),
-                    },
-                    PendingAction::OpenFile(path) => match crate::git::open_file_in_ide(&path) {
-                        Ok(status) => self.state.set_status(status, false),
-                        Err(err) => self.state.set_status(format!("open failed: {err}"), true),
-                    },
-                }
+                self.dispatch_pending(action);
             }
 
             // Expire stale status messages.
@@ -1157,6 +369,145 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn dispatch_pending(&mut self, action: PendingAction) {
+        match action {
+            PendingAction::GenerateMessage => match crate::git::staged_diff() {
+                Ok(diff) => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    std::thread::spawn(move || {
+                        crate::ollama::stream_commit_message(diff, tx);
+                    });
+                    self.state.start_generation(rx);
+                    self.state.set_status("generating\u{2026}", false);
+                }
+                Err(e) => {
+                    self.state.set_status(e.to_string(), true);
+                }
+            },
+            PendingAction::ReviewAssist(node_id) => {
+                spawn_review_assist(&mut self.state, node_id);
+            }
+            PendingAction::Commit => {
+                let msg = self.state.commit_message.clone();
+                spawn_operation(
+                    &mut self.state,
+                    "committing",
+                    OperationKind::Commit,
+                    move || {
+                        let out = crate::git::commit(&msg)?;
+                        Ok(out.lines().next().unwrap_or("committed").to_owned())
+                    },
+                );
+            }
+            PendingAction::Push => spawn_push(&mut self.state),
+            PendingAction::Pull => spawn_pull(&mut self.state),
+            PendingAction::SaveAuthor { name, email } => {
+                match crate::git::set_local_author(&name, &email) {
+                    Ok(()) => {
+                        self.state.author_has_local_override = true;
+                        self.state.modal = Modal::None;
+                        self.state.set_status("saved repo author", false);
+                    }
+                    Err(err) => self
+                        .state
+                        .set_status(format!("author save failed: {err}"), true),
+                }
+            }
+            PendingAction::ClearAuthor => match crate::git::clear_local_author() {
+                Ok(()) => {
+                    self.state.author_has_local_override = false;
+                    self.state.modal = Modal::None;
+                    self.state.set_status("cleared repo author", false);
+                }
+                Err(err) => self
+                    .state
+                    .set_status(format!("author clear failed: {err}"), true),
+            },
+            PendingAction::SaveSubtreeAuthor { path, name, email } => {
+                match crate::git::set_subtree_author(&path, &name, &email) {
+                    Ok(()) => {
+                        self.state.author_has_subtree_rule = true;
+                        self.state.modal = Modal::None;
+                        self.state.set_status("saved subtree author", false);
+                    }
+                    Err(err) => self
+                        .state
+                        .set_status(format!("author save failed: {err}"), true),
+                }
+            }
+            PendingAction::ClearSubtreeAuthor { path } => {
+                match crate::git::clear_subtree_author(&path) {
+                    Ok(()) => {
+                        self.state.author_has_subtree_rule = false;
+                        self.state.modal = Modal::None;
+                        self.state.set_status("cleared subtree author", false);
+                    }
+                    Err(err) => self
+                        .state
+                        .set_status(format!("author clear failed: {err}"), true),
+                }
+            }
+            PendingAction::StageAll => {
+                spawn_operation(&mut self.state, "staging", OperationKind::Worktree, || {
+                    crate::git::stage_all()?;
+                    Ok("staged all".to_string())
+                });
+            }
+            PendingAction::UnstageAll => {
+                spawn_operation(
+                    &mut self.state,
+                    "unstaging",
+                    OperationKind::Worktree,
+                    || {
+                        crate::git::unstage_all()?;
+                        Ok("unstaged all".to_string())
+                    },
+                );
+            }
+            PendingAction::StagePath(path) => {
+                spawn_operation(
+                    &mut self.state,
+                    "staging",
+                    OperationKind::Worktree,
+                    move || {
+                        crate::git::stage(&path)?;
+                        Ok(format!("staged {path}"))
+                    },
+                );
+            }
+            PendingAction::UnstagePath(path) => {
+                spawn_operation(
+                    &mut self.state,
+                    "unstaging",
+                    OperationKind::Worktree,
+                    move || {
+                        crate::git::unstage(&path)?;
+                        Ok(format!("unstaged {path}"))
+                    },
+                );
+            }
+            PendingAction::IgnorePath { path, is_dir } => {
+                match crate::git::add_to_gitignore(&path, is_dir) {
+                    Ok(status) => {
+                        self.state.set_status(status, false);
+                        self.start_refresh_with_status(false, false);
+                    }
+                    Err(err) => self
+                        .state
+                        .set_status(format!("gitignore update failed: {err}"), true),
+                }
+            }
+            PendingAction::OpenProject => match crate::git::open_project_in_ide() {
+                Ok(status) => self.state.set_status(status, false),
+                Err(err) => self.state.set_status(format!("open failed: {err}"), true),
+            },
+            PendingAction::OpenFile(path) => match crate::git::open_file_in_ide(&path) {
+                Ok(status) => self.state.set_status(status, false),
+                Err(err) => self.state.set_status(format!("open failed: {err}"), true),
+            },
+        }
     }
 
     fn start_refresh(&mut self, refresh_diff: bool) {
@@ -1381,7 +732,11 @@ impl App {
         Ok(())
     }
 
-    fn apply_refresh_snapshot(&mut self, snapshot: RefreshSnapshot, refresh_diff: bool) {
+    fn apply_refresh_snapshot(
+        &mut self,
+        snapshot: crate::state::RefreshSnapshot,
+        refresh_diff: bool,
+    ) {
         if let Some(files) = snapshot.files {
             self.state.files = files;
         }
