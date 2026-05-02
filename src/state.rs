@@ -599,6 +599,18 @@ impl AppState {
         }
         clamp_idx(&mut self.branches_idx, self.branches.len());
         clamp_idx(&mut self.commits_idx, self.commits.len());
+        if self
+            .commits
+            .get(self.commits_idx)
+            .is_some_and(crate::git::Commit::is_graph_row)
+        {
+            self.commits_idx = self
+                .commits
+                .iter()
+                .enumerate()
+                .find_map(|(idx, commit)| (!commit.is_graph_row()).then_some(idx))
+                .unwrap_or(0);
+        }
         let flow_len = usize::from(self.flow_available()) * FlowAction::ALL.len();
         clamp_idx(&mut self.flow_idx, flow_len);
     }

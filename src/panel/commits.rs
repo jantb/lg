@@ -14,13 +14,16 @@ use crate::{
 };
 
 const MERGE_MARKER: char = '\u{23e3}';
-const MERGE_CONNECTOR: &str = "\u{2500}\u{256e}";
+const MERGE_CONNECTOR: [char; 3] = ['\u{23e3}', '\u{2500}', '\u{256e}'];
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
-    let count = if state.commits.is_empty() {
+    let count = if real_commit_count(&state.commits) == 0 {
         None
     } else {
-        Some((state.commits_idx + 1, state.commits.len()))
+        Some((
+            selected_commit_ordinal(&state.commits, state.commits_idx),
+            real_commit_count(&state.commits),
+        ))
     };
     let title = state
         .commits_ref
@@ -51,10 +54,11 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         .iter()
         .enumerate()
         .map(|(idx, c)| {
-            let selected = focused && idx == state.commits_idx;
+            let graph_row = c.is_graph_row();
+            let selected = focused && idx == state.commits_idx && !graph_row;
             let subject_style = if state.unpushed_shas.contains(&c.sha) {
                 Style::default().fg(Color::Red)
-            } else if c.is_first_parent {
+            } else if c.is_first_parent || graph_row {
                 Style::default()
             } else {
                 Style::default().fg(Color::Gray).add_modifier(Modifier::DIM)
@@ -68,7 +72,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
             };
             let mut spans = vec![
                 Span::styled(
-                    format!("{} ", c.sha),
+                    format!("{:<8}", c.sha),
                     selected_style(Style::default().fg(Color::DarkGray), selected),
                 ),
                 Span::styled(
@@ -93,7 +97,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let list = List::new(items).block(block);
 
     let mut list_state = ListState::default();
-    if focused && !state.commits.is_empty() {
+    if focused && !state.commits.is_empty() && !state.commits[state.commits_idx].is_graph_row() {
         list_state.select(Some(state.commits_idx));
     }
 
@@ -103,13 +107,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            if !state.commits.is_empty() && state.commits_idx + 1 < state.commits.len() {
-                state.commits_idx += 1;
+            if let Some(next) = next_commit_idx(&state.commits, state.commits_idx) {
+                state.commits_idx = next;
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            if state.commits_idx > 0 {
-                state.commits_idx -= 1;
+            if let Some(prev) = previous_commit_idx(&state.commits, state.commits_idx) {
+                state.commits_idx = prev;
             }
         }
         KeyCode::Enter => {
@@ -118,6 +122,39 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn real_commit_count(commits: &[crate::git::Commit]) -> usize {
+    commits
+        .iter()
+        .filter(|commit| !commit.is_graph_row())
+        .count()
+}
+
+fn selected_commit_ordinal(commits: &[crate::git::Commit], idx: usize) -> usize {
+    commits
+        .iter()
+        .take(idx.saturating_add(1))
+        .filter(|commit| !commit.is_graph_row())
+        .count()
+        .max(1)
+}
+
+fn next_commit_idx(commits: &[crate::git::Commit], idx: usize) -> Option<usize> {
+    commits
+        .iter()
+        .enumerate()
+        .skip(idx.saturating_add(1))
+        .find_map(|(idx, commit)| (!commit.is_graph_row()).then_some(idx))
+}
+
+fn previous_commit_idx(commits: &[crate::git::Commit], idx: usize) -> Option<usize> {
+    commits
+        .iter()
+        .enumerate()
+        .take(idx)
+        .rev()
+        .find_map(|(idx, commit)| (!commit.is_graph_row()).then_some(idx))
 }
 
 fn visible_graph_width(area_width: u16, max_graph_width: usize) -> usize {
@@ -130,55 +167,61 @@ fn visible_graph_width(area_width: u16, max_graph_width: usize) -> usize {
 
 fn graph_spans(commit: &crate::git::Commit, width: usize) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
-    let mut visible_col = 0usize;
-    let mut skip_graph_padding = 0usize;
     let graph = if commit.graph.trim().is_empty() {
         "*"
     } else {
         commit.graph.as_str()
     };
+    let (cells, merge_cols) = graph_cells(commit, graph);
 
-    for ch in graph.chars() {
-        if skip_graph_padding > 0 && ch == ' ' {
-            skip_graph_padding -= 1;
-            continue;
-        }
+    for (visible_col, ch) in cells.into_iter().enumerate() {
         if visible_col >= width {
             break;
         }
-        let is_merge_marker = ch == '*' && commit.parent_count > 1;
-        let symbol = if is_merge_marker {
-            MERGE_MARKER
-        } else {
-            graph_symbol(ch)
-        };
-        let color = if is_merge_marker {
+        let is_merge_connector = merge_cols.contains(&visible_col);
+        let symbol = graph_symbol(ch);
+        let color = if is_merge_connector {
             Color::Yellow
         } else if ch == '*' {
             commit_marker_color(commit)
         } else {
             graph_column_color(visible_col)
         };
-        let style = if commit.is_first_parent || ch == '*' {
+        let style = if is_merge_connector || commit.is_first_parent || ch == '*' {
             Style::default().fg(color).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(color)
         };
         spans.push(Span::styled(symbol.to_string(), style));
-        visible_col += 1;
-
-        if ch == '*' && commit.parent_count > 1 {
-            let before_connector = visible_col;
-            visible_col = push_merge_connector(&mut spans, visible_col, width);
-            skip_graph_padding = visible_col.saturating_sub(before_connector);
-        }
     }
 
-    for _ in visible_col..width {
+    for _ in spans.len()..width {
         spans.push(Span::raw(" "));
     }
     spans.push(Span::raw(" "));
     spans
+}
+
+fn graph_cells(commit: &crate::git::Commit, graph: &str) -> (Vec<char>, Vec<usize>) {
+    let mut cells: Vec<char> = graph.chars().collect();
+    let Some(star_idx) = cells.iter().position(|ch| *ch == '*') else {
+        return (cells, Vec::new());
+    };
+    if commit.parent_count <= 1 {
+        return (cells, Vec::new());
+    }
+
+    let required_len = star_idx + MERGE_CONNECTOR.len();
+    if cells.len() < required_len {
+        cells.resize(required_len, ' ');
+    }
+    for (offset, ch) in MERGE_CONNECTOR.iter().enumerate() {
+        cells[star_idx + offset] = *ch;
+    }
+    (
+        cells,
+        (star_idx..star_idx + MERGE_CONNECTOR.len()).collect(),
+    )
 }
 
 fn graph_display_width(commit: &crate::git::Commit) -> usize {
@@ -188,39 +231,26 @@ fn graph_display_width(commit: &crate::git::Commit) -> usize {
         commit.graph.chars().count()
     };
     if commit.parent_count > 1 {
-        graph_width.max(1 + MERGE_CONNECTOR.chars().count())
+        let merge_width = commit
+            .graph
+            .chars()
+            .position(|ch| ch == '*')
+            .map(|idx| idx + MERGE_CONNECTOR.len())
+            .unwrap_or(MERGE_CONNECTOR.len());
+        graph_width.max(merge_width)
     } else {
         graph_width
     }
 }
 
-fn push_merge_connector(
-    spans: &mut Vec<Span<'static>>,
-    mut visible_col: usize,
-    width: usize,
-) -> usize {
-    for ch in MERGE_CONNECTOR.chars() {
-        if visible_col >= width {
-            break;
-        }
-        spans.push(Span::styled(ch.to_string(), merge_connector_style()));
-        visible_col += 1;
-    }
-    visible_col
-}
-
-fn merge_connector_style() -> Style {
-    Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD)
-}
-
 fn graph_symbol(ch: char) -> char {
     match ch {
         '*' => '\u{25cb}',
+        MERGE_MARKER => MERGE_MARKER,
         '|' => '\u{2502}',
         '/' => '\u{2571}',
         '\\' => '\u{2572}',
+        '\u{256e}' => '\u{256e}',
         '-' | '_' => '\u{2500}',
         other => other,
     }

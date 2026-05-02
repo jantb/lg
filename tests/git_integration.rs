@@ -620,6 +620,114 @@ fn list_commits_marks_merge_commits_with_multiple_parents() {
 }
 
 #[test]
+fn list_commits_preserves_graph_rows_for_complex_merges() {
+    let dir = init_repo();
+    fs::write(dir.path().join("base.txt"), "base").unwrap();
+    stage_in(dir.path(), "base.txt");
+    commit_in(dir.path(), "base");
+
+    git_ok(dir.path(), &["checkout", "-b", "side-a"]);
+    fs::write(dir.path().join("a.txt"), "a1").unwrap();
+    stage_in(dir.path(), "a.txt");
+    commit_in(dir.path(), "a1");
+    fs::write(dir.path().join("a.txt"), "a2").unwrap();
+    stage_in(dir.path(), "a.txt");
+    commit_in(dir.path(), "a2");
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("main.txt"), "main1").unwrap();
+    stage_in(dir.path(), "main.txt");
+    commit_in(dir.path(), "main1");
+    git_ok(dir.path(), &["merge", "--no-ff", "side-a", "-m", "merge-a"]);
+
+    git_ok(dir.path(), &["checkout", "-b", "side-b", "HEAD~1"]);
+    fs::write(dir.path().join("b.txt"), "b1").unwrap();
+    stage_in(dir.path(), "b.txt");
+    commit_in(dir.path(), "b1");
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("main.txt"), "main2").unwrap();
+    stage_in(dir.path(), "main.txt");
+    commit_in(dir.path(), "main2");
+    git_ok(dir.path(), &["merge", "--no-ff", "side-b", "-m", "merge-b"]);
+
+    let raw = git(
+        dir.path(),
+        &["log", "--graph", "--format=%x1f%h%x1f%P%x1f%s", "-n", "20"],
+    );
+    assert!(
+        raw.status.success(),
+        "git log failed: {}",
+        String::from_utf8_lossy(&raw.stderr)
+    );
+    let expected_graphs = String::from_utf8_lossy(&raw.stdout)
+        .lines()
+        .map(|line| {
+            line.find('\x1f')
+                .map(|marker| line[..marker].to_string())
+                .unwrap_or_else(|| line.to_string())
+        })
+        .filter(|graph| !graph.trim().is_empty())
+        .collect::<Vec<_>>();
+
+    let _cwd = CwdGuard::new(dir.path());
+    let commits = lg::git::list_commits_for_ref("main", 20).unwrap();
+    let actual_graphs = commits
+        .iter()
+        .map(|commit| commit.graph.clone())
+        .collect::<Vec<_>>();
+
+    assert_eq!(actual_graphs, expected_graphs);
+    assert!(
+        commits.iter().any(lg::git::Commit::is_graph_row),
+        "expected graph-only continuation rows: {commits:?}"
+    );
+    assert!(
+        commits
+            .iter()
+            .any(|commit| commit.is_graph_row() && commit.graph.contains('\\')),
+        "expected diagonal connector rows: {commits:?}"
+    );
+    assert_eq!(
+        commits
+            .iter()
+            .filter(|commit| !commit.is_graph_row())
+            .count(),
+        8
+    );
+
+    let mut state = lg::state::AppState::new();
+    state.commits = commits;
+    let backend = ratatui::backend::TestBackend::new(120, 20);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            lg::panel::commits::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(
+        rendered.contains("\u{23e3}\u{2500}\u{256e}"),
+        "rendered graph should include merge connector: {rendered}"
+    );
+    assert!(
+        rendered.contains("\u{2572}"),
+        "rendered graph should preserve diagonal connector rows: {rendered}"
+    );
+    assert!(
+        rendered.contains("merge-a") && rendered.contains("a2"),
+        "rendered graph should include merge and side branch commits: {rendered}"
+    );
+}
+
+#[test]
 fn branch_log_renders_decorated_graph_log() {
     let dir = init_repo();
     fs::write(dir.path().join("a.txt"), "one").unwrap();

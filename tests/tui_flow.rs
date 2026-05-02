@@ -1889,6 +1889,18 @@ fn commits_panel_shows_author_names_with_distinct_colors() {
     assert_ne!(buf[(11, 1)].fg, buf[(11, 2)].fg);
 }
 
+fn graph_row(graph: &str) -> Commit {
+    Commit {
+        sha: String::new(),
+        author: String::new(),
+        author_short: String::new(),
+        graph: graph.into(),
+        is_first_parent: false,
+        parent_count: 0,
+        subject: String::new(),
+    }
+}
+
 #[test]
 fn commits_panel_marks_merge_commits() {
     let mut state = AppState::new();
@@ -1929,6 +1941,70 @@ fn commits_panel_marks_merge_commits() {
 }
 
 #[test]
+fn commits_panel_renders_graph_continuation_rows_without_selection() {
+    let mut state = AppState::new();
+    state.commits = vec![
+        Commit {
+            sha: "abc1234".into(),
+            author: "Alice Example".into(),
+            author_short: "AE".into(),
+            graph: "*   ".into(),
+            is_first_parent: true,
+            parent_count: 2,
+            subject: "merge branch".into(),
+        },
+        graph_row("|\\  "),
+        Commit {
+            sha: "def5678".into(),
+            author: "Bob Example".into(),
+            author_short: "BE".into(),
+            graph: "| *".into(),
+            is_first_parent: false,
+            parent_count: 1,
+            subject: "side branch".into(),
+        },
+    ];
+    state.focus = Pane::Commits;
+    state.commits_idx = 0;
+
+    let backend = TestBackend::new(80, 7);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, true);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |row_idx| {
+        let mut row = String::new();
+        for col in 0..buf.area.width {
+            row.push_str(buf[(col, row_idx)].symbol());
+        }
+        row
+    };
+    let continuation = row_text(2);
+
+    assert!(
+        continuation.contains("\u{2502}\u{2572}"),
+        "missing continuation graph row: {continuation}"
+    );
+    assert!(
+        !continuation.contains("abc1234") && !continuation.contains("def5678"),
+        "graph row should not render commit columns: {continuation}"
+    );
+    assert!(
+        (1..buf.area.width - 1).all(|col| buf[(col, 2)].bg != Color::DarkGray),
+        "graph continuation row should not be highlighted: {continuation}"
+    );
+    assert!(
+        (1..buf.area.width - 1).any(|col| buf[(col, 1)].bg == Color::DarkGray),
+        "selected commit row should be highlighted: {}",
+        row_text(1)
+    );
+}
+
+#[test]
 fn commits_panel_draws_merge_connector_over_graph_padding() {
     let mut state = AppState::new();
     state.commits = vec![Commit {
@@ -1960,6 +2036,43 @@ fn commits_panel_draws_merge_connector_over_graph_padding() {
         (" ", 3),
         (" ", 4),
         ("m", 5),
+    ];
+    for (symbol, offset) in expected {
+        assert_eq!(buf[(marker_col + offset, 1)].symbol(), symbol);
+    }
+}
+
+#[test]
+fn commits_panel_merge_connector_reuses_existing_lane_cell() {
+    let mut state = AppState::new();
+    state.commits = vec![Commit {
+        sha: "abc1234".into(),
+        author: "Alice Example".into(),
+        author_short: "AE".into(),
+        graph: "* |".into(),
+        is_first_parent: false,
+        parent_count: 2,
+        subject: "merge branch".into(),
+    }];
+
+    let backend = TestBackend::new(80, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let marker_col = (0..buf.area.width)
+        .find(|col| buf[(*col, 1)].symbol() == "\u{23e3}")
+        .expect("merge marker should be rendered");
+    let expected = [
+        ("\u{23e3}", 0u16),
+        ("\u{2500}", 1),
+        ("\u{256e}", 2),
+        (" ", 3),
+        ("m", 4),
     ];
     for (symbol, offset) in expected {
         assert_eq!(buf[(marker_col + offset, 1)].symbol(), symbol);

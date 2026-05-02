@@ -246,6 +246,7 @@ fn selected_diff_source(state: &AppState) -> DiffSource {
         Pane::Commits => state
             .commits
             .get(state.commits_idx)
+            .filter(|c| !c.is_graph_row())
             .map(|c| DiffSource::Commit(c.sha.clone()))
             .unwrap_or(DiffSource::None),
         Pane::Branches => state

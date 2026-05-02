@@ -284,6 +284,12 @@ pub struct Commit {
     pub subject: String,
 }
 
+impl Commit {
+    pub fn is_graph_row(&self) -> bool {
+        self.sha.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorConfig {
     pub name: Option<String>,
@@ -512,21 +518,22 @@ pub fn list_commits_for_ref(reference: &str, limit: usize) -> Result<Vec<Commit>
     match result {
         Ok(out) => {
             let text = String::from_utf8_lossy(&out.stdout);
-            let commits = text
-                .lines()
-                .filter_map(|line| {
-                    let marker = line.find('\x1f')?;
+            let mut commits = Vec::new();
+            for line in text.lines() {
+                if let Some(marker) = line.find('\x1f') {
                     let graph = line[..marker].to_owned();
                     let mut parts = line[marker + 1..].splitn(4, '\x1f');
-                    let sha = parts.next()?.trim().to_owned();
+                    let Some(sha) = parts.next().map(str::trim).map(str::to_owned) else {
+                        continue;
+                    };
                     let author = parts.next().unwrap_or("").trim().to_owned();
                     let parents = parts.next().unwrap_or("").trim();
                     let subject = parts.next().unwrap_or("").trim().to_owned();
                     if sha.is_empty() {
-                        return None;
+                        continue;
                     }
                     let is_first_parent = first_parent.contains(&sha);
-                    Some(Commit {
+                    commits.push(Commit {
                         sha,
                         author_short: short_author_name(&author),
                         author,
@@ -534,9 +541,19 @@ pub fn list_commits_for_ref(reference: &str, limit: usize) -> Result<Vec<Commit>
                         is_first_parent,
                         parent_count: parents.split_whitespace().count(),
                         subject,
-                    })
-                })
-                .collect();
+                    });
+                } else if !line.trim().is_empty() {
+                    commits.push(Commit {
+                        sha: String::new(),
+                        author: String::new(),
+                        author_short: String::new(),
+                        graph: line.to_owned(),
+                        is_first_parent: false,
+                        parent_count: 0,
+                        subject: String::new(),
+                    });
+                }
+            }
             Ok(commits)
         }
         Err(e) => {

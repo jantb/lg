@@ -151,7 +151,9 @@ pub(super) fn select_mouse_row(
             }
         }
         Pane::Commits => {
-            if let Some(idx) = list_row_at(rects.commits, row, state.commits.len()) {
+            if let Some(idx) = list_row_at(rects.commits, row, state.commits.len())
+                && !state.commits[idx].is_graph_row()
+            {
                 state.commits_idx = idx;
             }
         }
@@ -176,12 +178,7 @@ pub(super) fn scroll_list(
             scroll_down,
             amount,
         ),
-        Pane::Commits => scroll_index(
-            &mut state.commits_idx,
-            state.commits.len(),
-            scroll_down,
-            amount,
-        ),
+        Pane::Commits => scroll_commits(state, scroll_down, amount),
         Pane::Status | Pane::Main => false,
     }
 }
@@ -200,6 +197,40 @@ fn scroll_index(idx: &mut usize, len: usize, scroll_down: bool, amount: usize) -
         current.saturating_sub(amount)
     };
     old != *idx
+}
+
+fn scroll_commits(state: &mut AppState, scroll_down: bool, amount: usize) -> bool {
+    let old = state.commits_idx;
+    if state.commits.is_empty() {
+        state.commits_idx = 0;
+        return old != state.commits_idx;
+    }
+
+    let mut idx = state.commits_idx.min(state.commits.len() - 1);
+    for _ in 0..amount {
+        let next = if scroll_down {
+            state
+                .commits
+                .iter()
+                .enumerate()
+                .skip(idx.saturating_add(1))
+                .find_map(|(candidate, commit)| (!commit.is_graph_row()).then_some(candidate))
+        } else {
+            state
+                .commits
+                .iter()
+                .enumerate()
+                .take(idx)
+                .rev()
+                .find_map(|(candidate, commit)| (!commit.is_graph_row()).then_some(candidate))
+        };
+        let Some(next) = next else {
+            break;
+        };
+        idx = next;
+    }
+    state.commits_idx = idx;
+    old != state.commits_idx
 }
 
 #[cfg(test)]
@@ -225,6 +256,18 @@ mod tests {
             is_first_parent: true,
             parent_count: 1,
             subject: "change".into(),
+        }
+    }
+
+    fn graph_row(graph: &str) -> Commit {
+        Commit {
+            sha: String::new(),
+            author: String::new(),
+            author_short: String::new(),
+            graph: graph.into(),
+            is_first_parent: false,
+            parent_count: 0,
+            subject: String::new(),
         }
     }
 
@@ -283,10 +326,10 @@ mod tests {
         assert!(scroll_list(&mut state, Pane::Files, false, 99));
         assert_eq!(state.files_idx, 0);
 
-        state.commits = vec![commit("a"), commit("b"), commit("c")];
+        state.commits = vec![commit("a"), graph_row("|\\  "), commit("b"), commit("c")];
         assert!(scroll_list(&mut state, Pane::Commits, true, 2));
-        assert_eq!(state.commits_idx, 2);
+        assert_eq!(state.commits_idx, 3);
         assert!(scroll_list(&mut state, Pane::Commits, false, 1));
-        assert_eq!(state.commits_idx, 1);
+        assert_eq!(state.commits_idx, 2);
     }
 }
