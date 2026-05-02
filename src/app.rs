@@ -525,13 +525,13 @@ impl App {
                     OperationKind::Worktree,
                     move || {
                         let mut report = Vec::new();
-                        if delete_remote {
-                            let line = crate::git::delete_remote_branch(&name)?;
-                            report.push(format!("remote: {line}"));
-                        }
                         if delete_local {
                             let line = crate::git::delete_local_branch(&name, force)?;
                             report.push(format!("local: {line}"));
+                        }
+                        if delete_remote {
+                            let line = crate::git::delete_remote_branch(&name)?;
+                            report.push(format!("remote: {line}"));
                         }
                         Ok(report.join(" | "))
                     },
@@ -1060,9 +1060,18 @@ impl App {
                     if kind == OperationKind::Commit {
                         self.state.modal = Modal::None;
                         self.state.commit_message.clear();
+                        if self.state.push_after_commit {
+                            self.state.push_after_commit = false;
+                            spawn_push(&mut self.state);
+                        }
                     }
                 }
-                Err(e) => self.state.set_status(e, true),
+                Err(e) => {
+                    if kind == OperationKind::Commit {
+                        self.state.push_after_commit = false;
+                    }
+                    self.state.set_status(e, true);
+                }
             }
             self.start_refresh(true);
         }

@@ -343,6 +343,7 @@ pub struct AppState {
 
     pub status: Option<StatusMsg>,
     pub pending_action: Option<PendingAction>,
+    pub push_after_commit: bool,
     pub should_quit: bool,
     pub animation_tick: usize,
 
@@ -468,6 +469,7 @@ impl AppState {
 
             status: None,
             pending_action: None,
+            push_after_commit: false,
             should_quit: false,
             animation_tick: 0,
 

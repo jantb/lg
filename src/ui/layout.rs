@@ -133,7 +133,7 @@ pub fn default_left_panel_heights(total_height: u16, show_environments: bool) ->
     };
     let lefts = Layout::vertical([
         Constraint::Length(5),
-        Constraint::Length(5),
+        Constraint::Length(6),
         Constraint::Ratio(1, 3),
         Constraint::Ratio(1, 3),
         Constraint::Ratio(1, 3),

@@ -42,7 +42,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         }
         None => (
             state.commit_message.clone(),
-            "Commit message  (Ctrl+S=commit  Enter=newline  Ctrl+R=regenerate  Esc=back)"
+            "Commit message  (Ctrl+S=commit  Shift+P=commit&push  Enter=newline  Ctrl+R=regenerate  Esc=back)"
                 .to_owned(),
             true,
         ),
@@ -76,6 +76,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         Paragraph::new(Line::from(vec![
             Span::styled("Ctrl+S", Style::default().fg(Color::Green)),
             Span::raw(" commit  "),
+            Span::styled("Shift+P", Style::default().fg(Color::Green)),
+            Span::raw(" commit&push  "),
             Span::styled("Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" newline  "),
             Span::styled("Ctrl+R", Style::default().fg(Color::Yellow)),
@@ -194,6 +196,13 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('s') if ctrl => {
             if !generating && !state.commit_message.trim().is_empty() {
+                state.push_after_commit = false;
+                state.pending_action = Some(PendingAction::Commit);
+            }
+        }
+        KeyCode::Char('P') if !ctrl => {
+            if !generating && !state.commit_message.trim().is_empty() {
+                state.push_after_commit = true;
                 state.pending_action = Some(PendingAction::Commit);
             }
         }
