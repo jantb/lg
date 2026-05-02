@@ -599,7 +599,6 @@ fn compact_graph_rows(pending_rows: &[String], commit_graph: &str) -> String {
 
 fn folded_graph_row_char(ch: char) -> char {
     match ch {
-        '/' | '\\' => '|',
         '_' => '-',
         other => other,
     }

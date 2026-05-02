@@ -14,7 +14,7 @@ use crate::{
 };
 
 const MERGE_MARKER: char = '\u{23e3}';
-const MERGE_CONNECTOR: [char; 3] = ['\u{23e3}', '\u{2500}', '\u{256e}'];
+const MERGE_PAD: char = '\u{2007}';
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let count = if real_commit_count(&state.commits) == 0 {
@@ -222,17 +222,26 @@ fn graph_cells(commit: &crate::git::Commit, graph: &str) -> (Vec<char>, Vec<usiz
         return (cells, Vec::new());
     }
 
-    let required_len = star_idx + MERGE_CONNECTOR.len();
-    if cells.len() < required_len {
-        cells.resize(required_len, ' ');
+    let end_idx = merge_connector_end(&cells, star_idx);
+    if cells.len() <= end_idx {
+        cells.resize(end_idx + 1, ' ');
     }
-    for (offset, ch) in MERGE_CONNECTOR.iter().enumerate() {
-        cells[star_idx + offset] = *ch;
+    cells[star_idx] = MERGE_MARKER;
+    for idx in star_idx + 1..end_idx {
+        cells[idx] = if idx == star_idx + 1 { MERGE_PAD } else { '-' };
     }
-    (
-        cells,
-        (star_idx..star_idx + MERGE_CONNECTOR.len()).collect(),
-    )
+    cells[end_idx] = '\u{256e}';
+    (cells, (star_idx..=end_idx).collect())
+}
+
+fn merge_connector_end(cells: &[char], star_idx: usize) -> usize {
+    let folded_target = cells
+        .iter()
+        .enumerate()
+        .skip(star_idx + 1)
+        .rev()
+        .find_map(|(idx, ch)| (*ch != ' ').then_some(idx));
+    folded_target.unwrap_or(star_idx + 3).max(star_idx + 3)
 }
 
 fn graph_display_width(commit: &crate::git::Commit) -> usize {
@@ -246,8 +255,11 @@ fn graph_display_width(commit: &crate::git::Commit) -> usize {
             .graph
             .chars()
             .position(|ch| ch == '*')
-            .map(|idx| idx + MERGE_CONNECTOR.len())
-            .unwrap_or(MERGE_CONNECTOR.len());
+            .map(|idx| {
+                let cells: Vec<char> = commit.graph.chars().collect();
+                merge_connector_end(&cells, idx) + 1
+            })
+            .unwrap_or(4);
         graph_width.max(merge_width)
     } else {
         graph_width
@@ -258,6 +270,7 @@ fn graph_symbol(ch: char) -> char {
     match ch {
         '*' => '\u{25cb}',
         MERGE_MARKER => MERGE_MARKER,
+        MERGE_PAD => ' ',
         '|' => '\u{2502}',
         '/' => '\u{256f}',
         '\\' => '\u{256e}',

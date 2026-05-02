@@ -735,8 +735,8 @@ fn list_commits_compacts_graph_rows_for_complex_merges() {
         .find(|commit| commit.subject == "merge-a")
         .expect("merge-a commit");
     assert!(
-        merge_a.graph.chars().filter(|ch| *ch == '|').count() >= 3,
-        "connector-only rows should be folded into their origin merge commit, not the next side commit: {merge_a:?}"
+        merge_a.graph.contains('/') || merge_a.graph.contains('\\'),
+        "connector-only rows should keep curved join geometry on their origin merge commit: {merge_a:?}"
     );
     assert!(
         commits.iter().all(|commit| !commit.subject.is_empty()),
@@ -761,12 +761,12 @@ fn list_commits_compacts_graph_rows_for_complex_merges() {
         .collect::<String>();
 
     assert!(
-        rendered.contains("\u{23e3}\u{2500}\u{256e}"),
+        rendered.contains("\u{23e3} \u{2500}\u{256e}"),
         "rendered graph should include merge connector: {rendered}"
     );
     assert!(
-        rendered.contains("\u{23e3}\u{2500}\u{256e}\u{2502}"),
-        "rendered graph should show folded branch origins continuing into a lane: {rendered}"
+        rendered.contains('\u{256f}'),
+        "rendered graph should show folded curved join geometry: {rendered}"
     );
     assert!(
         !rendered.contains('\\')

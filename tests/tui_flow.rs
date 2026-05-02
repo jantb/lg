@@ -2043,7 +2043,7 @@ fn commits_panel_marks_merge_commits() {
         .collect::<String>();
 
     assert!(
-        text.contains("\u{23e3}\u{2500}\u{256e}"),
+        text.contains("\u{23e3} \u{2500}\u{256e}"),
         "missing merge connector: {text}"
     );
     assert!(
@@ -2079,9 +2079,9 @@ fn commits_panel_draws_merge_connector_over_graph_padding() {
         .expect("merge marker should be rendered");
     let expected = [
         ("\u{23e3}", 0u16),
-        ("\u{2500}", 1),
-        ("\u{256e}", 2),
-        (" ", 3),
+        (" ", 1),
+        ("\u{2500}", 2),
+        ("\u{256e}", 3),
         (" ", 4),
         ("m", 5),
     ];
@@ -2117,10 +2117,50 @@ fn commits_panel_merge_connector_reuses_existing_lane_cell() {
         .expect("merge marker should be rendered");
     let expected = [
         ("\u{23e3}", 0u16),
-        ("\u{2500}", 1),
-        ("\u{256e}", 2),
-        (" ", 3),
-        ("m", 4),
+        (" ", 1),
+        ("\u{2500}", 2),
+        ("\u{256e}", 3),
+        (" ", 4),
+        ("m", 5),
+    ];
+    for (symbol, offset) in expected {
+        assert_eq!(buf[(marker_col + offset, 1)].symbol(), symbol);
+    }
+}
+
+#[test]
+fn commits_panel_extends_merge_connector_to_folded_target_lane() {
+    let mut state = AppState::new();
+    state.commits = vec![Commit {
+        sha: "abc1234".into(),
+        author: "Alice Example".into(),
+        author_short: "AE".into(),
+        graph: "*   /".into(),
+        is_first_parent: true,
+        parent_count: 2,
+        subject: "wide merge".into(),
+    }];
+
+    let backend = TestBackend::new(80, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let marker_col = (0..buf.area.width)
+        .find(|col| buf[(*col, 1)].symbol() == "\u{23e3}")
+        .expect("merge marker should be rendered");
+    let expected = [
+        ("\u{23e3}", 0u16),
+        (" ", 1),
+        ("\u{2500}", 2),
+        ("\u{2500}", 3),
+        ("\u{256e}", 4),
+        (" ", 5),
+        ("w", 6),
     ];
     for (symbol, offset) in expected {
         assert_eq!(buf[(marker_col + offset, 1)].symbol(), symbol);
@@ -2267,7 +2307,7 @@ fn commits_panel_keeps_selected_hash_visible_and_graph_columns_stable() {
         "selected hash foreground must contrast with selection background"
     );
 
-    let merge_origin = cell_col(2, "\u{23e3}\u{2500}\u{256e}")
+    let merge_origin = cell_col(2, "\u{23e3} \u{2500}\u{256e}")
         .expect("merge row should show a visible branch origin");
     let selected_marker =
         cell_col(3, "\u{25cb}").expect("selected side commit should show a marker");
@@ -2318,10 +2358,12 @@ fn commits_panel_highlights_selected_merge_connector() {
     let connector_start = (0..buf.area.width)
         .find(|col| buf[(*col, 1)].symbol() == "\u{23e3}")
         .expect("selected merge connector should include ⏣");
-    for (offset, symbol) in ["\u{23e3}", "\u{2500}", "\u{256e}"].iter().enumerate() {
+    for (offset, symbol) in ["\u{23e3}", " ", "\u{2500}", "\u{256e}"].iter().enumerate() {
         let cell = &buf[(connector_start + offset as u16, 1)];
         assert_eq!(cell.symbol(), *symbol);
-        assert_eq!(cell.fg, Color::Yellow);
+        if *symbol != " " {
+            assert_eq!(cell.fg, Color::Yellow);
+        }
         assert_eq!(cell.bg, Color::DarkGray);
     }
 }
