@@ -1,7 +1,5 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::process::{Command, Output};
 use std::sync::{Mutex, OnceLock};
 
@@ -29,40 +27,6 @@ pub use review::{
     AssistedReview, ReviewNode, assisted_review_against_main, build_assisted_review_against_main,
 };
 
-fn trace_enter(label: &str) {
-    let Some(path) = std::env::var_os("LG_TRACE") else {
-        return;
-    };
-    let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) else {
-        return;
-    };
-    let _ = writeln!(f, "ENTER {label}");
-}
-
-fn trace(args: &[&str], out: &Output) {
-    let Some(path) = std::env::var_os("LG_TRACE") else {
-        return;
-    };
-    let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) else {
-        return;
-    };
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let _ = writeln!(
-        f,
-        "git {} -> status={} stdout_bytes={} stderr_bytes={}\n--- stdout ---\n{}\n--- stderr ---\n{}\n---",
-        args.join(" "),
-        out.status
-            .code()
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "signal".to_owned()),
-        stdout.len(),
-        stderr.len(),
-        stdout,
-        stderr,
-    );
-}
-
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct ReleaseStatusCacheKey {
     branch: String,
@@ -84,7 +48,6 @@ fn run(args: &[&str]) -> Result<Output> {
         .args(args)
         .output()
         .with_context(|| format!("failed to spawn git {}", args.join(" ")))?;
-    trace(args, &out);
     if out.status.success() {
         Ok(out)
     } else {
@@ -102,7 +65,6 @@ fn run_combined(args: &[&str]) -> Result<String> {
         .args(args)
         .output()
         .with_context(|| format!("failed to spawn git {}", args.join(" ")))?;
-    trace(args, &out);
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
     if out.status.success() {
@@ -354,13 +316,11 @@ pub fn parse_porcelain_xy(bytes: &[u8]) -> Vec<FileEntry> {
 }
 
 pub fn status_entries() -> Result<Vec<FileEntry>> {
-    trace_enter("status_entries");
     let out = run(&["status", "-z", "--porcelain=v1"])?;
     Ok(parse_porcelain_xy(&out.stdout))
 }
 
 pub fn list_branches() -> Result<Vec<Branch>> {
-    trace_enter("list_branches");
     let out = run(&[
         "branch",
         "--format=%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)\x1f%(upstream:track)",
@@ -492,7 +452,6 @@ pub fn list_commits(limit: usize) -> Result<Vec<Commit>> {
 }
 
 pub fn list_commits_for_ref(reference: &str, limit: usize) -> Result<Vec<Commit>> {
-    trace_enter("list_commits");
     let n = limit.to_string();
     let first_parent = first_parent_shas(reference, limit).unwrap_or_default();
     let fmt = "--format=%x1f%h%x1f%an%x1f%p%x1f%s";
