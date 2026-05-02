@@ -314,9 +314,10 @@ where
                     self.state.modal = Modal::Flow;
                 }
             }
-            KeyCode::Char('q') | KeyCode::Esc => {
+            KeyCode::Char('q') => {
                 self.state.should_quit = true;
             }
+            KeyCode::Esc => {}
             KeyCode::Char('1') => {
                 self.state.focus = Pane::Status;
             }
@@ -1502,9 +1503,13 @@ impl App {
                 }
                 return Ok(());
             }
-            KeyCode::Char('q') | KeyCode::Esc => {
+            KeyCode::Char('q') => {
                 trace_lifecycle(format!("handle_key quit_request reason=key key={k:?}"));
                 self.state.should_quit = true;
+                return Ok(());
+            }
+            KeyCode::Esc => {
+                trace_lifecycle(format!("handle_key ignored_top_level_esc key={k:?}"));
                 return Ok(());
             }
             KeyCode::Char('1') => {
