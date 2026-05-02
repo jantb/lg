@@ -140,6 +140,66 @@ fn scroll_handlers_clamp_stale_indices_before_moving() {
 }
 
 #[test]
+fn scroll_handlers_clamp_stale_indices_before_moving_up() {
+    let mut state = make_state_with_files();
+    state.files_idx = usize::MAX;
+    panel::files::handle_key(&mut state, key(KeyCode::Char('k'))).unwrap();
+    assert_eq!(state.files_idx, state.tree_rows().len() - 2);
+
+    state.branches = vec![
+        Branch {
+            name: "main".into(),
+            is_current: true,
+            upstream: None,
+            upstream_gone: false,
+        },
+        Branch {
+            name: "feature".into(),
+            is_current: false,
+            upstream: None,
+            upstream_gone: false,
+        },
+    ];
+    state.branches_idx = usize::MAX;
+    panel::branches::handle_key(&mut state, key(KeyCode::Char('k'))).unwrap();
+    assert_eq!(state.branches_idx, 0);
+
+    state.commits = vec![
+        Commit {
+            sha: "abc1234".into(),
+            author: "Alice Example".into(),
+            author_short: "AE".into(),
+            parents: vec!["parent".into()],
+            is_first_parent: true,
+            subject: "top".into(),
+        },
+        Commit {
+            sha: "def5678".into(),
+            author: "Bob Example".into(),
+            author_short: "BE".into(),
+            parents: vec!["abc1234".into()],
+            is_first_parent: true,
+            subject: "bottom".into(),
+        },
+    ];
+    state.commits_idx = usize::MAX;
+    panel::commits::handle_key(&mut state, key(KeyCode::Char('k'))).unwrap();
+    assert_eq!(state.commits_idx, 0);
+
+    state.conflicts = vec!["src/lib.rs".into(), "src/main.rs".into()];
+    state.conflict_idx = usize::MAX;
+    panel::conflict::handle_key(&mut state, key(KeyCode::Char('k'))).unwrap();
+    assert_eq!(state.conflict_idx, 0);
+
+    add_flow_branches(&mut state);
+    state.flow_branches_available = true;
+    state.branch = Some("feature/demo".into());
+    state.flow_idx = usize::MAX;
+    panel::flow::handle_key(&mut state, key(KeyCode::Char('k'))).unwrap();
+    assert!(state.flow_idx < lg::state::FlowAction::ALL.len());
+}
+
+#[test]
 fn files_panel_o_opens_selected_source_file() {
     let mut state = make_state_with_files();
     state.files = vec![FileEntry {
@@ -1403,6 +1463,21 @@ fn branch_log_render_clamps_offset_to_rendered_lines() {
         rendered.contains("message"),
         "missing log bottom: {rendered}"
     );
+}
+
+#[test]
+fn branch_log_scroll_up_clamps_stale_offset_to_rendered_lines() {
+    let mut state = AppState::new();
+    state.focus = Pane::Main;
+    state.diff_source = lg::state::DiffSource::Branch("main".into());
+    state.diff_text = "* commit abc1234\n| Author: Alice\n| message\n".into();
+    state.diff_line_count = 500;
+    state.diff_viewport_height = 2;
+    state.diff_offset = 500;
+
+    panel::main::handle_key(&mut state, key(KeyCode::Char('k'))).unwrap();
+
+    assert_eq!(state.diff_offset, 0);
 }
 
 // ── XY-rendering smoke test ───────────────────────────────────────────────────

@@ -319,4 +319,34 @@ mod tests {
         assert!(scroll_list(&mut state, Pane::Commits, false, 1));
         assert_eq!(state.commits_idx, 1);
     }
+
+    #[test]
+    fn scroll_list_clamps_stale_indices_when_scrolling_up() {
+        let mut state = AppState::new();
+        state.branches = vec![branch("one"), branch("two"), branch("three")];
+        state.branches_idx = usize::MAX;
+        assert!(scroll_list(&mut state, Pane::Branches, false, 1));
+        assert_eq!(state.branches_idx, 1);
+
+        state.files = vec![
+            FileEntry {
+                path: "a.rs".into(),
+                x: ' ',
+                y: 'M',
+            },
+            FileEntry {
+                path: "b.rs".into(),
+                x: ' ',
+                y: 'M',
+            },
+        ];
+        state.files_idx = usize::MAX;
+        assert!(scroll_list(&mut state, Pane::Files, false, 1));
+        assert_eq!(state.files_idx, state.tree_rows().len() - 2);
+
+        state.commits = vec![commit("a"), commit("b"), commit("c")];
+        state.commits_idx = usize::MAX;
+        assert!(scroll_list(&mut state, Pane::Commits, false, 1));
+        assert_eq!(state.commits_idx, 1);
+    }
 }

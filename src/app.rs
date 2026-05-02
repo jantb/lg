@@ -1551,7 +1551,7 @@ impl App {
                 self.state.diff_offset = self.state.diff_offset.saturating_add(3).min(max_offset);
             }
             MouseEventKind::ScrollUp => {
-                self.state.diff_offset = self.state.diff_offset.saturating_sub(3);
+                self.state.diff_offset = self.state.diff_offset.min(max_offset).saturating_sub(3);
             }
             _ => {}
         }

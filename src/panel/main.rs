@@ -439,13 +439,20 @@ pub fn max_scroll_offset(state: &AppState) -> u16 {
     if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
         return scroll_bound(review_render_line_count(state), state.diff_viewport_height);
     }
-    scroll_bound(state.diff_line_count as usize, state.diff_viewport_height)
+    scroll_bound(rendered_diff_line_count(state), state.diff_viewport_height)
 }
 
 fn scroll_bound(line_count: usize, viewport_height: u16) -> u16 {
     line_count
         .min(u16::MAX as usize)
         .saturating_sub(viewport_height as usize) as u16
+}
+
+fn rendered_diff_line_count(state: &AppState) -> usize {
+    if state.diff_text.is_empty() {
+        return state.diff_line_count as usize;
+    }
+    state.diff_text.lines().count()
 }
 
 fn handle_review_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
