@@ -33,6 +33,7 @@ const SECTIONS: &[Section] = &[
             ("c", "Open commit modal"),
             ("p", "Open push modal"),
             ("R", "Build assisted review against main"),
+            ("drag divider", "Resize columns"),
         ],
     },
     Section {
@@ -49,7 +50,11 @@ const SECTIONS: &[Section] = &[
     Section {
         title: "Branches",
         pane: Some(Pane::Branches),
-        bindings: &[("j/k", "Move up/down"), ("Enter", "Checkout branch")],
+        bindings: &[
+            ("j/k", "Move up/down"),
+            ("Enter", "Checkout branch"),
+            ("select", "Commit log follows branch"),
+        ],
     },
     Section {
         title: "Commits",
@@ -69,6 +74,7 @@ const SECTIONS: &[Section] = &[
             ("R", "Build assisted review against main"),
             ("Enter / space", "Expand or collapse review item"),
             ("f", "Toggle source context for selected hunk"),
+            ("l", "Ask Ollama to explain selected review subtree"),
             ("wheel", "Scroll 3 lines (mouse)"),
             ("Shift+drag", "Select text (terminal native)"),
         ],

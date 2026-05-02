@@ -18,6 +18,7 @@ const MAX_SUMMARY_FILES: usize = 24;
 const MAX_SIGNAL_LINES: usize = 48;
 const COMMIT_MSG_BODY_MAX_LINES: usize = 4;
 const COMMIT_MSG_BODY_LINE_MAX_CHARS: usize = 120;
+const REVIEW_ASSIST_MAX_CHARS: usize = 2_400;
 
 #[derive(Serialize)]
 struct ChatRequest<'a> {
@@ -83,6 +84,15 @@ fn build_commit_prompt(diff: &str) -> String {
         "{OLLAMA_PROMPT_PREFIX}{}\n\nDiff excerpt:\n{}\n",
         summarize_diff(diff),
         diff_excerpt(diff)
+    )
+}
+
+fn build_review_assist_prompt(context: &str) -> String {
+    format!(
+        "Explain what this selected subtree from a full diff against main does.\n\
+         Be concise and factual. Focus on behavior, call flow, tests, and review risks.\n\
+         Output 3-6 bullets. Do not invent files or behavior not shown. Do not use code fences.\n\n\
+         Selected review subtree:\n{context}"
     )
 }
 
@@ -222,14 +232,33 @@ fn truncate_line(line: &str, max_chars: usize) -> String {
 /// [`GenMsg::Thinking`], and the rest of `message.content` to
 /// [`GenMsg::Output`]. Ends with a [`GenMsg::Done`] or [`GenMsg::Error`].
 pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
+    stream_prompt(build_commit_prompt(&diff), Options::default(), finalize, tx);
+}
+
+pub fn stream_review_assist(context: String, tx: Sender<GenMsg>) {
+    stream_prompt(
+        build_review_assist_prompt(&context),
+        review_assist_options(),
+        finalize_review_assist,
+        tx,
+    );
+}
+
+fn review_assist_options() -> Options {
+    let mut opts = Options::default();
+    if std::env::var_os("LG_OLLAMA_NUM_PREDICT").is_none() {
+        opts.num_predict = 256;
+    }
+    opts
+}
+
+fn stream_prompt(prompt: String, opts: Options, finalizer: fn(&str) -> String, tx: Sender<GenMsg>) {
     let start = Instant::now();
-    let opts = Options::default();
     let model = std::env::var("LG_OLLAMA_MODEL").unwrap_or_else(|_| OLLAMA_MODEL.to_owned());
     let endpoint = std::env::var("LG_OLLAMA_CHAT_ENDPOINT")
         .unwrap_or_else(|_| OLLAMA_CHAT_ENDPOINT.to_owned());
     let keep_alive =
         std::env::var("LG_OLLAMA_KEEP_ALIVE").unwrap_or_else(|_| OLLAMA_KEEP_ALIVE.to_owned());
-    let prompt = build_commit_prompt(&diff);
     let prompt_bytes = prompt.len();
 
     let body = ChatRequest {
@@ -379,10 +408,10 @@ pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
                 let _ = writeln!(
                     f,
                     "# DONE done_reason={done_reason} eval_count={eval_count} prompt_eval_count={prompt_eval_count} total_duration_ms={total_ms} eval_duration_ms={eval_ms} think_bytes={think_bytes} out_bytes={out_bytes} final_output={:?}",
-                    finalize(&full_output),
+                    finalizer(&full_output),
                 );
             }
-            let _ = tx.send(GenMsg::Done(finalize(&full_output)));
+            let _ = tx.send(GenMsg::Done(finalizer(&full_output)));
             return;
         }
     }
@@ -393,10 +422,10 @@ pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
         let _ = writeln!(
             f,
             "# DONE done_reason=loop_exhausted eval_count=0 prompt_eval_count=0 total_duration_ms=0 eval_duration_ms=0 think_bytes={think_bytes} out_bytes={out_bytes} final_output={:?}",
-            finalize(&full_output),
+            finalizer(&full_output),
         );
     }
-    let _ = tx.send(GenMsg::Done(finalize(&full_output)));
+    let _ = tx.send(GenMsg::Done(finalizer(&full_output)));
 }
 
 fn finalize(raw: &str) -> String {
@@ -433,6 +462,29 @@ fn finalize(raw: &str) -> String {
     }
 
     out.chars().take(COMMIT_MSG_GEN_MAX_CHARS).collect()
+}
+
+fn finalize_review_assist(raw: &str) -> String {
+    let cleaned = strip_think_tags(raw);
+    let mut lines = Vec::new();
+    for line in cleaned
+        .trim()
+        .trim_matches('"')
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| !line.starts_with("```"))
+    {
+        lines.push(trim_outer_quotes(line).to_string());
+        if lines.len() >= 8 {
+            break;
+        }
+    }
+    lines
+        .join("\n")
+        .chars()
+        .take(REVIEW_ASSIST_MAX_CHARS)
+        .collect()
 }
 
 fn split_subject(s: &str) -> (String, String) {

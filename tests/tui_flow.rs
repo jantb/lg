@@ -4,7 +4,7 @@ use lg::{
         ReviewNode,
     },
     panel,
-    state::{AppState, Modal, Pane, TreeKind, WorkflowJob, build_tree_rows},
+    state::{AppState, Modal, Pane, PendingAction, TreeKind, WorkflowJob, build_tree_rows},
 };
 use ratatui::{
     Terminal,
@@ -284,6 +284,59 @@ fn review_panel_expands_hunks_and_source_context() {
     assert!(
         context.contains("source context") && context.contains("2 |     fun greeting()"),
         "source context should be visible: {context}"
+    );
+}
+
+#[test]
+fn review_panel_explains_selected_subtree_with_ollama() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Full diff against main".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:entry:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: "src/lib.rs:2 in fn greet - updates greet (+1 -1)".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+        ],
+    });
+    app.state.review_idx = 1;
+    app.state.review_collapsed.insert("branch:entry:0".into());
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('l'))).unwrap();
+
+    assert_eq!(
+        app.state.pending_action,
+        Some(PendingAction::ReviewAssist("branch:entry:0".into()))
+    );
+    assert!(
+        !app.state.review_collapsed.contains("branch:entry:0"),
+        "selected subtree should open before explaining"
+    );
+
+    app.state.review_assists.insert(
+        "branch:entry:0".into(),
+        "Explains the greeting change.".into(),
+    );
+    app.render().unwrap();
+    let rendered = buffer_text(&app);
+    assert!(rendered.contains("ollama"), "{rendered}");
+    assert!(
+        rendered.contains("Explains the greeting change."),
+        "{rendered}"
     );
 }
 
@@ -1008,6 +1061,21 @@ fn layout_gives_files_panel_environment_space_when_flow_is_hidden() {
 }
 
 #[test]
+fn layout_accepts_resized_left_column_width() {
+    let area = ratatui::layout::Rect {
+        x: 0,
+        y: 0,
+        width: 120,
+        height: 24,
+    };
+    let resized = lg::ui::split_layout_with_width(area, true, Some(40));
+
+    assert_eq!(resized.status.width, 40);
+    assert_eq!(resized.main.x, 40);
+    assert_eq!(resized.main.width, 80);
+}
+
+#[test]
 fn commits_panel_shows_author_names_with_distinct_colors() {
     let mut state = AppState::new();
     state.commits = vec![
@@ -1015,12 +1083,14 @@ fn commits_panel_shows_author_names_with_distinct_colors() {
             sha: "abc1234".into(),
             author: "Alice Example".into(),
             author_short: "Alice".into(),
+            parent_count: 1,
             subject: "add feature".into(),
         },
         Commit {
             sha: "def5678".into(),
             author: "Bob Example".into(),
             author_short: "Bob".into(),
+            parent_count: 1,
             subject: "fix bug".into(),
         },
     ];
@@ -1043,7 +1113,37 @@ fn commits_panel_shows_author_names_with_distinct_colors() {
 
     assert!(text.contains("Alice"), "missing first author: {text}");
     assert!(text.contains("Bob"), "missing second author: {text}");
-    assert_ne!(buf[(9, 1)].fg, Color::Reset);
-    assert_ne!(buf[(9, 2)].fg, Color::Reset);
-    assert_ne!(buf[(9, 1)].fg, buf[(9, 2)].fg);
+    assert_ne!(buf[(11, 1)].fg, Color::Reset);
+    assert_ne!(buf[(11, 2)].fg, Color::Reset);
+    assert_ne!(buf[(11, 1)].fg, buf[(11, 2)].fg);
+}
+
+#[test]
+fn commits_panel_marks_merge_commits() {
+    let mut state = AppState::new();
+    state.commits = vec![Commit {
+        sha: "abc1234".into(),
+        author: "Alice Example".into(),
+        author_short: "Alice".into(),
+        parent_count: 2,
+        subject: "merge branch".into(),
+    }];
+
+    let backend = TestBackend::new(80, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::commits::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(text.contains("\u{25c6}"), "missing merge marker: {text}");
 }

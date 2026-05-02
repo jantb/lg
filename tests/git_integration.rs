@@ -475,6 +475,59 @@ fn list_commits_includes_short_author_name() {
 }
 
 #[test]
+fn list_commits_for_ref_reads_selected_branch_history() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+
+    git_ok(dir.path(), &["checkout", "-b", "feature/log"]);
+    fs::write(dir.path().join("feature.txt"), "feature").unwrap();
+    stage_in(dir.path(), "feature.txt");
+    commit_in(dir.path(), "feature branch commit");
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("main.txt"), "main").unwrap();
+    stage_in(dir.path(), "main.txt");
+    commit_in(dir.path(), "main branch commit");
+
+    let _cwd = CwdGuard::new(dir.path());
+    let feature_commits = lg::git::list_commits_for_ref("feature/log", 10).unwrap();
+    let main_commits = lg::git::list_commits_for_ref("main", 10).unwrap();
+
+    assert_eq!(feature_commits[0].subject, "feature branch commit");
+    assert_eq!(main_commits[0].subject, "main branch commit");
+}
+
+#[test]
+fn list_commits_marks_merge_commits_with_multiple_parents() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+
+    git_ok(dir.path(), &["checkout", "-b", "feature/merge"]);
+    fs::write(dir.path().join("feature.txt"), "feature").unwrap();
+    stage_in(dir.path(), "feature.txt");
+    commit_in(dir.path(), "feature side");
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("main.txt"), "main").unwrap();
+    stage_in(dir.path(), "main.txt");
+    commit_in(dir.path(), "main side");
+    git_ok(
+        dir.path(),
+        &["merge", "--no-ff", "feature/merge", "-m", "merge feature"],
+    );
+
+    let _cwd = CwdGuard::new(dir.path());
+    let commits = lg::git::list_commits_for_ref("main", 10).unwrap();
+
+    assert_eq!(commits[0].subject, "merge feature");
+    assert_eq!(commits[0].parent_count, 2);
+}
+
+#[test]
 fn commit_on_empty_message_fails() {
     // lg::git::commit guards against empty messages.
     let result = lg::git::commit("");

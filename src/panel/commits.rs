@@ -19,9 +19,14 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     } else {
         Some((state.commits_idx + 1, state.commits.len()))
     };
+    let title = state
+        .commits_ref
+        .as_deref()
+        .map(|branch| format!("Commits: {branch}"))
+        .unwrap_or_else(|| "Commits".to_string());
     let block = ui::framed_with_activity(
         4,
-        "Commits",
+        &title,
         focused,
         count,
         state.animation_tick,
@@ -40,7 +45,20 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
             let author_style = Style::default()
                 .fg(author_color(&c.author))
                 .add_modifier(Modifier::BOLD);
+            let merge_style = if c.parent_count > 1 {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            let merge_marker = if c.parent_count > 1 {
+                "\u{25c6} "
+            } else {
+                "  "
+            };
             let line = Line::from(vec![
+                Span::styled(merge_marker, merge_style),
                 Span::styled(format!("{} ", c.sha), Style::default().fg(Color::DarkGray)),
                 Span::styled(format!("{:<12} ", c.author_short), author_style),
                 Span::styled(c.subject.clone(), subject_style),

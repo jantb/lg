@@ -266,6 +266,7 @@ pub struct Commit {
     pub sha: String,
     pub author: String,
     pub author_short: String,
+    pub parent_count: usize,
     pub subject: String,
 }
 
@@ -463,19 +464,24 @@ fn release_target_status(
 }
 
 pub fn list_commits(limit: usize) -> Result<Vec<Commit>> {
+    list_commits_for_ref("HEAD", limit)
+}
+
+pub fn list_commits_for_ref(reference: &str, limit: usize) -> Result<Vec<Commit>> {
     trace_enter("list_commits");
     let n = limit.to_string();
-    let fmt = "--format=%h\x1f%an\x1f%s";
-    let result = run(&["log", fmt, "-n", &n]);
+    let fmt = "--format=%h\x1f%an\x1f%P\x1f%s";
+    let result = run(&["log", fmt, "-n", &n, reference]);
     match result {
         Ok(out) => {
             let text = String::from_utf8_lossy(&out.stdout);
             let commits = text
                 .lines()
                 .filter_map(|line| {
-                    let mut parts = line.splitn(3, '\x1f');
+                    let mut parts = line.splitn(4, '\x1f');
                     let sha = parts.next()?.trim().to_owned();
                     let author = parts.next().unwrap_or("").trim().to_owned();
+                    let parents = parts.next().unwrap_or("").trim();
                     let subject = parts.next().unwrap_or("").trim().to_owned();
                     if sha.is_empty() {
                         return None;
@@ -484,6 +490,7 @@ pub fn list_commits(limit: usize) -> Result<Vec<Commit>> {
                         sha,
                         author_short: short_author_name(&author),
                         author,
+                        parent_count: parents.split_whitespace().count(),
                         subject,
                     })
                 })

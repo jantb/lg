@@ -3,7 +3,9 @@ use chrono::Utc;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind},
+    event::{
+        self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -29,13 +31,15 @@ use crate::{
     },
     panel,
     state::{
-        AppState, CheckoutJob, CheckoutMsg, ConflictFollowup, DiffJob, DiffMsg, DiffSource,
-        FetchJob, FetchMsg, FlowAction, GenMsg, Modal, OperationJob, OperationKind, OperationMsg,
-        Pane, PendingAction, PushJob, PushMsg, RefreshJob, RefreshMsg, RefreshSnapshot, ReviewJob,
-        ReviewMsg, TreeKind, WorkflowJob, WorkflowMsg,
+        AppState, CheckoutJob, CheckoutMsg, CommitLogJob, CommitLogMsg, ConflictFollowup, DiffJob,
+        DiffMsg, DiffSource, FetchJob, FetchMsg, FlowAction, GenMsg, Modal, OperationJob,
+        OperationKind, OperationMsg, Pane, PendingAction, PushJob, PushMsg, RefreshJob, RefreshMsg,
+        RefreshSnapshot, ReviewAssistJob, ReviewJob, ReviewMsg, TreeKind, WorkflowJob, WorkflowMsg,
     },
     ui,
 };
+
+const MAX_REVIEW_ASSIST_CONTEXT_BYTES: usize = 18_000;
 
 pub struct App {
     pub state: AppState,
@@ -113,9 +117,112 @@ fn spawn_assisted_review(state: &mut AppState) {
     state.review_idx = 0;
     state.review_collapsed.clear();
     state.review_context_open.clear();
+    state.review_assists.clear();
+    state.review_assist_job = None;
     state.diff_text = "building assisted review against main...".to_string();
     state.diff_line_count = 1;
     state.set_status("building review...", false);
+}
+
+fn spawn_review_assist(state: &mut AppState, node_id: String) {
+    let Some(context) = review_assist_context(state, &node_id) else {
+        state.set_status("no review item selected", true);
+        return;
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        crate::ollama::stream_review_assist(context, tx);
+    });
+    state.review_assist_job = Some(ReviewAssistJob {
+        rx,
+        node_id,
+        output: String::new(),
+        spinner: 0,
+    });
+    state.set_status("explaining review item...", false);
+}
+
+fn review_assist_context(state: &AppState, node_id: &str) -> Option<String> {
+    let review = state.review.as_ref()?;
+    let selected = review.nodes.iter().find(|node| node.id == node_id)?;
+    let mut out = String::new();
+    push_review_assist_line(
+        &mut out,
+        "Full diff against main, selected drilldown subtree:",
+    );
+    push_review_assist_line(&mut out, &format!("selected: {}", selected.title));
+    push_review_assist_line(&mut out, "");
+
+    for (idx, node) in review.nodes.iter().enumerate() {
+        if !review_node_in_subtree(review, idx, node_id) {
+            continue;
+        }
+        if out.len() >= MAX_REVIEW_ASSIST_CONTEXT_BYTES {
+            push_review_assist_line(&mut out, "... review subtree truncated ...");
+            break;
+        }
+        let indent = "  ".repeat(node.depth as usize);
+        push_review_assist_line(&mut out, &format!("{indent}- {}", node.title));
+        for body in &node.body {
+            push_review_assist_line(&mut out, &format!("{indent}  {body}"));
+        }
+        if !node.context.is_empty() {
+            push_review_assist_line(&mut out, &format!("{indent}  source context:"));
+            for context in &node.context {
+                push_review_assist_line(&mut out, &format!("{indent}  {context}"));
+            }
+        }
+    }
+
+    Some(out)
+}
+
+fn review_node_in_subtree(
+    review: &crate::git::AssistedReview,
+    mut idx: usize,
+    root_id: &str,
+) -> bool {
+    loop {
+        let Some(node) = review.nodes.get(idx) else {
+            return false;
+        };
+        if node.id == root_id {
+            return true;
+        }
+        let Some(parent) = &node.parent else {
+            return false;
+        };
+        let Some(parent_idx) = review
+            .nodes
+            .iter()
+            .position(|candidate| &candidate.id == parent)
+        else {
+            return false;
+        };
+        idx = parent_idx;
+    }
+}
+
+fn push_review_assist_line(out: &mut String, line: &str) {
+    if out.len() >= MAX_REVIEW_ASSIST_CONTEXT_BYTES {
+        return;
+    }
+    let remaining = MAX_REVIEW_ASSIST_CONTEXT_BYTES - out.len();
+    if line.len() < remaining {
+        out.push_str(line);
+        out.push('\n');
+        return;
+    }
+    let take = remaining.saturating_sub(1);
+    let mut added = 0usize;
+    for ch in line.chars() {
+        if ch.len_utf8() > take.saturating_sub(added) {
+            break;
+        }
+        out.push(ch);
+        added += ch.len_utf8();
+    }
+    out.push('\n');
 }
 
 fn selected_diff_source(state: &AppState) -> DiffSource {
@@ -146,6 +253,18 @@ fn selected_diff_source(state: &AppState) -> DiffSource {
             .map(|b| DiffSource::Branch(b.name.clone()))
             .unwrap_or(DiffSource::None),
         _ => DiffSource::None,
+    }
+}
+
+fn selected_commit_ref(state: &AppState) -> Option<String> {
+    if state.focus == Pane::Branches {
+        state
+            .branches
+            .get(state.branches_idx)
+            .map(|branch| branch.name.clone())
+            .or_else(|| state.branch.clone())
+    } else {
+        state.branch.clone()
     }
 }
 
@@ -181,13 +300,6 @@ fn build_refresh_snapshot() -> RefreshSnapshot {
             None
         }
     };
-    let commits = match crate::git::list_commits(COMMIT_LIST_LIMIT) {
-        Ok(commits) => Some(commits),
-        Err(e) => {
-            errors.push(format!("git log failed: {e}"));
-            None
-        }
-    };
     let unpushed_shas = match crate::git::unpushed_shas() {
         Ok(shas) => Some(shas),
         Err(e) => {
@@ -203,6 +315,13 @@ fn build_refresh_snapshot() -> RefreshSnapshot {
                 .map(|branch| branch.name.clone())
         })
     });
+    let commits = match crate::git::list_commits(COMMIT_LIST_LIMIT) {
+        Ok(commits) => Some(commits),
+        Err(e) => {
+            errors.push(format!("git log failed: {e}"));
+            None
+        }
+    };
     let current_branch_releases = branch
         .as_deref()
         .and_then(|branch| crate::git::branch_release_status(branch).ok())
@@ -613,6 +732,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                         ("j/k", "move"),
                         ("Enter/space", "expand"),
                         ("f", "source"),
+                        ("l", "explain"),
                         ("g/G", "top/bot"),
                         ("R", "refresh"),
                         ("?", "help"),
@@ -834,13 +954,18 @@ where
             width: size.width,
             height: size.height,
         };
-        let rects_pre = ui::split_layout_with_environments(area, self.state.flow_available());
+        let rects_pre = ui::split_layout_with_width(
+            area,
+            self.state.flow_available(),
+            self.state.left_column_width,
+        );
         self.state.diff_viewport_height = rects_pre.main.height.saturating_sub(2);
 
         let state = &self.state;
         self.terminal.draw(|frame| {
             let area = frame.area();
-            let rects = ui::split_layout_with_environments(area, state.flow_available());
+            let rects =
+                ui::split_layout_with_width(area, state.flow_available(), state.left_column_width);
             let focused_pane = state.focus;
 
             panel::status::render(state, rects.status, frame, focused_pane == Pane::Status);
@@ -1001,11 +1126,13 @@ impl App {
             self.render()?;
 
             self.drain_generation();
+            self.drain_review_assist();
             self.drain_push_job()?;
             self.drain_checkout_job()?;
             self.drain_operation_job()?;
             self.drain_fetch_job();
             self.drain_refresh_job();
+            self.drain_commit_log_job();
             self.drain_diff_job();
             self.drain_review_job();
             self.drain_workflow_job()?;
@@ -1018,8 +1145,10 @@ impl App {
                 || self.state.operation_job.is_some()
                 || self.state.fetch_job.is_some()
                 || self.state.refresh_job.is_some()
+                || self.state.commit_log_job.is_some()
                 || self.state.diff_job.is_some()
                 || self.state.review_job.is_some()
+                || self.state.review_assist_job.is_some()
                 || self.state.workflow_job.is_some()
             {
                 80
@@ -1051,6 +1180,9 @@ impl App {
                             self.state.set_status(e.to_string(), true);
                         }
                     },
+                    PendingAction::ReviewAssist(node_id) => {
+                        spawn_review_assist(&mut self.state, node_id);
+                    }
                     PendingAction::Commit => {
                         let msg = self.state.commit_message.clone();
                         spawn_operation(
@@ -1217,6 +1349,55 @@ impl App {
         });
     }
 
+    fn sync_commit_log_to_selection(&mut self) {
+        let Some(branch) = selected_commit_ref(&self.state) else {
+            return;
+        };
+        self.start_commit_log_job(branch);
+    }
+
+    fn start_commit_log_job(&mut self, branch: String) {
+        if self.state.commits_ref.as_deref() == Some(branch.as_str()) {
+            return;
+        }
+        if self
+            .state
+            .commit_log_job
+            .as_ref()
+            .is_some_and(|job| job.branch == branch)
+        {
+            return;
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let thread_branch = branch.clone();
+        std::thread::spawn(move || {
+            match crate::git::list_commits_for_ref(&thread_branch, COMMIT_LIST_LIMIT) {
+                Ok(commits) => {
+                    let _ = tx.send(CommitLogMsg::Done {
+                        branch: thread_branch,
+                        commits,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(CommitLogMsg::Error {
+                        branch: thread_branch,
+                        message: e.to_string(),
+                    });
+                }
+            }
+        });
+
+        self.state.commits_ref = Some(branch.clone());
+        self.state.commits.clear();
+        self.state.commits_idx = 0;
+        self.state.commit_log_job = Some(CommitLogJob {
+            rx,
+            spinner: 0,
+            branch,
+        });
+    }
+
     fn drain_file_events(&mut self) -> Result<()> {
         let mut should_refresh = false;
         while let Ok(event) = self.file_events.try_recv() {
@@ -1246,13 +1427,17 @@ impl App {
             self.state.branches = branches;
         }
         self.state.flow_branches_available = snapshot.flow_branches_available;
-        if let Some(commits) = snapshot.commits {
-            self.state.commits = commits;
-        }
         if let Some(shas) = snapshot.unpushed_shas {
             self.state.unpushed_shas = shas;
         }
         self.state.branch = snapshot.branch;
+        let selected_ref = selected_commit_ref(&self.state);
+        if let Some(commits) = snapshot.commits {
+            if selected_ref.as_deref() == self.state.branch.as_deref() {
+                self.state.commits = commits;
+                self.state.commits_ref = selected_ref.clone();
+            }
+        }
         self.state.current_branch_releases = snapshot.current_branch_releases;
         self.state.remote_url = snapshot.remote_url;
         self.state.ahead_behind = snapshot.ahead_behind;
@@ -1260,6 +1445,9 @@ impl App {
             self.state.set_status(error, true);
         }
         self.state.clamp();
+        if selected_ref.as_deref() != self.state.commits_ref.as_deref() {
+            self.sync_commit_log_to_selection();
+        }
         if refresh_diff {
             self.start_diff_job(true);
         }
@@ -1302,6 +1490,36 @@ impl App {
                 self.state.diff_text = text;
                 self.state.diff_line_count =
                     self.state.diff_text.lines().count().min(u16::MAX as usize) as u16;
+            }
+        }
+    }
+
+    fn drain_commit_log_job(&mut self) {
+        let mut finished = None;
+        if let Some(job) = self.state.commit_log_job.as_mut() {
+            while let Ok(msg) = job.rx.try_recv() {
+                finished = Some(msg);
+            }
+            job.spinner = job.spinner.wrapping_add(1);
+        }
+        if let Some(msg) = finished {
+            self.state.commit_log_job = None;
+            match msg {
+                CommitLogMsg::Done { branch, commits } => {
+                    if self.state.commits_ref.as_deref() == Some(branch.as_str()) {
+                        self.state.commits = commits;
+                        self.state.commits_idx = 0;
+                        self.state.clamp();
+                    }
+                }
+                CommitLogMsg::Error { branch, message } => {
+                    if self.state.commits_ref.as_deref() == Some(branch.as_str()) {
+                        self.state.commits.clear();
+                        self.state.commits_idx = 0;
+                    }
+                    self.state
+                        .set_status(format!("git log {branch} failed: {message}"), true);
+                }
             }
         }
     }
@@ -1559,6 +1777,45 @@ impl App {
         }
     }
 
+    fn drain_review_assist(&mut self) {
+        let mut drained: Vec<GenMsg> = Vec::new();
+        if let Some(job) = self.state.review_assist_job.as_ref() {
+            while let Ok(msg) = job.rx.try_recv() {
+                drained.push(msg);
+            }
+        }
+        for msg in drained {
+            match msg {
+                GenMsg::Thinking(_) => {}
+                GenMsg::Output(output) => {
+                    if let Some(job) = self.state.review_assist_job.as_mut() {
+                        job.output.push_str(&output);
+                        self.state
+                            .review_assists
+                            .insert(job.node_id.clone(), job.output.clone());
+                    }
+                }
+                GenMsg::Done(final_msg) => {
+                    if let Some(job) = self.state.review_assist_job.take() {
+                        self.state.review_assists.insert(job.node_id, final_msg);
+                    }
+                    self.state.set_status("review explanation ready", false);
+                }
+                GenMsg::Error(error) => {
+                    if let Some(job) = self.state.review_assist_job.take() {
+                        self.state
+                            .review_assists
+                            .insert(job.node_id, format!("ollama error: {error}"));
+                    }
+                    self.state.set_status(error, true);
+                }
+            }
+        }
+        if let Some(job) = self.state.review_assist_job.as_mut() {
+            job.spinner = job.spinner.wrapping_add(1);
+        }
+    }
+
     fn render(&mut self) -> Result<()> {
         self.state.advance_animation();
 
@@ -1570,13 +1827,18 @@ impl App {
             width: size.width,
             height: size.height,
         };
-        let rects_pre = ui::split_layout_with_environments(area, self.state.flow_available());
+        let rects_pre = ui::split_layout_with_width(
+            area,
+            self.state.flow_available(),
+            self.state.left_column_width,
+        );
         self.state.diff_viewport_height = rects_pre.main.height.saturating_sub(2);
 
         let state = &self.state;
         self.terminal.draw(|frame| {
             let area = frame.area();
-            let rects = ui::split_layout_with_environments(area, state.flow_available());
+            let rects =
+                ui::split_layout_with_width(area, state.flow_available(), state.left_column_width);
             let focused_pane = state.focus;
 
             panel::status::render(state, rects.status, frame, focused_pane == Pane::Status);
@@ -1650,21 +1912,25 @@ impl App {
             KeyCode::Char('1') => {
                 self.state.focus = Pane::Status;
                 self.start_diff_job(false);
+                self.sync_commit_log_to_selection();
                 return Ok(());
             }
             KeyCode::Char('2') => {
                 self.state.focus = Pane::Files;
                 self.start_diff_job(false);
+                self.sync_commit_log_to_selection();
                 return Ok(());
             }
             KeyCode::Char('3') => {
                 self.state.focus = Pane::Branches;
                 self.start_diff_job(false);
+                self.sync_commit_log_to_selection();
                 return Ok(());
             }
             KeyCode::Char('4') => {
                 self.state.focus = Pane::Commits;
                 self.start_diff_job(false);
+                self.sync_commit_log_to_selection();
                 return Ok(());
             }
             KeyCode::Char('0') => {
@@ -1674,11 +1940,13 @@ impl App {
             KeyCode::Tab => {
                 self.state.focus = next_pane(self.state.focus);
                 self.start_diff_job(false);
+                self.sync_commit_log_to_selection();
                 return Ok(());
             }
             KeyCode::BackTab => {
                 self.state.focus = prev_pane(self.state.focus);
                 self.start_diff_job(false);
+                self.sync_commit_log_to_selection();
                 return Ok(());
             }
             KeyCode::Char('c') => {
@@ -1706,6 +1974,7 @@ impl App {
         }
 
         let focus_before = self.state.focus;
+        let commit_ref_before = selected_commit_ref(&self.state);
 
         match focus_before {
             Pane::Status => {}
@@ -1724,6 +1993,9 @@ impl App {
         {
             self.start_diff_job(false);
         }
+        if selected_commit_ref(&self.state) != commit_ref_before {
+            self.sync_commit_log_to_selection();
+        }
         Ok(())
     }
 
@@ -1735,7 +2007,41 @@ impl App {
             width: size.width,
             height: size.height,
         };
-        let rects = ui::split_layout_with_environments(area, self.state.flow_available());
+        let rects = ui::split_layout_with_width(
+            area,
+            self.state.flow_available(),
+            self.state.left_column_width,
+        );
+        let divider_col = rects.main.x.saturating_sub(1);
+        let on_divider = m.row >= rects.status.y
+            && m.row < rects.footer.y
+            && (m.column == divider_col || m.column == rects.main.x);
+
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left)
+                if on_divider && !m.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                self.state.column_drag_active = true;
+                self.state.left_column_width = Some(ui::clamp_left_column_width(
+                    rects.status.width.saturating_add(rects.main.width),
+                    m.column.saturating_sub(area.x).saturating_add(1),
+                ));
+                return Ok(());
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.state.column_drag_active => {
+                self.state.left_column_width = Some(ui::clamp_left_column_width(
+                    rects.status.width.saturating_add(rects.main.width),
+                    m.column.saturating_sub(area.x).saturating_add(1),
+                ));
+                return Ok(());
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.state.column_drag_active = false;
+                return Ok(());
+            }
+            _ => {}
+        }
+
         let in_main = m.column >= rects.main.x
             && m.column < rects.main.x + rects.main.width
             && m.row >= rects.main.y

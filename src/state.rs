@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::mpsc::Receiver;
 
 use chrono::{DateTime, Utc};
@@ -107,6 +107,25 @@ pub struct RefreshSnapshot {
 }
 
 #[derive(Debug)]
+pub enum CommitLogMsg {
+    Done {
+        branch: String,
+        commits: Vec<Commit>,
+    },
+    Error {
+        branch: String,
+        message: String,
+    },
+}
+
+#[derive(Debug)]
+pub struct CommitLogJob {
+    pub rx: Receiver<CommitLogMsg>,
+    pub spinner: usize,
+    pub branch: String,
+}
+
+#[derive(Debug)]
 pub struct RefreshJob {
     pub rx: Receiver<RefreshMsg>,
     pub spinner: usize,
@@ -134,6 +153,14 @@ pub enum ReviewMsg {
 #[derive(Debug)]
 pub struct ReviewJob {
     pub rx: Receiver<ReviewMsg>,
+    pub spinner: usize,
+}
+
+#[derive(Debug)]
+pub struct ReviewAssistJob {
+    pub rx: Receiver<GenMsg>,
+    pub node_id: String,
+    pub output: String,
     pub spinner: usize,
 }
 
@@ -199,6 +226,7 @@ pub struct StatusMsg {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingAction {
     GenerateMessage,
+    ReviewAssist(String),
     Commit,
     Push,
     StageAll,
@@ -354,6 +382,7 @@ pub struct AppState {
     pub files: Vec<FileEntry>,
     pub branches: Vec<Branch>,
     pub commits: Vec<Commit>,
+    pub commits_ref: Option<String>,
     pub current_branch_releases: BranchReleaseStatus,
     pub flow_branches_available: bool,
     pub unpushed_shas: HashSet<String>,
@@ -373,6 +402,7 @@ pub struct AppState {
     pub review_idx: usize,
     pub review_collapsed: HashSet<String>,
     pub review_context_open: HashSet<String>,
+    pub review_assists: HashMap<String, String>,
 
     pub commit_message: String,
     pub branch: Option<String>,
@@ -392,9 +422,14 @@ pub struct AppState {
     pub refresh_job: Option<RefreshJob>,
     pub refresh_pending: bool,
     pub refresh_pending_diff: bool,
+    pub commit_log_job: Option<CommitLogJob>,
     pub diff_job: Option<DiffJob>,
     pub review_job: Option<ReviewJob>,
+    pub review_assist_job: Option<ReviewAssistJob>,
     pub workflow_job: Option<WorkflowJob>,
+
+    pub left_column_width: Option<u16>,
+    pub column_drag_active: bool,
 
     pub flow_idx: usize,
     pub flow_confirm: Option<FlowAction>,
@@ -456,6 +491,7 @@ impl AppState {
             files: Vec::new(),
             branches: Vec::new(),
             commits: Vec::new(),
+            commits_ref: None,
             current_branch_releases: BranchReleaseStatus::default(),
             flow_branches_available: false,
             unpushed_shas: HashSet::new(),
@@ -475,6 +511,7 @@ impl AppState {
             review_idx: 0,
             review_collapsed: HashSet::new(),
             review_context_open: HashSet::new(),
+            review_assists: HashMap::new(),
 
             commit_message: String::new(),
             branch: None,
@@ -494,9 +531,14 @@ impl AppState {
             refresh_job: None,
             refresh_pending: false,
             refresh_pending_diff: false,
+            commit_log_job: None,
             diff_job: None,
             review_job: None,
+            review_assist_job: None,
             workflow_job: None,
+
+            left_column_width: None,
+            column_drag_active: false,
 
             flow_idx: 0,
             flow_confirm: None,
@@ -527,15 +569,20 @@ impl AppState {
             Some("fetching")
         } else if self.refresh_job.is_some() {
             Some("refreshing")
+        } else if self.commit_log_job.is_some() {
+            Some("loading commits")
         } else if self.diff_job.is_some() {
             Some("loading diff")
         } else if self.review_job.is_some() {
             Some("reviewing")
+        } else if self.review_assist_job.is_some() {
+            Some("explaining")
         } else if self.workflow_job.is_some() {
             Some("running workflow")
         } else {
             match &self.pending_action {
                 Some(PendingAction::GenerateMessage) => Some("starting generator"),
+                Some(PendingAction::ReviewAssist(_)) => Some("starting explanation"),
                 Some(PendingAction::Commit) => Some("committing"),
                 Some(PendingAction::Push) => Some("starting push"),
                 Some(PendingAction::StageAll | PendingAction::StagePath(_)) => Some("staging"),

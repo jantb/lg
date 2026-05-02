@@ -58,8 +58,16 @@ pub fn split_layout(area: Rect) -> LayoutRects {
 }
 
 pub fn split_layout_with_environments(area: Rect, show_environments: bool) -> LayoutRects {
+    split_layout_with_width(area, show_environments, None)
+}
+
+pub fn split_layout_with_width(
+    area: Rect,
+    show_environments: bool,
+    requested_left_width: Option<u16>,
+) -> LayoutRects {
     let rows = Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).split(area);
-    let left_width = left_column_width(rows[0].width);
+    let left_width = left_column_width(rows[0].width, requested_left_width);
     let cols =
         Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).split(rows[0]);
     let lefts = Layout::vertical([
@@ -96,11 +104,15 @@ pub fn split_layout_with_environments(area: Rect, show_environments: bool) -> La
     }
 }
 
-fn left_column_width(total_width: u16) -> u16 {
+pub fn clamp_left_column_width(total_width: u16, requested_width: u16) -> u16 {
     let min_main_width = 40.min(total_width / 2);
-    LEFT_COLUMN_WIDTH
+    requested_width
         .min(total_width.saturating_sub(min_main_width))
         .max(24.min(total_width))
+}
+
+fn left_column_width(total_width: u16, requested_width: Option<u16>) -> u16 {
+    clamp_left_column_width(total_width, requested_width.unwrap_or(LEFT_COLUMN_WIDTH))
 }
 
 /// Framed block for numbered panels.

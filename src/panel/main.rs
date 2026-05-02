@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::{
     config::DIFF_PAGE,
-    state::{AppState, DiffSource},
+    state::{AppState, DiffSource, PendingAction},
     ui,
 };
 
@@ -64,7 +64,7 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
     )
     .title_bottom(
         Line::from(Span::styled(
-            "j/k move  Enter/space expand  f source  g/G top/bottom  R refresh",
+            "j/k move  Enter/space expand  f source  l explain  g/G top/bottom  R refresh",
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::DIM),
@@ -139,7 +139,24 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
                     )));
                 }
             }
-            if has_body || state.review_context_open.contains(&node.id) {
+            if let Some(assist) = review_assist_text(state, &node.id) {
+                lines.push(Line::from(Span::styled(
+                    format!("{indent}  │ ollama"),
+                    Style::default()
+                        .fg(Color::LightCyan)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                for line in assist.lines() {
+                    lines.push(Line::from(Span::styled(
+                        format!("{indent}  │ {line}"),
+                        Style::default().fg(Color::Gray),
+                    )));
+                }
+            }
+            if has_body
+                || state.review_context_open.contains(&node.id)
+                || review_assist_text(state, &node.id).is_some()
+            {
                 lines.push(Line::from(Span::styled(
                     format!("{indent}  └─"),
                     Style::default().fg(Color::DarkGray),
@@ -244,6 +261,14 @@ fn handle_review_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 }
             }
         }
+        KeyCode::Char('l') => {
+            if let Some(review) = &state.review
+                && let Some(node) = review.nodes.get(state.review_idx)
+            {
+                state.review_collapsed.remove(&node.id);
+                state.pending_action = Some(PendingAction::ReviewAssist(node.id.clone()));
+            }
+        }
         KeyCode::Char('g') => {
             if let Some(first) = visible.first() {
                 state.review_idx = *first;
@@ -259,6 +284,18 @@ fn handle_review_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn review_assist_text<'a>(state: &'a AppState, node_id: &str) -> Option<&'a str> {
+    if let Some(job) = &state.review_assist_job
+        && job.node_id == node_id
+    {
+        if job.output.trim().is_empty() {
+            return Some("thinking...");
+        }
+        return Some(job.output.trim());
+    }
+    state.review_assists.get(node_id).map(|text| text.trim())
 }
 
 fn is_test_review_node(title: &str) -> bool {
