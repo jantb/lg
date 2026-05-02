@@ -537,6 +537,25 @@ fn list_commits_marks_merge_commits_with_multiple_parents() {
 }
 
 #[test]
+fn branch_log_renders_decorated_graph_log() {
+    let dir = init_repo();
+    fs::write(dir.path().join("a.txt"), "one").unwrap();
+    stage_in(dir.path(), "a.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let _cwd = CwdGuard::new(dir.path());
+    let log = lg::git::branch_log("main", 10).unwrap();
+
+    assert!(
+        log.contains("* commit "),
+        "missing graph commit line: {log}"
+    );
+    assert!(log.contains("Author:"), "missing author line: {log}");
+    assert!(log.contains("Date:"), "missing date line: {log}");
+    assert!(log.contains("initial commit"), "missing message: {log}");
+}
+
+#[test]
 fn commit_on_empty_message_fails() {
     // lg::git::commit guards against empty messages.
     let result = lg::git::commit("");

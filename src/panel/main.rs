@@ -20,10 +20,10 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         return;
     }
 
-    let title = if matches!(state.diff_source, DiffSource::Review) {
-        "Review"
-    } else {
-        "Diff"
+    let title = match state.diff_source {
+        DiffSource::Review => "Review",
+        DiffSource::Branch(_) => "Log",
+        _ => "Diff",
     };
     let block = ui::framed_with_activity(
         0,
@@ -37,7 +37,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let lines: Vec<ratatui::text::Line> = state
         .diff_text
         .split('\n')
-        .map(ui::highlight_diff_line)
+        .map(|line| {
+            if matches!(state.diff_source, DiffSource::Branch(_)) {
+                ui::highlight_log_line(line)
+            } else {
+                ui::highlight_diff_line(line)
+            }
+        })
         .collect();
 
     let max_offset = state

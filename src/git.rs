@@ -624,6 +624,22 @@ pub fn show_commit(sha: &str) -> Result<String> {
     Ok(label_commit_patch(&String::from_utf8_lossy(&out.stdout)))
 }
 
+pub fn branch_log(reference: &str, limit: usize) -> Result<String> {
+    let n = limit.to_string();
+    let out = run(&[
+        "log",
+        "--graph",
+        "--decorate",
+        "--date=relative",
+        "--abbrev-commit",
+        "-n",
+        &n,
+        reference,
+        "--",
+    ])?;
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 pub fn assisted_review_against_main() -> Result<String> {
     Ok(build_assisted_review_against_main()?.report)
 }

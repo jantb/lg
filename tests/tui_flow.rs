@@ -354,6 +354,51 @@ fn diff_highlighting_colors_markers_and_changed_text_separately() {
 }
 
 #[test]
+fn log_highlighting_colors_graph_and_decorations() {
+    let line = lg::ui::highlight_log_line("* commit abc123 (main)");
+
+    assert_eq!(line.spans[0].content.as_ref(), "*");
+    assert_eq!(line.spans[0].style.fg, Some(Color::Yellow));
+    assert!(
+        line.spans
+            .iter()
+            .any(|span| span.content.as_ref() == "abc123" && span.style.fg == Some(Color::Yellow))
+    );
+    assert!(
+        line.spans
+            .iter()
+            .any(|span| span.content.as_ref() == "(main)"
+                && span.style.fg == Some(Color::LightGreen))
+    );
+}
+
+#[test]
+fn branch_source_renders_log_view() {
+    let mut state = AppState::new();
+    state.diff_source = lg::state::DiffSource::Branch("main".into());
+    state.diff_text = "* commit abc123 (main)\n| Author: Test User <test@example.com>".into();
+    state.diff_line_count = 2;
+
+    let backend = TestBackend::new(80, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::main::render(&state, frame.area(), frame, true);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let text = buf
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(text.contains("Log"), "missing log title: {text}");
+    assert!(text.contains("abc123"), "missing commit id: {text}");
+}
+
+#[test]
 fn review_panel_explains_selected_subtree_with_ollama() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.focus = Pane::Main;

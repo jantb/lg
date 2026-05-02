@@ -419,7 +419,7 @@ fn select_mouse_row(state: &mut AppState, pane: Pane, rects: &ui::LayoutRects, r
 
 fn load_diff_text(source: &DiffSource) -> String {
     match source {
-        DiffSource::None | DiffSource::Branch(_) | DiffSource::Review => String::new(),
+        DiffSource::None | DiffSource::Review => String::new(),
         DiffSource::All => crate::git::all_diffs().unwrap_or_else(|e| format!("error: {e}")),
         DiffSource::File(path) => {
             crate::git::file_diff(path).unwrap_or_else(|e| format!("error: {e}"))
@@ -430,6 +430,8 @@ fn load_diff_text(source: &DiffSource) -> String {
         DiffSource::Commit(sha) => {
             crate::git::show_commit(sha).unwrap_or_else(|e| format!("error: {e}"))
         }
+        DiffSource::Branch(branch) => crate::git::branch_log(branch, COMMIT_LIST_LIMIT)
+            .unwrap_or_else(|e| format!("error: {e}")),
     }
 }
 
@@ -1531,14 +1533,16 @@ impl App {
         }
         self.state.diff_source = source.clone();
         self.state.diff_offset = 0;
-        self.state.diff_text = if matches!(source, DiffSource::None | DiffSource::Branch(_)) {
+        self.state.diff_text = if matches!(source, DiffSource::None) {
             String::new()
+        } else if matches!(source, DiffSource::Branch(_)) {
+            "loading log...".to_string()
         } else {
             "loading diff...".to_string()
         };
         self.state.diff_line_count =
             self.state.diff_text.lines().count().min(u16::MAX as usize) as u16;
-        if matches!(source, DiffSource::None | DiffSource::Branch(_)) {
+        if matches!(source, DiffSource::None) {
             self.state.diff_job = None;
             return;
         }
