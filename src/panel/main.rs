@@ -92,6 +92,7 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
                 .is_some_and(|parent| parent == &node.id)
         });
         let has_body = renders_review_body(&node.id) && !node.body.is_empty();
+        let drillable = has_drill_child(review, &node.id);
         let expanded = !state.review_collapsed.contains(&node.id);
         let marker = if has_children || has_body {
             if expanded { "▾" } else { "▸" }
@@ -105,6 +106,7 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
             &node.title,
             node.depth,
             selected,
+            drillable,
         ));
 
         if expanded {
@@ -166,6 +168,7 @@ fn review_title_line(
     title: &str,
     depth: u16,
     selected: bool,
+    drillable: bool,
 ) -> Line<'static> {
     let mut spans = vec![Span::styled(
         format!("{indent}{marker} "),
@@ -177,6 +180,17 @@ fn review_title_line(
         ),
     )];
     spans.extend(review_title_spans(title, depth, selected));
+    if drillable {
+        spans.push(Span::styled(
+            " ↳".to_string(),
+            selected_style(
+                Style::default()
+                    .fg(Color::LightGreen)
+                    .add_modifier(Modifier::BOLD),
+                selected,
+            ),
+        ));
+    }
     Line::from(spans)
 }
 
@@ -849,6 +863,13 @@ fn first_drill_child<'a>(
                 .enumerate()
                 .find(|(_, candidate)| candidate.parent.as_deref() == Some(node_id))
         })
+}
+
+fn has_drill_child(review: &crate::git::AssistedReview, node_id: &str) -> bool {
+    review.nodes.iter().any(|candidate| {
+        candidate.parent.as_deref() == Some(node_id)
+            && (is_review_file_node(&candidate.id) || is_review_entry_node(&candidate.id))
+    })
 }
 
 fn review_assist_text<'a>(state: &'a AppState, node_id: &str) -> Option<&'a str> {

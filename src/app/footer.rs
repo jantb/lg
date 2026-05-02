@@ -176,7 +176,7 @@ fn default_spans(state: &AppState) -> Vec<Span<'static>> {
         if *key == "p" && !state.pull_available() {
             continue;
         }
-        spans.push(Span::styled(*key, Style::default().fg(Color::Yellow)));
+        spans.push(Span::styled(*key, shortcut_style(state, key)));
         spans.push(Span::raw(" "));
         spans.push(Span::raw(*label));
         if pairs.iter().skip(idx + 1).any(|(next_key, _)| {
@@ -187,6 +187,32 @@ fn default_spans(state: &AppState) -> Vec<Span<'static>> {
         }
     }
     spans
+}
+
+fn shortcut_style(state: &AppState, key: &str) -> Style {
+    if key == "d" && review_drill_available(state) {
+        Style::default()
+            .fg(Color::LightGreen)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Yellow)
+    }
+}
+
+fn review_drill_available(state: &AppState) -> bool {
+    if !matches!(state.focus, Pane::Main) || !matches!(state.diff_source, DiffSource::Review) {
+        return false;
+    }
+    let Some(review) = &state.review else {
+        return false;
+    };
+    let Some(node) = review.nodes.get(state.review_idx) else {
+        return false;
+    };
+    review.nodes.iter().any(|candidate| {
+        candidate.parent.as_deref() == Some(node.id.as_str())
+            && (candidate.id.contains(":file:") || candidate.id.contains(":entry:"))
+    })
 }
 
 fn modal_spans(

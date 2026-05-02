@@ -491,6 +491,19 @@ fn review_panel_sources_entry_subtree_across_files_and_drills_to_child_file() {
         rendered.contains("+     fun maybeTransfer() = \"transfer\""),
         "{rendered}"
     );
+    assert!(
+        rendered.contains("↳"),
+        "missing drill indicator: {rendered}"
+    );
+    let buf = app.terminal.backend().buffer();
+    assert!(
+        buf.content().iter().any(|cell| {
+            cell.symbol() == "d"
+                && cell.fg == Color::LightGreen
+                && cell.modifier.contains(Modifier::BOLD)
+        }),
+        "drill shortcut should be highlighted when selected item can drill"
+    );
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Char('d'))).unwrap();
     assert_eq!(
