@@ -233,20 +233,31 @@ fn assisted_review_reports_diff_and_entry_points_against_main() {
         .iter()
         .position(|node| node.title.contains("fn greet"))
         .expect("entry node");
+    let file_pos = review
+        .nodes
+        .iter()
+        .position(|node| node.id.starts_with("branch:file:") && node.title.contains("src/lib.rs"))
+        .expect("file node");
     assert_eq!(review.nodes[0].title, "Full diff against main");
     assert_eq!(
-        review.nodes[entry_pos].parent.as_deref(),
+        review.nodes[file_pos].parent.as_deref(),
         Some("branch"),
-        "entry point should be directly under the full diff root"
+        "file should be directly under the full diff root"
     );
-    assert_eq!(review.nodes[entry_pos].depth, 1);
+    assert_eq!(review.nodes[file_pos].depth, 1);
+    assert_eq!(
+        review.nodes[entry_pos].parent.as_deref(),
+        Some(review.nodes[file_pos].id.as_str()),
+        "entry point should be nested under its file"
+    );
+    assert_eq!(review.nodes[entry_pos].depth, 2);
     assert_eq!(
         review.nodes[hunk_pos].parent.as_deref(),
         Some(review.nodes[entry_pos].id.as_str()),
         "hunk should be nested under its entry point"
     );
-    assert_eq!(review.nodes[hunk_pos].depth, 2);
-    assert!(entry_pos < 3, "entry point should appear before metadata");
+    assert_eq!(review.nodes[hunk_pos].depth, 3);
+    assert!(file_pos < 3, "file node should appear before metadata");
     assert!(
         review.nodes.iter().all(|node| node.id != "full-diff"),
         "interactive review should not have a flat full-diff lump"
@@ -303,6 +314,12 @@ fn assisted_review_groups_multiple_hunks_under_same_entry_point() {
         .filter(|node| node.title.contains("fn greet"))
         .collect();
     assert_eq!(entry_nodes.len(), 1, "same entry point should be grouped");
+    let file_nodes: Vec<_> = review
+        .nodes
+        .iter()
+        .filter(|node| node.id.starts_with("branch:file:") && node.title.contains("src/lib.rs"))
+        .collect();
+    assert_eq!(file_nodes.len(), 1, "same file should be listed once");
     let hunk_count = review
         .nodes
         .iter()
@@ -352,15 +369,29 @@ fn assisted_review_nests_entry_points_when_hunk_calls_changed_function() {
         .iter()
         .position(|node| node.title.contains("fun maybeTransferPointsToHousehold"))
         .expect("callee entry");
+    let file_nodes: Vec<_> = review
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.id.starts_with("branch:file:") && node.title.contains("src/main/kotlin/App.kt")
+        })
+        .collect();
 
+    assert_eq!(file_nodes.len(), 1, "same file should be listed once");
+    assert_eq!(
+        review.nodes[next_step].parent.as_deref(),
+        Some(file_nodes[0].id.as_str()),
+        "caller entry should be nested under its file"
+    );
     assert_eq!(
         review.nodes[maybe_transfer].parent.as_deref(),
         Some(review.nodes[next_step].id.as_str()),
         "callee entry should be nested under caller entry: {:?}",
         review.nodes
     );
-    assert_eq!(review.nodes[next_step].depth, 1);
-    assert_eq!(review.nodes[maybe_transfer].depth, 2);
+    assert_eq!(file_nodes[0].depth, 1);
+    assert_eq!(review.nodes[next_step].depth, 2);
+    assert_eq!(review.nodes[maybe_transfer].depth, 3);
 }
 
 #[test]

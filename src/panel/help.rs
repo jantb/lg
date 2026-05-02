@@ -86,7 +86,8 @@ const SECTIONS: &[Section] = &[
         bindings: &[
             ("j/k", "Move selected review item"),
             ("Enter / space", "Expand or collapse selected item"),
-            ("s", "Toggle source context for selected hunk"),
+            ("d", "Drill into first child item"),
+            ("s", "Toggle full source with inline diff"),
             ("l", "Ask Ollama to explain selected subtree"),
             ("g / G", "Top / bottom"),
             ("R", "Rebuild assisted review"),

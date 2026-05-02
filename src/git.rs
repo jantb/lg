@@ -1370,13 +1370,18 @@ fn push_entry_nodes(
         parents: &parents,
     };
     let mut emitted = BTreeSet::new();
-    for (group_idx, parent) in parents.iter().enumerate() {
-        if parent.is_none() {
-            tree.push_group(nodes, group_idx, &root_id, 1, &mut emitted);
-        }
+    for (path, group_indices) in groups_by_path(
+        groups
+            .iter()
+            .enumerate()
+            .filter(|(group_idx, _)| parents[*group_idx].is_none())
+            .map(|(group_idx, _)| group_idx),
+        &groups,
+    ) {
+        tree.push_file(nodes, &path, &group_indices, &root_id, 1, &mut emitted);
     }
-    for group_idx in 0..groups.len() {
-        tree.push_group(nodes, group_idx, &root_id, 1, &mut emitted);
+    for (group_idx, group) in groups.iter().enumerate() {
+        tree.push_file(nodes, &group.path, &[group_idx], &root_id, 1, &mut emitted);
     }
 }
 
@@ -1388,6 +1393,38 @@ struct EntryTree<'a> {
 }
 
 impl EntryTree<'_> {
+    fn push_file(
+        &self,
+        nodes: &mut Vec<ReviewNode>,
+        path: &str,
+        group_indices: &[usize],
+        parent_id: &str,
+        depth: u16,
+        emitted: &mut BTreeSet<usize>,
+    ) {
+        let pending: Vec<usize> = group_indices
+            .iter()
+            .copied()
+            .filter(|group_idx| !emitted.contains(group_idx))
+            .collect();
+        if pending.is_empty() {
+            return;
+        }
+
+        let file_id = format!("{}:file:{}", self.prefix, pending[0]);
+        nodes.push(ReviewNode {
+            id: file_id.clone(),
+            parent: Some(parent_id.to_string()),
+            depth,
+            title: self.file_title(path),
+            body: self.file_patch_body(path),
+            context: Vec::new(),
+        });
+        for group_idx in pending {
+            self.push_group(nodes, group_idx, &file_id, depth.saturating_add(1), emitted);
+        }
+    }
+
     fn push_group(
         &self,
         nodes: &mut Vec<ReviewNode>,
@@ -1412,7 +1449,7 @@ impl EntryTree<'_> {
                 group.symbol,
                 entry_group_description(self.entries, group)
             ),
-            body: Vec::new(),
+            body: self.group_patch_body(group),
             context: Vec::new(),
         });
         for idx in &group.indices {
@@ -1435,15 +1472,72 @@ impl EntryTree<'_> {
 
         for child_idx in 0..self.groups.len() {
             if self.parents[child_idx] == Some(group_idx) {
-                self.push_group(
-                    nodes,
-                    child_idx,
-                    &group_id,
-                    depth.saturating_add(1),
-                    emitted,
-                );
+                if self.groups[child_idx].path == group.path {
+                    self.push_group(
+                        nodes,
+                        child_idx,
+                        &group_id,
+                        depth.saturating_add(1),
+                        emitted,
+                    );
+                } else {
+                    self.push_file(
+                        nodes,
+                        &self.groups[child_idx].path,
+                        &[child_idx],
+                        &group_id,
+                        depth.saturating_add(1),
+                        emitted,
+                    );
+                }
             }
         }
+    }
+
+    fn file_title(&self, path: &str) -> String {
+        let mut entry_count = 0usize;
+        let mut added = 0usize;
+        let mut removed = 0usize;
+        for group in self.groups.iter().filter(|group| group.path == path) {
+            entry_count += 1;
+            added += group
+                .indices
+                .iter()
+                .map(|idx| self.entries[*idx].added)
+                .sum::<usize>();
+            removed += group
+                .indices
+                .iter()
+                .map(|idx| self.entries[*idx].removed)
+                .sum::<usize>();
+        }
+        let noun = if entry_count == 1 {
+            "entry point"
+        } else {
+            "entry points"
+        };
+        format!("{path} - {entry_count} {noun} (+{added} -{removed})")
+    }
+
+    fn file_patch_body(&self, path: &str) -> Vec<String> {
+        self.groups
+            .iter()
+            .filter(|group| group.path == path)
+            .flat_map(|group| {
+                group
+                    .indices
+                    .iter()
+                    .flat_map(|idx| self.entries[*idx].patch.iter().cloned())
+            })
+            .collect()
+    }
+
+    fn group_patch_body(&self, group: &EntryGroup) -> Vec<String> {
+        group
+            .indices
+            .iter()
+            .flat_map(|idx| self.entries[*idx].patch.iter().cloned())
+            .collect()
     }
 }
 
@@ -1483,6 +1577,23 @@ fn entry_groups(entries: &[ReviewEntryPoint]) -> Vec<EntryGroup> {
         }
     }
     groups
+}
+
+fn groups_by_path<I>(indices: I, groups: &[EntryGroup]) -> Vec<(String, Vec<usize>)>
+where
+    I: IntoIterator<Item = usize>,
+{
+    let mut files = Vec::<(String, Vec<usize>)>::new();
+    for idx in indices {
+        let path = &groups[idx].path;
+        if let Some((_, group_indices)) = files.iter_mut().find(|(candidate, _)| candidate == path)
+        {
+            group_indices.push(idx);
+        } else {
+            files.push((path.clone(), vec![idx]));
+        }
+    }
+    files
 }
 
 fn entry_group_parents(entries: &[ReviewEntryPoint], groups: &[EntryGroup]) -> Vec<Option<usize>> {

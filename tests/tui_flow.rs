@@ -386,6 +386,120 @@ fn review_panel_expands_hunks_and_source_context() {
 }
 
 #[test]
+fn review_panel_sources_entry_subtree_across_files_and_drills_to_child_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let caller_path = dir.path().join("Caller.kt");
+    let callee_path = dir.path().join("Callee.kt");
+    std::fs::write(
+        &caller_path,
+        "class Caller {\n    fun nextStep() = maybeTransfer()\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &callee_path,
+        "class Callee {\n    fun maybeTransfer() = \"transfer\"\n}\n",
+    )
+    .unwrap();
+    let caller_path = caller_path.display().to_string();
+    let callee_path = callee_path.display().to_string();
+
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(160, 40)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Branch diff".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:file:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: format!("{caller_path} - 1 entry point (+1 -1)"),
+                body: vec![
+                    "@@ -1,3 +1,3 @@".into(),
+                    " class Caller {".into(),
+                    "-    fun nextStep() = \"done\"".into(),
+                    "+    fun nextStep() = maybeTransfer()".into(),
+                    " }".into(),
+                ],
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:entry:0".into(),
+                parent: Some("branch:file:0".into()),
+                depth: 2,
+                title: format!("{caller_path} in fun nextStep - updates nextStep (+1 -1)"),
+                body: vec![
+                    "@@ -1,3 +1,3 @@".into(),
+                    " class Caller {".into(),
+                    "-    fun nextStep() = \"done\"".into(),
+                    "+    fun nextStep() = maybeTransfer()".into(),
+                    " }".into(),
+                ],
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:hunk:0".into(),
+                parent: Some("branch:entry:0".into()),
+                depth: 3,
+                title: format!("{caller_path}:2 - updates nextStep (+1 -1)"),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:file:1".into(),
+                parent: Some("branch:entry:0".into()),
+                depth: 3,
+                title: format!("{callee_path} - 1 entry point (+1 -1)"),
+                body: vec![
+                    "@@ -1,3 +1,3 @@".into(),
+                    " class Callee {".into(),
+                    "-    fun maybeTransfer() = \"skip\"".into(),
+                    "+    fun maybeTransfer() = \"transfer\"".into(),
+                    " }".into(),
+                ],
+                context: Vec::new(),
+            },
+        ],
+    });
+    app.state.review_idx = 2;
+    app.state.review_collapsed.insert("branch:entry:0".into());
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
+    app.render().unwrap();
+    let rendered = buffer_text(&app);
+    assert!(
+        rendered.contains(&format!("source {caller_path}")),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("source {callee_path}")),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("+     fun nextStep() = maybeTransfer()"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("+     fun maybeTransfer() = \"transfer\""),
+        "{rendered}"
+    );
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('d'))).unwrap();
+    assert_eq!(
+        app.state.review_idx, 4,
+        "drill should prefer the nested file over the hunk"
+    );
+}
+
+#[test]
 fn review_navigation_keeps_selection_visible_without_early_scroll() {
     let mut state = AppState::new();
     state.focus = Pane::Main;

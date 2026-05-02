@@ -70,7 +70,7 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
     )
     .title_bottom(
         Line::from(Span::styled(
-            "j/k move  Enter/space expand  s source  l explain  g/G top/bottom  R refresh",
+            "j/k move  Enter/space expand  d drill  s source  l explain  g/G top/bottom  R refresh",
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::DIM),
@@ -91,7 +91,7 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
                 .as_ref()
                 .is_some_and(|parent| parent == &node.id)
         });
-        let has_body = !node.body.is_empty();
+        let has_body = renders_review_body(&node.id) && !node.body.is_empty();
         let expanded = !state.review_collapsed.contains(&node.id);
         let marker = if has_children || has_body {
             if expanded { "▾" } else { "▸" }
@@ -109,19 +109,26 @@ fn render_review(state: &AppState, area: Rect, frame: &mut Frame, focused: bool)
 
         if expanded {
             let syntax_path = review_node_path(&node.title);
-            for body in &node.body {
-                let mut spans = vec![Span::styled(
-                    format!("{indent}  │ "),
-                    Style::default().fg(Color::DarkGray),
-                )];
-                let body_line = syntax_path
-                    .map(|path| ui::highlight_diff_line_for_path(body, path))
-                    .unwrap_or_else(|| ui::highlight_diff_line(body));
-                spans.extend(body_line.spans);
-                lines.push(Line::from(spans));
+            if renders_review_body(&node.id) {
+                for body in &node.body {
+                    let mut spans = vec![Span::styled(
+                        format!("{indent}  │ "),
+                        Style::default().fg(Color::DarkGray),
+                    )];
+                    let body_line = syntax_path
+                        .map(|path| ui::highlight_diff_line_for_path(body, path))
+                        .unwrap_or_else(|| ui::highlight_diff_line(body));
+                    spans.extend(body_line.spans);
+                    lines.push(Line::from(spans));
+                }
             }
             if state.review_context_open.contains(&node.id) {
-                lines.extend(review_source_context_lines(node, syntax_path, &indent));
+                lines.extend(review_source_context_lines(
+                    review,
+                    node,
+                    syntax_path,
+                    &indent,
+                ));
             }
             if let Some(assist) = review_assist_text(state, &node.id) {
                 lines.push(Line::from(Span::styled(
@@ -255,6 +262,18 @@ fn review_node_path(title: &str) -> Option<&str> {
     (!path.is_empty()).then_some(path)
 }
 
+fn is_review_file_node(node_id: &str) -> bool {
+    node_id.contains(":file:")
+}
+
+fn is_review_entry_node(node_id: &str) -> bool {
+    node_id.contains(":entry:")
+}
+
+fn renders_review_body(node_id: &str) -> bool {
+    !is_review_file_node(node_id) && !is_review_entry_node(node_id)
+}
+
 fn styled_file_path(path: &str, selected: bool) -> Vec<Span<'static>> {
     let file_style = if is_test_review_node(path) {
         Style::default()
@@ -335,32 +354,106 @@ fn selected_style(style: Style, selected: bool) -> Style {
 }
 
 fn review_source_context_lines(
+    review: &crate::git::AssistedReview,
     node: &crate::git::ReviewNode,
     syntax_path: Option<&str>,
     indent: &str,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![section_header(indent, "source context")];
-
-    if let Some(path) = syntax_path
-        && let Some(mut source) = full_source_with_inline_diff(path, &node.body, indent)
-    {
-        lines.append(&mut source);
+    let sections = source_sections(review, node);
+    if !sections.is_empty() {
+        let multiple = sections.len() > 1;
+        for section in sections {
+            if let Some(mut source) =
+                full_source_with_inline_diff(&section.path, &section.body, indent, multiple)
+            {
+                lines.append(&mut source);
+            } else {
+                lines.extend(fallback_source_context_lines(
+                    &section.body,
+                    &section.context,
+                    Some(&section.path),
+                    indent,
+                ));
+            }
+        }
         return lines;
     }
 
-    lines.extend(fallback_source_context_lines(node, syntax_path, indent));
+    lines.extend(fallback_source_context_lines(
+        &node.body,
+        &node.context,
+        syntax_path,
+        indent,
+    ));
     lines
 }
 
-fn fallback_source_context_lines(
+struct SourceSection {
+    path: String,
+    body: Vec<String>,
+    context: Vec<String>,
+}
+
+fn source_sections(
+    review: &crate::git::AssistedReview,
     node: &crate::git::ReviewNode,
+) -> Vec<SourceSection> {
+    let mut sections = Vec::new();
+    let mut seen_paths = BTreeSet::new();
+    for candidate in std::iter::once(node).chain(
+        review
+            .nodes
+            .iter()
+            .filter(|candidate| review_node_in_subtree(review, candidate, &node.id)),
+    ) {
+        let Some(path) = review_node_path(&candidate.title) else {
+            continue;
+        };
+        if candidate.body.is_empty() && candidate.context.is_empty() {
+            continue;
+        }
+        if !seen_paths.insert(path.to_string()) {
+            continue;
+        }
+        sections.push(SourceSection {
+            path: path.to_string(),
+            body: candidate.body.clone(),
+            context: candidate.context.clone(),
+        });
+    }
+    sections
+}
+
+fn review_node_in_subtree(
+    review: &crate::git::AssistedReview,
+    node: &crate::git::ReviewNode,
+    root_id: &str,
+) -> bool {
+    let mut parent = node.parent.as_deref();
+    while let Some(parent_id) = parent {
+        if parent_id == root_id {
+            return true;
+        }
+        parent = review
+            .nodes
+            .iter()
+            .find(|candidate| candidate.id == parent_id)
+            .and_then(|candidate| candidate.parent.as_deref());
+    }
+    false
+}
+
+fn fallback_source_context_lines(
+    body: &[String],
+    context: &[String],
     syntax_path: Option<&str>,
     indent: &str,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    if !node.body.is_empty() {
+    if !body.is_empty() {
         lines.push(section_header(indent, "diff"));
-        for body in &node.body {
+        for body in body {
             let mut spans = context_prefix(indent);
             let body_line = syntax_path
                 .map(|path| ui::highlight_diff_line_for_path(body, path))
@@ -369,9 +462,9 @@ fn fallback_source_context_lines(
             lines.push(Line::from(spans));
         }
     }
-    if !node.context.is_empty() {
+    if !context.is_empty() {
         lines.push(section_header(indent, "source"));
-        for context in &node.context {
+        for context in context {
             lines.push(source_context_line(context, syntax_path, indent));
         }
     }
@@ -382,10 +475,16 @@ fn full_source_with_inline_diff(
     path: &str,
     body: &[String],
     indent: &str,
+    show_path: bool,
 ) -> Option<Vec<Line<'static>>> {
     let text = std::fs::read_to_string(path).ok()?;
     let overlay = inline_diff_overlay(body);
-    let mut lines = vec![section_header(indent, "source")];
+    let label = if show_path {
+        format!("source {path}")
+    } else {
+        "source".to_string()
+    };
+    let mut lines = vec![section_header(indent, &label)];
 
     for (idx, source) in text.lines().enumerate() {
         let line_no = idx + 1;
@@ -682,10 +781,21 @@ fn handle_review_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 ensure_review_selection_visible(state);
             }
         }
+        KeyCode::Char('d') => {
+            if let Some(review) = &state.review
+                && let Some(node) = review.nodes.get(state.review_idx)
+            {
+                state.review_collapsed.remove(&node.id);
+                if let Some((child_idx, _)) = first_drill_child(review, &node.id) {
+                    state.review_idx = child_idx;
+                }
+                ensure_review_selection_visible(state);
+            }
+        }
         KeyCode::Char('s') => {
             if let Some(review) = &state.review
                 && let Some(node) = review.nodes.get(state.review_idx)
-                && !node.context.is_empty()
+                && review_source_available(node)
             {
                 if state.review_context_open.contains(&node.id) {
                     state.review_context_open.remove(&node.id);
@@ -718,6 +828,27 @@ fn handle_review_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn first_drill_child<'a>(
+    review: &'a crate::git::AssistedReview,
+    node_id: &str,
+) -> Option<(usize, &'a crate::git::ReviewNode)> {
+    review
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| candidate.parent.as_deref() == Some(node_id))
+        .find(|(_, candidate)| {
+            is_review_file_node(&candidate.id) || is_review_entry_node(&candidate.id)
+        })
+        .or_else(|| {
+            review
+                .nodes
+                .iter()
+                .enumerate()
+                .find(|(_, candidate)| candidate.parent.as_deref() == Some(node_id))
+        })
 }
 
 fn review_assist_text<'a>(state: &'a AppState, node_id: &str) -> Option<&'a str> {
@@ -785,12 +916,14 @@ fn review_node_line_count(state: &AppState, idx: usize) -> usize {
         return count;
     }
 
-    let has_body = !node.body.is_empty();
+    let has_body = renders_review_body(&node.id) && !node.body.is_empty();
     let context_open = state.review_context_open.contains(&node.id);
     let assist = review_assist_text(state, &node.id);
-    count += node.body.len();
+    if renders_review_body(&node.id) {
+        count += node.body.len();
+    }
     if context_open {
-        count += review_source_context_line_count(node);
+        count += review_source_context_line_count(state, node);
     }
     if let Some(text) = assist {
         count += 1 + text.lines().count();
@@ -801,20 +934,41 @@ fn review_node_line_count(state: &AppState, idx: usize) -> usize {
     count
 }
 
-fn review_source_context_line_count(node: &crate::git::ReviewNode) -> usize {
-    if let Some(path) = review_node_path(&node.title)
-        && let Ok(text) = std::fs::read_to_string(path)
-    {
-        let removed_count = inline_diff_overlay(&node.body)
-            .removed_before
-            .values()
-            .map(Vec::len)
-            .sum::<usize>();
-        return 2 + text.lines().count() + removed_count;
+fn review_source_context_line_count(state: &AppState, node: &crate::git::ReviewNode) -> usize {
+    if let Some(review) = &state.review {
+        let sections = source_sections(review, node);
+        if !sections.is_empty() {
+            return 1 + sections
+                .iter()
+                .map(|section| {
+                    if let Ok(text) = std::fs::read_to_string(&section.path) {
+                        let removed_count = inline_diff_overlay(&section.body)
+                            .removed_before
+                            .values()
+                            .map(Vec::len)
+                            .sum::<usize>();
+                        1 + text.lines().count() + removed_count
+                    } else {
+                        usize::from(!section.body.is_empty()) * (1 + section.body.len())
+                            + usize::from(!section.context.is_empty()) * (1 + section.context.len())
+                    }
+                })
+                .sum::<usize>();
+        }
     }
 
     1 + usize::from(!node.body.is_empty()) * (1 + node.body.len())
         + usize::from(!node.context.is_empty()) * (1 + node.context.len())
+}
+
+fn review_source_available(node: &crate::git::ReviewNode) -> bool {
+    if !node.context.is_empty() {
+        return true;
+    }
+    let Some(path) = review_node_path(&node.title) else {
+        return false;
+    };
+    !node.body.is_empty() && std::fs::read_to_string(path).is_ok()
 }
 
 fn ensure_review_selection_visible(state: &mut AppState) {
