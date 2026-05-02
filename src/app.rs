@@ -118,6 +118,24 @@ fn mouse_scroll_snapshot(state: &AppState, pane: Pane) -> (usize, usize) {
     }
 }
 
+fn drain_pending_terminal_events() {
+    for _ in 0..1024 {
+        match event::poll(Duration::from_millis(0)) {
+            Ok(true) => {
+                let _ = event::read();
+            }
+            _ => break,
+        }
+    }
+}
+
+fn restore_terminal<W: Write>(output: &mut W) {
+    let _ = execute!(output, DisableMouseCapture);
+    drain_pending_terminal_events();
+    let _ = execute!(output, LeaveAlternateScreen);
+    let _ = disable_raw_mode();
+}
+
 // ─── HeadlessApp ─────────────────────────────────────────────────────────────
 
 impl<B: Backend> HeadlessApp<B>
@@ -315,8 +333,8 @@ impl App {
 
         let prev_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            let _ = disable_raw_mode();
-            let _ = execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+            let mut stdout = std::io::stdout();
+            restore_terminal(&mut stdout);
             prev_hook(info);
         }));
 
@@ -1631,11 +1649,6 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(
-            self.terminal.backend_mut(),
-            DisableMouseCapture,
-            LeaveAlternateScreen
-        );
+        restore_terminal(self.terminal.backend_mut());
     }
 }
