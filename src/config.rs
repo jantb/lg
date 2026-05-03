@@ -7,7 +7,7 @@ pub const OLLAMA_TOP_P: f32 = 0.9;
 pub const OLLAMA_TOP_K: u32 = 40;
 pub const OLLAMA_MIN_P: f32 = 0.0;
 pub const OLLAMA_NUM_CTX: u32 = 16_384;
-pub const OLLAMA_NUM_PREDICT: i32 = 96;
+pub const OLLAMA_NUM_PREDICT: i32 = 160;
 pub const OLLAMA_REPEAT_PENALTY: f32 = 1.05;
 pub const OLLAMA_PRESENCE_PENALTY: f32 = 0.0;
 pub const OLLAMA_MODEL: &str = "qwen3.6:35b-a3b-coding-nvfp4";
@@ -21,7 +21,10 @@ Rules:
 - Describe the behavior change, not the files touched. Be specific.
 - Prefer concrete user-visible outcomes over vague words like update, improve, or change.
 - Use the change summary first; use the diff excerpt only for extra detail.
-- Prefer one line when it fully captures the change. Use a short body of up to four lines when needed.
+- For non-trivial changes, include detail lines directly after the subject.
+- Detail lines should explain the important behavior, condition, control-flow path, or test coverage.
+- Prefer one line only when the staged diff is tiny and obvious.
+- Do not include blank lines in the output.
 - Output ONLY the commit message. No prose, no quotes, no markdown, no code fences.
 
 Examples:
@@ -30,6 +33,9 @@ Examples:
 - refactor(state): interleave dirs and files in tree rows
 - perf(ollama): reuse shared http client across requests
 - feat(tui): show staged and unstaged counts in status panel
+- feat(flow): retry release validation after conflict resolution
+  Add a follow-up validation path once resolved files are staged.
+  Cover the new continuation branch with a release-flow test.
 
 Staged changes:
 

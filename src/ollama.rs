@@ -443,11 +443,10 @@ fn finalize(raw: &str) -> String {
     };
 
     let subject = trim_outer_quotes(subject);
-    let (subject, overflow) = split_subject(subject);
+    let (subject, _) = split_subject(subject);
     let mut out = subject;
 
     let mut body = Vec::new();
-    push_wrapped_body_lines(&mut body, &overflow);
 
     for line in lines.map(trim_outer_quotes) {
         push_wrapped_body_lines(&mut body, line);
@@ -457,7 +456,7 @@ fn finalize(raw: &str) -> String {
     }
 
     if !body.is_empty() {
-        out.push_str("\n\n");
+        out.push('\n');
         out.push_str(&body.join("\n"));
     }
 
@@ -678,24 +677,16 @@ mod tests {
     fn finalize_strips_quotes_and_keeps_overflow() {
         assert_eq!(finalize("  \"feat: add\"  "), "feat: add");
         let long = "x".repeat(200);
-        assert_eq!(
-            finalize(&long),
-            format!(
-                "{}\n\n{}\n{}",
-                "x".repeat(COMMIT_MSG_SUBJECT_MAX_CHARS),
-                "x".repeat(COMMIT_MSG_BODY_LINE_MAX_CHARS),
-                "x".repeat(8)
-            )
-        );
+        assert_eq!(finalize(&long), "x".repeat(COMMIT_MSG_SUBJECT_MAX_CHARS));
     }
 
     #[test]
-    fn finalize_moves_long_subject_overflow_to_body() {
+    fn finalize_trims_long_subject_without_creating_body() {
         assert_eq!(
             finalize(
                 "feat(tui): show a longer generated message that needs extra detail instead of being cut off"
             ),
-            "feat(tui): show a longer generated message that needs extra detail\n\ninstead of being cut off"
+            "feat(tui): show a longer generated message that needs extra detail"
         );
     }
 
@@ -705,7 +696,7 @@ mod tests {
             finalize(
                 "feat(tui): show active generation state\n\nAdds status counts.\nKeeps focused panels visible.\nKeeps the modal useful for longer messages.\nAvoids cutting off generated context.\nExtra line ignored."
             ),
-            "feat(tui): show active generation state\n\nAdds status counts.\nKeeps focused panels visible.\nKeeps the modal useful for longer messages.\nAvoids cutting off generated context."
+            "feat(tui): show active generation state\nAdds status counts.\nKeeps focused panels visible.\nKeeps the modal useful for longer messages.\nAvoids cutting off generated context."
         );
     }
 
