@@ -17,6 +17,13 @@ use crate::{
 
 use super::files::code_span;
 
+#[derive(Debug, Clone)]
+struct VisualLine {
+    text: String,
+    start: usize,
+    len: usize,
+}
+
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let w = (area.width * 8 / 10).clamp(60, 120).min(area.width);
     let h = (area.height * 3 / 4).clamp(14, 34).min(area.height);
@@ -49,13 +56,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         ),
     };
 
-    let input_area = left_chunks[0];
-    let body_area = Rect {
-        x: input_area.x.saturating_add(1),
-        y: input_area.y.saturating_add(1),
-        width: input_area.width.saturating_sub(2),
-        height: input_area.height.saturating_sub(2),
-    };
+    let body_area = editor_body_area(area);
     let (visible_text, cursor) =
         visible_message_view(&msg_view, msg_cursor, body_area.width, body_area.height);
 
@@ -133,6 +134,27 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     frame.render_widget(sidebar, chunks[1]);
 }
 
+fn editor_body_area(area: Rect) -> Rect {
+    let w = (area.width * 8 / 10).clamp(60, 120).min(area.width);
+    let h = (area.height * 3 / 4).clamp(14, 34).min(area.height);
+    let modal = ui::centered(area, w, h);
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+        .split(modal);
+    let left_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .split(chunks[0]);
+    let input_area = left_chunks[0];
+    Rect {
+        x: input_area.x.saturating_add(1),
+        y: input_area.y.saturating_add(1),
+        width: input_area.width.saturating_sub(2),
+        height: input_area.height.saturating_sub(2),
+    }
+}
+
 fn visible_message_view(
     message: &str,
     cursor: usize,
@@ -146,43 +168,19 @@ fn visible_message_view(
     let width = width as usize;
     let height = height as usize;
     let cursor = cursor.min(message.chars().count());
-    let mut lines = Vec::new();
     let mut cursor_row = 0;
     let mut cursor_col = 0;
-    let mut consumed = 0usize;
-    let logical_lines: Vec<&str> = message.split('\n').collect();
+    let lines = visual_lines(message, width);
 
-    for (line_idx, logical_line) in logical_lines.iter().enumerate() {
-        let chars: Vec<char> = logical_line.chars().collect();
-        let line_len = chars.len();
-        let line_start_row = lines.len();
-        let cursor_in_line = cursor >= consumed && cursor <= consumed + line_len;
-
-        if chars.is_empty() {
-            lines.push(String::new());
-        } else {
-            for chunk in chars.chunks(width) {
-                lines.push(chunk.iter().collect::<String>());
+    for (idx, line) in lines.iter().enumerate() {
+        let end = line.start + line.len;
+        if cursor >= line.start && cursor <= end {
+            cursor_row = idx;
+            cursor_col = cursor.saturating_sub(line.start);
+            if cursor < end || line.len == 0 || idx + 1 == lines.len() {
+                break;
             }
         }
-
-        if cursor_in_line {
-            let offset = cursor - consumed;
-            cursor_row = line_start_row + offset / width;
-            cursor_col = offset % width;
-            if cursor_row >= lines.len() {
-                lines.push(String::new());
-            }
-        }
-
-        consumed += line_len;
-        if line_idx + 1 < logical_lines.len() {
-            consumed += 1;
-        }
-    }
-
-    if lines.is_empty() {
-        lines.push(String::new());
     }
 
     let scroll = cursor_row.saturating_sub(height.saturating_sub(1));
@@ -190,13 +188,53 @@ fn visible_message_view(
         .iter()
         .skip(scroll)
         .take(height)
-        .cloned()
+        .map(|line| line.text.clone())
         .collect::<Vec<_>>()
         .join("\n");
     let cursor_y = (cursor_row - scroll).min(height - 1) as u16;
     let cursor_x = cursor_col.min(width.saturating_sub(1)) as u16;
 
     (visible, (cursor_x, cursor_y))
+}
+
+fn visual_lines(message: &str, width: usize) -> Vec<VisualLine> {
+    let width = width.max(1);
+    let logical_lines: Vec<&str> = message.split('\n').collect();
+    let mut lines = Vec::new();
+    let mut consumed = 0usize;
+
+    for (line_idx, logical_line) in logical_lines.iter().enumerate() {
+        let chars: Vec<char> = logical_line.chars().collect();
+        if chars.is_empty() {
+            lines.push(VisualLine {
+                text: String::new(),
+                start: consumed,
+                len: 0,
+            });
+        } else {
+            for (chunk_idx, chunk) in chars.chunks(width).enumerate() {
+                lines.push(VisualLine {
+                    text: chunk.iter().collect(),
+                    start: consumed + chunk_idx * width,
+                    len: chunk.len(),
+                });
+            }
+        }
+        consumed += chars.len();
+        if line_idx + 1 < logical_lines.len() {
+            consumed += 1;
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(VisualLine {
+            text: String::new(),
+            start: 0,
+            len: 0,
+        });
+    }
+
+    lines
 }
 
 fn char_len(s: &str) -> usize {
@@ -241,6 +279,65 @@ fn remove_at_cursor(state: &mut AppState) {
     state.commit_message.replace_range(start..end, "");
 }
 
+fn logical_lines(message: &str) -> Vec<(usize, usize)> {
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    for line in message.split('\n') {
+        let len = line.chars().count();
+        lines.push((start, start + len));
+        start += len + 1;
+    }
+    if lines.is_empty() {
+        lines.push((0, 0));
+    }
+    lines
+}
+
+fn move_cursor_vertical(state: &mut AppState, up: bool) {
+    let len = char_len(&state.commit_message);
+    state.commit_cursor = state.commit_cursor.min(len);
+    let lines = logical_lines(&state.commit_message);
+    let current = lines
+        .iter()
+        .enumerate()
+        .find_map(|(idx, (start, end))| {
+            (state.commit_cursor >= *start && state.commit_cursor <= *end).then_some(idx)
+        })
+        .unwrap_or(lines.len().saturating_sub(1));
+
+    let target = if up {
+        current.saturating_sub(1)
+    } else {
+        current.saturating_add(1).min(lines.len().saturating_sub(1))
+    };
+    let col = state.commit_cursor.saturating_sub(lines[current].0);
+    let (target_start, target_end) = lines[target];
+    state.commit_cursor = target_start + col.min(target_end.saturating_sub(target_start));
+}
+
+pub fn place_cursor_at(state: &mut AppState, area: Rect, column: u16, row: u16) -> bool {
+    if state.generation.is_some() {
+        return false;
+    }
+    let body = editor_body_area(area);
+    if column < body.x
+        || column >= body.x.saturating_add(body.width)
+        || row < body.y
+        || row >= body.y.saturating_add(body.height)
+    {
+        return false;
+    }
+
+    let width = body.width.max(1) as usize;
+    let lines = visual_lines(&state.commit_message, width);
+    let visual_row = row.saturating_sub(body.y) as usize;
+    let visual_col = column.saturating_sub(body.x) as usize;
+    let line = &lines[visual_row.min(lines.len().saturating_sub(1))];
+    state.commit_cursor =
+        (line.start + visual_col.min(line.len)).min(char_len(&state.commit_message));
+    true
+}
+
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let generating = state.generation.is_some();
@@ -273,6 +370,16 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.pending_action = Some(PendingAction::GenerateMessage);
             }
         }
+        KeyCode::Char('a') if ctrl => {
+            if !generating {
+                state.commit_cursor = 0;
+            }
+        }
+        KeyCode::Char('e') if ctrl => {
+            if !generating {
+                state.commit_cursor = char_len(&state.commit_message);
+            }
+        }
         KeyCode::Enter => {
             if !generating {
                 insert_at_cursor(state, '\n');
@@ -299,6 +406,16 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                     .commit_cursor
                     .saturating_add(1)
                     .min(char_len(&state.commit_message));
+            }
+        }
+        KeyCode::Up => {
+            if !generating {
+                move_cursor_vertical(state, true);
+            }
+        }
+        KeyCode::Down => {
+            if !generating {
+                move_cursor_vertical(state, false);
             }
         }
         KeyCode::Home => {

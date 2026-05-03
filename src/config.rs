@@ -21,10 +21,10 @@ Rules:
 - Describe the behavior change, not the files touched. Be specific.
 - Prefer concrete user-visible outcomes over vague words like update, improve, or change.
 - Use the change summary first; use the diff excerpt only for extra detail.
-- For non-trivial changes, include detail lines directly after the subject.
+- For non-trivial changes, include a short body after a blank line.
 - Detail lines should explain the important behavior, condition, control-flow path, or test coverage.
 - Prefer one line only when the staged diff is tiny and obvious.
-- Do not include blank lines in the output.
+- Do not use emoji.
 - Output ONLY the commit message. No prose, no quotes, no markdown, no code fences.
 
 Examples:
@@ -34,6 +34,7 @@ Examples:
 - perf(ollama): reuse shared http client across requests
 - feat(tui): show staged and unstaged counts in status panel
 - feat(flow): retry release validation after conflict resolution
+
   Add a follow-up validation path once resolved files are staged.
   Cover the new continuation branch with a release-flow test.
 

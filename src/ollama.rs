@@ -16,8 +16,6 @@ const MAX_DIFF_EXCERPT_LINES: usize = 180;
 const MAX_DIFF_EXCERPT_BYTES: usize = 16_000;
 const MAX_SUMMARY_FILES: usize = 24;
 const MAX_SIGNAL_LINES: usize = 48;
-const COMMIT_MSG_BODY_MAX_LINES: usize = 4;
-const COMMIT_MSG_BODY_LINE_MAX_CHARS: usize = 120;
 const REVIEW_ASSIST_MAX_CHARS: usize = 2_400;
 
 #[derive(Serialize)]
@@ -430,37 +428,35 @@ fn stream_prompt(prompt: String, opts: Options, finalizer: fn(&str) -> String, t
 
 fn finalize(raw: &str) -> String {
     let cleaned = strip_think_tags(raw);
-    let mut lines = cleaned
+    let mut lines: Vec<String> = cleaned
         .trim()
         .trim_matches('"')
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .filter(|line| !line.starts_with("```"));
+        .filter(|line| !line.starts_with("```"))
+        .map(trim_outer_quotes)
+        .map(str::to_string)
+        .collect();
 
-    let Some(subject) = lines.next() else {
+    while lines.first().is_some_and(|line| line.is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+
+    let Some(subject) = lines.first_mut() else {
         return String::new();
     };
 
-    let subject = trim_outer_quotes(subject);
     let (subject, _) = split_subject(subject);
-    let mut out = subject;
+    *lines.first_mut().expect("checked above") = subject;
 
-    let mut body = Vec::new();
-
-    for line in lines.map(trim_outer_quotes) {
-        push_wrapped_body_lines(&mut body, line);
-        if body.len() >= COMMIT_MSG_BODY_MAX_LINES {
-            break;
-        }
-    }
-
-    if !body.is_empty() {
-        out.push('\n');
-        out.push_str(&body.join("\n"));
-    }
-
-    out.chars().take(COMMIT_MSG_GEN_MAX_CHARS).collect()
+    lines
+        .join("\n")
+        .chars()
+        .take(COMMIT_MSG_GEN_MAX_CHARS)
+        .collect()
 }
 
 fn finalize_review_assist(raw: &str) -> String {
@@ -506,34 +502,6 @@ fn split_subject(s: &str) -> (String, String) {
     let subject = s[..split_at].trim().to_string();
     let overflow = s[split_at..].trim().to_string();
     (subject, overflow)
-}
-
-fn push_wrapped_body_lines(body: &mut Vec<String>, line: &str) {
-    let mut rest = line.trim();
-    while !rest.is_empty() && body.len() < COMMIT_MSG_BODY_MAX_LINES {
-        if rest.chars().count() <= COMMIT_MSG_BODY_LINE_MAX_CHARS {
-            body.push(rest.to_string());
-            break;
-        }
-
-        let split_at = rest
-            .char_indices()
-            .take_while(|(i, _)| rest[..*i].chars().count() <= COMMIT_MSG_BODY_LINE_MAX_CHARS)
-            .filter_map(|(i, c)| c.is_whitespace().then_some(i))
-            .last()
-            .unwrap_or_else(|| {
-                rest.char_indices()
-                    .nth(COMMIT_MSG_BODY_LINE_MAX_CHARS)
-                    .map(|(i, _)| i)
-                    .unwrap_or(rest.len())
-            });
-
-        let chunk = rest[..split_at].trim();
-        if !chunk.is_empty() {
-            body.push(chunk.to_string());
-        }
-        rest = rest[split_at..].trim();
-    }
 }
 
 fn trim_outer_quotes(s: &str) -> &str {
@@ -691,12 +659,12 @@ mod tests {
     }
 
     #[test]
-    fn finalize_preserves_short_body_lines() {
+    fn finalize_preserves_body_layout() {
         assert_eq!(
             finalize(
                 "feat(tui): show active generation state\n\nAdds status counts.\nKeeps focused panels visible.\nKeeps the modal useful for longer messages.\nAvoids cutting off generated context.\nExtra line ignored."
             ),
-            "feat(tui): show active generation state\nAdds status counts.\nKeeps focused panels visible.\nKeeps the modal useful for longer messages.\nAvoids cutting off generated context."
+            "feat(tui): show active generation state\n\nAdds status counts.\nKeeps focused panels visible.\nKeeps the modal useful for longer messages.\nAvoids cutting off generated context.\nExtra line ignored."
         );
     }
 

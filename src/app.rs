@@ -1606,6 +1606,13 @@ impl App {
             width: size.width,
             height: size.height,
         };
+        if matches!(self.state.modal, Modal::Commit)
+            && matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+            && panel::commit::place_cursor_at(&mut self.state, area, m.column, m.row)
+        {
+            return Ok(());
+        }
+
         let rects = ui::split_layout_with_sizes(
             area,
             self.state.flow_available(),

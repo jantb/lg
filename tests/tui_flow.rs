@@ -1477,6 +1477,46 @@ fn commit_input_edits_at_cursor_with_arrow_keys() {
 }
 
 #[test]
+fn commit_input_moves_cursor_vertically_and_with_control_shortcuts() {
+    let mut state = make_state_with_files();
+    state.modal = Modal::Commit;
+    state.commit_message = "one\ntwo\nthree".into();
+    state.commit_cursor = 5;
+
+    panel::commit::handle_key(&mut state, key(KeyCode::Up)).unwrap();
+    assert_eq!(state.commit_cursor, 1);
+
+    panel::commit::handle_key(&mut state, key(KeyCode::Down)).unwrap();
+    assert_eq!(state.commit_cursor, 5);
+
+    panel::commit::handle_key(
+        &mut state,
+        KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+    assert_eq!(state.commit_cursor, 0);
+
+    panel::commit::handle_key(
+        &mut state,
+        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+    assert_eq!(state.commit_cursor, state.commit_message.chars().count());
+}
+
+#[test]
+fn commit_input_mouse_click_places_cursor() {
+    let mut state = make_state_with_files();
+    state.modal = Modal::Commit;
+    state.commit_message = "one\ntwo".into();
+
+    let area = ratatui::layout::Rect::new(0, 0, 100, 30);
+    assert!(panel::commit::place_cursor_at(&mut state, area, 12, 6));
+
+    assert_eq!(state.commit_cursor, 5);
+}
+
+#[test]
 fn commit_input_accepts_long_multiline_message() {
     let mut state = make_state_with_files();
     state.modal = Modal::Commit;
