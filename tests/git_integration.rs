@@ -1060,6 +1060,14 @@ fn release_flow_returns_to_original_branch_after_target_push() {
         String::from_utf8_lossy(&upstream.stdout).trim(),
         "origin/release/next"
     );
+    let branches = git(dir.path(), &["branch", "--format=%(refname:short)"]);
+    let branch_text = String::from_utf8_lossy(&branches.stdout);
+    assert!(
+        !branch_text
+            .lines()
+            .any(|branch| branch.starts_with("lg/backup/")),
+        "successful release should clean up safety branches: {branch_text}"
+    );
 }
 
 #[test]
