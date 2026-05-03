@@ -136,6 +136,25 @@ fn restore_terminal<W: Write>(output: &mut W) {
     let _ = output.flush();
 }
 
+fn handle_modal_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) -> bool {
+    match state.modal {
+        Modal::None => false,
+        Modal::Commit => {
+            state.column_drag_active = false;
+            state.row_drag_active = None;
+            if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
+                let _ = panel::commit::place_cursor_at(state, area, m.column, m.row);
+            }
+            true
+        }
+        _ => {
+            state.column_drag_active = false;
+            state.row_drag_active = None;
+            true
+        }
+    }
+}
+
 // ─── HeadlessApp ─────────────────────────────────────────────────────────────
 
 impl<B: Backend> HeadlessApp<B>
@@ -1610,10 +1629,7 @@ impl App {
             width: size.width,
             height: size.height,
         };
-        if matches!(self.state.modal, Modal::Commit)
-            && matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
-            && panel::commit::place_cursor_at(&mut self.state, area, m.column, m.row)
-        {
+        if handle_modal_mouse(&mut self.state, area, &m) {
             return Ok(());
         }
 
@@ -1800,5 +1816,55 @@ impl Drop for App {
     fn drop(&mut self) {
         restore_terminal(self.terminal.backend_mut());
         self.join_background_jobs();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn left_click(column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn conflict_modal_mouse_is_consumed_before_background_focus() {
+        let area = Rect::new(0, 0, 100, 30);
+        let mut state = AppState::new();
+        state.focus = Pane::Files;
+        state.modal = Modal::Conflict;
+        state.column_drag_active = true;
+        state.row_drag_active = Some((2, 3));
+
+        assert!(handle_modal_mouse(&mut state, area, &left_click(80, 10)));
+
+        assert_eq!(state.focus, Pane::Files);
+        assert!(!state.column_drag_active);
+        assert_eq!(state.row_drag_active, None);
+    }
+
+    #[test]
+    fn commit_modal_mouse_still_places_cursor_and_consumes_click() {
+        let area = Rect::new(0, 0, 100, 30);
+        let mut state = AppState::new();
+        state.modal = Modal::Commit;
+        state.commit_message = "one\ntwo".into();
+
+        assert!(handle_modal_mouse(&mut state, area, &left_click(12, 6)));
+
+        assert_eq!(state.commit_cursor, 5);
+    }
+
+    #[test]
+    fn mouse_is_not_consumed_without_modal() {
+        let area = Rect::new(0, 0, 100, 30);
+        let mut state = AppState::new();
+
+        assert!(!handle_modal_mouse(&mut state, area, &left_click(80, 10)));
     }
 }
