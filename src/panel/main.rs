@@ -101,6 +101,12 @@ pub fn scroll(state: &mut AppState, scroll_down: bool, amount: u16) {
     };
 }
 
+pub fn select_mouse_row(state: &mut AppState, area: Rect, row: u16) {
+    if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
+        review::select_mouse_row(state, area, row);
+    }
+}
+
 pub fn max_scroll_offset(state: &AppState) -> u16 {
     if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
         return scroll_bound(review::render_line_count(state), state.diff_viewport_height);

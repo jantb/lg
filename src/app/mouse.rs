@@ -157,7 +157,10 @@ pub(super) fn select_mouse_row(
                 state.commits_idx = idx;
             }
         }
-        Pane::Status | Pane::Main => {}
+        Pane::Main => {
+            crate::panel::main::select_mouse_row(state, rects.main, row);
+        }
+        Pane::Status => {}
     }
 }
 

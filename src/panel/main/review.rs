@@ -467,6 +467,25 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn select_mouse_row(state: &mut AppState, area: Rect, row: u16) {
+    if row <= area.y || row >= area.y.saturating_add(area.height).saturating_sub(1) {
+        return;
+    }
+    let visual_line = row
+        .saturating_sub(area.y)
+        .saturating_sub(1)
+        .saturating_add(state.diff_offset) as usize;
+    let mut line = 0usize;
+    for idx in visible_review_node_indices(state) {
+        let count = review_node_line_count(state, idx);
+        if visual_line < line.saturating_add(count) {
+            state.review_idx = idx;
+            return;
+        }
+        line = line.saturating_add(count);
+    }
+}
+
 pub(super) fn selected_open_path(state: &AppState) -> Option<String> {
     let review = state.review.as_ref()?;
     let node = review.nodes.get(state.review_idx)?;

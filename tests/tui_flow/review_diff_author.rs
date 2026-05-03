@@ -639,6 +639,51 @@ fn review_navigation_keeps_selection_visible_without_early_scroll() {
 }
 
 #[test]
+fn review_panel_mouse_click_selects_visible_item() {
+    let mut state = AppState::new();
+    state.diff_source = lg::state::DiffSource::Review;
+    state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Full diff against main".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:file:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: "src/lib.rs - 1 entry point (+1 -1)".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "summary".into(),
+                parent: None,
+                depth: 0,
+                title: "Summary: feature vs origin/main (1 commit, 1 file)".into(),
+                body: vec!["The branch changes 1 file across 1 commit.".into()],
+                context: Vec::new(),
+            },
+        ],
+    });
+
+    panel::main::select_mouse_row(&mut state, Rect::new(40, 1, 80, 12), 3);
+    assert_eq!(state.review_idx, 1);
+
+    state.diff_offset = 1;
+    panel::main::select_mouse_row(&mut state, Rect::new(40, 1, 80, 12), 2);
+    assert_eq!(state.review_idx, 1);
+
+    panel::main::select_mouse_row(&mut state, Rect::new(40, 1, 80, 12), 4);
+    assert_eq!(state.review_idx, 2);
+}
+
+#[test]
 fn review_panel_styles_tree_titles_and_change_counts() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 12)).unwrap();
     app.state.focus = Pane::Main;

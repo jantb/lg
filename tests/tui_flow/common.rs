@@ -13,6 +13,7 @@ pub use ratatui::{
     Terminal,
     backend::TestBackend,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
+    layout::Rect,
     style::{Color, Modifier},
 };
 pub use std::{collections::HashSet, sync::mpsc};
