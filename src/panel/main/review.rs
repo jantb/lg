@@ -403,14 +403,26 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Char('s') => {
             if let Some(review) = &state.review
                 && let Some(node) = review.nodes.get(state.review_idx)
-                && review_source_available(node)
+                && review_source_available(review, node)
             {
                 if state.review_context_open.contains(&node.id) {
                     state.review_context_open.remove(&node.id);
+                    if state.review_context_restore_collapsed.remove(&node.id) {
+                        state.review_collapsed.insert(node.id.clone());
+                        clamp_review_selection(state);
+                    }
                 } else {
+                    if state.review_collapsed.contains(&node.id) {
+                        state
+                            .review_context_restore_collapsed
+                            .insert(node.id.clone());
+                    } else {
+                        state.review_context_restore_collapsed.remove(&node.id);
+                    }
                     state.review_collapsed.remove(&node.id);
                     state.review_context_open.insert(node.id.clone());
                 }
+                ensure_review_selection_visible(state);
             }
         }
         KeyCode::Char('l') => {
@@ -599,7 +611,13 @@ fn review_source_context_line_count(state: &AppState, node: &crate::git::ReviewN
         + usize::from(!node.context.is_empty()) * (1 + node.context.len())
 }
 
-fn review_source_available(node: &crate::git::ReviewNode) -> bool {
+fn review_source_available(
+    review: &crate::git::AssistedReview,
+    node: &crate::git::ReviewNode,
+) -> bool {
+    if !source_sections(review, node).is_empty() {
+        return true;
+    }
     if !node.context.is_empty() {
         return true;
     }

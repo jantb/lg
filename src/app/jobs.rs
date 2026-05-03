@@ -481,6 +481,7 @@ impl App {
                     self.state.review = Some(*review);
                     self.state.review_collapsed.clear();
                     self.state.review_context_open.clear();
+                    self.state.review_context_restore_collapsed.clear();
                     if let Some(review) = &self.state.review {
                         for node in &review.nodes {
                             let expandable = !node.body.is_empty()

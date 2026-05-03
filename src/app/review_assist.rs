@@ -30,6 +30,7 @@ pub(super) fn spawn_assisted_review(state: &mut AppState) {
     state.review_idx = 0;
     state.review_collapsed.clear();
     state.review_context_open.clear();
+    state.review_context_restore_collapsed.clear();
     state.review_assists.clear();
     if let Some(mut job) = state.review_assist_job.take() {
         state.defer_thread_join(job.handle.take());

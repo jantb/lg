@@ -406,6 +406,159 @@ fn review_panel_sources_entry_subtree_across_files_and_drills_to_child_file() {
 }
 
 #[test]
+fn review_panel_sources_full_diff_subtree_across_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib_path = dir.path().join("lib.rs");
+    let app_path = dir.path().join("App.kt");
+    std::fs::write(
+        &lib_path,
+        "pub fn greet() -> &'static str {\n    \"hello review\"\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &app_path,
+        "class App {\n    fun greeting() = \"hello review\"\n}\n",
+    )
+    .unwrap();
+    let lib_path = lib_path.display().to_string();
+    let app_path = app_path.display().to_string();
+
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(160, 40)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Full diff against main".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:file:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: format!("{lib_path} - 1 entry point (+1 -1)"),
+                body: vec![
+                    "@@ -1,3 +1,3 @@".into(),
+                    " pub fn greet() -> &'static str {".into(),
+                    "-    \"hello\"".into(),
+                    "+    \"hello review\"".into(),
+                    " }".into(),
+                ],
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:file:1".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: format!("{app_path} - 1 entry point (+1 -1)"),
+                body: vec![
+                    "@@ -1,3 +1,3 @@".into(),
+                    " class App {".into(),
+                    "-    fun greeting() = \"hello\"".into(),
+                    "+    fun greeting() = \"hello review\"".into(),
+                    " }".into(),
+                ],
+                context: Vec::new(),
+            },
+        ],
+    });
+    app.state.review_idx = 0;
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
+    app.render().unwrap();
+    let rendered = buffer_text(&app);
+
+    assert!(
+        app.state.review_context_open.contains("branch"),
+        "full diff root should open source context"
+    );
+    assert!(
+        rendered.contains(&format!("source {lib_path}")),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("source {app_path}")),
+        "{rendered}"
+    );
+    assert!(rendered.contains("+     \"hello review\""), "{rendered}");
+    assert!(
+        rendered.contains("+     fun greeting() = \"hello review\""),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn review_panel_source_toggle_restores_collapsed_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_path = dir.path().join("lib.rs");
+    std::fs::write(
+        &source_path,
+        "pub fn greet() -> &'static str {\n    \"hello review\"\n}\n",
+    )
+    .unwrap();
+    let source_path = source_path.display().to_string();
+
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(140, 32)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Full diff against main".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:file:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: format!("{source_path} - 1 entry point (+1 -1)"),
+                body: vec![
+                    "@@ -1,3 +1,3 @@".into(),
+                    " pub fn greet() -> &'static str {".into(),
+                    "-    \"hello\"".into(),
+                    "+    \"hello review\"".into(),
+                    " }".into(),
+                ],
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:entry:0".into(),
+                parent: Some("branch:file:0".into()),
+                depth: 2,
+                title: format!("{source_path} in fn greet - updates greet (+1 -1)"),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+        ],
+    });
+    app.state.review_idx = 1;
+    app.state.review_collapsed.insert("branch:file:0".into());
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
+
+    assert!(app.state.review_context_open.contains("branch:file:0"));
+    assert!(!app.state.review_collapsed.contains("branch:file:0"));
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
+
+    assert!(!app.state.review_context_open.contains("branch:file:0"));
+    assert!(
+        app.state.review_collapsed.contains("branch:file:0"),
+        "closing source should restore the file's prior collapsed state"
+    );
+}
+
+#[test]
 fn review_navigation_keeps_selection_visible_without_early_scroll() {
     let mut state = AppState::new();
     state.focus = Pane::Main;
@@ -763,6 +916,61 @@ fn review_panel_explains_selected_subtree_with_ollama() {
         rendered.contains("Explains the greeting change."),
         "{rendered}"
     );
+}
+
+#[test]
+fn review_panel_explains_full_diff_with_ollama() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Full diff against main".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:file:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: "src/lib.rs - 1 entry point (+1 -1)".into(),
+                body: vec![
+                    "@@ -1,3 +1,3 @@".into(),
+                    " pub fn greet() -> &'static str {".into(),
+                    "-    \"hello\"".into(),
+                    "+    \"hello review\"".into(),
+                    " }".into(),
+                ],
+                context: Vec::new(),
+            },
+        ],
+    });
+    app.state.review_idx = 0;
+    app.state.review_collapsed.insert("branch".into());
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('l'))).unwrap();
+
+    assert_eq!(
+        app.state.pending_action,
+        Some(PendingAction::ReviewAssist("branch".into()))
+    );
+    assert!(
+        !app.state.review_collapsed.contains("branch"),
+        "full diff subtree should open before explaining"
+    );
+
+    app.state
+        .review_assists
+        .insert("branch".into(), "Explains the whole diff.".into());
+    app.render().unwrap();
+    let rendered = buffer_text(&app);
+    assert!(rendered.contains("ollama"), "{rendered}");
+    assert!(rendered.contains("Explains the whole diff."), "{rendered}");
 }
 
 #[test]

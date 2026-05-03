@@ -154,6 +154,7 @@ pub struct AppState {
     pub review_idx: usize,
     pub review_collapsed: HashSet<String>,
     pub review_context_open: HashSet<String>,
+    pub review_context_restore_collapsed: HashSet<String>,
     pub review_assists: HashMap<String, String>,
 
     pub commit_message: String,
@@ -293,6 +294,7 @@ impl AppState {
             review_idx: 0,
             review_collapsed: HashSet::new(),
             review_context_open: HashSet::new(),
+            review_context_restore_collapsed: HashSet::new(),
             review_assists: HashMap::new(),
 
             commit_message: String::new(),
