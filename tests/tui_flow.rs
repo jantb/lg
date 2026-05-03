@@ -1452,10 +1452,28 @@ fn backspace_removes_last_char_of_commit_message() {
     let mut state = make_state_with_files();
     state.modal = Modal::Commit;
     state.commit_message = "hello".into();
+    state.commit_cursor = state.commit_message.chars().count();
 
     panel::commit::handle_key(&mut state, key(KeyCode::Backspace)).unwrap();
 
     assert_eq!(state.commit_message, "hell");
+    assert_eq!(state.commit_cursor, 4);
+}
+
+#[test]
+fn commit_input_edits_at_cursor_with_arrow_keys() {
+    let mut state = make_state_with_files();
+    state.modal = Modal::Commit;
+    state.commit_message = "helo".into();
+    state.commit_cursor = state.commit_message.chars().count();
+
+    panel::commit::handle_key(&mut state, key(KeyCode::Left)).unwrap();
+    panel::commit::handle_key(&mut state, key(KeyCode::Char('l'))).unwrap();
+    panel::commit::handle_key(&mut state, key(KeyCode::Right)).unwrap();
+    panel::commit::handle_key(&mut state, key(KeyCode::Char('!'))).unwrap();
+
+    assert_eq!(state.commit_message, "hello!");
+    assert_eq!(state.commit_cursor, 6);
 }
 
 #[test]
@@ -1463,6 +1481,7 @@ fn commit_input_accepts_long_multiline_message() {
     let mut state = make_state_with_files();
     state.modal = Modal::Commit;
     state.commit_message = "x".repeat(2_048);
+    state.commit_cursor = state.commit_message.chars().count();
 
     panel::commit::handle_key(&mut state, key(KeyCode::Enter)).unwrap();
     panel::commit::handle_key(&mut state, key(KeyCode::Char('y'))).unwrap();
@@ -1476,6 +1495,7 @@ fn commit_modal_uses_terminal_cursor_for_multiline_message() {
     app.state = make_state_with_files();
     app.state.modal = Modal::Commit;
     app.state.commit_message = "one\ntwo".into();
+    app.state.commit_cursor = app.state.commit_message.chars().count();
 
     app.render().unwrap();
 
@@ -1505,6 +1525,7 @@ fn commit_modal_scrolls_to_cursor_for_long_multiline_message() {
         .map(|i| format!("line-{i:02}"))
         .collect::<Vec<_>>()
         .join("\n");
+    app.state.commit_cursor = app.state.commit_message.chars().count();
 
     app.render().unwrap();
 

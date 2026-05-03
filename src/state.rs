@@ -359,6 +359,7 @@ pub struct AppState {
     pub review_assists: HashMap<String, String>,
 
     pub commit_message: String,
+    pub commit_cursor: usize,
     pub author_path_input: String,
     pub author_name_input: String,
     pub author_email_input: String,
@@ -496,6 +497,7 @@ impl AppState {
             review_assists: HashMap::new(),
 
             commit_message: String::new(),
+            commit_cursor: 0,
             author_path_input: String::new(),
             author_name_input: String::new(),
             author_email_input: String::new(),
@@ -724,6 +726,7 @@ impl AppState {
 
     pub fn open_commit_modal(&mut self) {
         self.modal = Modal::Commit;
+        self.commit_cursor = self.commit_message.chars().count();
         if self.commit_message.is_empty() && self.generation.is_none() {
             self.set_status("generating\u{2026}", false);
             self.pending_action = Some(PendingAction::GenerateMessage);

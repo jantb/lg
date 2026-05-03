@@ -34,14 +34,15 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         .constraints([Constraint::Min(3), Constraint::Length(1)])
         .split(chunks[0]);
 
-    let (msg_view, title_text, editable) = match &state.generation {
+    let (msg_view, msg_cursor, title_text, editable) = match &state.generation {
         Some(g) => {
             let spinner = SPINNER_FRAMES[g.spinner % SPINNER_FRAMES.len()];
             let title = format!("Commit message  {spinner} generating\u{2026}  (Esc=cancel)");
-            (g.output.clone(), title, false)
+            (g.output.clone(), g.output.chars().count(), title, false)
         }
         None => (
             state.commit_message.clone(),
+            state.commit_cursor,
             "Commit message  (Ctrl+S=commit  Shift+P=commit&push  Enter=newline  Ctrl+R=regenerate  Esc=back)"
                 .to_owned(),
             true,
@@ -55,7 +56,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         width: input_area.width.saturating_sub(2),
         height: input_area.height.saturating_sub(2),
     };
-    let (visible_text, cursor) = visible_message_view(&msg_view, body_area.width, body_area.height);
+    let (visible_text, cursor) =
+        visible_message_view(&msg_view, msg_cursor, body_area.width, body_area.height);
 
     let input = Paragraph::new(visible_text).block(ui::bordered(&title_text));
     frame.render_widget(input, left_chunks[0]);
@@ -131,37 +133,52 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     frame.render_widget(sidebar, chunks[1]);
 }
 
-fn visible_message_view(message: &str, width: u16, height: u16) -> (String, (u16, u16)) {
+fn visible_message_view(
+    message: &str,
+    cursor: usize,
+    width: u16,
+    height: u16,
+) -> (String, (u16, u16)) {
     if width == 0 || height == 0 {
         return (String::new(), (0, 0));
     }
 
     let width = width as usize;
     let height = height as usize;
+    let cursor = cursor.min(message.chars().count());
     let mut lines = Vec::new();
     let mut cursor_row = 0;
     let mut cursor_col = 0;
+    let mut consumed = 0usize;
+    let logical_lines: Vec<&str> = message.split('\n').collect();
 
-    for logical_line in message.split('\n') {
-        if logical_line.is_empty() {
-            lines.push(String::new());
-            cursor_row = lines.len() - 1;
-            cursor_col = 0;
-            continue;
-        }
-
+    for (line_idx, logical_line) in logical_lines.iter().enumerate() {
         let chars: Vec<char> = logical_line.chars().collect();
-        for chunk in chars.chunks(width) {
-            lines.push(chunk.iter().collect::<String>());
+        let line_len = chars.len();
+        let line_start_row = lines.len();
+        let cursor_in_line = cursor >= consumed && cursor <= consumed + line_len;
+
+        if chars.is_empty() {
+            lines.push(String::new());
+        } else {
+            for chunk in chars.chunks(width) {
+                lines.push(chunk.iter().collect::<String>());
+            }
         }
 
-        let len = chars.len();
-        cursor_row = lines.len() - 1;
-        cursor_col = if len % width == 0 {
-            width - 1
-        } else {
-            len % width
-        };
+        if cursor_in_line {
+            let offset = cursor - consumed;
+            cursor_row = line_start_row + offset / width;
+            cursor_col = offset % width;
+            if cursor_row >= lines.len() {
+                lines.push(String::new());
+            }
+        }
+
+        consumed += line_len;
+        if line_idx + 1 < logical_lines.len() {
+            consumed += 1;
+        }
     }
 
     if lines.is_empty() {
@@ -180,6 +197,48 @@ fn visible_message_view(message: &str, width: u16, height: u16) -> (String, (u16
     let cursor_x = cursor_col.min(width.saturating_sub(1)) as u16;
 
     (visible, (cursor_x, cursor_y))
+}
+
+fn char_len(s: &str) -> usize {
+    s.chars().count()
+}
+
+fn byte_index_for_char(s: &str, char_idx: usize) -> usize {
+    if char_idx == 0 {
+        return 0;
+    }
+    s.char_indices()
+        .nth(char_idx)
+        .map(|(idx, _)| idx)
+        .unwrap_or(s.len())
+}
+
+fn insert_at_cursor(state: &mut AppState, c: char) {
+    state.commit_cursor = state.commit_cursor.min(char_len(&state.commit_message));
+    let idx = byte_index_for_char(&state.commit_message, state.commit_cursor);
+    state.commit_message.insert(idx, c);
+    state.commit_cursor += 1;
+}
+
+fn remove_before_cursor(state: &mut AppState) {
+    state.commit_cursor = state.commit_cursor.min(char_len(&state.commit_message));
+    if state.commit_cursor == 0 {
+        return;
+    }
+    let start = byte_index_for_char(&state.commit_message, state.commit_cursor - 1);
+    let end = byte_index_for_char(&state.commit_message, state.commit_cursor);
+    state.commit_message.replace_range(start..end, "");
+    state.commit_cursor -= 1;
+}
+
+fn remove_at_cursor(state: &mut AppState) {
+    state.commit_cursor = state.commit_cursor.min(char_len(&state.commit_message));
+    if state.commit_cursor >= char_len(&state.commit_message) {
+        return;
+    }
+    let start = byte_index_for_char(&state.commit_message, state.commit_cursor);
+    let end = byte_index_for_char(&state.commit_message, state.commit_cursor + 1);
+    state.commit_message.replace_range(start..end, "");
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
@@ -209,23 +268,52 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Char('r') if ctrl => {
             if !generating {
                 state.commit_message.clear();
+                state.commit_cursor = 0;
                 state.set_status("generating\u{2026}", false);
                 state.pending_action = Some(PendingAction::GenerateMessage);
             }
         }
         KeyCode::Enter => {
             if !generating {
-                state.commit_message.push('\n');
+                insert_at_cursor(state, '\n');
             }
         }
         KeyCode::Backspace => {
             if !generating {
-                state.commit_message.pop();
+                remove_before_cursor(state);
+            }
+        }
+        KeyCode::Delete => {
+            if !generating {
+                remove_at_cursor(state);
+            }
+        }
+        KeyCode::Left => {
+            if !generating {
+                state.commit_cursor = state.commit_cursor.saturating_sub(1);
+            }
+        }
+        KeyCode::Right => {
+            if !generating {
+                state.commit_cursor = state
+                    .commit_cursor
+                    .saturating_add(1)
+                    .min(char_len(&state.commit_message));
+            }
+        }
+        KeyCode::Home => {
+            if !generating {
+                state.commit_cursor = 0;
+            }
+        }
+        KeyCode::End => {
+            if !generating {
+                state.commit_cursor = char_len(&state.commit_message);
             }
         }
         KeyCode::Char(c) if !ctrl => {
             if !generating {
-                state.commit_message.push(c);
+                insert_at_cursor(state, c);
             }
         }
         _ => {}

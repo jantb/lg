@@ -1196,6 +1196,7 @@ impl App {
                     if kind == OperationKind::Commit {
                         self.state.modal = Modal::None;
                         self.state.commit_message.clear();
+                        self.state.commit_cursor = 0;
                         if self.state.push_after_commit {
                             self.state.push_after_commit = false;
                             spawn_push(&mut self.state);
@@ -1309,6 +1310,7 @@ impl App {
                         handle = g.handle.take();
                     }
                     self.state.commit_message = final_msg;
+                    self.state.commit_cursor = self.state.commit_message.chars().count();
                     self.state.generation = None;
                     self.state.set_status("message generated", false);
                 }
