@@ -5,8 +5,8 @@ pub use lg::{
     },
     panel,
     state::{
-        AppState, AuthorField, BranchView, Modal, Pane, PendingAction, ReleaseStatusJob, TreeKind,
-        WorkflowJob, build_tree_rows,
+        AppState, AuthorField, BranchView, Modal, Pane, PendingAction, ReleaseStatusJob,
+        ReviewChatRole, TreeKind, WorkflowJob, build_tree_rows,
     },
 };
 pub use ratatui::{

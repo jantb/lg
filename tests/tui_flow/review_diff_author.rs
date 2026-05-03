@@ -1106,6 +1106,79 @@ fn review_panel_explains_full_diff_with_ollama() {
 }
 
 #[test]
+fn review_panel_opens_chat_about_full_review() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "Assisted review against main\nFull diff against main\nsrc/lib.rs:2".into(),
+        nodes: vec![ReviewNode {
+            id: "branch".into(),
+            parent: None,
+            depth: 0,
+            title: "Full diff against main".into(),
+            body: Vec::new(),
+            context: Vec::new(),
+        }],
+    });
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('C'))).unwrap();
+
+    assert_eq!(app.state.modal, Modal::ReviewChat);
+
+    panel::review_chat::handle_key(&mut app.state, key(KeyCode::Char('w'))).unwrap();
+    panel::review_chat::handle_key(&mut app.state, key(KeyCode::Char('e'))).unwrap();
+    panel::review_chat::handle_key(&mut app.state, key(KeyCode::Char('a'))).unwrap();
+    panel::review_chat::handle_key(&mut app.state, key(KeyCode::Char('k'))).unwrap();
+    panel::review_chat::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
+
+    assert_eq!(
+        app.state.pending_action,
+        Some(PendingAction::ReviewChat("weak".into()))
+    );
+    assert_eq!(app.state.review_chat_messages.len(), 1);
+    assert_eq!(app.state.review_chat_messages[0].role, ReviewChatRole::User);
+    assert_eq!(app.state.review_chat_messages[0].content, "weak");
+    assert!(app.state.review_chat_input.is_empty());
+}
+
+#[test]
+fn review_chat_modal_renders_markdown_conversation() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
+    app.state.modal = Modal::ReviewChat;
+    app.state
+        .review_chat_messages
+        .push(lg::state::ReviewChatMessage {
+            role: ReviewChatRole::User,
+            content: "find weaknesses".into(),
+        });
+    app.state
+        .review_chat_messages
+        .push(lg::state::ReviewChatMessage {
+            role: ReviewChatRole::Assistant,
+            content: "- **Risk** in `src/lib.rs:2` needs test coverage.".into(),
+        });
+
+    app.render().unwrap();
+
+    let rendered = buffer_text(&app);
+    assert!(rendered.contains("Review chat"), "{rendered}");
+    assert!(rendered.contains("you"), "{rendered}");
+    assert!(rendered.contains("ollama"), "{rendered}");
+    assert!(
+        rendered.contains("• Risk in src/lib.rs:2 needs test coverage."),
+        "{rendered}"
+    );
+    let buf = app.terminal.backend().buffer();
+    assert!(
+        buf.content()
+            .iter()
+            .any(|cell| cell.symbol() == "R" && cell.modifier.contains(Modifier::BOLD)),
+        "bold markdown should render in chat: {rendered}"
+    );
+}
+
+#[test]
 fn review_panel_renders_ollama_markdown() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(140, 32)).unwrap();
     app.state.focus = Pane::Main;

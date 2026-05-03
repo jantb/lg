@@ -10,18 +10,19 @@ use crate::config::{
     OLLAMA_PRESENCE_PENALTY, OLLAMA_PROMPT_PREFIX, OLLAMA_REPEAT_PENALTY, OLLAMA_TEMPERATURE,
     OLLAMA_TOP_K, OLLAMA_TOP_P,
 };
-use crate::state::GenMsg;
+use crate::state::{GenMsg, ReviewChatMessage};
 
 const MAX_DIFF_EXCERPT_LINES: usize = 180;
 const MAX_DIFF_EXCERPT_BYTES: usize = 16_000;
 const MAX_SUMMARY_FILES: usize = 24;
 const MAX_SIGNAL_LINES: usize = 48;
 const REVIEW_ASSIST_MAX_CHARS: usize = 2_400;
+const REVIEW_CHAT_MAX_CHARS: usize = 12_000;
 
 #[derive(Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
-    messages: Vec<ChatMessage<'a>>,
+    messages: Vec<ChatMessage>,
     stream: bool,
     think: bool,
     keep_alive: &'a str,
@@ -29,8 +30,8 @@ struct ChatRequest<'a> {
 }
 
 #[derive(Serialize)]
-struct ChatMessage<'a> {
-    role: &'a str,
+struct ChatMessage {
+    role: &'static str,
     content: String,
 }
 
@@ -91,6 +92,17 @@ fn build_review_assist_prompt(context: &str) -> String {
          Be concise and factual. Focus on behavior, call flow, tests, and review risks.\n\
          Output 3-6 bullets. Do not invent files or behavior not shown. Do not use code fences.\n\n\
          Selected review subtree:\n{context}"
+    )
+}
+
+fn build_review_chat_system_prompt(context: &str) -> String {
+    format!(
+        "You are a senior code reviewer helping inspect a full branch review against main.\n\
+         Use only the supplied review context and the conversation. Be concrete about weaknesses,\n\
+         missed tests, risky flows, compatibility concerns, and follow-up checks. When useful,\n\
+         cite file paths, function names, and line numbers from the context. If the context is\n\
+         insufficient, say what is missing instead of guessing.\n\n\
+         Review context:\n{context}"
     )
 }
 
@@ -242,6 +254,36 @@ pub fn stream_review_assist(context: String, tx: Sender<GenMsg>) {
     );
 }
 
+pub fn stream_review_chat(
+    context: String,
+    history: Vec<ReviewChatMessage>,
+    prompt: String,
+    tx: Sender<GenMsg>,
+) {
+    let mut messages = vec![ChatMessage {
+        role: "system",
+        content: build_review_chat_system_prompt(&context),
+    }];
+    for message in history
+        .into_iter()
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        messages.push(ChatMessage {
+            role: message.role.as_ollama_role(),
+            content: message.content,
+        });
+    }
+    messages.push(ChatMessage {
+        role: "user",
+        content: prompt,
+    });
+    stream_messages(messages, review_chat_options(), finalize_review_chat, tx);
+}
+
 fn review_assist_options() -> Options {
     let mut opts = Options::default();
     if std::env::var_os("LG_OLLAMA_NUM_PREDICT").is_none() {
@@ -250,21 +292,46 @@ fn review_assist_options() -> Options {
     opts
 }
 
+fn review_chat_options() -> Options {
+    let mut opts = Options::default();
+    if std::env::var_os("LG_OLLAMA_NUM_PREDICT").is_none() {
+        opts.num_predict = 768;
+    }
+    opts
+}
+
 fn stream_prompt(prompt: String, opts: Options, finalizer: fn(&str) -> String, tx: Sender<GenMsg>) {
+    stream_messages(
+        vec![ChatMessage {
+            role: "user",
+            content: prompt,
+        }],
+        opts,
+        finalizer,
+        tx,
+    );
+}
+
+fn stream_messages(
+    messages: Vec<ChatMessage>,
+    opts: Options,
+    finalizer: fn(&str) -> String,
+    tx: Sender<GenMsg>,
+) {
     let start = Instant::now();
     let model = std::env::var("LG_OLLAMA_MODEL").unwrap_or_else(|_| OLLAMA_MODEL.to_owned());
     let endpoint = std::env::var("LG_OLLAMA_CHAT_ENDPOINT")
         .unwrap_or_else(|_| OLLAMA_CHAT_ENDPOINT.to_owned());
     let keep_alive =
         std::env::var("LG_OLLAMA_KEEP_ALIVE").unwrap_or_else(|_| OLLAMA_KEEP_ALIVE.to_owned());
-    let prompt_bytes = prompt.len();
+    let prompt_bytes = messages
+        .iter()
+        .map(|message| message.content.len())
+        .sum::<usize>();
 
     let body = ChatRequest {
         model: &model,
-        messages: vec![ChatMessage {
-            role: "user",
-            content: prompt,
-        }],
+        messages,
         stream: true,
         think: false,
         keep_alive: &keep_alive,
@@ -482,6 +549,19 @@ fn finalize_review_assist(raw: &str) -> String {
         .collect()
 }
 
+fn finalize_review_chat(raw: &str) -> String {
+    strip_think_tags(raw)
+        .trim()
+        .trim_matches('"')
+        .lines()
+        .map(trim_outer_quotes_without_backticks)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .chars()
+        .take(REVIEW_CHAT_MAX_CHARS)
+        .collect()
+}
+
 fn split_subject(s: &str) -> (String, String) {
     if s.chars().count() <= COMMIT_MSG_SUBJECT_MAX_CHARS {
         return (s.to_string(), String::new());
@@ -509,6 +589,10 @@ fn trim_outer_quotes(s: &str) -> &str {
         .trim_matches('"')
         .trim_matches('\'')
         .trim_matches('`')
+}
+
+fn trim_outer_quotes_without_backticks(s: &str) -> &str {
+    s.trim().trim_matches('"').trim_matches('\'')
 }
 
 fn strip_think_tags(s: &str) -> String {

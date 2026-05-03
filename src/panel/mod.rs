@@ -11,5 +11,6 @@ pub mod help;
 pub mod main;
 pub(crate) mod markdown;
 pub mod push;
+pub mod review_chat;
 pub mod stage_all;
 pub mod status;

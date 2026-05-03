@@ -65,6 +65,7 @@ where
                 Modal::Flow => panel::flow::render(state, area, frame),
                 Modal::Conflict => panel::conflict::render(state, area, frame),
                 Modal::DeleteBranch => panel::delete_branch::render(state, area, frame),
+                Modal::ReviewChat => panel::review_chat::render(state, area, frame),
             }
         })?;
         Ok(())
@@ -131,6 +132,7 @@ impl App {
                 Modal::Flow => panel::flow::render(state, area, frame),
                 Modal::Conflict => panel::conflict::render(state, area, frame),
                 Modal::DeleteBranch => panel::delete_branch::render(state, area, frame),
+                Modal::ReviewChat => panel::review_chat::render(state, area, frame),
             }
         })?;
         Ok(())

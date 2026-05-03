@@ -195,6 +195,14 @@ pub struct ReviewAssistJob {
 }
 
 #[derive(Debug)]
+pub struct ReviewChatJob {
+    pub rx: Receiver<GenMsg>,
+    pub handle: Option<JoinHandle<()>>,
+    pub output: String,
+    pub spinner: usize,
+}
+
+#[derive(Debug)]
 pub enum WorkflowMsg {
     Progress(usize),
     Done(String),

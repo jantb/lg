@@ -1,6 +1,9 @@
-use crate::state::{AppState, DiffSource, Pane, ReviewAssistJob, ReviewJob, ReviewMsg};
+use crate::state::{
+    AppState, DiffSource, Pane, ReviewAssistJob, ReviewChatJob, ReviewJob, ReviewMsg,
+};
 
 const MAX_REVIEW_ASSIST_CONTEXT_BYTES: usize = 18_000;
+const MAX_REVIEW_CHAT_CONTEXT_BYTES: usize = 32_000;
 
 pub(super) fn spawn_assisted_review(state: &mut AppState) {
     if state.review_job.is_some() {
@@ -32,7 +35,14 @@ pub(super) fn spawn_assisted_review(state: &mut AppState) {
     state.review_context_open.clear();
     state.review_context_restore_collapsed.clear();
     state.review_assists.clear();
+    state.review_chat_messages.clear();
+    state.review_chat_input.clear();
+    state.review_chat_cursor = 0;
+    state.review_chat_scroll = 0;
     if let Some(mut job) = state.review_assist_job.take() {
+        state.defer_thread_join(job.handle.take());
+    }
+    if let Some(mut job) = state.review_chat_job.take() {
         state.defer_thread_join(job.handle.take());
     }
     state.diff_text = "building assisted review against main...".to_string();
@@ -57,6 +67,57 @@ pub(super) fn spawn_review_assist(state: &mut AppState, node_id: String) {
         spinner: 0,
     });
     state.set_status("explaining review item...", false);
+}
+
+pub(super) fn spawn_review_chat(state: &mut AppState, prompt: String) {
+    let Some(context) = review_chat_context(state) else {
+        state.set_status("build review first", true);
+        return;
+    };
+    if state.review_chat_job.is_some() {
+        state.set_status("review chat already running", false);
+        return;
+    }
+    let mut history = state.review_chat_messages.clone();
+    if history.last().is_some_and(|message| {
+        message.role == crate::state::ReviewChatRole::User && message.content == prompt
+    }) {
+        history.pop();
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        crate::ollama::stream_review_chat(context, history, prompt, tx);
+    });
+    state.review_chat_job = Some(ReviewChatJob {
+        rx,
+        handle: Some(handle),
+        output: String::new(),
+        spinner: 0,
+    });
+    state.set_status("asking review chat...", false);
+}
+
+fn review_chat_context(state: &AppState) -> Option<String> {
+    let report = &state.review.as_ref()?.report;
+    let mut out = String::new();
+    push_limited_line(
+        &mut out,
+        "Full assisted review against main. Use this as the source of truth.",
+        MAX_REVIEW_CHAT_CONTEXT_BYTES,
+    );
+    push_limited_line(&mut out, "", MAX_REVIEW_CHAT_CONTEXT_BYTES);
+    for line in report.lines() {
+        if out.len() >= MAX_REVIEW_CHAT_CONTEXT_BYTES {
+            push_limited_line(
+                &mut out,
+                "... full review context truncated ...",
+                MAX_REVIEW_CHAT_CONTEXT_BYTES,
+            );
+            break;
+        }
+        push_limited_line(&mut out, line, MAX_REVIEW_CHAT_CONTEXT_BYTES);
+    }
+    Some(out)
 }
 
 fn review_assist_context(state: &AppState, node_id: &str) -> Option<String> {
@@ -121,10 +182,14 @@ fn review_node_in_subtree(
 }
 
 fn push_line(out: &mut String, line: &str) {
-    if out.len() >= MAX_REVIEW_ASSIST_CONTEXT_BYTES {
+    push_limited_line(out, line, MAX_REVIEW_ASSIST_CONTEXT_BYTES);
+}
+
+fn push_limited_line(out: &mut String, line: &str, max_bytes: usize) {
+    if out.len() >= max_bytes {
         return;
     }
-    let remaining = MAX_REVIEW_ASSIST_CONTEXT_BYTES - out.len();
+    let remaining = max_bytes - out.len();
     if line.len() < remaining {
         out.push_str(line);
         out.push('\n');

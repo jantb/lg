@@ -42,7 +42,7 @@ pub(crate) use workflow::{
 use refresh::{
     build_refresh_snapshot, prime_branches, should_refresh_for_fs_event, watch_current_dir,
 };
-use review_assist::{spawn_assisted_review, spawn_review_assist};
+use review_assist::{spawn_assisted_review, spawn_review_assist, spawn_review_chat};
 use spawn::{
     git_job_running, load_diff_text, open_author_modal, selected_commit_ref, selected_diff_source,
     spawn_operation, spawn_pull, spawn_push,
@@ -154,6 +154,7 @@ impl App {
 
             self.drain_generation();
             self.drain_review_assist();
+            self.drain_review_chat();
             self.drain_push_job()?;
             self.drain_checkout_job()?;
             self.drain_operation_job()?;
@@ -179,6 +180,7 @@ impl App {
                 || self.state.diff_job.is_some()
                 || self.state.review_job.is_some()
                 || self.state.review_assist_job.is_some()
+                || self.state.review_chat_job.is_some()
                 || self.state.workflow_job.is_some()
             {
                 80

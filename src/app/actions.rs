@@ -1,6 +1,6 @@
 use crate::state::{Modal, OperationKind, PendingAction};
 
-use super::{App, spawn_operation, spawn_pull, spawn_push, spawn_review_assist};
+use super::{App, spawn_operation, spawn_pull, spawn_push, spawn_review_assist, spawn_review_chat};
 
 impl App {
     pub(super) fn dispatch_pending(&mut self, action: PendingAction) {
@@ -20,6 +20,9 @@ impl App {
             },
             PendingAction::ReviewAssist(node_id) => {
                 spawn_review_assist(&mut self.state, node_id);
+            }
+            PendingAction::ReviewChat(prompt) => {
+                spawn_review_chat(&mut self.state, prompt);
             }
             PendingAction::Commit => {
                 let msg = self.state.commit_message.clone();

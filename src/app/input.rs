@@ -97,6 +97,10 @@ where
                 panel::delete_branch::handle_key(&mut self.state, k)?;
                 return self.render();
             }
+            Modal::ReviewChat => {
+                panel::review_chat::handle_key(&mut self.state, k)?;
+                return self.render();
+            }
             Modal::None => {}
         }
         match k.code {
@@ -211,6 +215,10 @@ impl App {
             }
             Modal::DeleteBranch => {
                 panel::delete_branch::handle_key(&mut self.state, k)?;
+                return Ok(());
+            }
+            Modal::ReviewChat => {
+                panel::review_chat::handle_key(&mut self.state, k)?;
                 return Ok(());
             }
             Modal::None => {}

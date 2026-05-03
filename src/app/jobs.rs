@@ -808,6 +808,59 @@ impl App {
         }
     }
 
+    pub(super) fn drain_review_chat(&mut self) {
+        let mut drained: Vec<GenMsg> = Vec::new();
+        let mut handle = None;
+        if let Some(job) = self.state.review_chat_job.as_ref() {
+            while let Ok(msg) = job.rx.try_recv() {
+                drained.push(msg);
+            }
+        }
+        for msg in drained {
+            match msg {
+                GenMsg::Thinking(_) => {}
+                GenMsg::Output(output) => {
+                    if let Some(job) = self.state.review_chat_job.as_mut() {
+                        job.output.push_str(&output);
+                    }
+                }
+                GenMsg::Done(final_msg) => {
+                    if let Some(job) = self.state.review_chat_job.as_mut() {
+                        handle = job.handle.take();
+                    }
+                    self.state.review_chat_job = None;
+                    self.state
+                        .review_chat_messages
+                        .push(crate::state::ReviewChatMessage {
+                            role: crate::state::ReviewChatRole::Assistant,
+                            content: final_msg,
+                        });
+                    self.state.review_chat_scroll = u16::MAX;
+                    self.state.set_status("review chat ready", false);
+                }
+                GenMsg::Error(error) => {
+                    if let Some(job) = self.state.review_chat_job.as_mut() {
+                        handle = job.handle.take();
+                    }
+                    self.state.review_chat_job = None;
+                    self.state
+                        .review_chat_messages
+                        .push(crate::state::ReviewChatMessage {
+                            role: crate::state::ReviewChatRole::Assistant,
+                            content: format!("ollama error: {error}"),
+                        });
+                    self.state.review_chat_scroll = u16::MAX;
+                    self.state.set_status(error, true);
+                }
+            }
+        }
+        join_worker(handle);
+        if let Some(job) = self.state.review_chat_job.as_mut() {
+            job.spinner = job.spinner.wrapping_add(1);
+            self.state.review_chat_scroll = u16::MAX;
+        }
+    }
+
     pub(super) fn join_background_jobs(&mut self) {
         let mut handles = Vec::new();
         handles.extend(self.state.take_deferred_threads());
@@ -843,6 +896,9 @@ impl App {
             handles.extend(job.handle.take());
         }
         if let Some(job) = self.state.review_assist_job.as_mut() {
+            handles.extend(job.handle.take());
+        }
+        if let Some(job) = self.state.review_chat_job.as_mut() {
             handles.extend(job.handle.take());
         }
         if let Some(job) = self.state.workflow_job.as_mut() {

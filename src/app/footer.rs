@@ -79,6 +79,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                         ("s", "source"),
                         ("o", "open IDE"),
                         ("l", "explain"),
+                        ("C", "chat"),
                         ("g/G", "top/bot"),
                         ("f", "fetch"),
                         ("a", "author"),
@@ -166,6 +167,11 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
                 ("Esc", "cancel"),
             ],
             Color::Red,
+        ),
+        Modal::ReviewChat => modal_spans(
+            "Review chat ",
+            &[("Enter", "send"), ("Esc", "close")],
+            Color::Cyan,
         ),
     };
 

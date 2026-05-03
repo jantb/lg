@@ -95,8 +95,19 @@ const SECTIONS: &[Section] = &[
             ("s", "Toggle full source with inline diff"),
             ("o", "Open selected source file in IDE"),
             ("l", "Ask Ollama to explain selected subtree"),
+            ("C", "Chat with Ollama about the full review"),
             ("g / G", "Top / bottom"),
             ("R", "Rebuild assisted review"),
+        ],
+    },
+    Section {
+        title: "Review chat",
+        pane: None,
+        bindings: &[
+            ("Enter", "Send prompt"),
+            ("Esc", "Close chat"),
+            ("Ctrl+A / Ctrl+E", "Start / end of prompt"),
+            ("Up / Down", "Scroll conversation"),
         ],
     },
     Section {

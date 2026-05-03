@@ -30,7 +30,7 @@ pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: b
     )
     .title_bottom(
         Line::from(Span::styled(
-            "j/k move  Enter/space expand  d drill  s source  l explain  g/G top/bottom  R refresh",
+            "j/k move  Enter/space expand  d drill  s source  l explain  C chat  g/G top/bottom  R refresh",
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::DIM),
@@ -442,6 +442,10 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.review_collapsed.remove(&node.id);
                 state.pending_action = Some(PendingAction::ReviewAssist(node.id.clone()));
             }
+        }
+        KeyCode::Char('C') => {
+            state.modal = crate::state::Modal::ReviewChat;
+            state.review_chat_cursor = state.review_chat_input.chars().count();
         }
         KeyCode::Char('o') => {
             if let Some(path) = selected_open_path(state) {
