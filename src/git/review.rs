@@ -829,7 +829,7 @@ fn effect_summary(
     if paths.iter().any(|path| path.starts_with("src/panel/")) {
         areas.push("terminal UI panels");
     }
-    if paths.iter().any(|path| path.starts_with("tests/")) {
+    if paths.iter().any(|path| is_test_path(path)) {
         areas.push("test coverage");
     }
     if paths
@@ -905,7 +905,7 @@ fn review_checklist(files: &[ReviewFile], entries: &[ReviewEntryPoint]) -> Vec<S
             "Exercise the affected keybindings and render at narrow terminal widths.".to_string(),
         );
     }
-    if !paths.iter().any(|path| path.starts_with("tests/")) && !entries.is_empty() {
+    if !paths.iter().any(|path| is_test_path(path)) && !entries.is_empty() {
         lines.push(
             "No test files changed; consider adding coverage for the user-visible flow."
                 .to_string(),
@@ -918,6 +918,15 @@ fn review_checklist(files: &[ReviewFile], entries: &[ReviewEntryPoint]) -> Vec<S
         );
     }
     lines
+}
+
+fn is_test_path(path: &str) -> bool {
+    path.starts_with("tests/")
+        || path.contains("/tests/")
+        || path.starts_with("test/")
+        || path.contains("/test/")
+        || path.starts_with("src/test/")
+        || path.contains("/src/test/")
 }
 
 fn truncate_review_text(line: &str, max_chars: usize) -> String {
@@ -1086,5 +1095,36 @@ mod tests {
             !summary.contains("..."),
             "entry symbol list should not be truncated: {summary}"
         );
+    }
+
+    #[test]
+    fn review_checklist_recognizes_source_set_tests() {
+        let files = vec![ReviewFile {
+            status: "M".into(),
+            path: "src/test/kotlin/no/spenn/gravy/adapter/model/HouseholdIdConversionTest.kt"
+                .into(),
+            old_path: None,
+        }];
+        let entries = vec![ReviewEntryPoint {
+            path: "src/test/kotlin/no/spenn/gravy/adapter/model/HouseholdIdConversionTest.kt"
+                .into(),
+            line: Some(1),
+            symbol: "class HouseholdIdConversionTest".into(),
+            description: "updates coverage".into(),
+            hunk: String::new(),
+            patch: Vec::new(),
+            context: Vec::new(),
+            added: 1,
+            removed: 0,
+        }];
+
+        let checklist = review_checklist(&files, &entries).join("\n");
+        let summary = effect_summary(&files, &entries, &["abc123".into()]).join("\n");
+
+        assert!(
+            !checklist.contains("No test files changed"),
+            "source-set test files should count as tests: {checklist}"
+        );
+        assert!(summary.contains("test coverage"), "{summary}");
     }
 }
