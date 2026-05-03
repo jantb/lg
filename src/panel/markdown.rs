@@ -282,7 +282,7 @@ fn inline_spans(text: &str, base: Style) -> Vec<Span<'static>> {
                 push_inline_code(&mut spans, &mut rest, code, base);
             }
             (None, None) => {
-                spans.push(Span::styled(rest.to_string(), base));
+                push_plain_inline(&mut spans, rest, base);
                 break;
             }
         }
@@ -292,11 +292,11 @@ fn inline_spans(text: &str, base: Style) -> Vec<Span<'static>> {
 
 fn push_bold(spans: &mut Vec<Span<'static>>, rest: &mut &str, start: usize, base: Style) {
     if start > 0 {
-        spans.push(Span::styled(rest[..start].to_string(), base));
+        push_plain_inline(spans, &rest[..start], base);
     }
     let content_start = start + 2;
     let Some(end) = rest[content_start..].find("**") else {
-        spans.push(Span::styled(rest[start..].to_string(), base));
+        push_plain_inline(spans, &rest[start..], base);
         *rest = "";
         return;
     };
@@ -310,11 +310,11 @@ fn push_bold(spans: &mut Vec<Span<'static>>, rest: &mut &str, start: usize, base
 
 fn push_inline_code(spans: &mut Vec<Span<'static>>, rest: &mut &str, start: usize, base: Style) {
     if start > 0 {
-        spans.push(Span::styled(rest[..start].to_string(), base));
+        push_plain_inline(spans, &rest[..start], base);
     }
     let content_start = start + 1;
     let Some(end) = rest[content_start..].find('`') else {
-        spans.push(Span::styled(rest[start..].to_string(), base));
+        push_plain_inline(spans, &rest[start..], base);
         *rest = "";
         return;
     };
@@ -326,6 +326,86 @@ fn push_inline_code(spans: &mut Vec<Span<'static>>, rest: &mut &str, start: usiz
             .bg(Color::Rgb(42, 44, 52)),
     ));
     *rest = &rest[content_end + 1..];
+}
+
+fn push_plain_inline(spans: &mut Vec<Span<'static>>, text: &str, base: Style) {
+    let mut rest = text;
+    while !rest.is_empty() {
+        let split = rest
+            .char_indices()
+            .find(|(_, ch)| ch.is_whitespace())
+            .map(|(idx, ch)| idx + ch.len_utf8());
+        let (part, next) = match split {
+            Some(end) => rest.split_at(end),
+            None => (rest, ""),
+        };
+        push_plain_token(spans, part, base);
+        rest = next;
+    }
+}
+
+fn push_plain_token(spans: &mut Vec<Span<'static>>, token: &str, base: Style) {
+    let trimmed_end = token.trim_end();
+    let whitespace = &token[trimmed_end.len()..];
+    let content = trimmed_end.trim_end_matches([',', '.', ';', ')']);
+    let suffix = &trimmed_end[content.len()..];
+    if let Some((path, line)) = source_path_location(content) {
+        let prefix_len = content.len().saturating_sub(path.len() + line.len() + 1);
+        if prefix_len > 0 {
+            spans.push(Span::styled(content[..prefix_len].to_string(), base));
+        }
+        spans.push(Span::styled(
+            path.to_string(),
+            source_path_style(path, base),
+        ));
+        spans.push(Span::styled(
+            format!(":{line}"),
+            base.fg(Color::LightBlue).add_modifier(Modifier::BOLD),
+        ));
+        if !suffix.is_empty() {
+            spans.push(Span::styled(suffix.to_string(), base));
+        }
+    } else {
+        spans.push(Span::styled(trimmed_end.to_string(), base));
+    }
+    if !whitespace.is_empty() {
+        spans.push(Span::styled(whitespace.to_string(), base));
+    }
+}
+
+fn source_path_location(token: &str) -> Option<(&str, &str)> {
+    let (path, line) = token.rsplit_once(':')?;
+    if !line.chars().all(|ch| ch.is_ascii_digit()) || !is_supported_source_path(path) {
+        return None;
+    }
+    Some((path, line))
+}
+
+fn is_supported_source_path(path: &str) -> bool {
+    matches!(
+        std::path::Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str()),
+        Some("kt" | "kts" | "java" | "rs")
+    )
+}
+
+fn source_path_style(path: &str, base: Style) -> Style {
+    let color = if is_test_path(path) {
+        Color::LightMagenta
+    } else {
+        Color::LightCyan
+    };
+    base.fg(color).add_modifier(Modifier::BOLD)
+}
+
+fn is_test_path(path: &str) -> bool {
+    path.starts_with("tests/")
+        || path.contains("/tests/")
+        || path.starts_with("test/")
+        || path.contains("/test/")
+        || path.starts_with("src/test/")
+        || path.contains("/src/test/")
 }
 
 fn code_spans(code: &str, syntax: Option<Syntax>, base: Style) -> Vec<Span<'static>> {
@@ -595,6 +675,46 @@ mod tests {
                 line_text(line)
             );
         }
+    }
+
+    #[test]
+    fn markdown_colors_source_locations() {
+        let lines = render(
+            "- fun update — src/main/kotlin/app/BalanceService.kt:42",
+            "",
+            120,
+        );
+        let line = &lines[0];
+
+        assert_eq!(
+            line_text(line),
+            "• fun update — src/main/kotlin/app/BalanceService.kt:42"
+        );
+        assert!(line.spans.iter().any(|span| {
+            span.content.as_ref() == "src/main/kotlin/app/BalanceService.kt"
+                && span.style.fg == Some(Color::LightCyan)
+                && span.style.add_modifier.contains(Modifier::BOLD)
+        }));
+        assert!(line.spans.iter().any(|span| {
+            span.content.as_ref() == ":42"
+                && span.style.fg == Some(Color::LightBlue)
+                && span.style.add_modifier.contains(Modifier::BOLD)
+        }));
+    }
+
+    #[test]
+    fn markdown_colors_test_source_locations_differently() {
+        let lines = render(
+            "- class BalanceServiceTest — src/test/kotlin/app/BalanceServiceTest.kt:7",
+            "",
+            120,
+        );
+
+        assert!(lines[0].spans.iter().any(|span| {
+            span.content.as_ref() == "src/test/kotlin/app/BalanceServiceTest.kt"
+                && span.style.fg == Some(Color::LightMagenta)
+                && span.style.add_modifier.contains(Modifier::BOLD)
+        }));
     }
 
     #[test]
