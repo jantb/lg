@@ -172,15 +172,27 @@ fn visible_message_view(
     let mut cursor_col = 0;
     let lines = visual_lines(message, width);
 
+    let mut matched = false;
     for (idx, line) in lines.iter().enumerate() {
         let end = line.start + line.len;
         if cursor >= line.start && cursor <= end {
             cursor_row = idx;
             cursor_col = cursor.saturating_sub(line.start);
+            matched = true;
             if cursor < end || line.len == 0 || idx + 1 == lines.len() {
                 break;
             }
         }
+    }
+    if !matched
+        && let Some((idx, line)) = lines
+            .iter()
+            .enumerate()
+            .take_while(|(_, line)| line.start <= cursor)
+            .last()
+    {
+        cursor_row = idx;
+        cursor_col = line.len;
     }
 
     let scroll = cursor_row.saturating_sub(height.saturating_sub(1));
@@ -212,13 +224,7 @@ fn visual_lines(message: &str, width: usize) -> Vec<VisualLine> {
                 len: 0,
             });
         } else {
-            for (chunk_idx, chunk) in chars.chunks(width).enumerate() {
-                lines.push(VisualLine {
-                    text: chunk.iter().collect(),
-                    start: consumed + chunk_idx * width,
-                    len: chunk.len(),
-                });
-            }
+            push_wrapped_visual_lines(&mut lines, &chars, consumed, width);
         }
         consumed += chars.len();
         if line_idx + 1 < logical_lines.len() {
@@ -235,6 +241,49 @@ fn visual_lines(message: &str, width: usize) -> Vec<VisualLine> {
     }
 
     lines
+}
+
+fn push_wrapped_visual_lines(
+    lines: &mut Vec<VisualLine>,
+    chars: &[char],
+    line_start: usize,
+    width: usize,
+) {
+    let mut offset = 0usize;
+    while offset < chars.len() {
+        let remaining = chars.len() - offset;
+        if remaining <= width {
+            lines.push(VisualLine {
+                text: chars[offset..].iter().collect(),
+                start: line_start + offset,
+                len: remaining,
+            });
+            break;
+        }
+
+        let limit = offset + width;
+        let wrap_at = (offset + 1..limit)
+            .rev()
+            .find(|idx| chars[*idx].is_whitespace());
+
+        let (end, next) = match wrap_at {
+            Some(idx) if idx > offset => {
+                let mut next = idx + 1;
+                while next < chars.len() && chars[next].is_whitespace() {
+                    next += 1;
+                }
+                (idx, next)
+            }
+            _ => (limit, limit),
+        };
+
+        lines.push(VisualLine {
+            text: chars[offset..end].iter().collect(),
+            start: line_start + offset,
+            len: end - offset,
+        });
+        offset = next;
+    }
 }
 
 fn char_len(s: &str) -> usize {
@@ -436,4 +485,26 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visual_lines_wrap_at_words_when_possible() {
+        let lines = visual_lines("complete the saga immediately", 24);
+
+        assert_eq!(lines[0].text, "complete the saga");
+        assert_eq!(lines[1].text, "immediately");
+    }
+
+    #[test]
+    fn visual_lines_hard_wrap_oversized_words() {
+        let lines = visual_lines("immediately", 5);
+
+        assert_eq!(lines[0].text, "immed");
+        assert_eq!(lines[1].text, "iatel");
+        assert_eq!(lines[2].text, "y");
+    }
 }
