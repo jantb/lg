@@ -493,6 +493,52 @@ fn review_panel_sources_full_diff_subtree_across_files() {
 }
 
 #[test]
+fn review_panel_sources_full_diff_from_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_path = dir.path().join("lib.rs");
+    std::fs::write(
+        &source_path,
+        "pub fn greet() -> &'static str {\n    \"hello review\"\n}\n",
+    )
+    .unwrap();
+    let source_path = source_path.display().to_string();
+
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(160, 32)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: format!(
+            "Assisted review against main\n\nFull diff against main\n\
+             diff --git a/{source_path} b/{source_path}\n\
+             --- a/{source_path}\n\
+             +++ b/{source_path}\n\
+             @@ -1,3 +1,3 @@\n\
+              pub fn greet() -> &'static str {{\n\
+             -    \"hello\"\n\
+             +    \"hello review\"\n\
+              }}\n"
+        ),
+        nodes: vec![ReviewNode {
+            id: "branch".into(),
+            parent: None,
+            depth: 0,
+            title: "Full diff against main".into(),
+            body: Vec::new(),
+            context: Vec::new(),
+        }],
+    });
+    app.state.review_idx = 0;
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
+    app.render().unwrap();
+    let rendered = buffer_text(&app);
+
+    assert!(app.state.review_context_open.contains("branch"));
+    assert!(rendered.contains("source"), "{rendered}");
+    assert!(rendered.contains("hello review"), "{rendered}");
+}
+
+#[test]
 fn review_panel_source_toggle_restores_collapsed_file() {
     let dir = tempfile::tempdir().unwrap();
     let source_path = dir.path().join("lib.rs");

@@ -70,6 +70,13 @@ pub(super) fn source_sections(
     review: &crate::git::AssistedReview,
     node: &crate::git::ReviewNode,
 ) -> Vec<SourceSection> {
+    if is_full_diff_root(node)
+        && let Some(sections) = full_diff_source_sections(review)
+        && !sections.is_empty()
+    {
+        return sections;
+    }
+
     let mut sections = Vec::new();
     let mut seen_paths = BTreeSet::new();
     for candidate in std::iter::once(node).chain(
@@ -94,6 +101,55 @@ pub(super) fn source_sections(
         });
     }
     sections
+}
+
+fn is_full_diff_root(node: &crate::git::ReviewNode) -> bool {
+    node.parent.is_none() && node.title == "Full diff against main"
+}
+
+fn full_diff_source_sections(review: &crate::git::AssistedReview) -> Option<Vec<SourceSection>> {
+    let (_, diff) = review.report.split_once("\nFull diff against main\n")?;
+    let mut sections = Vec::new();
+    let mut current_path: Option<String> = None;
+    let mut current_body = Vec::new();
+
+    for line in diff.lines() {
+        if let Some(path) = diff_git_path(line) {
+            push_full_diff_section(&mut sections, current_path.take(), &mut current_body);
+            current_path = Some(path);
+        }
+        if current_path.is_some() {
+            current_body.push(line.to_string());
+        }
+    }
+    push_full_diff_section(&mut sections, current_path, &mut current_body);
+
+    Some(sections)
+}
+
+fn diff_git_path(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("diff --git a/")?;
+    let (_, path) = rest.split_once(" b/")?;
+    (path != "/dev/null" && !path.trim().is_empty()).then(|| path.trim().to_string())
+}
+
+fn push_full_diff_section(
+    sections: &mut Vec<SourceSection>,
+    path: Option<String>,
+    body: &mut Vec<String>,
+) {
+    let Some(path) = path else {
+        body.clear();
+        return;
+    };
+    if body.is_empty() {
+        return;
+    }
+    sections.push(SourceSection {
+        path,
+        body: std::mem::take(body),
+        context: Vec::new(),
+    });
 }
 
 fn review_node_in_subtree(
