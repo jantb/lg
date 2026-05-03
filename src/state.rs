@@ -537,7 +537,10 @@ impl AppState {
 
     pub fn open_commit_or_stage_all_prompt(&mut self) {
         let (staged, unstaged, untracked) = self.file_counts();
-        if staged == 0 && (unstaged > 0 || untracked > 0) {
+        if staged == 0 && unstaged == 0 && untracked == 0 {
+            self.set_status("nothing to commit", false);
+            self.modal = Modal::None;
+        } else if staged == 0 && (unstaged > 0 || untracked > 0) {
             self.modal = Modal::StageAllBeforeCommit;
         } else {
             self.open_commit_modal();

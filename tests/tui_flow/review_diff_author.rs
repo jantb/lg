@@ -3,10 +3,14 @@ use super::common::*;
 // ── Panel transitions ─────────────────────────────────────────────────────────
 
 #[test]
-fn pressing_c_opens_commit_modal() {
+fn pressing_c_without_changed_files_does_not_open_commit_modal() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 24)).unwrap();
     app.send_key(key(KeyCode::Char('c'))).unwrap();
-    assert_eq!(app.state.modal, Modal::Commit);
+    assert_eq!(app.state.modal, Modal::None);
+    assert_eq!(
+        app.state.status.as_ref().map(|status| status.text.as_str()),
+        Some("nothing to commit")
+    );
 }
 
 #[test]

@@ -882,37 +882,107 @@ fn render_entry_points(out: &mut String, entries: &[ReviewEntryPoint]) {
 fn review_checklist(files: &[ReviewFile], entries: &[ReviewEntryPoint]) -> Vec<String> {
     let mut lines = Vec::new();
     let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    let has_tests = paths.iter().any(|path| is_test_path(path));
+    let has_non_tests = paths.iter().any(|path| !is_test_path(path));
 
     if paths.contains(&"src/git.rs") {
         lines.push(
-            "Verify Git commands on a temporary repository before trusting the workflow."
+            "- Verify Git commands on a temporary repository before trusting the workflow."
                 .to_string(),
         );
     }
     if paths.contains(&"src/app.rs") || paths.contains(&"src/state.rs") {
         lines.push(
-            "Check state transitions and background jobs for stale output or focus changes."
+            "- Check state transitions and background jobs for stale output or focus changes."
                 .to_string(),
         );
     }
     if paths.iter().any(|path| path.starts_with("src/panel/")) {
         lines.push(
-            "Exercise the affected keybindings and render at narrow terminal widths.".to_string(),
+            "- Exercise the affected keybindings and render at narrow terminal widths.".to_string(),
         );
     }
-    if !paths.iter().any(|path| is_test_path(path)) && !entries.is_empty() {
+
+    if path_matches_any(&paths, &["kafka", "topic", "event", "request", "response"])
+        || symbol_matches_any(entries, &["request", "response", "event", "topic"])
+    {
         lines.push(
-            "No test files changed; consider adding coverage for the user-visible flow."
+            "- Verify message contracts: topic names, serialized field names, nullable/default values, and backwards compatibility."
+                .to_string(),
+        );
+    }
+    if path_matches_any(&paths, &["adapter", "mapper", "converter"])
+        || symbol_matches_any(entries, &["adapter", "mapper", "convert", "deserialize"])
+    {
+        lines.push(
+            "- Check adapter and mapping boundaries with representative old and new payloads."
+                .to_string(),
+        );
+    }
+    if path_matches_any(&paths, &["service", "processor", "workflow", "flow"])
+        || symbol_matches_any(entries, &["service", "processor", "workflow", "flow"])
+    {
+        lines.push(
+            "- Trace service flow side effects, ordering, retries, and idempotency for partial failures."
+                .to_string(),
+        );
+    }
+    if path_matches_any(&paths, &["model", "dto", "request", "response"])
+        || symbol_matches_any(entries, &["data class", "class", "enum"])
+    {
+        lines.push(
+            "- Review model/API compatibility: required fields, defaults, validation, and renamed concepts."
+                .to_string(),
+        );
+    }
+    if path_matches_any(
+        &paths,
+        &["repository", "database", "migration", "cache", "dao"],
+    ) || symbol_matches_any(entries, &["repository", "cache", "query"])
+    {
+        lines.push(
+            "- Check persistence and cache behavior, including migrations, invalidation, and rollback expectations."
+                .to_string(),
+        );
+    }
+    if has_tests {
+        lines.push(
+            "- Run the changed tests plus the nearest broader suite that exercises the touched production paths."
+                .to_string(),
+        );
+    } else if has_non_tests && !entries.is_empty() {
+        lines.push(
+            "- No test files changed; consider adding coverage for the user-visible flow."
+                .to_string(),
+        );
+    }
+    if !entries.is_empty() {
+        lines.push(
+            "- Use `l` on `Full diff against main` for an Ollama pass over the whole change, then use `l` again on the highest-risk file or entry nodes for focused follow-up."
                 .to_string(),
         );
     }
     if lines.is_empty() {
         lines.push(
-            "Review the entry point trace and diffstat, then run the standard test command."
+            "- Review the entry point trace and diffstat, then run the standard test command."
                 .to_string(),
         );
     }
     lines
+}
+
+fn path_matches_any(paths: &[&str], needles: &[&str]) -> bool {
+    paths.iter().any(|path| {
+        let lower = path.to_ascii_lowercase();
+        needles.iter().any(|needle| lower.contains(needle))
+    })
+}
+
+fn symbol_matches_any(entries: &[ReviewEntryPoint], needles: &[&str]) -> bool {
+    entries.iter().any(|entry| {
+        let lower = entry.symbol.to_ascii_lowercase();
+        needles.iter().any(|needle| lower.contains(needle))
+    })
 }
 
 fn is_test_path(path: &str) -> bool {
@@ -1125,8 +1195,63 @@ mod tests {
             "source-set test files should count as tests: {checklist}"
         );
         assert!(
+            checklist.contains("Run the changed tests"),
+            "changed tests should produce a concrete test prompt: {checklist}"
+        );
+        assert!(checklist.contains("Use `l`"), "{checklist}");
+        assert!(
             summary.contains("Primary touched areas:\n- test coverage"),
             "{summary}"
+        );
+    }
+
+    #[test]
+    fn review_checklist_adds_domain_specific_prompts() {
+        let files = vec![
+            ReviewFile {
+                status: "M".into(),
+                path: "src/main/kotlin/app/adapter/kafka/BalanceUpdatedEvent.kt".into(),
+                old_path: None,
+            },
+            ReviewFile {
+                status: "M".into(),
+                path: "src/main/kotlin/app/service/BalanceService.kt".into(),
+                old_path: None,
+            },
+            ReviewFile {
+                status: "M".into(),
+                path: "src/main/kotlin/app/model/BalanceRequest.kt".into(),
+                old_path: None,
+            },
+        ];
+        let entries = vec![ReviewEntryPoint {
+            path: "src/main/kotlin/app/service/BalanceService.kt".into(),
+            line: Some(12),
+            symbol: "class BalanceService".into(),
+            description: "updates balance".into(),
+            hunk: String::new(),
+            patch: Vec::new(),
+            context: Vec::new(),
+            added: 1,
+            removed: 0,
+        }];
+
+        let checklist = review_checklist(&files, &entries).join("\n");
+
+        assert!(checklist.contains("message contracts"), "{checklist}");
+        assert!(
+            checklist.contains("adapter and mapping boundaries"),
+            "{checklist}"
+        );
+        assert!(
+            checklist.contains("service flow side effects"),
+            "{checklist}"
+        );
+        assert!(checklist.contains("model/API compatibility"), "{checklist}");
+        assert!(checklist.contains("Ollama pass"), "{checklist}");
+        assert!(
+            checklist.contains("No test files changed"),
+            "production-only domain changes should still ask about coverage: {checklist}"
         );
     }
 }
