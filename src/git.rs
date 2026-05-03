@@ -8,6 +8,7 @@ use crate::config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST, DEFAULT_PUSH_REMOTE};
 mod config;
 mod flow;
 mod review;
+mod status;
 
 pub use config::{
     AuthorConfig, IdeOpenCommand, add_to_gitignore, author_config, clear_local_author,
@@ -25,6 +26,9 @@ pub use flow::{
 };
 pub use review::{
     AssistedReview, ReviewNode, assisted_review_against_main, build_assisted_review_against_main,
+};
+pub use status::{
+    FileEntry, parse_porcelain, parse_porcelain_xy, status_entries, status_porcelain,
 };
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -80,59 +84,6 @@ pub fn is_repo() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
-}
-
-/// Parse `git status -z --porcelain=v1` output.
-/// Returns `(unstaged, staged)` — a file may appear in both.
-pub fn parse_porcelain(bytes: &[u8]) -> (Vec<String>, Vec<String>) {
-    let mut unstaged = Vec::new();
-    let mut staged = Vec::new();
-
-    // Records are NUL-separated. For rename/copy (R/C) the record contains
-    // "XY path" and the *old* path follows as a second NUL-terminated record.
-    let mut records: Vec<&[u8]> = bytes.split(|&b| b == 0).collect();
-    // Remove trailing empty entry produced by a trailing NUL.
-    if records.last().map(|r| r.is_empty()).unwrap_or(false) {
-        records.pop();
-    }
-
-    let mut i = 0;
-    while i < records.len() {
-        let rec = records[i];
-        i += 1;
-
-        if rec.len() < 4 {
-            // Must be at least "XY p" — skip short/empty records.
-            continue;
-        }
-
-        let x = rec[0] as char; // index status
-        let y = rec[1] as char; // worktree status
-        // rec[2] is the space separator; path starts at index 3.
-        let path = String::from_utf8_lossy(&rec[3..]).into_owned();
-
-        // Rename/copy: consume the *old* path record (we only show new path).
-        if x == 'R' || x == 'C' {
-            i += 1; // skip old-path record
-        }
-
-        // Index (staged) side: X ∈ {M, A, D, R, C, U} and not ' '.
-        if x != ' ' && x != '?' {
-            staged.push(path.clone());
-        }
-
-        // Worktree (unstaged) side: Y ∈ {M, D, A, ?, U} and not ' '.
-        if y != ' ' && y != '.' {
-            unstaged.push(path.clone());
-        }
-    }
-
-    (unstaged, staged)
-}
-
-pub fn status_porcelain() -> Result<(Vec<String>, Vec<String>)> {
-    let out = run(&["status", "-z", "--porcelain=v1"])?;
-    Ok(parse_porcelain(&out.stdout))
 }
 
 pub fn stage(path: &str) -> Result<()> {
@@ -224,13 +175,6 @@ pub fn staged_diff() -> Result<String> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileEntry {
-    pub path: String,
-    pub x: char,
-    pub y: char,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branch {
     pub name: String,
     pub is_current: bool,
@@ -290,43 +234,6 @@ impl crate::graph::CommitNode for Commit {
     fn is_first_parent(&self) -> bool {
         self.is_first_parent
     }
-}
-
-/// Parse `git status -z --porcelain=v1` output into unified `FileEntry` vec.
-/// Each entry carries the raw x and y status chars.
-pub fn parse_porcelain_xy(bytes: &[u8]) -> Vec<FileEntry> {
-    let mut records: Vec<&[u8]> = bytes.split(|&b| b == 0).collect();
-    if records.last().map(|r| r.is_empty()).unwrap_or(false) {
-        records.pop();
-    }
-
-    let mut entries = Vec::new();
-    let mut i = 0;
-    while i < records.len() {
-        let rec = records[i];
-        i += 1;
-
-        if rec.len() < 4 {
-            continue;
-        }
-
-        let x = rec[0] as char;
-        let y = rec[1] as char;
-        let path = String::from_utf8_lossy(&rec[3..]).into_owned();
-
-        if x == 'R' || x == 'C' {
-            i += 1; // skip old-path record
-        }
-
-        entries.push(FileEntry { path, x, y });
-    }
-
-    entries
-}
-
-pub fn status_entries() -> Result<Vec<FileEntry>> {
-    let out = run(&["status", "-z", "--porcelain=v1"])?;
-    Ok(parse_porcelain_xy(&out.stdout))
 }
 
 pub fn list_branches() -> Result<Vec<Branch>> {
