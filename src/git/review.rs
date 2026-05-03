@@ -843,19 +843,27 @@ fn effect_summary(
         lines.extend(areas.into_iter().map(|area| format!("- {area}")));
     }
 
-    let mut symbols: Vec<String> = entries
+    let mut trace_points: Vec<String> = entries
         .iter()
         .filter(|entry| entry.symbol != "file scope")
-        .map(|entry| entry.symbol.clone())
+        .map(trace_point)
         .collect();
-    symbols.sort();
-    symbols.dedup();
-    if !symbols.is_empty() {
+    trace_points.sort();
+    trace_points.dedup();
+    if !trace_points.is_empty() {
         lines.push("Start tracing at:".to_string());
-        lines.extend(symbols.into_iter().map(|symbol| format!("- {symbol}")));
+        lines.extend(trace_points.into_iter().map(|point| format!("- {point}")));
     }
 
     lines
+}
+
+fn trace_point(entry: &ReviewEntryPoint) -> String {
+    let location = entry
+        .line
+        .map(|line| format!("{}:{line}", entry.path))
+        .unwrap_or_else(|| entry.path.clone());
+    format!("{} — {}", entry.symbol, location)
 }
 
 fn render_entry_points(out: &mut String, entries: &[ReviewEntryPoint]) {
@@ -1155,15 +1163,49 @@ mod tests {
         let summary = effect_summary(&files, &entries, &["abc123".into()]).join("\n");
 
         assert!(
-            summary.contains("Start tracing at:\n- fn symbol_0"),
+            summary.contains("Start tracing at:\n- fn symbol_0 — src/lib.rs:1"),
             "{summary}"
         );
-        assert!(summary.contains("fn symbol_0"), "{summary}");
-        assert!(summary.contains("fn symbol_9"), "{summary}");
+        assert!(summary.contains("fn symbol_9 — src/lib.rs:10"), "{summary}");
         assert!(
             !summary.contains("..."),
             "entry symbol list should not be truncated: {summary}"
         );
+    }
+
+    #[test]
+    fn effect_summary_keeps_same_symbol_in_different_files() {
+        let files = vec![
+            ReviewFile {
+                status: "M".into(),
+                path: "src/a.kt".into(),
+                old_path: None,
+            },
+            ReviewFile {
+                status: "M".into(),
+                path: "src/b.kt".into(),
+                old_path: None,
+            },
+        ];
+        let entries = ["src/a.kt", "src/b.kt"]
+            .into_iter()
+            .map(|path| ReviewEntryPoint {
+                path: path.into(),
+                line: Some(7),
+                symbol: "fun update".into(),
+                description: "updates flow".into(),
+                hunk: String::new(),
+                patch: Vec::new(),
+                context: Vec::new(),
+                added: 1,
+                removed: 0,
+            })
+            .collect::<Vec<_>>();
+
+        let summary = effect_summary(&files, &entries, &["abc123".into()]).join("\n");
+
+        assert!(summary.contains("fun update — src/a.kt:7"), "{summary}");
+        assert!(summary.contains("fun update — src/b.kt:7"), "{summary}");
     }
 
     #[test]
