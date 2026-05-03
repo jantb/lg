@@ -119,12 +119,7 @@ fn markdown_lines(raw: &str, prefix: &str, wrap_width: u16) -> Vec<Line<'static>
         );
     }
 
-    let mut spans = prefixed(prefix);
-    if indent_len > 0 {
-        spans.push(Span::raw(" ".repeat(indent_len)));
-    }
-    spans.extend(inline_spans(trimmed, Style::default().fg(Color::Gray)));
-    vec![Line::from(spans)]
+    wrap_plain(prefix, indent_len, trimmed, wrap_width, prefix_width)
 }
 
 fn wrap_with_marker(
@@ -155,6 +150,30 @@ fn wrap_with_marker(
                 spans.push(marker.clone());
             } else {
                 spans.push(Span::raw(" ".repeat(marker_width)));
+            }
+            spans.extend(inline_spans(&chunk, style));
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn wrap_plain(
+    prefix: &str,
+    indent_len: usize,
+    content: &str,
+    wrap_width: u16,
+    prefix_width: usize,
+) -> Vec<Line<'static>> {
+    let available = (wrap_width as usize).saturating_sub(prefix_width).max(1);
+    let chunks = word_wrap(content, available);
+    let style = Style::default().fg(Color::Gray);
+
+    chunks
+        .into_iter()
+        .map(|chunk| {
+            let mut spans = prefixed(prefix);
+            if indent_len > 0 {
+                spans.push(Span::raw(" ".repeat(indent_len)));
             }
             spans.extend(inline_spans(&chunk, style));
             Line::from(spans)
@@ -579,9 +598,15 @@ mod tests {
     }
 
     #[test]
-    fn plain_paragraph_is_emitted_as_single_line() {
-        // Non-bullet/heading lines still produce one Line so existing rendering
-        // (and ratatui's wrap) keep working.
+    fn plain_paragraph_wraps_at_word_boundary() {
+        let lines = render("just a paragraph that needs wrapping", "│ ", 16);
+        assert!(lines.len() > 1);
+        assert_eq!(line_text(&lines[0]), "│ just a");
+        assert_eq!(line_text(&lines[1]), "│ paragraph that");
+    }
+
+    #[test]
+    fn short_plain_paragraph_is_emitted_as_single_line() {
         let lines = render("just a paragraph", "│ ", 80);
         assert_eq!(lines.len(), 1);
         assert_eq!(line_text(&lines[0]), "│ just a paragraph");

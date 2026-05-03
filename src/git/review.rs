@@ -851,14 +851,12 @@ fn effect_summary(
     symbols.dedup();
     if !symbols.is_empty() {
         lines.push(format!(
-            "Start tracing at: {}{}.",
+            "Start tracing at: {}.",
             symbols
                 .iter()
-                .take(8)
-                .cloned()
+                .map(String::as_str)
                 .collect::<Vec<_>>()
-                .join(", "),
-            if symbols.len() > 8 { ", ..." } else { "" }
+                .join(", ")
         ));
     }
 
@@ -1057,5 +1055,36 @@ mod tests {
     fn truncate_review_text_appends_ellipsis_when_cut() {
         assert_eq!(truncate_review_text("short", 10), "short");
         assert_eq!(truncate_review_text("0123456789xyz", 10), "0123456789...");
+    }
+
+    #[test]
+    fn effect_summary_lists_all_entry_symbols() {
+        let files = vec![ReviewFile {
+            status: "M".into(),
+            path: "src/lib.rs".into(),
+            old_path: None,
+        }];
+        let entries = (0..10)
+            .map(|idx| ReviewEntryPoint {
+                path: "src/lib.rs".into(),
+                line: Some(idx + 1),
+                symbol: format!("fn symbol_{idx}"),
+                description: "updates symbol".into(),
+                hunk: String::new(),
+                patch: Vec::new(),
+                context: Vec::new(),
+                added: 1,
+                removed: 0,
+            })
+            .collect::<Vec<_>>();
+
+        let summary = effect_summary(&files, &entries, &["abc123".into()]).join("\n");
+
+        assert!(summary.contains("fn symbol_0"), "{summary}");
+        assert!(summary.contains("fn symbol_9"), "{summary}");
+        assert!(
+            !summary.contains("..."),
+            "entry symbol list should not be truncated: {summary}"
+        );
     }
 }

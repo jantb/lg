@@ -643,6 +643,43 @@ fn review_panel_styles_tree_titles_and_change_counts() {
 }
 
 #[test]
+fn review_panel_renders_summary_body_as_markdown_without_cutoff() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(70, 14)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.diff_viewport_width = 68;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![ReviewNode {
+            id: "summary".into(),
+            parent: None,
+            depth: 0,
+            title: "Summary: feature/example vs origin/main (12 commits, 20 files)".into(),
+            body: vec![
+                "- **Generated summary** keeps alpha beta gamma delta epsilon zeta eta theta iota kappa lambda omega.".into(),
+            ],
+            context: Vec::new(),
+        }],
+    });
+
+    app.render().unwrap();
+    let rendered = buffer_text(&app);
+
+    assert!(rendered.contains("• Generated summary"), "{rendered}");
+    assert!(
+        rendered.contains("lambda omega"),
+        "summary body should wrap instead of truncating: {rendered}"
+    );
+    let buf = app.terminal.backend().buffer();
+    assert!(
+        buf.content()
+            .iter()
+            .any(|cell| cell.symbol() == "•" && cell.fg == Color::Yellow),
+        "summary markdown bullet should be rendered: {rendered}"
+    );
+}
+
+#[test]
 fn diff_highlighting_colors_markers_and_changed_text_separately() {
     let added = lg::ui::highlight_diff_line("+added");
     let removed = lg::ui::highlight_diff_line("-removed");

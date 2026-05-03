@@ -84,17 +84,23 @@ pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: b
         ));
 
         if expanded {
-            let syntax_path = review_node_path(&node.title);
+            let syntax_path = review_node_syntax_path(&node.title);
             // Each section/marker line repeats this prefix — render it once.
             let body_prefix = format!("{indent}  │ ");
             if renders_review_body(node_id) {
-                for body in &node.body {
-                    let mut spans = vec![Span::styled(body_prefix.clone(), body_style)];
-                    let body_line = syntax_path
-                        .map(|path| ui::highlight_diff_line_for_path(body, path))
-                        .unwrap_or_else(|| ui::highlight_diff_line(body));
-                    spans.extend(body_line.spans);
-                    lines.push(Line::from(spans));
+                if let Some(path) = syntax_path {
+                    for body in &node.body {
+                        let mut spans = vec![Span::styled(body_prefix.clone(), body_style)];
+                        let body_line = ui::highlight_diff_line_for_path(body, path);
+                        spans.extend(body_line.spans);
+                        lines.push(Line::from(spans));
+                    }
+                } else {
+                    lines.extend(markdown::render(
+                        &node.body.join("\n"),
+                        &body_prefix,
+                        wrap_width,
+                    ));
                 }
             }
             if state.review_context_open.contains(node_id) {
@@ -251,6 +257,10 @@ pub(super) fn review_node_path(title: &str) -> Option<&str> {
         .unwrap_or(location)
         .trim();
     (!path.is_empty()).then_some(path)
+}
+
+fn review_node_syntax_path(title: &str) -> Option<&str> {
+    review_node_path(title).filter(|path| super::is_supported_source_path(path))
 }
 
 fn is_review_file_node(node_id: &str) -> bool {
@@ -570,7 +580,7 @@ fn review_node_line_count(state: &AppState, idx: usize) -> usize {
     let context_open = state.review_context_open.contains(&node.id);
     let assist = review_assist_text(state, &node.id);
     if renders_review_body(&node.id) {
-        count += node.body.len();
+        count += review_body_line_count(state, node);
     }
     if context_open {
         count += review_source_context_line_count(state, node);
@@ -582,6 +592,20 @@ fn review_node_line_count(state: &AppState, idx: usize) -> usize {
         count += 1;
     }
     count
+}
+
+fn review_body_line_count(state: &AppState, node: &crate::git::ReviewNode) -> usize {
+    let Some(_path) = review_node_syntax_path(&node.title) else {
+        let indent = review_indent(node.depth);
+        let prefix = format!("{indent}  │ ");
+        return markdown::render(
+            &node.body.join("\n"),
+            &prefix,
+            state.diff_viewport_width.saturating_sub(2),
+        )
+        .len();
+    };
+    node.body.len()
 }
 
 fn review_source_context_line_count(state: &AppState, node: &crate::git::ReviewNode) -> usize {
