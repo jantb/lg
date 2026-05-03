@@ -600,6 +600,55 @@ fn pressing_c_opens_commit_modal() {
 }
 
 #[test]
+fn pressing_c_with_only_unstaged_changes_prompts_to_stage_all() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 24)).unwrap();
+    app.state.files = vec![FileEntry {
+        path: "a.rs".into(),
+        x: ' ',
+        y: 'M',
+    }];
+
+    app.send_key(key(KeyCode::Char('c'))).unwrap();
+
+    assert_eq!(app.state.modal, Modal::StageAllBeforeCommit);
+}
+
+#[test]
+fn stage_all_before_commit_prompt_accepts_or_cancels() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 24)).unwrap();
+    app.state.modal = Modal::StageAllBeforeCommit;
+
+    app.send_key(key(KeyCode::Char('y'))).unwrap();
+
+    assert_eq!(app.state.modal, Modal::None);
+    assert_eq!(
+        app.state.pending_action,
+        Some(PendingAction::StageAllAndCommit)
+    );
+
+    app.state.pending_action = None;
+    app.state.modal = Modal::StageAllBeforeCommit;
+    app.send_key(key(KeyCode::Esc)).unwrap();
+
+    assert_eq!(app.state.modal, Modal::None);
+    assert_eq!(app.state.pending_action, None);
+}
+
+#[test]
+fn pressing_c_with_staged_changes_opens_commit_modal() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 24)).unwrap();
+    app.state.files = vec![FileEntry {
+        path: "b.rs".into(),
+        x: 'A',
+        y: ' ',
+    }];
+
+    app.send_key(key(KeyCode::Char('c'))).unwrap();
+
+    assert_eq!(app.state.modal, Modal::Commit);
+}
+
+#[test]
 fn pressing_esc_in_commit_closes_modal_and_keeps_message() {
     let mut state = make_state_with_files();
     state.modal = Modal::Commit;

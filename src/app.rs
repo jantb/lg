@@ -193,6 +193,7 @@ where
             match state.modal {
                 Modal::None => {}
                 Modal::Commit => panel::commit::render(state, area, frame),
+                Modal::StageAllBeforeCommit => panel::stage_all::render(state, area, frame),
                 Modal::Push => panel::push::render(state, area, frame),
                 Modal::Author => panel::author::render(state, area, frame),
                 Modal::Help => panel::help::render(state, area, frame),
@@ -223,6 +224,10 @@ where
             }
             Modal::Commit => {
                 panel::commit::handle_key(&mut self.state, k)?;
+                return self.render();
+            }
+            Modal::StageAllBeforeCommit => {
+                panel::stage_all::handle_key(&mut self.state, k)?;
                 return self.render();
             }
             Modal::Push => {
@@ -283,7 +288,7 @@ where
                 self.state.focus = prev_pane(self.state.focus);
             }
             KeyCode::Char('c') => {
-                self.state.open_commit_modal();
+                self.state.open_commit_or_stage_all_prompt();
             }
             KeyCode::Char('a') => {
                 open_author_modal(&mut self.state);
@@ -451,6 +456,17 @@ impl App {
                     move || {
                         let out = crate::git::commit(&msg)?;
                         Ok(out.lines().next().unwrap_or("committed").to_owned())
+                    },
+                );
+            }
+            PendingAction::StageAllAndCommit => {
+                spawn_operation(
+                    &mut self.state,
+                    "staging",
+                    OperationKind::StageAllAndCommit,
+                    || {
+                        crate::git::stage_all()?;
+                        Ok("staged all".to_string())
                     },
                 );
             }
@@ -1184,10 +1200,15 @@ impl App {
                             self.state.push_after_commit = false;
                             spawn_push(&mut self.state);
                         }
+                    } else if kind == OperationKind::StageAllAndCommit {
+                        self.state.open_commit_modal();
                     }
                 }
                 Err(e) => {
-                    if kind == OperationKind::Commit {
+                    if matches!(
+                        kind,
+                        OperationKind::Commit | OperationKind::StageAllAndCommit
+                    ) {
                         self.state.push_after_commit = false;
                     }
                     self.state.set_status(e, true);
@@ -1397,6 +1418,7 @@ impl App {
             match state.modal {
                 Modal::None => {}
                 Modal::Commit => panel::commit::render(state, area, frame),
+                Modal::StageAllBeforeCommit => panel::stage_all::render(state, area, frame),
                 Modal::Push => panel::push::render(state, area, frame),
                 Modal::Author => panel::author::render(state, area, frame),
                 Modal::Help => panel::help::render(state, area, frame),
@@ -1428,6 +1450,10 @@ impl App {
             }
             Modal::Commit => {
                 panel::commit::handle_key(&mut self.state, k)?;
+                return Ok(());
+            }
+            Modal::StageAllBeforeCommit => {
+                panel::stage_all::handle_key(&mut self.state, k)?;
                 return Ok(());
             }
             Modal::Push => {
@@ -1514,7 +1540,7 @@ impl App {
                 return Ok(());
             }
             KeyCode::Char('c') => {
-                self.state.open_commit_modal();
+                self.state.open_commit_or_stage_all_prompt();
                 return Ok(());
             }
             KeyCode::Char('a') => {

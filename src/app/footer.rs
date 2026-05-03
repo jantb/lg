@@ -121,6 +121,11 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
             ],
             Color::Cyan,
         ),
+        Modal::StageAllBeforeCommit => modal_spans(
+            "Commit ",
+            &[("y", "stage all"), ("n/Esc", "cancel")],
+            Color::Yellow,
+        ),
         Modal::Push => modal_spans(
             "Push modal ",
             &[("Enter", "push"), ("Esc", "cancel")],

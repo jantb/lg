@@ -80,6 +80,7 @@ pub enum OperationMsg {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationKind {
     Commit,
+    StageAllAndCommit,
     Worktree,
 }
 
@@ -243,6 +244,7 @@ pub enum Pane {
 pub enum Modal {
     None,
     Commit,
+    StageAllBeforeCommit,
     Push,
     Author,
     Help,
@@ -288,6 +290,7 @@ pub enum PendingAction {
     GenerateMessage,
     ReviewAssist(String),
     Commit,
+    StageAllAndCommit,
     Push,
     Pull,
     SaveAuthor {
@@ -583,6 +586,7 @@ impl AppState {
                 Some(PendingAction::GenerateMessage) => Some("starting generator"),
                 Some(PendingAction::ReviewAssist(_)) => Some("starting explanation"),
                 Some(PendingAction::Commit) => Some("committing"),
+                Some(PendingAction::StageAllAndCommit) => Some("staging"),
                 Some(PendingAction::Push) => Some("starting push"),
                 Some(PendingAction::Pull) => Some("starting pull"),
                 Some(
@@ -723,6 +727,15 @@ impl AppState {
         if self.commit_message.is_empty() && self.generation.is_none() {
             self.set_status("generating\u{2026}", false);
             self.pending_action = Some(PendingAction::GenerateMessage);
+        }
+    }
+
+    pub fn open_commit_or_stage_all_prompt(&mut self) {
+        let (staged, unstaged, untracked) = self.file_counts();
+        if staged == 0 && (unstaged > 0 || untracked > 0) {
+            self.modal = Modal::StageAllBeforeCommit;
+        } else {
+            self.open_commit_modal();
         }
     }
 

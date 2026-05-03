@@ -223,7 +223,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('c') => {
             if state.modal == Modal::None {
-                state.open_commit_modal();
+                state.open_commit_or_stage_all_prompt();
             }
         }
         KeyCode::Char('p') => {
