@@ -6,6 +6,7 @@ use std::sync::{Mutex, OnceLock};
 use crate::config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST, DEFAULT_PUSH_REMOTE};
 
 mod config;
+mod diff;
 mod flow;
 mod review;
 mod status;
@@ -14,6 +15,12 @@ pub use config::{
     AuthorConfig, IdeOpenCommand, add_to_gitignore, author_config, clear_local_author,
     clear_subtree_author, ide_open_command, open_file_in_ide, open_project_in_ide,
     project_open_command, set_local_author, set_subtree_author, subtree_author_rule_exists,
+};
+#[cfg(test)]
+use diff::label_commit_patch;
+pub use diff::{
+    all_diffs, branch_log, fetch_updates, file_diff, folder_diff, repo_root, show_commit,
+    staged_diff,
 };
 pub use flow::{
     abort_in_progress_operation, abort_in_progress_operation_with_return, checkout_branch,
@@ -167,11 +174,6 @@ pub fn pull(remote: &str, branch: &str) -> Result<String> {
         anyhow::bail!("branch name must not be empty");
     }
     run_combined(&["pull", "--ff-only", remote, branch])
-}
-
-pub fn staged_diff() -> Result<String> {
-    let out = run(&["diff", "--cached"])?;
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -513,108 +515,6 @@ fn short_author_name(author: &str) -> String {
         .chars()
         .take(2)
         .collect()
-}
-
-pub fn repo_root() -> Result<String> {
-    let out = run(&["rev-parse", "--show-toplevel"])?;
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-pub fn fetch_updates() -> Result<String> {
-    let remotes = run(&["remote"])?;
-    if String::from_utf8_lossy(&remotes.stdout).trim().is_empty() {
-        return Ok("no remotes configured".to_string());
-    }
-
-    let text = run_combined(&["fetch", "--all", "--prune"])?;
-    let status = text
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| line.trim().to_owned())
-        .unwrap_or_else(|| "fetched branch updates".to_string());
-    Ok(status)
-}
-
-pub fn all_diffs() -> Result<String> {
-    let cached_out = run(&["diff", "--cached"])?;
-    let worktree_out = run(&["diff"])?;
-    let cached = String::from_utf8_lossy(&cached_out.stdout).into_owned();
-    let worktree = String::from_utf8_lossy(&worktree_out.stdout).into_owned();
-    Ok(format!(
-        "== staged (--cached) ==\n{}\n== worktree ==\n{}",
-        cached, worktree
-    ))
-}
-
-pub fn file_diff(path: &str) -> Result<String> {
-    let cached_out = run(&["diff", "--cached", "--", path])?;
-    let worktree_out = run(&["diff", "--", path])?;
-    let cached = String::from_utf8_lossy(&cached_out.stdout).into_owned();
-    let worktree = String::from_utf8_lossy(&worktree_out.stdout).into_owned();
-    Ok(format!(
-        "== staged (--cached) ==\n{}\n== worktree ==\n{}",
-        cached, worktree
-    ))
-}
-
-/// Aggregate staged + worktree diff for everything under a folder prefix.
-pub fn folder_diff(prefix: &str) -> Result<String> {
-    let spec = if prefix.is_empty() {
-        ".".to_string()
-    } else {
-        format!("{prefix}/")
-    };
-    let cached_out = run(&["diff", "--cached", "--", &spec])?;
-    let worktree_out = run(&["diff", "--", &spec])?;
-    let cached = String::from_utf8_lossy(&cached_out.stdout).into_owned();
-    let worktree = String::from_utf8_lossy(&worktree_out.stdout).into_owned();
-    Ok(format!(
-        "== staged (--cached) {prefix}/ ==\n{}\n== worktree {prefix}/ ==\n{}",
-        cached, worktree
-    ))
-}
-
-pub fn show_commit(sha: &str) -> Result<String> {
-    let format = "format:commit %H%nAuthor: %an <%ae>%nDate:   %ad%n%nMessage:%n%B%nFiles changed:";
-    let out = run(&[
-        "show",
-        "--date=short",
-        "--patch-with-stat",
-        "--find-renames",
-        "--root",
-        &format!("--format={format}"),
-        sha,
-    ])?;
-    Ok(label_commit_patch(&String::from_utf8_lossy(&out.stdout)))
-}
-
-pub fn branch_log(reference: &str, limit: usize) -> Result<String> {
-    let n = limit.to_string();
-    let out = run(&[
-        "log",
-        "--graph",
-        "--decorate",
-        "--date=relative",
-        "--abbrev-commit",
-        "-n",
-        &n,
-        reference,
-        "--",
-    ])?;
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-fn label_commit_patch(text: &str) -> String {
-    if let Some(pos) = text.find("\ndiff --git ") {
-        let mut out = String::with_capacity(text.len() + "\nPatch:\n".len());
-        out.push_str(text[..pos].trim_end());
-        out.push_str("\n\nPatch:\n");
-        out.push_str(&text[pos + 1..]);
-        out
-    } else {
-        text.to_owned()
-    }
 }
 
 fn preferred_commit_ref(remote_ref: &str, local_ref: &str) -> Option<String> {

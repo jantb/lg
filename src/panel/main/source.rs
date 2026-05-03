@@ -78,7 +78,7 @@ pub(super) fn source_sections(
             .iter()
             .filter(|candidate| review_node_in_subtree(review, candidate, &node.id)),
     ) {
-        let Some(path) = super::review_node_path(&candidate.title) else {
+        let Some(path) = super::review::review_node_path(&candidate.title) else {
             continue;
         };
         if candidate.body.is_empty() && candidate.context.is_empty() {
