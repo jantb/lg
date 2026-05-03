@@ -2318,6 +2318,8 @@ fn push_modal_handle_key_is_noop_while_running() {
 fn layout_renders_all_panel_borders() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 24)).unwrap();
     app.state = make_state_with_files();
+    app.state.repo_root = Some("/tmp/work/lg".into());
+    app.state.branch = Some("main".into());
     add_flow_branches(&mut app.state);
     app.render().unwrap();
 
@@ -2329,6 +2331,7 @@ fn layout_renders_all_panel_borders() {
         }
     }
 
+    assert!(all_text.contains("lg"), "missing project header");
     assert!(all_text.contains("Status"), "missing Status panel title");
     assert!(
         all_text.contains("Deployment Status"),
@@ -2392,7 +2395,7 @@ fn layout_accepts_resized_left_panel_heights() {
     assert_eq!(resized.environments.height, 6);
     assert_eq!(resized.files.height, 5);
     assert_eq!(resized.branches.height, 4);
-    assert_eq!(resized.commits.height, 4);
+    assert_eq!(resized.commits.height, 3);
 }
 
 #[test]

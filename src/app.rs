@@ -36,6 +36,7 @@ use crate::{
 };
 
 mod footer;
+mod header;
 mod mouse;
 mod refresh;
 mod review_assist;
@@ -181,6 +182,7 @@ where
             );
             let focused_pane = state.focus;
 
+            header::draw(frame, rects.header, state);
             panel::status::render(state, rects.status, frame, focused_pane == Pane::Status);
             panel::environments::render(state, rects.environments, frame);
             panel::files::render(state, rects.files, frame, focused_pane == Pane::Files);
@@ -870,6 +872,7 @@ impl App {
         snapshot: crate::state::RefreshSnapshot,
         refresh_diff: bool,
     ) {
+        self.state.repo_root = snapshot.repo_root;
         if let Some(files) = snapshot.files {
             self.state.files = files;
         }
@@ -1408,6 +1411,7 @@ impl App {
             );
             let focused_pane = state.focus;
 
+            header::draw(frame, rects.header, state);
             panel::status::render(state, rects.status, frame, focused_pane == Pane::Status);
             panel::environments::render(state, rects.environments, frame);
             panel::files::render(state, rects.files, frame, focused_pane == Pane::Files);

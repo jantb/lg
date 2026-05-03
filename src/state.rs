@@ -113,6 +113,7 @@ pub enum RefreshMsg {
 
 #[derive(Debug)]
 pub struct RefreshSnapshot {
+    pub repo_root: Option<String>,
     pub files: Option<Vec<FileEntry>>,
     pub branches: Option<Vec<Branch>>,
     pub remote_branches: Option<Vec<RemoteBranch>>,
@@ -366,6 +367,7 @@ pub struct AppState {
     pub author_field: AuthorField,
     pub author_has_local_override: bool,
     pub author_has_subtree_rule: bool,
+    pub repo_root: Option<String>,
     pub branch: Option<String>,
     pub remote_url: Option<String>,
     pub ahead_behind: Option<(u32, u32)>,
@@ -504,6 +506,7 @@ impl AppState {
             author_field: AuthorField::Path,
             author_has_local_override: false,
             author_has_subtree_rule: false,
+            repo_root: None,
             branch: None,
             remote_url: None,
             ahead_behind: None,

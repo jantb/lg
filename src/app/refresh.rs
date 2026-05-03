@@ -52,6 +52,7 @@ pub(super) fn build_refresh_snapshot() -> RefreshSnapshot {
         }
     };
     RefreshSnapshot {
+        repo_root: crate::git::repo_root().ok(),
         files,
         branches,
         remote_branches,
@@ -66,6 +67,7 @@ pub(super) fn build_refresh_snapshot() -> RefreshSnapshot {
 }
 
 pub(super) fn prime_branches(state: &mut AppState) {
+    state.repo_root = crate::git::repo_root().ok();
     if let Ok(branches) = crate::git::list_branches() {
         state.branch = branches
             .iter()

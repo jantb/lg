@@ -31,6 +31,7 @@ pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
 }
 
 pub struct LayoutRects {
+    pub header: Rect,
     pub status: Rect,
     pub environments: Rect,
     pub files: Rect,
@@ -62,10 +63,15 @@ pub fn split_layout_with_sizes(
     requested_left_width: Option<u16>,
     requested_left_panel_heights: Option<LeftPanelHeights>,
 ) -> LayoutRects {
-    let rows = Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).split(area);
-    let left_width = left_column_width(rows[0].width, requested_left_width);
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(3),
+        Constraint::Length(1),
+    ])
+    .split(area);
+    let left_width = left_column_width(rows[1].width, requested_left_width);
     let cols =
-        Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).split(rows[0]);
+        Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).split(rows[1]);
     let left_heights = normalize_left_panel_heights(
         cols[0].height,
         show_environments,
@@ -103,13 +109,14 @@ pub fn split_layout_with_sizes(
     };
 
     LayoutRects {
+        header: rows[0],
         status,
         environments,
         files,
         branches,
         commits,
         main: cols[1],
-        footer: rows[1],
+        footer: rows[2],
     }
 }
 
