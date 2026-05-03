@@ -839,7 +839,8 @@ fn effect_summary(
         areas.push("build or dependency configuration");
     }
     if !areas.is_empty() {
-        lines.push(format!("Primary touched areas: {}.", areas.join(", ")));
+        lines.push("Primary touched areas:".to_string());
+        lines.extend(areas.into_iter().map(|area| format!("- {area}")));
     }
 
     let mut symbols: Vec<String> = entries
@@ -850,14 +851,8 @@ fn effect_summary(
     symbols.sort();
     symbols.dedup();
     if !symbols.is_empty() {
-        lines.push(format!(
-            "Start tracing at: {}.",
-            symbols
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+        lines.push("Start tracing at:".to_string());
+        lines.extend(symbols.into_iter().map(|symbol| format!("- {symbol}")));
     }
 
     lines
@@ -1089,6 +1084,10 @@ mod tests {
 
         let summary = effect_summary(&files, &entries, &["abc123".into()]).join("\n");
 
+        assert!(
+            summary.contains("Start tracing at:\n- fn symbol_0"),
+            "{summary}"
+        );
         assert!(summary.contains("fn symbol_0"), "{summary}");
         assert!(summary.contains("fn symbol_9"), "{summary}");
         assert!(
@@ -1125,6 +1124,9 @@ mod tests {
             !checklist.contains("No test files changed"),
             "source-set test files should count as tests: {checklist}"
         );
-        assert!(summary.contains("test coverage"), "{summary}");
+        assert!(
+            summary.contains("Primary touched areas:\n- test coverage"),
+            "{summary}"
+        );
     }
 }
