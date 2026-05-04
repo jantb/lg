@@ -38,6 +38,8 @@ fn branches_panel_shows_remote_and_missing_upstream_indicators() {
             is_current: true,
             upstream: Some("origin/feature/remote".into()),
             upstream_gone: false,
+            ahead: 0,
+            behind: 0,
             last_commit_unix: None,
         },
         Branch {
@@ -45,6 +47,8 @@ fn branches_panel_shows_remote_and_missing_upstream_indicators() {
             is_current: false,
             upstream: Some("origin/docs".into()),
             upstream_gone: true,
+            ahead: 0,
+            behind: 0,
             last_commit_unix: None,
         },
     ];
@@ -75,6 +79,38 @@ fn branches_panel_shows_remote_and_missing_upstream_indicators() {
 }
 
 #[test]
+fn branches_panel_shows_ahead_and_behind_counts() {
+    let mut state = AppState::new();
+    state.branches = vec![Branch {
+        name: "feature/diverged".into(),
+        is_current: true,
+        upstream: Some("origin/feature/diverged".into()),
+        upstream_gone: false,
+        ahead: 1,
+        behind: 6,
+        last_commit_unix: None,
+    }];
+
+    let backend = TestBackend::new(80, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::branches::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let text = buf
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(text.contains("\u{2191}1"), "missing ahead count: {text}");
+    assert!(text.contains("\u{2193}6"), "missing behind count: {text}");
+}
+
+#[test]
 fn branches_panel_keeps_missing_upstream_visible_for_long_names() {
     let mut state = AppState::new();
     state.branches = vec![Branch {
@@ -82,6 +118,8 @@ fn branches_panel_keeps_missing_upstream_visible_for_long_names() {
         is_current: false,
         upstream: Some("origin/removed".into()),
         upstream_gone: true,
+        ahead: 0,
+        behind: 0,
         last_commit_unix: None,
     }];
 
@@ -114,6 +152,8 @@ fn branches_panel_shows_time_since_last_commit() {
         is_current: false,
         upstream: None,
         upstream_gone: false,
+        ahead: 0,
+        behind: 0,
         last_commit_unix: Some(chrono::Utc::now().timestamp() - 2 * 60 * 60),
     }];
 
@@ -183,6 +223,8 @@ fn remote_branch_view_hides_checked_out_branches() {
         is_current: false,
         upstream: Some("origin/feature/local".into()),
         upstream_gone: false,
+        ahead: 0,
+        behind: 0,
         last_commit_unix: None,
     }];
     state.remote_branches = vec![

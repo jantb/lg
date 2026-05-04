@@ -51,6 +51,8 @@ pub fn add_flow_branches(state: &mut AppState) {
             is_current: false,
             upstream: None,
             upstream_gone: false,
+            ahead: 0,
+            behind: 0,
             last_commit_unix: None,
         },
         Branch {
@@ -58,6 +60,8 @@ pub fn add_flow_branches(state: &mut AppState) {
             is_current: false,
             upstream: None,
             upstream_gone: false,
+            ahead: 0,
+            behind: 0,
             last_commit_unix: None,
         },
     ];

@@ -156,7 +156,7 @@ where
                     .set_status("fetch unavailable in headless", false);
             }
             KeyCode::Char('P') => {
-                if self.state.unpushed_shas.is_empty() {
+                if !self.state.has_unpushed_commits() {
                     self.state.set_status("nothing to push", false);
                 } else {
                     spawn_push(&mut self.state);
@@ -301,7 +301,7 @@ impl App {
                 return Ok(());
             }
             KeyCode::Char('P') => {
-                if self.state.unpushed_shas.is_empty() {
+                if !self.state.has_unpushed_commits() {
                     self.state.set_status("nothing to push", false);
                     return Ok(());
                 }

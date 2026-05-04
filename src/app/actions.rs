@@ -49,6 +49,21 @@ impl App {
             }
             PendingAction::Push => spawn_push(&mut self.state),
             PendingAction::Pull => spawn_pull(&mut self.state),
+            PendingAction::MergeUpstream => {
+                spawn_operation(
+                    &mut self.state,
+                    "merging",
+                    OperationKind::MergeUpstream,
+                    || {
+                        let out = crate::git::merge_upstream()?;
+                        Ok(out
+                            .lines()
+                            .rfind(|line| !line.trim().is_empty())
+                            .unwrap_or("merged upstream")
+                            .to_owned())
+                    },
+                );
+            }
             PendingAction::SaveAuthor { name, email } => {
                 match crate::git::set_local_author(&name, &email) {
                     Ok(()) => {

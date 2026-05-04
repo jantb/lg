@@ -507,6 +507,18 @@ fn push_modal_handle_key_is_noop_while_running() {
 }
 
 #[test]
+fn push_modal_enter_merges_when_branch_diverged() {
+    let mut state = AppState::new();
+    state.modal = Modal::Push;
+    state.branch = Some("feature/diverged".into());
+    state.ahead_behind = Some((1, 6));
+
+    panel::push::handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+
+    assert_eq!(state.pending_action, Some(PendingAction::MergeUpstream));
+}
+
+#[test]
 fn layout_renders_all_panel_borders() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 24)).unwrap();
     app.state = make_state_with_files();

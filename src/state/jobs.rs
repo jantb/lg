@@ -66,6 +66,7 @@ pub enum OperationMsg {
 pub enum OperationKind {
     Commit,
     StageAllAndCommit,
+    MergeUpstream,
     Worktree,
 }
 

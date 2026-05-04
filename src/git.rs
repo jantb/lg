@@ -154,6 +154,16 @@ pub fn commit(msg: &str) -> Result<String> {
 }
 
 pub fn push(remote: &str, branch: &str) -> Result<String> {
+    let _ = fetch_updates();
+    if let Ok((ahead, behind)) = counts_ahead_behind() {
+        if ahead > 0 && behind > 0 {
+            anyhow::bail!("branch diverged from remote; merge upstream before pushing");
+        }
+        if behind > 0 {
+            anyhow::bail!("branch is behind remote; pull before pushing");
+        }
+    }
+
     // Capture both stdout and stderr for the status display.
     let out = Command::new("git")
         .args(["push", remote, branch])
@@ -176,12 +186,19 @@ pub fn pull(remote: &str, branch: &str) -> Result<String> {
     run_combined(&["pull", "--ff-only", remote, branch])
 }
 
+pub fn merge_upstream() -> Result<String> {
+    let _ = fetch_updates();
+    run_combined(&["merge", "--no-edit", "@{u}"])
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branch {
     pub name: String,
     pub is_current: bool,
     pub upstream: Option<String>,
     pub upstream_gone: bool,
+    pub ahead: u32,
+    pub behind: u32,
     pub last_commit_unix: Option<i64>,
 }
 
@@ -252,6 +269,7 @@ pub fn list_branches() -> Result<Vec<Branch>> {
             let head = parts.next()?.trim();
             let upstream = parts.next().unwrap_or("").trim();
             let track = parts.next().unwrap_or("").trim();
+            let (ahead, behind) = parse_upstream_track(track);
             let last_commit_unix = parse_unix_timestamp(parts.next().unwrap_or("").trim());
             if name.is_empty() {
                 return None;
@@ -261,6 +279,8 @@ pub fn list_branches() -> Result<Vec<Branch>> {
                 is_current: head == "*",
                 upstream: (!upstream.is_empty()).then(|| upstream.to_owned()),
                 upstream_gone: track.contains("gone"),
+                ahead,
+                behind,
                 last_commit_unix,
             })
         })
@@ -309,6 +329,20 @@ pub fn list_remote_branches() -> Result<Vec<RemoteBranch>> {
 
 fn parse_unix_timestamp(value: &str) -> Option<i64> {
     value.parse::<i64>().ok().filter(|ts| *ts > 0)
+}
+
+fn parse_upstream_track(value: &str) -> (u32, u32) {
+    let text = value.trim().trim_start_matches('[').trim_end_matches(']');
+    let mut ahead = 0;
+    let mut behind = 0;
+    for part in text.split(',').map(str::trim) {
+        if let Some(count) = part.strip_prefix("ahead ") {
+            ahead = count.trim().parse().unwrap_or(0);
+        } else if let Some(count) = part.strip_prefix("behind ") {
+            behind = count.trim().parse().unwrap_or(0);
+        }
+    }
+    (ahead, behind)
 }
 
 fn sort_refs_by_recent_commit<T, F, N>(refs: &mut [T], timestamp: F, name: N)
@@ -630,7 +664,18 @@ pub fn counts_ahead_behind() -> Result<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::config::{build_ide_open_command, diff_hunk_start_line};
-    use super::{FileEntry, label_commit_patch, parse_porcelain, parse_porcelain_xy};
+    use super::{
+        FileEntry, label_commit_patch, parse_porcelain, parse_porcelain_xy, parse_upstream_track,
+    };
+
+    #[test]
+    fn parses_upstream_track_counts() {
+        assert_eq!(parse_upstream_track("[ahead 1]"), (1, 0));
+        assert_eq!(parse_upstream_track("[behind 78]"), (0, 78));
+        assert_eq!(parse_upstream_track("[ahead 1, behind 6]"), (1, 6));
+        assert_eq!(parse_upstream_track("[gone]"), (0, 0));
+        assert_eq!(parse_upstream_track(""), (0, 0));
+    }
 
     #[test]
     fn parse_porcelain_empty() {

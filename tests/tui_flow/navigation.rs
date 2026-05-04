@@ -31,6 +31,8 @@ fn scroll_handlers_clamp_stale_indices_before_moving() {
             is_current: true,
             upstream: None,
             upstream_gone: false,
+            ahead: 0,
+            behind: 0,
             last_commit_unix: None,
         },
         Branch {
@@ -38,6 +40,8 @@ fn scroll_handlers_clamp_stale_indices_before_moving() {
             is_current: false,
             upstream: None,
             upstream_gone: false,
+            ahead: 0,
+            behind: 0,
             last_commit_unix: None,
         },
     ];
@@ -83,6 +87,8 @@ fn scroll_handlers_clamp_stale_indices_before_moving_up() {
             is_current: true,
             upstream: None,
             upstream_gone: false,
+            ahead: 0,
+            behind: 0,
             last_commit_unix: None,
         },
         Branch {
@@ -90,6 +96,8 @@ fn scroll_handlers_clamp_stale_indices_before_moving_up() {
             is_current: false,
             upstream: None,
             upstream_gone: false,
+            ahead: 0,
+            behind: 0,
             last_commit_unix: None,
         },
     ];

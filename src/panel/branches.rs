@@ -229,6 +229,8 @@ fn append_local_branch_status(spans: &mut Vec<Span<'static>>, branch: &Branch) {
                 .fg(Color::LightMagenta)
                 .add_modifier(Modifier::BOLD),
         ));
+    } else if branch.ahead > 0 || branch.behind > 0 {
+        append_tracking_counts(spans, branch);
     } else if branch.upstream.is_some() {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
@@ -244,12 +246,46 @@ fn append_local_branch_status(spans: &mut Vec<Span<'static>>, branch: &Branch) {
 fn local_branch_status_width(branch: &Branch) -> usize {
     let remote_width = if branch.upstream_gone {
         " (upstream gone)".chars().count()
+    } else if branch.ahead > 0 || branch.behind > 0 {
+        tracking_counts_width(branch)
     } else if branch.upstream.is_some() {
         " \u{2713}".chars().count()
     } else {
         0
     };
     remote_width + branch_age_width(branch.last_commit_unix)
+}
+
+fn append_tracking_counts(spans: &mut Vec<Span<'static>>, branch: &Branch) {
+    if branch.ahead > 0 {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            format!("\u{2191}{}", branch.ahead),
+            Style::default()
+                .fg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if branch.behind > 0 {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            format!("\u{2193}{}", branch.behind),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+}
+
+fn tracking_counts_width(branch: &Branch) -> usize {
+    let mut width = 0;
+    if branch.ahead > 0 {
+        width += 1 + 1 + branch.ahead.to_string().chars().count();
+    }
+    if branch.behind > 0 {
+        width += 1 + 1 + branch.behind.to_string().chars().count();
+    }
+    width
 }
 
 fn append_branch_age(spans: &mut Vec<Span<'static>>, last_commit_unix: Option<i64>) {

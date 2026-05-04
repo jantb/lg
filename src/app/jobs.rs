@@ -635,6 +635,8 @@ impl App {
                         }
                     } else if kind == OperationKind::StageAllAndCommit {
                         self.state.open_commit_modal();
+                    } else if kind == OperationKind::MergeUpstream {
+                        self.state.modal = Modal::None;
                     }
                 }
                 Err(e) => {

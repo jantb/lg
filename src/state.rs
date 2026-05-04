@@ -93,6 +93,7 @@ pub enum PendingAction {
     StageAllAndCommit,
     Push,
     Pull,
+    MergeUpstream,
     SaveAuthor {
         name: String,
         email: String,
@@ -429,6 +430,7 @@ impl AppState {
                 Some(PendingAction::StageAllAndCommit) => Some("staging"),
                 Some(PendingAction::Push) => Some("starting push"),
                 Some(PendingAction::Pull) => Some("starting pull"),
+                Some(PendingAction::MergeUpstream) => Some("starting merge"),
                 Some(
                     PendingAction::SaveAuthor { .. }
                     | PendingAction::ClearAuthor
@@ -514,7 +516,37 @@ impl AppState {
     }
 
     pub fn pull_available(&self) -> bool {
-        self.branch.is_some() && self.ahead_behind.is_some_and(|(_, behind)| behind > 0)
+        self.branch.is_some()
+            && self
+                .current_branch_ahead_behind()
+                .is_some_and(|(_, behind)| behind > 0)
+    }
+
+    pub fn current_branch_ahead_behind(&self) -> Option<(u32, u32)> {
+        self.ahead_behind.or_else(|| {
+            let branch = self.branch.as_deref()?;
+            self.branches
+                .iter()
+                .find(|candidate| candidate.is_current || candidate.name == branch)
+                .map(|candidate| (candidate.ahead, candidate.behind))
+        })
+    }
+
+    pub fn branch_diverged_from_remote(&self) -> bool {
+        self.current_branch_ahead_behind()
+            .is_some_and(|(ahead, behind)| ahead > 0 && behind > 0)
+    }
+
+    pub fn branch_behind_remote(&self) -> bool {
+        self.current_branch_ahead_behind()
+            .is_some_and(|(_, behind)| behind > 0)
+    }
+
+    pub fn has_unpushed_commits(&self) -> bool {
+        !self.unpushed_shas.is_empty()
+            || self
+                .current_branch_ahead_behind()
+                .is_some_and(|(ahead, _)| ahead > 0)
     }
 
     pub fn start_generation(&mut self, rx: Receiver<GenMsg>, handle: JoinHandle<()>) {

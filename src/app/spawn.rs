@@ -78,6 +78,15 @@ pub(super) fn spawn_push(state: &mut AppState) {
     if git_job_running(state) {
         return;
     }
+    if state.branch_diverged_from_remote() {
+        state.modal = Modal::Push;
+        state.set_status("branch diverged; merge upstream before pushing?", false);
+        return;
+    }
+    if state.branch_behind_remote() {
+        state.set_status("branch is behind remote; pull before pushing", true);
+        return;
+    }
     let branch = state.branch.clone().unwrap_or_default();
     let remote = DEFAULT_PUSH_REMOTE.to_string();
     let (tx, rx) = std::sync::mpsc::channel();
