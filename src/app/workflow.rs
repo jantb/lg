@@ -138,6 +138,7 @@ pub(super) fn workflow_steps(
             format!("merge origin/{} into {current}", BRANCH_MAIN),
             format!("push {current}"),
             "restore stashed changes".into(),
+            "remove safety backup".into(),
         ],
         FlowAction::ReleaseDev => release_steps(current, BRANCH_DEV),
         FlowAction::ReleaseTest => release_steps(current, BRANCH_TEST),

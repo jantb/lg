@@ -58,7 +58,7 @@ pub fn flow_merge_main_into_current_with_progress(
     progress();
     let stashed = stash_uncommitted_changes("lg flow: auto-stash before merging main")?;
     progress();
-    create_safety_ref("merge-main")?;
+    let safety_ref = create_safety_ref("merge-main")?;
     progress();
     run(&["fetch"])?;
     progress();
@@ -73,6 +73,8 @@ pub fn flow_merge_main_into_current_with_progress(
     run(&["push"])?;
     progress();
     pop_stash_if_needed(stashed)?;
+    progress();
+    delete_safety_ref(&safety_ref)?;
     Ok(format!("merged origin/{BRANCH_MAIN} into {current_branch}"))
 }
 

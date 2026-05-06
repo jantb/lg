@@ -1511,6 +1511,11 @@ fn merge_main_flow_stashes_dirty_work_updates_main_and_returns_to_feature() {
         String::from_utf8_lossy(&stash_list.stdout).is_empty(),
         "auto-stash should be restored and dropped"
     );
+    let branches = branch_list(dir.path());
+    assert!(
+        !branches.contains("lg/backup/merge-main-feature-merge-main-"),
+        "successful merge-main should clean safety backup: {branches}"
+    );
 }
 
 #[test]
