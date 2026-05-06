@@ -190,6 +190,27 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 }
             }
         }
+        KeyCode::Char('d') => {
+            if let Some(row) = rows.get(state.files_idx) {
+                match &row.kind {
+                    TreeKind::Folder { .. } => {
+                        state.pending_action = Some(PendingAction::DeletePath {
+                            path: row.path.clone(),
+                            is_dir: true,
+                        });
+                    }
+                    TreeKind::File { entry_idx } => {
+                        state.pending_action = Some(PendingAction::DeletePath {
+                            path: state.files[*entry_idx].path.clone(),
+                            is_dir: false,
+                        });
+                    }
+                    TreeKind::AllChanges => {
+                        state.set_status("select a file or folder to delete", false);
+                    }
+                }
+            }
+        }
         KeyCode::Char('o') => {
             if let Some(row) = rows.get(state.files_idx) {
                 match row.kind {

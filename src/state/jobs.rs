@@ -67,6 +67,8 @@ pub enum OperationKind {
     Commit,
     StageAllAndCommit,
     MergeUpstream,
+    Index,
+    FileSystem,
     Worktree,
 }
 

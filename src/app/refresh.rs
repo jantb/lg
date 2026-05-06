@@ -82,6 +82,13 @@ pub(super) fn prime_branches(state: &mut AppState) {
     }
 }
 
+pub(super) fn prime_files(state: &mut AppState) {
+    if let Ok(files) = crate::git::status_entries() {
+        state.files = files;
+        state.clamp();
+    }
+}
+
 fn path_has_ignored_component(path: &Path) -> bool {
     path.components().any(|component| match component {
         Component::Normal(name) => name

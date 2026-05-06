@@ -49,6 +49,7 @@ const SECTIONS: &[Section] = &[
             ("u", "Unstage selected"),
             ("A / U", "Stage all / unstage all"),
             ("i", "Add selected file or folder to .gitignore"),
+            ("d", "Delete selected file or folder"),
             ("o", "Open file or project in IntelliJ/RustRover"),
             ("Enter", "Refresh diff"),
         ],

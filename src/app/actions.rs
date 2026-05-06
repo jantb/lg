@@ -114,27 +114,22 @@ impl App {
                 }
             }
             PendingAction::StageAll => {
-                spawn_operation(&mut self.state, "staging", OperationKind::Worktree, || {
+                spawn_operation(&mut self.state, "staging", OperationKind::Index, || {
                     crate::git::stage_all()?;
                     Ok("staged all".to_string())
                 });
             }
             PendingAction::UnstageAll => {
-                spawn_operation(
-                    &mut self.state,
-                    "unstaging",
-                    OperationKind::Worktree,
-                    || {
-                        crate::git::unstage_all()?;
-                        Ok("unstaged all".to_string())
-                    },
-                );
+                spawn_operation(&mut self.state, "unstaging", OperationKind::Index, || {
+                    crate::git::unstage_all()?;
+                    Ok("unstaged all".to_string())
+                });
             }
             PendingAction::StagePath(path) => {
                 spawn_operation(
                     &mut self.state,
                     "staging",
-                    OperationKind::Worktree,
+                    OperationKind::Index,
                     move || {
                         crate::git::stage(&path)?;
                         Ok(format!("staged {path}"))
@@ -145,10 +140,21 @@ impl App {
                 spawn_operation(
                     &mut self.state,
                     "unstaging",
-                    OperationKind::Worktree,
+                    OperationKind::Index,
                     move || {
                         crate::git::unstage(&path)?;
                         Ok(format!("unstaged {path}"))
+                    },
+                );
+            }
+            PendingAction::DeletePath { path, is_dir } => {
+                spawn_operation(
+                    &mut self.state,
+                    "deleting",
+                    OperationKind::FileSystem,
+                    move || {
+                        crate::git::delete_worktree_path(&path, is_dir)?;
+                        Ok(format!("deleted {path}"))
                     },
                 );
             }

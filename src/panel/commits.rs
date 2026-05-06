@@ -99,7 +99,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         })
         .collect();
 
-    let list = List::new(items).block(block);
+    let list = List::new(items).block(block).scroll_padding(2);
 
     let mut list_state = ListState::default();
     if focused && let Some(idx) = selected_idx {

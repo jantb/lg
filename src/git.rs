@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path};
 use std::process::{Command, Output};
 use std::sync::{Mutex, OnceLock};
 
@@ -133,6 +134,29 @@ pub fn unstage_all() -> Result<()> {
             }
         }
     }
+}
+
+pub fn delete_worktree_path(path: &str, is_dir: bool) -> Result<()> {
+    let rel = Path::new(path);
+    if path.trim().is_empty()
+        || rel.is_absolute()
+        || rel
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        anyhow::bail!("refusing to delete unsafe path: {path}");
+    }
+
+    let root = repo_root()?;
+    let target = Path::new(&root).join(rel);
+    if is_dir {
+        std::fs::remove_dir_all(&target)
+            .with_context(|| format!("delete directory {}", target.display()))?;
+    } else {
+        std::fs::remove_file(&target)
+            .with_context(|| format!("delete file {}", target.display()))?;
+    }
+    Ok(())
 }
 
 pub fn head_branch() -> Result<String> {

@@ -93,6 +93,30 @@ fn add_to_gitignore_appends_file_and_folder_entries_once() {
 }
 
 #[test]
+fn delete_worktree_path_removes_file_or_folder() {
+    let dir = init_repo();
+    let _cwd = CwdGuard::new(dir.path());
+    fs::create_dir_all("src/nested").unwrap();
+    fs::write("src/main.rs", "fn main() {}\n").unwrap();
+    fs::write("src/nested/old.rs", "old\n").unwrap();
+
+    lg::git::delete_worktree_path("src/main.rs", false).unwrap();
+    assert!(!dir.path().join("src/main.rs").exists());
+
+    lg::git::delete_worktree_path("src/nested", true).unwrap();
+    assert!(!dir.path().join("src/nested").exists());
+}
+
+#[test]
+fn delete_worktree_path_rejects_unsafe_paths() {
+    let dir = init_repo();
+    let _cwd = CwdGuard::new(dir.path());
+
+    assert!(lg::git::delete_worktree_path("../outside.txt", false).is_err());
+    assert!(lg::git::delete_worktree_path("", false).is_err());
+}
+
+#[test]
 fn project_open_command_opens_rust_repo_root() {
     let dir = init_repo();
     fs::write(

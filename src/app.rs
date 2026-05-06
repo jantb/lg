@@ -40,7 +40,8 @@ pub(crate) use workflow::{
 };
 
 use refresh::{
-    build_refresh_snapshot, prime_branches, should_refresh_for_fs_event, watch_current_dir,
+    build_refresh_snapshot, prime_branches, prime_files, should_refresh_for_fs_event,
+    watch_current_dir,
 };
 use review_assist::{spawn_assisted_review, spawn_review_assist, spawn_review_chat};
 use spawn::{
@@ -139,6 +140,7 @@ impl App {
                 - Duration::from_secs(BACKGROUND_FETCH_INTERVAL_SECS),
         };
         prime_branches(&mut app.state);
+        prime_files(&mut app.state);
         app.start_refresh(true);
         app.start_fetch();
         Ok(app)

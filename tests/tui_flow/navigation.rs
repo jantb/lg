@@ -211,3 +211,44 @@ fn files_panel_i_ignores_selected_file_or_folder() {
         })
     );
 }
+
+#[test]
+fn files_panel_d_deletes_selected_file_or_folder() {
+    let mut state = AppState::new();
+    state.files = vec![FileEntry {
+        path: "src/main.rs".into(),
+        x: '?',
+        y: '?',
+    }];
+
+    panel::files::handle_key(&mut state, key(KeyCode::Char('d'))).unwrap();
+    assert_eq!(state.pending_action, None);
+    assert!(
+        state
+            .status
+            .as_ref()
+            .is_some_and(|status| status.text.contains("select a file or folder"))
+    );
+
+    state.status = None;
+    state.files_idx = 1;
+    panel::files::handle_key(&mut state, key(KeyCode::Char('d'))).unwrap();
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::DeletePath {
+            path: "src".into(),
+            is_dir: true,
+        })
+    );
+
+    state.pending_action = None;
+    state.files_idx = 2;
+    panel::files::handle_key(&mut state, key(KeyCode::Char('d'))).unwrap();
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::DeletePath {
+            path: "src/main.rs".into(),
+            is_dir: false,
+        })
+    );
+}

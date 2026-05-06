@@ -14,6 +14,18 @@ pub(super) fn git_job_running(state: &AppState) -> bool {
         || state.workflow_job.is_some()
 }
 
+fn operation_blocked(state: &AppState, kind: OperationKind) -> bool {
+    state.push_job.is_some()
+        || state.checkout_job.is_some()
+        || state.operation_job.is_some()
+        || state.workflow_job.is_some()
+        || (state.fetch_job.is_some()
+            && !matches!(
+                kind,
+                OperationKind::Index | OperationKind::StageAllAndCommit | OperationKind::FileSystem
+            ))
+}
+
 pub(super) fn selected_diff_source(state: &AppState) -> DiffSource {
     match state.focus {
         Pane::Files => {
@@ -231,7 +243,7 @@ pub(super) fn spawn_operation<F>(
 ) where
     F: FnOnce() -> Result<String> + Send + 'static,
 {
-    if git_job_running(state) {
+    if operation_blocked(state, kind) {
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
@@ -251,4 +263,27 @@ pub(super) fn spawn_operation<F>(
         kind,
     });
     state.set_status(format!("{label}\u{2026}"), false);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::FetchJob;
+
+    #[test]
+    fn index_and_file_operations_can_start_during_fetch() {
+        let mut state = AppState::new();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        state.fetch_job = Some(FetchJob {
+            rx,
+            handle: None,
+            spinner: 0,
+        });
+
+        assert!(!operation_blocked(&state, OperationKind::Index));
+        assert!(!operation_blocked(&state, OperationKind::StageAllAndCommit));
+        assert!(!operation_blocked(&state, OperationKind::FileSystem));
+        assert!(operation_blocked(&state, OperationKind::Worktree));
+        assert!(operation_blocked(&state, OperationKind::Commit));
+    }
 }
