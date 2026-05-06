@@ -174,8 +174,16 @@ pub fn commit(msg: &str) -> Result<String> {
     if msg.trim().is_empty() {
         anyhow::bail!("commit message must not be empty");
     }
+    let release_update = flow::update_release_branch_from_main_before_commit()?;
     let out = run(&["commit", "-m", msg])?;
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    if let Some(update) = release_update {
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&update);
+    }
+    Ok(text)
 }
 
 pub fn push(remote: &str, branch: &str) -> Result<String> {

@@ -119,7 +119,7 @@ pub fn flow_release_current_with_progress(
     progress();
     run(&["checkout", target_branch])?;
     progress();
-    run(&["merge", &format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}")])?;
+    merge_remote_main_into_current_release_branch(target_branch)?;
     progress();
     run(&["merge", &format!("{DEFAULT_PUSH_REMOTE}/{current_branch}")])?;
     progress();
@@ -143,6 +143,54 @@ pub fn flow_release_current_with_progress(
     };
     Ok(format!(
         "released {current_branch} to {target_branch} -> {env}"
+    ))
+}
+
+pub(super) fn update_release_branch_from_main_before_commit() -> Result<Option<String>> {
+    let current_branch = head_branch()?;
+    if !is_release_branch(&current_branch) {
+        return Ok(None);
+    }
+
+    let stashed =
+        stash_uncommitted_changes("lg: auto-stash before updating release branch from main")?;
+    let update = merge_remote_main_into_current_release_branch(&current_branch);
+    match update {
+        Ok(message) => {
+            pop_stash_with_index_if_needed(stashed)?;
+            Ok(message)
+        }
+        Err(err) => {
+            if !git_path_exists("MERGE_HEAD").unwrap_or(false) {
+                restore_stash_after_failed_checkout(stashed)?;
+            }
+            Err(err)
+        }
+    }
+}
+
+fn merge_remote_main_into_current_release_branch(branch: &str) -> Result<Option<String>> {
+    ensure_release_branch(branch)?;
+    run(&["fetch"])?;
+    let remote_main = format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
+    if !ref_exists(&remote_main) {
+        anyhow::bail!("cannot update {branch}: missing {remote_main}");
+    }
+    let out = run(&["rev-list", "--count", &remote_main, "--not", "HEAD"])?;
+    let count = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<u32>()
+        .context("parsing release branch behind-main count")?;
+    if count == 0 {
+        return Ok(None);
+    }
+
+    let out = run_combined(&["merge", &remote_main])?;
+    Ok(Some(
+        out.lines()
+            .rfind(|line| !line.trim().is_empty())
+            .unwrap_or("updated release branch from origin/main")
+            .to_string(),
     ))
 }
 
@@ -453,6 +501,25 @@ fn ensure_merge_main_branch(branch: &str) -> Result<()> {
         anyhow::bail!("checkout a feature, {BRANCH_DEV}, or {BRANCH_TEST} branch first");
     }
     Ok(())
+}
+
+fn ensure_release_branch(branch: &str) -> Result<()> {
+    if !is_release_branch(branch) {
+        anyhow::bail!("expected {BRANCH_DEV} or {BRANCH_TEST}, got {branch}");
+    }
+    Ok(())
+}
+
+fn is_release_branch(branch: &str) -> bool {
+    matches!(branch, BRANCH_DEV | BRANCH_TEST)
+}
+
+fn ref_exists(name: &str) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", name])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
 }
 
 fn is_valid_branch_name(name: &str) -> bool {

@@ -909,6 +909,62 @@ fn commit_on_empty_message_fails() {
 }
 
 #[test]
+fn commit_on_release_branch_updates_from_origin_main_first() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+
+    git_ok(dir.path(), &["checkout", "-b", "develop"]);
+    git_ok(dir.path(), &["push", "-u", "origin", "develop"]);
+
+    let updater = tempfile::tempdir().expect("updater tempdir");
+    git_ok(
+        updater.path(),
+        &["clone", bare.path().to_str().unwrap(), "."],
+    );
+    git_ok(
+        updater.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git_ok(updater.path(), &["config", "user.name", "Test User"]);
+    fs::write(updater.path().join("main.txt"), "main update").unwrap();
+    stage_in(updater.path(), "main.txt");
+    commit_in(updater.path(), "main update");
+    git_ok(updater.path(), &["push", "origin", "main"]);
+
+    fs::write(dir.path().join("direct.txt"), "direct").unwrap();
+    stage_in(dir.path(), "direct.txt");
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::commit("direct release commit").expect("commit on stale release branch");
+
+    let main_is_ancestor = git(
+        dir.path(),
+        &["merge-base", "--is-ancestor", "origin/main", "HEAD"],
+    );
+    assert!(
+        main_is_ancestor.status.success(),
+        "release branch should include origin/main before the direct commit"
+    );
+    let log = git(dir.path(), &["log", "--oneline", "develop"]);
+    let log = String::from_utf8_lossy(&log.stdout);
+    assert!(log.contains("main update"), "missing main update: {log}");
+    assert!(
+        log.contains("direct release commit"),
+        "missing direct commit: {log}"
+    );
+}
+
+#[test]
 fn list_branches_orders_newest_commit_first() {
     let dir = init_repo();
     fs::write(dir.path().join("README.md"), "main\n").unwrap();
@@ -1210,6 +1266,21 @@ fn release_flow_returns_to_original_branch_after_target_push() {
     stage_in(dir.path(), "feature.txt");
     commit_in(dir.path(), "feature commit");
 
+    let updater = tempfile::tempdir().expect("updater tempdir");
+    git_ok(
+        updater.path(),
+        &["clone", bare.path().to_str().unwrap(), "."],
+    );
+    git_ok(
+        updater.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git_ok(updater.path(), &["config", "user.name", "Test User"]);
+    fs::write(updater.path().join("main.txt"), "main update").unwrap();
+    stage_in(updater.path(), "main.txt");
+    commit_in(updater.path(), "main update");
+    git_ok(updater.path(), &["push", "origin", "main"]);
+
     let _cwd = CwdGuard::new(dir.path());
     lg::git::flow_release_current(feature, "develop").expect("release to develop");
     assert_eq!(head_branch(dir.path()), feature);
@@ -1222,10 +1293,18 @@ fn release_flow_returns_to_original_branch_after_target_push() {
         String::from_utf8_lossy(&develop_log.stdout).contains("feature commit"),
         "develop did not receive feature commit"
     );
+    assert!(
+        String::from_utf8_lossy(&develop_log.stdout).contains("main update"),
+        "develop did not receive origin/main before release"
+    );
     let release_log = git(bare.path(), &["log", "--oneline", "release/next"]);
     assert!(
         String::from_utf8_lossy(&release_log.stdout).contains("feature commit"),
         "release/next did not receive feature commit"
+    );
+    assert!(
+        String::from_utf8_lossy(&release_log.stdout).contains("main update"),
+        "release/next did not receive origin/main before release"
     );
     let local_release = git(dir.path(), &["rev-parse", "release/next"]);
     let remote_release = git(bare.path(), &["rev-parse", "release/next"]);
