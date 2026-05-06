@@ -199,6 +199,7 @@ pub struct Branch {
     pub upstream_gone: bool,
     pub ahead: u32,
     pub behind: u32,
+    pub behind_main: u32,
     pub last_commit_unix: Option<i64>,
 }
 
@@ -256,6 +257,8 @@ impl crate::graph::CommitNode for Commit {
 }
 
 pub fn list_branches() -> Result<Vec<Branch>> {
+    let main_ref =
+        preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}"), BRANCH_MAIN);
     let out = run(&[
         "branch",
         "--format=%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)\x1f%(upstream:track)\x1f%(committerdate:unix)",
@@ -274,6 +277,7 @@ pub fn list_branches() -> Result<Vec<Branch>> {
             if name.is_empty() {
                 return None;
             }
+            let behind_main = branch_behind_main(&name, main_ref.as_deref());
             Some(Branch {
                 name,
                 is_current: head == "*",
@@ -281,6 +285,7 @@ pub fn list_branches() -> Result<Vec<Branch>> {
                 upstream_gone: track.contains("gone"),
                 ahead,
                 behind,
+                behind_main,
                 last_commit_unix,
             })
         })
@@ -343,6 +348,22 @@ fn parse_upstream_track(value: &str) -> (u32, u32) {
         }
     }
     (ahead, behind)
+}
+
+fn branch_behind_main(branch: &str, main_ref: Option<&str>) -> u32 {
+    let Some(main_ref) = main_ref else {
+        return 0;
+    };
+    if branch == BRANCH_MAIN || branch == main_ref {
+        return 0;
+    }
+    let Ok(out) = run(&["rev-list", "--count", main_ref, "--not", branch]) else {
+        return 0;
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0)
 }
 
 fn sort_refs_by_recent_commit<T, F, N>(refs: &mut [T], timestamp: F, name: N)

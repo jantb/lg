@@ -46,6 +46,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
             &[
                 ("Enter", "checkout"),
                 ("r", "remotes"),
+                ("m", "merge main"),
                 ("D", "delete"),
                 ("p", "pull"),
                 ("a", "author"),

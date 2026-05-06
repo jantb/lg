@@ -33,6 +33,7 @@ fn scroll_handlers_clamp_stale_indices_before_moving() {
             upstream_gone: false,
             ahead: 0,
             behind: 0,
+            behind_main: 0,
             last_commit_unix: None,
         },
         Branch {
@@ -42,6 +43,7 @@ fn scroll_handlers_clamp_stale_indices_before_moving() {
             upstream_gone: false,
             ahead: 0,
             behind: 0,
+            behind_main: 0,
             last_commit_unix: None,
         },
     ];
@@ -89,6 +91,7 @@ fn scroll_handlers_clamp_stale_indices_before_moving_up() {
             upstream_gone: false,
             ahead: 0,
             behind: 0,
+            behind_main: 0,
             last_commit_unix: None,
         },
         Branch {
@@ -98,6 +101,7 @@ fn scroll_handlers_clamp_stale_indices_before_moving_up() {
             upstream_gone: false,
             ahead: 0,
             behind: 0,
+            behind_main: 0,
             last_commit_unix: None,
         },
     ];

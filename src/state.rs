@@ -94,6 +94,7 @@ pub enum PendingAction {
     Push,
     Pull,
     MergeUpstream,
+    Flow(FlowAction),
     SaveAuthor {
         name: String,
         email: String,
@@ -431,6 +432,7 @@ impl AppState {
                 Some(PendingAction::Push) => Some("starting push"),
                 Some(PendingAction::Pull) => Some("starting pull"),
                 Some(PendingAction::MergeUpstream) => Some("starting merge"),
+                Some(PendingAction::Flow(_)) => Some("starting workflow"),
                 Some(
                     PendingAction::SaveAuthor { .. }
                     | PendingAction::ClearAuthor

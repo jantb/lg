@@ -40,6 +40,7 @@ fn branches_panel_shows_remote_and_missing_upstream_indicators() {
             upstream_gone: false,
             ahead: 0,
             behind: 0,
+            behind_main: 0,
             last_commit_unix: None,
         },
         Branch {
@@ -49,6 +50,7 @@ fn branches_panel_shows_remote_and_missing_upstream_indicators() {
             upstream_gone: true,
             ahead: 0,
             behind: 0,
+            behind_main: 0,
             last_commit_unix: None,
         },
     ];
@@ -88,6 +90,7 @@ fn branches_panel_shows_ahead_and_behind_counts() {
         upstream_gone: false,
         ahead: 1,
         behind: 6,
+        behind_main: 0,
         last_commit_unix: None,
     }];
 
@@ -111,6 +114,42 @@ fn branches_panel_shows_ahead_and_behind_counts() {
 }
 
 #[test]
+fn branches_panel_shows_behind_main_count() {
+    let mut state = AppState::new();
+    state.branches = vec![Branch {
+        name: "feature/stale-main".into(),
+        is_current: true,
+        upstream: Some("origin/feature/stale-main".into()),
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 17,
+        last_commit_unix: None,
+    }];
+
+    let backend = TestBackend::new(80, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::branches::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(
+        text.contains("main\u{2193}17"),
+        "missing behind-main count: {text}"
+    );
+}
+
+#[test]
 fn branches_panel_keeps_missing_upstream_visible_for_long_names() {
     let mut state = AppState::new();
     state.branches = vec![Branch {
@@ -120,6 +159,7 @@ fn branches_panel_keeps_missing_upstream_visible_for_long_names() {
         upstream_gone: true,
         ahead: 0,
         behind: 0,
+        behind_main: 0,
         last_commit_unix: None,
     }];
 
@@ -154,6 +194,7 @@ fn branches_panel_shows_time_since_last_commit() {
         upstream_gone: false,
         ahead: 0,
         behind: 0,
+        behind_main: 0,
         last_commit_unix: Some(chrono::Utc::now().timestamp() - 2 * 60 * 60),
     }];
 
@@ -225,6 +266,7 @@ fn remote_branch_view_hides_checked_out_branches() {
         upstream_gone: false,
         ahead: 0,
         behind: 0,
+        behind_main: 0,
         last_commit_unix: None,
     }];
     state.remote_branches = vec![
@@ -279,6 +321,10 @@ fn branches_shortcuts_show_remote_toggle() {
         footer.contains("r remotes"),
         "branches footer should show remote toggle: {footer}"
     );
+    assert!(
+        footer.contains("m merge main"),
+        "branches footer should show merge-main shortcut: {footer}"
+    );
 
     app.state.prev_focus = Pane::Branches;
     app.state.modal = Modal::Help;
@@ -287,6 +333,34 @@ fn branches_shortcuts_show_remote_toggle() {
     assert!(
         help.contains("Toggle local and remote branch views"),
         "help should show remote toggle: {help}"
+    );
+    assert!(
+        help.contains("Merge origin/main into the current branch"),
+        "help should show merge-main shortcut: {help}"
+    );
+}
+
+#[test]
+fn branches_m_shortcut_queues_merge_main_workflow() {
+    let mut state = AppState::new();
+    state.focus = Pane::Branches;
+    state.branch = Some("feature/demo".into());
+    state.branches = vec![Branch {
+        name: "feature/demo".into(),
+        is_current: true,
+        upstream: Some("origin/feature/demo".into()),
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 4,
+        last_commit_unix: None,
+    }];
+
+    panel::branches::handle_key(&mut state, key(KeyCode::Char('m'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::Flow(FlowAction::MergeMain))
     );
 }
 

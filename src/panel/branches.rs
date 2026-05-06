@@ -10,8 +10,9 @@ use ratatui::{
 
 use crate::{
     app,
+    config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST},
     git::{Branch, RemoteBranch},
-    state::{AppState, BranchView, SPINNER_FRAMES, clamp_index},
+    state::{AppState, BranchView, FlowAction, PendingAction, SPINNER_FRAMES, clamp_index},
     ui,
 };
 
@@ -121,6 +122,19 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 BranchView::Remote => BranchView::Local,
             };
             state.clamp();
+        }
+        KeyCode::Char('m') => {
+            if state.branch_view == BranchView::Remote {
+                state.set_status("merge main from local branch view", false);
+            } else if state
+                .branch
+                .as_deref()
+                .is_some_and(|branch| matches!(branch, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST))
+            {
+                state.set_status("checkout a feature branch before merging main", true);
+            } else {
+                state.pending_action = Some(PendingAction::Flow(FlowAction::MergeMain));
+            }
         }
         _ => {}
     }
@@ -240,6 +254,7 @@ fn append_local_branch_status(spans: &mut Vec<Span<'static>>, branch: &Branch) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
+    append_main_behind_count(spans, branch);
     append_branch_age(spans, branch.last_commit_unix);
 }
 
@@ -253,7 +268,7 @@ fn local_branch_status_width(branch: &Branch) -> usize {
     } else {
         0
     };
-    remote_width + branch_age_width(branch.last_commit_unix)
+    remote_width + main_behind_width(branch) + branch_age_width(branch.last_commit_unix)
 }
 
 fn append_tracking_counts(spans: &mut Vec<Span<'static>>, branch: &Branch) {
@@ -286,6 +301,26 @@ fn tracking_counts_width(branch: &Branch) -> usize {
         width += 1 + 1 + branch.behind.to_string().chars().count();
     }
     width
+}
+
+fn append_main_behind_count(spans: &mut Vec<Span<'static>>, branch: &Branch) {
+    if branch.behind_main > 0 {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            format!("main\u{2193}{}", branch.behind_main),
+            Style::default()
+                .fg(Color::LightBlue)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+}
+
+fn main_behind_width(branch: &Branch) -> usize {
+    if branch.behind_main > 0 {
+        " main\u{2193}".chars().count() + branch.behind_main.to_string().chars().count()
+    } else {
+        0
+    }
 }
 
 fn append_branch_age(spans: &mut Vec<Span<'static>>, last_commit_unix: Option<i64>) {

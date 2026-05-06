@@ -5,8 +5,8 @@ pub use lg::{
     },
     panel,
     state::{
-        AppState, AuthorField, BranchView, Modal, Pane, PendingAction, ReleaseStatusJob,
-        ReviewChatRole, TreeKind, WorkflowJob, build_tree_rows,
+        AppState, AuthorField, BranchView, FlowAction, Modal, Pane, PendingAction,
+        ReleaseStatusJob, ReviewChatRole, TreeKind, WorkflowJob, build_tree_rows,
     },
 };
 pub use ratatui::{
@@ -53,6 +53,7 @@ pub fn add_flow_branches(state: &mut AppState) {
             upstream_gone: false,
             ahead: 0,
             behind: 0,
+            behind_main: 0,
             last_commit_unix: None,
         },
         Branch {
@@ -62,6 +63,7 @@ pub fn add_flow_branches(state: &mut AppState) {
             upstream_gone: false,
             ahead: 0,
             behind: 0,
+            behind_main: 0,
             last_commit_unix: None,
         },
     ];

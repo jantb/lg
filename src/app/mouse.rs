@@ -247,6 +247,7 @@ mod tests {
             upstream_gone: false,
             ahead: 0,
             behind: 0,
+            behind_main: 0,
             last_commit_unix: None,
         }
     }

@@ -7,13 +7,21 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
     if git_job_running(state) {
         return;
     }
-    if !state.flow_available() {
+    let current = state.branch.clone().unwrap_or_default();
+    if matches!(action, FlowAction::MergeMain)
+        && (current.is_empty()
+            || matches!(current.as_str(), BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST))
+    {
+        state.modal = Modal::None;
+        state.set_status("checkout a feature branch before merging main", true);
+        return;
+    }
+    if !matches!(action, FlowAction::MergeMain) && !state.flow_available() {
         state.modal = Modal::None;
         state.set_status("flow unavailable: missing develop or release/next", true);
         return;
     }
 
-    let current = state.branch.clone().unwrap_or_default();
     let label = action.label().to_owned();
     let steps = workflow_steps(action, &current, input.as_deref());
     let thread_steps = steps.clone();

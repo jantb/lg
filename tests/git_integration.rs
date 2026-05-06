@@ -907,6 +907,38 @@ fn list_branches_orders_newest_commit_first() {
 }
 
 #[test]
+fn list_branches_reports_commits_behind_main() {
+    let dir = init_repo();
+    fs::write(dir.path().join("README.md"), "main\n").unwrap();
+    stage_in(dir.path(), "README.md");
+    commit_in(dir.path(), "initial");
+
+    git_ok(dir.path(), &["checkout", "-b", "feature/stale"]);
+    fs::write(dir.path().join("feature.txt"), "feature\n").unwrap();
+    stage_in(dir.path(), "feature.txt");
+    commit_in(dir.path(), "feature commit");
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("main.txt"), "main update\n").unwrap();
+    stage_in(dir.path(), "main.txt");
+    commit_in(dir.path(), "main update");
+
+    let _cwd = CwdGuard::new(dir.path());
+    let branches = lg::git::list_branches().unwrap();
+    let feature = branches
+        .iter()
+        .find(|branch| branch.name == "feature/stale")
+        .expect("feature/stale branch should be listed");
+    let main = branches
+        .iter()
+        .find(|branch| branch.name == "main")
+        .expect("main branch should be listed");
+
+    assert_eq!(feature.behind_main, 1);
+    assert_eq!(main.behind_main, 0);
+}
+
+#[test]
 fn checkout_branch_stashes_unstaged_changes_before_switching() {
     let dir = init_repo();
     fs::write(dir.path().join("README.md"), "main\n").unwrap();

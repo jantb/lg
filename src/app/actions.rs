@@ -64,6 +64,9 @@ impl App {
                     },
                 );
             }
+            PendingAction::Flow(action) => {
+                super::run_flow_action(&mut self.state, action, None);
+            }
             PendingAction::SaveAuthor { name, email } => {
                 match crate::git::set_local_author(&name, &email) {
                     Ok(()) => {
