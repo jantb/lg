@@ -19,6 +19,51 @@ fn files_panel_k_moves_selection_up() {
 }
 
 #[test]
+fn files_panel_keeps_context_below_selected_row_while_scrolling() {
+    let mut state = AppState::new();
+    state.focus = Pane::Files;
+    state.files_idx = 8;
+    state.files = (0..14)
+        .map(|idx| FileEntry {
+            path: format!("file_{idx:02}.rs"),
+            x: ' ',
+            y: 'M',
+        })
+        .collect();
+
+    let backend = TestBackend::new(80, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::files::render(&state, frame.area(), frame, true);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |row_idx: u16| {
+        let mut row = String::new();
+        for col in 0..buf.area.width {
+            row.push_str(buf[(col, row_idx)].symbol());
+        }
+        row
+    };
+    let selected_row = (0..buf.area.height)
+        .find(|row| row_text(*row).contains("file_07.rs"))
+        .expect("selected file should be visible");
+
+    assert!(
+        selected_row < buf.area.height - 2,
+        "selected file should not stick to the bottom:\n{}",
+        (0..buf.area.height)
+            .map(row_text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(row_text(selected_row + 1).contains("file_08.rs"));
+    assert!(row_text(selected_row + 2).contains("file_09.rs"));
+}
+
+#[test]
 fn scroll_handlers_clamp_stale_indices_before_moving() {
     let mut state = make_state_with_files();
     state.files_idx = usize::MAX;

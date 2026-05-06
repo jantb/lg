@@ -150,6 +150,103 @@ fn branches_panel_shows_behind_main_count() {
 }
 
 #[test]
+fn branches_panel_keeps_context_below_selected_local_row_while_scrolling() {
+    let mut state = AppState::new();
+    state.focus = Pane::Branches;
+    state.branches_idx = 8;
+    state.branches = (0..14)
+        .map(|idx| Branch {
+            name: format!("feature/{idx:02}"),
+            is_current: false,
+            upstream: None,
+            upstream_gone: false,
+            ahead: 0,
+            behind: 0,
+            behind_main: 0,
+            last_commit_unix: None,
+        })
+        .collect();
+
+    let backend = TestBackend::new(80, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::branches::render(&state, frame.area(), frame, true);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |row_idx: u16| {
+        let mut row = String::new();
+        for col in 0..buf.area.width {
+            row.push_str(buf[(col, row_idx)].symbol());
+        }
+        row
+    };
+    let selected_row = (0..buf.area.height)
+        .find(|row| row_text(*row).contains("feature/08"))
+        .expect("selected branch should be visible");
+
+    assert!(
+        selected_row < buf.area.height - 2,
+        "selected local branch should not stick to the bottom:\n{}",
+        (0..buf.area.height)
+            .map(row_text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(row_text(selected_row + 1).contains("feature/09"));
+    assert!(row_text(selected_row + 2).contains("feature/10"));
+}
+
+#[test]
+fn branches_panel_keeps_context_below_selected_remote_row_while_scrolling() {
+    let mut state = AppState::new();
+    state.focus = Pane::Branches;
+    state.branch_view = BranchView::Remote;
+    state.remote_branches_idx = 8;
+    state.remote_branches = (0..14)
+        .map(|idx| RemoteBranch {
+            name: format!("origin/feature/{idx:02}"),
+            remote: "origin".into(),
+            local_name: format!("feature/{idx:02}"),
+            last_commit_unix: None,
+        })
+        .collect();
+
+    let backend = TestBackend::new(80, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::branches::render(&state, frame.area(), frame, true);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |row_idx: u16| {
+        let mut row = String::new();
+        for col in 0..buf.area.width {
+            row.push_str(buf[(col, row_idx)].symbol());
+        }
+        row
+    };
+    let selected_row = (0..buf.area.height)
+        .find(|row| row_text(*row).contains("origin/feature/08"))
+        .expect("selected remote branch should be visible");
+
+    assert!(
+        selected_row < buf.area.height - 2,
+        "selected remote branch should not stick to the bottom:\n{}",
+        (0..buf.area.height)
+            .map(row_text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(row_text(selected_row + 1).contains("origin/feature/09"));
+    assert!(row_text(selected_row + 2).contains("origin/feature/10"));
+}
+
+#[test]
 fn branches_panel_keeps_missing_upstream_visible_for_long_names() {
     let mut state = AppState::new();
     state.branches = vec![Branch {

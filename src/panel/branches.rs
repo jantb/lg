@@ -56,7 +56,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("\u{203a} ");
+        .highlight_symbol("\u{203a} ")
+        .scroll_padding(2);
 
     let mut list_state = ListState::default();
     if focused && let Some(idx) = selected_idx {

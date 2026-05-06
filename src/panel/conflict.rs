@@ -60,7 +60,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("\u{203a} ");
+        .highlight_symbol("\u{203a} ")
+        .scroll_padding(2);
     let mut list_state = ListState::default();
     if let Some(idx) = clamp_index(state.conflict_idx, state.conflicts.len()) {
         list_state.select(Some(idx));
