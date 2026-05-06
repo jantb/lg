@@ -11,6 +11,7 @@ const SAFETY_REF_PREFIX: &str = "lg/backup/";
 const SAFETY_REF_KEEP: usize = 20;
 
 pub fn checkout_branch(name: &str) -> Result<String> {
+    let stashed = stash_before_branch_change(name, "lg: auto-stash before checkout")?;
     let out = Command::new("git")
         .args(["checkout", name])
         .output()
@@ -19,13 +20,16 @@ pub fn checkout_branch(name: &str) -> Result<String> {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let combined = format!("{stdout}{stderr}");
     if out.status.success() {
-        Ok(combined)
+        pop_stash_with_index_if_needed(stashed)?;
+        Ok(checkout_output_with_stash_notice(combined, stashed))
     } else {
+        restore_stash_after_failed_checkout(stashed)?;
         Err(anyhow::anyhow!("git checkout failed: {}", combined.trim()))
     }
 }
 
 pub fn checkout_remote_branch(remote_ref: &str) -> Result<String> {
+    let stashed = stash_uncommitted_changes("lg: auto-stash before remote checkout")?;
     let out = Command::new("git")
         .args(["switch", "--track", remote_ref])
         .output()
@@ -34,8 +38,10 @@ pub fn checkout_remote_branch(remote_ref: &str) -> Result<String> {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let combined = format!("{stdout}{stderr}");
     if out.status.success() {
-        Ok(combined)
+        pop_stash_with_index_if_needed(stashed)?;
+        Ok(checkout_output_with_stash_notice(combined, stashed))
     } else {
+        restore_stash_after_failed_checkout(stashed)?;
         Err(anyhow::anyhow!("git switch failed: {}", combined.trim()))
     }
 }
@@ -422,6 +428,13 @@ fn has_uncommitted_changes() -> Result<bool> {
     Ok(!out.stdout.is_empty())
 }
 
+fn stash_before_branch_change(target: &str, message: &str) -> Result<bool> {
+    if head_branch().is_ok_and(|current| current == target) {
+        return Ok(false);
+    }
+    stash_uncommitted_changes(message)
+}
+
 fn stash_uncommitted_changes(message: &str) -> Result<bool> {
     let stashed = has_uncommitted_changes()?;
     if stashed {
@@ -435,6 +448,28 @@ fn pop_stash_if_needed(stashed: bool) -> Result<()> {
         run(&["stash", "pop"])?;
     }
     Ok(())
+}
+
+fn pop_stash_with_index_if_needed(stashed: bool) -> Result<()> {
+    if stashed {
+        run(&["stash", "pop", "--index"])?;
+    }
+    Ok(())
+}
+
+fn restore_stash_after_failed_checkout(stashed: bool) -> Result<()> {
+    if stashed {
+        pop_stash_with_index_if_needed(true)
+            .context("checkout failed after auto-stash; stash was not restored")?;
+    }
+    Ok(())
+}
+
+fn checkout_output_with_stash_notice(mut output: String, stashed: bool) -> String {
+    if stashed {
+        output.push_str("applied stashed local changes after checkout\n");
+    }
+    output
 }
 
 fn orphan_branches() -> Result<Vec<String>> {

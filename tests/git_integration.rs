@@ -196,6 +196,16 @@ fn head_branch(dir: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
+fn stash_list(dir: &Path) -> String {
+    let out = git(dir, &["stash", "list"]);
+    assert!(
+        out.status.success(),
+        "git stash list failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[test]
@@ -897,6 +907,73 @@ fn list_branches_orders_newest_commit_first() {
 }
 
 #[test]
+fn checkout_branch_stashes_unstaged_changes_before_switching() {
+    let dir = init_repo();
+    fs::write(dir.path().join("README.md"), "main\n").unwrap();
+    stage_in(dir.path(), "README.md");
+    commit_in(dir.path(), "initial");
+    git_ok(dir.path(), &["checkout", "-b", "feature/target"]);
+    fs::write(dir.path().join("target.txt"), "target\n").unwrap();
+    stage_in(dir.path(), "target.txt");
+    commit_in(dir.path(), "target branch");
+    git_ok(dir.path(), &["checkout", "main"]);
+
+    fs::write(dir.path().join("README.md"), "dirty\n").unwrap();
+    let _cwd = CwdGuard::new(dir.path());
+
+    let out = lg::git::checkout_branch("feature/target").unwrap();
+
+    assert_eq!(head_branch(dir.path()), "feature/target");
+    assert!(
+        out.contains("applied stashed local changes after checkout"),
+        "checkout output should mention stash: {out}"
+    );
+    let (unstaged, staged) = status_in(dir.path());
+    assert!(
+        unstaged.contains(&"README.md".to_string()) && staged.is_empty(),
+        "unstaged change should be applied on target branch"
+    );
+    assert!(
+        !stash_list(dir.path()).contains("lg: auto-stash before checkout"),
+        "stash should be popped after checkout"
+    );
+}
+
+#[test]
+fn checkout_branch_stashes_staged_changes_before_switching() {
+    let dir = init_repo();
+    fs::write(dir.path().join("README.md"), "main\n").unwrap();
+    stage_in(dir.path(), "README.md");
+    commit_in(dir.path(), "initial");
+    git_ok(dir.path(), &["checkout", "-b", "feature/target"]);
+    fs::write(dir.path().join("target.txt"), "target\n").unwrap();
+    stage_in(dir.path(), "target.txt");
+    commit_in(dir.path(), "target branch");
+    git_ok(dir.path(), &["checkout", "main"]);
+
+    fs::write(dir.path().join("staged.txt"), "staged\n").unwrap();
+    stage_in(dir.path(), "staged.txt");
+    let _cwd = CwdGuard::new(dir.path());
+
+    let out = lg::git::checkout_branch("feature/target").unwrap();
+
+    assert_eq!(head_branch(dir.path()), "feature/target");
+    assert!(
+        out.contains("applied stashed local changes after checkout"),
+        "checkout output should mention stash: {out}"
+    );
+    let (unstaged, staged) = status_in(dir.path());
+    assert!(
+        unstaged.is_empty() && staged.contains(&"staged.txt".to_string()),
+        "staged change should be applied on target branch"
+    );
+    assert!(
+        !stash_list(dir.path()).contains("lg: auto-stash before checkout"),
+        "stash should be popped after checkout"
+    );
+}
+
+#[test]
 fn remote_branches_can_be_listed_and_checked_out_locally() {
     let dir = init_repo();
     let bare = tempfile::tempdir().expect("bare tempdir");
@@ -944,6 +1021,50 @@ fn remote_branches_can_be_listed_and_checked_out_locally() {
     assert_eq!(
         String::from_utf8_lossy(&upstream.stdout).trim(),
         "origin/feature/remote"
+    );
+}
+
+#[test]
+fn checkout_remote_branch_applies_dirty_changes_after_switching() {
+    let dir = init_repo();
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+
+    fs::write(dir.path().join("README.md"), "main\n").unwrap();
+    stage_in(dir.path(), "README.md");
+    commit_in(dir.path(), "initial");
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+
+    git_ok(dir.path(), &["checkout", "-b", "feature/remote"]);
+    fs::write(dir.path().join("remote.txt"), "remote\n").unwrap();
+    stage_in(dir.path(), "remote.txt");
+    commit_in(dir.path(), "remote branch");
+    git_ok(dir.path(), &["push", "-u", "origin", "feature/remote"]);
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["branch", "-D", "feature/remote"]);
+
+    fs::write(dir.path().join("README.md"), "dirty\n").unwrap();
+    let _cwd = CwdGuard::new(dir.path());
+
+    let out = lg::git::checkout_remote_branch("origin/feature/remote").unwrap();
+
+    assert_eq!(head_branch(dir.path()), "feature/remote");
+    assert!(
+        out.contains("applied stashed local changes after checkout"),
+        "checkout output should mention stash: {out}"
+    );
+    let (unstaged, staged) = status_in(dir.path());
+    assert!(
+        unstaged.contains(&"README.md".to_string()) && staged.is_empty(),
+        "dirty change should be applied on remote tracking branch"
+    );
+    assert!(
+        !stash_list(dir.path()).contains("lg: auto-stash before remote checkout"),
+        "stash should be popped after remote checkout"
     );
 }
 
