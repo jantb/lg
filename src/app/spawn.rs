@@ -14,16 +14,29 @@ pub(super) fn git_job_running(state: &AppState) -> bool {
         || state.workflow_job.is_some()
 }
 
-fn operation_blocked(state: &AppState, kind: OperationKind) -> bool {
-    state.push_job.is_some()
-        || state.checkout_job.is_some()
-        || state.operation_job.is_some()
-        || state.workflow_job.is_some()
-        || (state.fetch_job.is_some()
-            && !matches!(
-                kind,
-                OperationKind::Index | OperationKind::StageAllAndCommit | OperationKind::FileSystem
-            ))
+fn operation_block_reason(state: &AppState, kind: OperationKind) -> Option<&'static str> {
+    if state.push_job.is_some() {
+        Some("push in progress")
+    } else if state.checkout_job.is_some() {
+        Some("checkout in progress")
+    } else if let Some(job) = &state.operation_job {
+        Some(job.label)
+    } else if state.workflow_job.is_some() {
+        Some("workflow in progress")
+    } else if state.fetch_job.is_some()
+        && !matches!(
+            kind,
+            OperationKind::Index | OperationKind::StageAllAndCommit | OperationKind::FileSystem
+        )
+    {
+        Some("fetch in progress")
+    } else {
+        None
+    }
+}
+
+fn blocked_operation_status(label: &str, reason: &str) -> String {
+    format!("{label} blocked: {reason}")
 }
 
 pub(super) fn selected_diff_source(state: &AppState) -> DiffSource {
@@ -243,7 +256,8 @@ pub(super) fn spawn_operation<F>(
 ) where
     F: FnOnce() -> Result<String> + Send + 'static,
 {
-    if operation_blocked(state, kind) {
+    if let Some(reason) = operation_block_reason(state, kind) {
+        state.set_status(blocked_operation_status(label, reason), true);
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
@@ -280,10 +294,34 @@ mod tests {
             spinner: 0,
         });
 
-        assert!(!operation_blocked(&state, OperationKind::Index));
-        assert!(!operation_blocked(&state, OperationKind::StageAllAndCommit));
-        assert!(!operation_blocked(&state, OperationKind::FileSystem));
-        assert!(operation_blocked(&state, OperationKind::Worktree));
-        assert!(operation_blocked(&state, OperationKind::Commit));
+        assert!(operation_block_reason(&state, OperationKind::Index).is_none());
+        assert!(operation_block_reason(&state, OperationKind::StageAllAndCommit).is_none());
+        assert!(operation_block_reason(&state, OperationKind::FileSystem).is_none());
+        assert!(operation_block_reason(&state, OperationKind::Worktree).is_some());
+        assert!(operation_block_reason(&state, OperationKind::Commit).is_some());
+    }
+
+    #[test]
+    fn blocked_operation_sets_status_message() {
+        let mut state = AppState::new();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        state.checkout_job = Some(CheckoutJob {
+            rx,
+            handle: None,
+            spinner: 0,
+            branch: "feature/demo".into(),
+        });
+
+        spawn_operation(
+            &mut state,
+            "deleting",
+            OperationKind::FileSystem,
+            || -> Result<String> { panic!("blocked operation should not run") },
+        );
+
+        assert!(state.operation_job.is_none());
+        let status = state.status.as_ref().expect("blocked status");
+        assert!(status.is_error);
+        assert_eq!(status.text, "deleting blocked: checkout in progress");
     }
 }
