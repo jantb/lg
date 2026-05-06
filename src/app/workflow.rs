@@ -1,5 +1,7 @@
 use crate::config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST};
-use crate::state::{AppState, ConflictFollowup, FlowAction, Modal, WorkflowJob, WorkflowMsg};
+use crate::state::{
+    AppState, ConflictFollowup, FlowAction, Modal, SafetyRefCleanup, WorkflowJob, WorkflowMsg,
+};
 
 use super::spawn::git_job_running;
 
@@ -92,14 +94,26 @@ fn conflict_followup_for_flow(action: FlowAction, current: &str) -> Option<Confl
         FlowAction::MergeMain => Some(ConflictFollowup {
             push_branch: Some(current.to_string()),
             return_branch: Some(current.to_string()),
+            safety_ref_cleanup: Some(SafetyRefCleanup {
+                label: "merge-main".to_string(),
+                branch: current.to_string(),
+            }),
         }),
         FlowAction::ReleaseDev => Some(ConflictFollowup {
             push_branch: Some(BRANCH_DEV.to_string()),
             return_branch: Some(current.to_string()),
+            safety_ref_cleanup: Some(SafetyRefCleanup {
+                label: "release-current".to_string(),
+                branch: current.to_string(),
+            }),
         }),
         FlowAction::ReleaseTest => Some(ConflictFollowup {
             push_branch: Some(BRANCH_TEST.to_string()),
             return_branch: Some(current.to_string()),
+            safety_ref_cleanup: Some(SafetyRefCleanup {
+                label: "release-current".to_string(),
+                branch: current.to_string(),
+            }),
         }),
         FlowAction::ResetDev
         | FlowAction::ResetTest
@@ -176,9 +190,13 @@ pub(crate) fn validate_conflict_resolution(state: &mut AppState) {
     let followup = state.conflict_followup.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
-        match crate::git::validate_conflict_resolution_with_followup(
+        match crate::git::validate_conflict_resolution_with_cleanup(
             followup.as_ref().and_then(|f| f.push_branch.as_deref()),
             followup.as_ref().and_then(|f| f.return_branch.as_deref()),
+            followup
+                .as_ref()
+                .and_then(|f| f.safety_ref_cleanup.as_ref())
+                .map(|cleanup| (cleanup.label.as_str(), cleanup.branch.as_str())),
         ) {
             Ok(s) => {
                 let _ = tx.send(WorkflowMsg::Done(s));

@@ -29,7 +29,7 @@ pub use flow::{
     flow_merge_main_into_current_with_progress, flow_release_current,
     flow_release_current_with_progress, flow_reset_branch_from_main,
     flow_reset_branch_from_main_with_progress, stage_resolved_conflicts,
-    validate_conflict_resolution_with_followup,
+    validate_conflict_resolution_with_cleanup, validate_conflict_resolution_with_followup,
 };
 pub use review::{
     AssistedReview, ReviewNode, assisted_review_against_main, build_assisted_review_against_main,

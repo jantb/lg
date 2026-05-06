@@ -27,6 +27,13 @@ pub fn clamp_index(idx: usize, len: usize) -> Option<usize> {
 pub struct ConflictFollowup {
     pub push_branch: Option<String>,
     pub return_branch: Option<String>,
+    pub safety_ref_cleanup: Option<SafetyRefCleanup>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SafetyRefCleanup {
+    pub label: String,
+    pub branch: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,6 +247,7 @@ pub struct AppState {
     pub delete_branch_target: String,
     pub delete_branch_local: bool,
     pub delete_branch_remote: bool,
+    pub delete_branch_remote_available: bool,
     pub delete_branch_force: bool,
     pub delete_branch_field: DeleteBranchField,
     pub branch_view: BranchView,
@@ -385,6 +393,7 @@ impl AppState {
             delete_branch_target: String::new(),
             delete_branch_local: true,
             delete_branch_remote: false,
+            delete_branch_remote_available: false,
             delete_branch_force: false,
             delete_branch_field: DeleteBranchField::Local,
             branch_view: BranchView::Local,
@@ -622,7 +631,8 @@ impl AppState {
         self.delete_branch_local = true;
         // Default: also delete the remote when one is tracked, so a single
         // confirm cleans up both. Skip the toggle when there is no remote.
-        self.delete_branch_remote = branch.upstream.is_some() && !branch.upstream_gone;
+        self.delete_branch_remote_available = branch.upstream.is_some() && !branch.upstream_gone;
+        self.delete_branch_remote = self.delete_branch_remote_available;
         self.delete_branch_force = false;
         self.delete_branch_field = DeleteBranchField::Local;
         self.modal = Modal::DeleteBranch;

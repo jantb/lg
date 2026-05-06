@@ -206,6 +206,16 @@ fn stash_list(dir: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+fn branch_list(dir: &Path) -> String {
+    let out = git(dir, &["branch", "--format=%(refname:short)"]);
+    assert!(
+        out.status.success(),
+        "git branch failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[test]
@@ -1476,6 +1486,64 @@ fn merge_main_flow_stashes_dirty_work_updates_main_and_returns_to_feature() {
     assert!(
         String::from_utf8_lossy(&stash_list.stdout).is_empty(),
         "auto-stash should be restored and dropped"
+    );
+}
+
+#[test]
+fn merge_main_conflict_validation_cleans_safety_backup() {
+    let dir = init_repo();
+    fs::write(dir.path().join("conflict.txt"), "base\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+
+    let feature = "feature/merge-main-conflict";
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("conflict.txt"), "feature\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "feature side");
+    git_ok(dir.path(), &["push", "-u", "origin", feature]);
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("conflict.txt"), "main\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "main side");
+    git_ok(dir.path(), &["push", "origin", "main"]);
+    git_ok(dir.path(), &["checkout", feature]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::flow_merge_main_into_current(feature)
+        .expect_err("merge-main should stop for manual conflict resolution");
+    assert_eq!(head_branch(dir.path()), feature);
+    assert!(
+        branch_list(dir.path()).contains("lg/backup/merge-main-feature-merge-main-conflict-"),
+        "merge-main conflict should leave a safety backup before validation"
+    );
+
+    fs::write(dir.path().join("conflict.txt"), "resolved\n").unwrap();
+    let out = lg::git::validate_conflict_resolution_with_cleanup(
+        Some(feature),
+        Some(feature),
+        Some(("merge-main", feature)),
+    )
+    .expect("continue merge-main conflict");
+
+    assert!(
+        out.contains("removed lg/backup/merge-main-feature-merge-main-conflict-"),
+        "validation should report backup cleanup: {out}"
+    );
+    assert_eq!(head_branch(dir.path()), feature);
+    let branches = branch_list(dir.path());
+    assert!(
+        !branches.contains("lg/backup/merge-main-feature-merge-main-conflict-"),
+        "validation should clean merge-main safety backup: {branches}"
     );
 }
 

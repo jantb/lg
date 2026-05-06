@@ -365,6 +365,91 @@ fn branches_m_shortcut_queues_merge_main_workflow() {
 }
 
 #[test]
+fn delete_branch_modal_hides_remote_option_for_local_only_branch() {
+    let mut state = AppState::new();
+    let branch = Branch {
+        name: "lg/backup/merge-main-feature-demo-123".into(),
+        is_current: false,
+        upstream: None,
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 0,
+        last_commit_unix: None,
+    };
+    state.open_delete_branch_modal(&branch);
+
+    let backend = TestBackend::new(100, 18);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::delete_branch::render(&state, frame.area(), frame);
+        })
+        .unwrap();
+
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(
+        !text.contains("delete remote"),
+        "local-only branch should not show remote delete option: {text}"
+    );
+    assert!(
+        text.contains("force local delete"),
+        "force option should explain that it is local-only: {text}"
+    );
+
+    panel::delete_branch::handle_key(&mut state, key(KeyCode::Tab)).unwrap();
+    assert_eq!(
+        state.delete_branch_field,
+        lg::state::DeleteBranchField::Force
+    );
+}
+
+#[test]
+fn delete_branch_modal_shows_remote_option_for_tracked_branch() {
+    let mut state = AppState::new();
+    let branch = Branch {
+        name: "feature/tracked".into(),
+        is_current: false,
+        upstream: Some("origin/feature/tracked".into()),
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 0,
+        last_commit_unix: None,
+    };
+    state.open_delete_branch_modal(&branch);
+
+    let backend = TestBackend::new(100, 18);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::delete_branch::render(&state, frame.area(), frame);
+        })
+        .unwrap();
+
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(
+        text.contains("delete remote (origin)"),
+        "tracked branch should show remote delete option: {text}"
+    );
+    assert!(state.delete_branch_remote);
+}
+
+#[test]
 fn pressing_f_opens_flow_modal_with_deploy_map() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
     add_flow_branches(&mut app.state);

@@ -42,19 +42,21 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         chunks[0],
     );
 
-    let body = vec![
-        toggle_line(
-            "delete local",
-            state.delete_branch_local,
-            state.delete_branch_field == DeleteBranchField::Local,
-        ),
-        toggle_line(
+    let mut body = vec![toggle_line(
+        "delete local",
+        state.delete_branch_local,
+        state.delete_branch_field == DeleteBranchField::Local,
+    )];
+    if state.delete_branch_remote_available {
+        body.push(toggle_line(
             "delete remote (origin)",
             state.delete_branch_remote,
             state.delete_branch_field == DeleteBranchField::Remote,
-        ),
+        ));
+    }
+    body.extend([
         toggle_line(
-            "force (-D, allows unmerged)",
+            "force local delete (-D, for unmerged branches)",
             state.delete_branch_force,
             state.delete_branch_field == DeleteBranchField::Force,
         ),
@@ -65,7 +67,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::DIM),
         )),
-    ];
+    ]);
     frame.render_widget(
         Paragraph::new(body)
             .block(ui::bordered("Options"))
@@ -106,10 +108,10 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             state.modal = Modal::None;
         }
         KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => {
-            state.delete_branch_field = next_field(state.delete_branch_field);
+            state.delete_branch_field = next_field(state);
         }
         KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => {
-            state.delete_branch_field = prev_field(state.delete_branch_field);
+            state.delete_branch_field = prev_field(state);
         }
         KeyCode::Char(' ') => toggle_current(state),
         KeyCode::Enter => {
@@ -129,26 +131,35 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-fn next_field(field: DeleteBranchField) -> DeleteBranchField {
-    match field {
-        DeleteBranchField::Local => DeleteBranchField::Remote,
+fn next_field(state: &AppState) -> DeleteBranchField {
+    match state.delete_branch_field {
+        DeleteBranchField::Local if state.delete_branch_remote_available => {
+            DeleteBranchField::Remote
+        }
+        DeleteBranchField::Local => DeleteBranchField::Force,
         DeleteBranchField::Remote => DeleteBranchField::Force,
         DeleteBranchField::Force => DeleteBranchField::Local,
     }
 }
 
-fn prev_field(field: DeleteBranchField) -> DeleteBranchField {
-    match field {
+fn prev_field(state: &AppState) -> DeleteBranchField {
+    match state.delete_branch_field {
         DeleteBranchField::Local => DeleteBranchField::Force,
         DeleteBranchField::Remote => DeleteBranchField::Local,
-        DeleteBranchField::Force => DeleteBranchField::Remote,
+        DeleteBranchField::Force if state.delete_branch_remote_available => {
+            DeleteBranchField::Remote
+        }
+        DeleteBranchField::Force => DeleteBranchField::Local,
     }
 }
 
 fn toggle_current(state: &mut AppState) {
     match state.delete_branch_field {
         DeleteBranchField::Local => state.delete_branch_local = !state.delete_branch_local,
-        DeleteBranchField::Remote => state.delete_branch_remote = !state.delete_branch_remote,
+        DeleteBranchField::Remote if state.delete_branch_remote_available => {
+            state.delete_branch_remote = !state.delete_branch_remote
+        }
+        DeleteBranchField::Remote => {}
         DeleteBranchField::Force => state.delete_branch_force = !state.delete_branch_force,
     }
 }

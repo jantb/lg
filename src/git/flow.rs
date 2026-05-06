@@ -322,6 +322,14 @@ pub fn validate_conflict_resolution_with_followup(
     push_branch: Option<&str>,
     return_branch: Option<&str>,
 ) -> Result<String> {
+    validate_conflict_resolution_with_cleanup(push_branch, return_branch, None)
+}
+
+pub fn validate_conflict_resolution_with_cleanup(
+    push_branch: Option<&str>,
+    return_branch: Option<&str>,
+    safety_cleanup: Option<(&str, &str)>,
+) -> Result<String> {
     let staged = stage_resolved_conflicts()?;
     let conflicts = conflicted_files()?;
     if !conflicts.is_empty() {
@@ -365,6 +373,13 @@ pub fn validate_conflict_resolution_with_followup(
             out.push_str("\n\nCheckout:\n");
             out.push_str(checkout.trim());
         }
+    }
+
+    if let Some((label, branch)) = safety_cleanup
+        && let Some(backup) = delete_latest_safety_ref(label, branch)?
+    {
+        out.push_str("\n\nBackup:\nremoved ");
+        out.push_str(&backup);
     }
 
     Ok(out)
@@ -517,6 +532,41 @@ fn delete_safety_ref(name: &str) -> Result<()> {
     }
     run(&["update-ref", "-d", &format!("refs/heads/{name}")])?;
     Ok(())
+}
+
+fn delete_latest_safety_ref(label: &str, branch: &str) -> Result<Option<String>> {
+    let prefix = safety_ref_name_prefix(label, branch);
+    let out = run(&[
+        "for-each-ref",
+        "--format=%(refname:short)",
+        &format!("refs/heads/{SAFETY_REF_PREFIX}"),
+    ])?;
+    let latest = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|name| name.starts_with(&prefix))
+        .filter_map(|name| safety_ref_timestamp(name).map(|ts| (name.to_string(), ts)))
+        .max_by(|(_, a), (_, b)| a.cmp(b))
+        .map(|(name, _)| name);
+
+    if let Some(name) = latest {
+        delete_safety_ref(&name)?;
+        Ok(Some(name))
+    } else {
+        Ok(None)
+    }
+}
+
+fn safety_ref_name_prefix(label: &str, branch: &str) -> String {
+    let clean_label: String = label
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let clean_branch: String = branch
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    format!("{SAFETY_REF_PREFIX}{clean_label}-{clean_branch}-")
 }
 
 fn prune_safety_refs(keep: usize) -> Result<usize> {
