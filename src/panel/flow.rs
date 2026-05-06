@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Clear, List, ListItem, Paragraph},
 };
 
 use crate::{
@@ -15,6 +15,8 @@ use crate::{
     ui,
 };
 
+use super::scroll;
+
 fn merge_main_available(state: &AppState) -> bool {
     state
         .branch
@@ -22,7 +24,7 @@ fn merge_main_available(state: &AppState) -> bool {
         .is_some_and(|branch| !matches!(branch, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST))
 }
 
-fn available_actions(state: &AppState) -> Vec<FlowAction> {
+pub(crate) fn available_actions(state: &AppState) -> Vec<FlowAction> {
     FlowAction::ALL
         .into_iter()
         .filter(|action| *action != FlowAction::MergeMain || merge_main_available(state))
@@ -160,13 +162,46 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("\u{203a} ")
-        .scroll_padding(2);
-    let mut list_state = ListState::default();
-    if let Some(idx) = clamp_index(state.flow_idx, actions.len()) {
-        list_state.select(Some(idx));
-    }
+        .highlight_symbol("\u{203a} ");
+    let selected_idx = clamp_index(state.flow_idx, actions.len());
+    let offset = scroll::selection_scroll_offset(
+        selected_idx,
+        actions.len(),
+        scroll::list_viewport_height(chunks[1].height),
+        state.flow_scroll_offset,
+    );
+    let mut list_state = scroll::list_state(selected_idx, offset);
     frame.render_stateful_widget(list, chunks[1], &mut list_state);
+}
+
+pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
+    if state.flow_confirm.is_some()
+        || state.flow_input.is_some()
+        || state.workflow_job.is_some()
+        || !state.flow_available()
+    {
+        state.flow_scroll_offset = 0;
+        return;
+    }
+
+    let actions_len = available_actions(state).len();
+    state.flow_scroll_offset = scroll::selection_scroll_offset(
+        clamp_index(state.flow_idx, actions_len),
+        actions_len,
+        scroll::list_viewport_height(actions_area(area).height),
+        state.flow_scroll_offset,
+    );
+}
+
+fn actions_area(area: Rect) -> Rect {
+    let w = (area.width * 7 / 10).clamp(58, 96).min(area.width);
+    let h = 16.min(area.height);
+    let modal = ui::centered(area, w, h);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(7), Constraint::Min(0)])
+        .split(modal);
+    chunks[1]
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {

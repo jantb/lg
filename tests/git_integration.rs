@@ -1519,6 +1519,42 @@ fn merge_main_flow_stashes_dirty_work_updates_main_and_returns_to_feature() {
 }
 
 #[test]
+fn reset_flow_cleans_safety_backup_after_success() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init\n").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+
+    git_ok(dir.path(), &["checkout", "-b", "develop"]);
+    fs::write(dir.path().join("develop.txt"), "develop\n").unwrap();
+    stage_in(dir.path(), "develop.txt");
+    commit_in(dir.path(), "develop commit");
+    git_ok(dir.path(), &["push", "-u", "origin", "develop"]);
+
+    let feature = "feature/reset-return";
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::flow_reset_branch_from_main(feature, "develop").expect("reset develop");
+
+    assert_eq!(head_branch(dir.path()), feature);
+    let branches = branch_list(dir.path());
+    assert!(
+        !branches.contains("lg/backup/reset-develop-develop-"),
+        "successful reset should clean safety backup: {branches}"
+    );
+}
+
+#[test]
 fn merge_main_conflict_validation_cleans_safety_backup() {
     let dir = init_repo();
     fs::write(dir.path().join("conflict.txt"), "base\n").unwrap();
@@ -1573,6 +1609,60 @@ fn merge_main_conflict_validation_cleans_safety_backup() {
     assert!(
         !branches.contains("lg/backup/merge-main-feature-merge-main-conflict-"),
         "validation should clean merge-main safety backup: {branches}"
+    );
+}
+
+#[test]
+fn merge_main_conflict_abort_cleans_safety_backup() {
+    let dir = init_repo();
+    fs::write(dir.path().join("conflict.txt"), "base\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+
+    let feature = "feature/merge-main-abort";
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("conflict.txt"), "feature\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "feature side");
+    git_ok(dir.path(), &["push", "-u", "origin", feature]);
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("conflict.txt"), "main\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "main side");
+    git_ok(dir.path(), &["push", "origin", "main"]);
+    git_ok(dir.path(), &["checkout", feature]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::flow_merge_main_into_current(feature)
+        .expect_err("merge-main should stop for manual conflict resolution");
+    assert!(
+        branch_list(dir.path()).contains("lg/backup/merge-main-feature-merge-main-abort-"),
+        "merge-main conflict should leave a safety backup before abort"
+    );
+
+    let out = lg::git::abort_in_progress_operation_with_cleanup(
+        Some(feature),
+        Some(("merge-main", feature)),
+    )
+    .expect("abort merge-main conflict");
+    assert!(
+        out.contains("removed lg/backup/merge-main-feature-merge-main-abort-"),
+        "abort should report backup cleanup: {out}"
+    );
+    assert_eq!(head_branch(dir.path()), feature);
+    let branches = branch_list(dir.path());
+    assert!(
+        !branches.contains("lg/backup/merge-main-feature-merge-main-abort-"),
+        "abort should clean merge-main safety backup: {branches}"
     );
 }
 

@@ -5,7 +5,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{List, ListItem, ListState},
+    widgets::{List, ListItem},
 };
 
 use crate::{
@@ -15,6 +15,8 @@ use crate::{
     state::{AppState, BranchView, FlowAction, PendingAction, SPINNER_FRAMES, clamp_index},
     ui,
 };
+
+use super::scroll;
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let len = state.branch_list_len();
@@ -56,15 +58,55 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("\u{203a} ")
-        .scroll_padding(2);
+        .highlight_symbol("\u{203a} ");
 
-    let mut list_state = ListState::default();
-    if focused && let Some(idx) = selected_idx {
-        list_state.select(Some(idx));
-    }
+    let offset = visible_scroll_offset(state, area);
+    let mut list_state = scroll::list_state(focused.then_some(selected_idx).flatten(), offset);
 
     frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
+    let len = state.branch_list_len();
+    let selected_idx = match state.branch_view {
+        BranchView::Local => clamp_index(state.branches_idx, len),
+        BranchView::Remote => clamp_index(state.remote_branches_idx, len),
+    };
+    let offset = scroll::selection_scroll_offset(
+        selected_idx,
+        len,
+        scroll::list_viewport_height(area.height),
+        branch_scroll_offset(state),
+    );
+    *branch_scroll_offset_mut(state) = offset;
+}
+
+fn visible_scroll_offset(state: &AppState, area: Rect) -> usize {
+    let len = state.branch_list_len();
+    let selected_idx = match state.branch_view {
+        BranchView::Local => clamp_index(state.branches_idx, len),
+        BranchView::Remote => clamp_index(state.remote_branches_idx, len),
+    };
+    scroll::selection_scroll_offset(
+        selected_idx,
+        len,
+        scroll::list_viewport_height(area.height),
+        branch_scroll_offset(state),
+    )
+}
+
+pub(crate) fn branch_scroll_offset(state: &AppState) -> usize {
+    match state.branch_view {
+        BranchView::Local => state.branches_scroll_offset,
+        BranchView::Remote => state.remote_branches_scroll_offset,
+    }
+}
+
+fn branch_scroll_offset_mut(state: &mut AppState) -> &mut usize {
+    match state.branch_view {
+        BranchView::Local => &mut state.branches_scroll_offset,
+        BranchView::Remote => &mut state.remote_branches_scroll_offset,
+    }
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {

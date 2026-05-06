@@ -24,9 +24,10 @@ pub use diff::{
     staged_diff,
 };
 pub use flow::{
-    abort_in_progress_operation, abort_in_progress_operation_with_return, checkout_branch,
-    checkout_remote_branch, conflicted_files, delete_local_branch, delete_remote_branch,
-    flow_clean_orphan_branches, flow_create_feature_branch, flow_merge_main_into_current,
+    abort_in_progress_operation, abort_in_progress_operation_with_cleanup,
+    abort_in_progress_operation_with_return, checkout_branch, checkout_remote_branch,
+    conflicted_files, delete_local_branch, delete_remote_branch, flow_clean_orphan_branches,
+    flow_create_feature_branch, flow_merge_main_into_current,
     flow_merge_main_into_current_with_progress, flow_release_current,
     flow_release_current_with_progress, flow_reset_branch_from_main,
     flow_reset_branch_from_main_with_progress, stage_resolved_conflicts,

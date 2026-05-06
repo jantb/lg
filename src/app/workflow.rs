@@ -177,6 +177,7 @@ fn reset_steps(current: &str, target: &str) -> Vec<String> {
         "create safety backup".into(),
         format!("reset {target} to origin/{}", BRANCH_MAIN),
         format!("force push {target}"),
+        "remove safety backup".into(),
     ]);
     if current != target {
         steps.push(format!("checkout {current}"));
@@ -231,9 +232,18 @@ pub(crate) fn abort_conflict_operation(state: &mut AppState) {
         .conflict_followup
         .as_ref()
         .and_then(|f| f.return_branch.clone());
+    let safety_cleanup = state
+        .conflict_followup
+        .as_ref()
+        .and_then(|f| f.safety_ref_cleanup.clone());
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
-        match crate::git::abort_in_progress_operation_with_return(return_branch.as_deref()) {
+        match crate::git::abort_in_progress_operation_with_cleanup(
+            return_branch.as_deref(),
+            safety_cleanup
+                .as_ref()
+                .map(|cleanup| (cleanup.label.as_str(), cleanup.branch.as_str())),
+        ) {
             Ok(s) => {
                 let _ = tx.send(WorkflowMsg::Done(s));
             }

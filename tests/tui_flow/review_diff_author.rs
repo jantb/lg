@@ -637,8 +637,8 @@ fn review_navigation_keeps_selection_visible_without_early_scroll() {
     }
     assert_eq!(state.review_idx, 5);
     assert_eq!(
-        state.diff_offset, 1,
-        "offset should advance only when selection reaches the bottom"
+        state.diff_offset, 3,
+        "offset should keep the selection away from the viewport edge when possible"
     );
 }
 

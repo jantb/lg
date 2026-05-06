@@ -162,7 +162,7 @@ pub fn flow_reset_branch_from_main_with_progress(
         run(&["checkout", target_branch])?;
     }
     progress();
-    create_safety_ref(&format!("reset-{target_branch}"))?;
+    let safety_ref = create_safety_ref(&format!("reset-{target_branch}"))?;
     progress();
     run(&[
         "reset",
@@ -175,6 +175,8 @@ pub fn flow_reset_branch_from_main_with_progress(
         progress();
         run(&["checkout", current_branch])?;
     }
+    progress();
+    delete_safety_ref(&safety_ref)?;
     Ok(format!("reset {target_branch} from origin/{BRANCH_MAIN}"))
 }
 
@@ -392,6 +394,13 @@ pub fn abort_in_progress_operation() -> Result<String> {
 }
 
 pub fn abort_in_progress_operation_with_return(return_branch: Option<&str>) -> Result<String> {
+    abort_in_progress_operation_with_cleanup(return_branch, None)
+}
+
+pub fn abort_in_progress_operation_with_cleanup(
+    return_branch: Option<&str>,
+    safety_cleanup: Option<(&str, &str)>,
+) -> Result<String> {
     let mut out;
     if git_path_exists("rebase-merge")? || git_path_exists("rebase-apply")? {
         out = run_combined(&["rebase", "--abort"])?;
@@ -412,6 +421,13 @@ pub fn abort_in_progress_operation_with_return(return_branch: Option<&str>) -> R
             out.push_str("\n\nCheckout:\n");
             out.push_str(checkout.trim());
         }
+    }
+
+    if let Some((label, branch)) = safety_cleanup
+        && let Some(backup) = delete_latest_safety_ref(label, branch)?
+    {
+        out.push_str("\n\nBackup:\nremoved ");
+        out.push_str(&backup);
     }
 
     Ok(out)

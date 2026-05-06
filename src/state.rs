@@ -177,6 +177,10 @@ pub struct AppState {
     pub branches_idx: usize,
     pub remote_branches_idx: usize,
     pub commits_idx: usize,
+    pub files_scroll_offset: usize,
+    pub branches_scroll_offset: usize,
+    pub remote_branches_scroll_offset: usize,
+    pub commits_scroll_offset: usize,
 
     pub collapsed_dirs: HashSet<String>,
 
@@ -199,6 +203,7 @@ pub struct AppState {
 
     pub commit_message: String,
     pub commit_cursor: usize,
+    pub commit_scroll_offset: usize,
     pub author_path_input: String,
     pub author_name_input: String,
     pub author_email_input: String,
@@ -239,12 +244,14 @@ pub struct AppState {
     pub row_drag_active: Option<(usize, usize)>,
 
     pub flow_idx: usize,
+    pub flow_scroll_offset: usize,
     pub flow_confirm: Option<FlowAction>,
     pub flow_input: Option<FlowAction>,
     pub flow_text: String,
 
     pub conflicts: Vec<String>,
     pub conflict_idx: usize,
+    pub conflict_scroll_offset: usize,
     pub conflict_log: String,
     pub conflict_followup: Option<ConflictFollowup>,
 
@@ -323,6 +330,10 @@ impl AppState {
             branches_idx: 0,
             remote_branches_idx: 0,
             commits_idx: 0,
+            files_scroll_offset: 0,
+            branches_scroll_offset: 0,
+            remote_branches_scroll_offset: 0,
+            commits_scroll_offset: 0,
 
             collapsed_dirs: HashSet::new(),
 
@@ -345,6 +356,7 @@ impl AppState {
 
             commit_message: String::new(),
             commit_cursor: 0,
+            commit_scroll_offset: 0,
             author_path_input: String::new(),
             author_name_input: String::new(),
             author_email_input: String::new(),
@@ -385,12 +397,14 @@ impl AppState {
             row_drag_active: None,
 
             flow_idx: 0,
+            flow_scroll_offset: 0,
             flow_confirm: None,
             flow_input: None,
             flow_text: String::new(),
 
             conflicts: Vec::new(),
             conflict_idx: 0,
+            conflict_scroll_offset: 0,
             conflict_log: String::new(),
             conflict_followup: None,
 

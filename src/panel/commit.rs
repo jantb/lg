@@ -16,6 +16,7 @@ use crate::{
 };
 
 use super::files::code_span;
+use super::scroll;
 
 #[derive(Debug, Clone)]
 struct VisualLine {
@@ -57,8 +58,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     };
 
     let body_area = editor_body_area(area);
-    let (visible_text, cursor) =
-        visible_message_view(&msg_view, msg_cursor, body_area.width, body_area.height);
+    let (visible_text, cursor) = visible_message_view(
+        &msg_view,
+        msg_cursor,
+        body_area.width,
+        body_area.height,
+        state.commit_scroll_offset,
+    );
 
     let input = Paragraph::new(visible_text).block(ui::bordered(&title_text));
     frame.render_widget(input, left_chunks[0]);
@@ -134,7 +140,31 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     frame.render_widget(sidebar, chunks[1]);
 }
 
-fn editor_body_area(area: Rect) -> Rect {
+pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
+    let body = editor_body_area(area);
+    if body.width == 0 || body.height == 0 {
+        state.commit_scroll_offset = 0;
+        return;
+    }
+
+    let (message, cursor) = match &state.generation {
+        Some(generation) => (
+            generation.output.as_str(),
+            generation.output.chars().count(),
+        ),
+        None => (state.commit_message.as_str(), state.commit_cursor),
+    };
+    let lines = visual_lines(message, body.width.max(1) as usize);
+    let (cursor_row, _) = cursor_visual_position(&lines, cursor);
+    state.commit_scroll_offset = scroll::selection_scroll_offset(
+        Some(cursor_row),
+        lines.len(),
+        body.height as usize,
+        state.commit_scroll_offset,
+    );
+}
+
+pub(crate) fn editor_body_area(area: Rect) -> Rect {
     let w = (area.width * 8 / 10).clamp(60, 120).min(area.width);
     let h = (area.height * 3 / 4).clamp(14, 34).min(area.height);
     let modal = ui::centered(area, w, h);
@@ -160,6 +190,7 @@ fn visible_message_view(
     cursor: usize,
     width: u16,
     height: u16,
+    scroll_offset: usize,
 ) -> (String, (u16, u16)) {
     if width == 0 || height == 0 {
         return (String::new(), (0, 0));
@@ -168,34 +199,11 @@ fn visible_message_view(
     let width = width as usize;
     let height = height as usize;
     let cursor = cursor.min(message.chars().count());
-    let mut cursor_row = 0;
-    let mut cursor_col = 0;
     let lines = visual_lines(message, width);
+    let (cursor_row, cursor_col) = cursor_visual_position(&lines, cursor);
 
-    let mut matched = false;
-    for (idx, line) in lines.iter().enumerate() {
-        let end = line.start + line.len;
-        if cursor >= line.start && cursor <= end {
-            cursor_row = idx;
-            cursor_col = cursor.saturating_sub(line.start);
-            matched = true;
-            if cursor < end || line.len == 0 || idx + 1 == lines.len() {
-                break;
-            }
-        }
-    }
-    if !matched
-        && let Some((idx, line)) = lines
-            .iter()
-            .enumerate()
-            .take_while(|(_, line)| line.start <= cursor)
-            .last()
-    {
-        cursor_row = idx;
-        cursor_col = line.len;
-    }
-
-    let scroll = cursor_row.saturating_sub(height.saturating_sub(1));
+    let scroll =
+        scroll::selection_scroll_offset(Some(cursor_row), lines.len(), height, scroll_offset);
     let visible = lines
         .iter()
         .skip(scroll)
@@ -207,6 +215,26 @@ fn visible_message_view(
     let cursor_x = cursor_col.min(width.saturating_sub(1)) as u16;
 
     (visible, (cursor_x, cursor_y))
+}
+
+fn cursor_visual_position(lines: &[VisualLine], cursor: usize) -> (usize, usize) {
+    for (idx, line) in lines.iter().enumerate() {
+        let end = line.start + line.len;
+        if cursor >= line.start
+            && cursor <= end
+            && (cursor < end || line.len == 0 || idx + 1 == lines.len())
+        {
+            return (idx, cursor.saturating_sub(line.start));
+        }
+    }
+
+    lines
+        .iter()
+        .enumerate()
+        .take_while(|(_, line)| line.start <= cursor)
+        .last()
+        .map(|(idx, line)| (idx, line.len))
+        .unwrap_or((0, 0))
 }
 
 fn visual_lines(message: &str, width: usize) -> Vec<VisualLine> {
@@ -379,7 +407,7 @@ pub fn place_cursor_at(state: &mut AppState, area: Rect, column: u16, row: u16) 
 
     let width = body.width.max(1) as usize;
     let lines = visual_lines(&state.commit_message, width);
-    let visual_row = row.saturating_sub(body.y) as usize;
+    let visual_row = row.saturating_sub(body.y) as usize + state.commit_scroll_offset;
     let visual_col = column.saturating_sub(body.x) as usize;
     let line = &lines[visual_row.min(lines.len().saturating_sub(1))];
     state.commit_cursor =

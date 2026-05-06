@@ -5,8 +5,10 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{List, ListItem, ListState},
+    widgets::{List, ListItem},
 };
+
+use super::scroll;
 
 use crate::{
     graph::{self, Pipe, SELECTED_COLOR},
@@ -99,14 +101,32 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         })
         .collect();
 
-    let list = List::new(items).block(block).scroll_padding(2);
+    let list = List::new(items).block(block);
 
-    let mut list_state = ListState::default();
-    if focused && let Some(idx) = selected_idx {
-        list_state.select(Some(idx));
-    }
+    let offset = visible_scroll_offset(state, area);
+    let mut list_state = scroll::list_state(focused.then_some(selected_idx).flatten(), offset);
 
     frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
+    let selected_idx = selected_commit_index(state);
+    state.commits_scroll_offset = scroll::selection_scroll_offset(
+        selected_idx,
+        state.commits.len(),
+        scroll::list_viewport_height(area.height),
+        state.commits_scroll_offset,
+    );
+}
+
+fn visible_scroll_offset(state: &AppState, area: Rect) -> usize {
+    let selected_idx = selected_commit_index(state);
+    scroll::selection_scroll_offset(
+        selected_idx,
+        state.commits.len(),
+        scroll::list_viewport_height(area.height),
+        state.commits_scroll_offset,
+    )
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
@@ -128,7 +148,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-fn selected_commit_index(state: &AppState) -> Option<usize> {
+pub(crate) fn selected_commit_index(state: &AppState) -> Option<usize> {
     let idx = clamp_index(state.commits_idx, state.commits.len())?;
     if !state.commits[idx].is_graph_row() {
         return Some(idx);

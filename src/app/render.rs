@@ -33,6 +33,7 @@ where
         self.state.diff_viewport_height = rects_pre.main.height.saturating_sub(2);
         self.state.diff_viewport_width = rects_pre.main.width.saturating_sub(2);
         self.clamp_main_scroll_offset();
+        sync_selection_scroll_offsets(&mut self.state, &rects_pre, area);
 
         let state = &self.state;
         self.terminal.draw(|frame| {
@@ -100,6 +101,7 @@ impl App {
         self.state.diff_viewport_height = rects_pre.main.height.saturating_sub(2);
         self.state.diff_viewport_width = rects_pre.main.width.saturating_sub(2);
         self.clamp_main_scroll_offset();
+        sync_selection_scroll_offsets(&mut self.state, &rects_pre, area);
 
         let state = &self.state;
         self.terminal.draw(|frame| {
@@ -143,5 +145,22 @@ impl App {
             .state
             .diff_offset
             .min(panel::main::max_scroll_offset(&self.state));
+    }
+}
+
+fn sync_selection_scroll_offsets(
+    state: &mut crate::state::AppState,
+    rects: &ui::LayoutRects,
+    area: Rect,
+) {
+    panel::files::sync_scroll_offset(state, rects.files);
+    panel::branches::sync_scroll_offset(state, rects.branches);
+    panel::commits::sync_scroll_offset(state, rects.commits);
+
+    match state.modal {
+        Modal::Commit => panel::commit::sync_scroll_offset(state, area),
+        Modal::Flow => panel::flow::sync_scroll_offset(state, area),
+        Modal::Conflict => panel::conflict::sync_scroll_offset(state, area),
+        _ => {}
     }
 }

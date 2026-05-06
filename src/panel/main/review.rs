@@ -681,12 +681,12 @@ fn ensure_review_selection_visible(state: &mut AppState) {
     };
     let viewport = state.diff_viewport_height.max(1) as usize;
     let max_offset = super::max_scroll_offset(state) as usize;
-    let mut offset = (state.diff_offset as usize).min(max_offset);
-    if line < offset {
-        offset = line;
-    } else if line >= offset.saturating_add(viewport) {
-        offset = line.saturating_add(1).saturating_sub(viewport);
-    }
+    let offset = crate::panel::scroll::selection_scroll_offset(
+        Some(line),
+        render_line_count(state),
+        viewport,
+        state.diff_offset as usize,
+    );
     state.diff_offset = offset.min(max_offset).min(u16::MAX as usize) as u16;
 }
 

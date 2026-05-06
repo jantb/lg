@@ -12,5 +12,6 @@ pub mod main;
 pub(crate) mod markdown;
 pub mod push;
 pub mod review_chat;
+pub(crate) mod scroll;
 pub mod stage_all;
 pub mod status;

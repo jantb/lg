@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
 use crate::{
@@ -13,6 +13,8 @@ use crate::{
     state::{AppState, clamp_index},
     ui,
 };
+
+use super::scroll;
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let w = (area.width * 8 / 10).clamp(72, 140).min(area.width);
@@ -60,12 +62,15 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("\u{203a} ")
-        .scroll_padding(2);
-    let mut list_state = ListState::default();
-    if let Some(idx) = clamp_index(state.conflict_idx, state.conflicts.len()) {
-        list_state.select(Some(idx));
-    }
+        .highlight_symbol("\u{203a} ");
+    let selected_idx = clamp_index(state.conflict_idx, state.conflicts.len());
+    let offset = scroll::selection_scroll_offset(
+        selected_idx,
+        state.conflicts.len(),
+        scroll::list_viewport_height(body[0].height),
+        state.conflict_scroll_offset,
+    );
+    let mut list_state = scroll::list_state(selected_idx, offset);
     frame.render_stateful_widget(list, body[0], &mut list_state);
 
     let detail = if let Some(path) = state.conflicts.get(state.conflict_idx) {
@@ -101,6 +106,35 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         Paragraph::new(controls).block(Block::default().borders(Borders::ALL)),
         chunks[2],
     );
+}
+
+pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
+    let files_area = files_area(area);
+    state.conflict_scroll_offset = scroll::selection_scroll_offset(
+        clamp_index(state.conflict_idx, state.conflicts.len()),
+        state.conflicts.len(),
+        scroll::list_viewport_height(files_area.height),
+        state.conflict_scroll_offset,
+    );
+}
+
+fn files_area(area: Rect) -> Rect {
+    let w = (area.width * 8 / 10).clamp(72, 140).min(area.width);
+    let h = (area.height * 4 / 5).clamp(18, 44).min(area.height);
+    let modal = ui::centered(area, w, h);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Min(7),
+            Constraint::Length(5),
+        ])
+        .split(modal);
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+        .split(chunks[1]);
+    body[0]
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {

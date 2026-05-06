@@ -124,11 +124,11 @@ pub(super) fn pane_at(rects: &ui::LayoutRects, column: u16, row: u16) -> Option<
     .find_map(|(pane, rect)| rect_contains(rect, column, row).then_some(pane))
 }
 
-fn list_row_at(area: Rect, row: u16, len: usize) -> Option<usize> {
+fn list_row_at(area: Rect, row: u16, len: usize, offset: usize) -> Option<usize> {
     if len == 0 || row <= area.y || row >= area.y.saturating_add(area.height).saturating_sub(1) {
         return None;
     }
-    let idx = row.saturating_sub(area.y).saturating_sub(1) as usize;
+    let idx = offset.saturating_add(row.saturating_sub(area.y).saturating_sub(1) as usize);
     (idx < len).then_some(idx)
 }
 
@@ -141,18 +141,28 @@ pub(super) fn select_mouse_row(
     match pane {
         Pane::Files => {
             let rows = state.tree_rows();
-            if let Some(idx) = list_row_at(rects.files, row, rows.len()) {
+            if let Some(idx) = list_row_at(rects.files, row, rows.len(), state.files_scroll_offset)
+            {
                 state.files_idx = idx;
             }
         }
         Pane::Branches => {
-            if let Some(idx) = list_row_at(rects.branches, row, state.branch_list_len()) {
+            if let Some(idx) = list_row_at(
+                rects.branches,
+                row,
+                state.branch_list_len(),
+                crate::panel::branches::branch_scroll_offset(state),
+            ) {
                 *state.branch_list_idx_mut() = idx;
             }
         }
         Pane::Commits => {
-            if let Some(idx) = list_row_at(rects.commits, row, state.commits.len())
-                && !state.commits[idx].is_graph_row()
+            if let Some(idx) = list_row_at(
+                rects.commits,
+                row,
+                state.commits.len(),
+                state.commits_scroll_offset,
+            ) && !state.commits[idx].is_graph_row()
             {
                 state.commits_idx = idx;
             }

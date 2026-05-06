@@ -5,13 +5,15 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{List, ListItem, ListState},
+    widgets::{List, ListItem},
 };
 
 use crate::{
     state::{AppState, Modal, PendingAction, TreeKind, clamp_index},
     ui,
 };
+
+use super::scroll;
 
 /// Map a porcelain status char to a colored Span.
 pub(crate) fn code_span(c: char) -> Span<'static> {
@@ -105,15 +107,34 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("\u{203a} ")
-        .scroll_padding(2);
+        .highlight_symbol("\u{203a} ");
 
-    let mut list_state = ListState::default();
-    if focused && let Some(idx) = selected_idx {
-        list_state.select(Some(idx));
-    }
+    let offset = visible_scroll_offset(state, area);
+    let mut list_state = scroll::list_state(focused.then_some(selected_idx).flatten(), offset);
 
     frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
+    let rows = state.tree_rows();
+    let selected_idx = clamp_index(state.files_idx, rows.len());
+    state.files_scroll_offset = scroll::selection_scroll_offset(
+        selected_idx,
+        rows.len(),
+        scroll::list_viewport_height(area.height),
+        state.files_scroll_offset,
+    );
+}
+
+fn visible_scroll_offset(state: &AppState, area: Rect) -> usize {
+    let rows = state.tree_rows();
+    let selected_idx = clamp_index(state.files_idx, rows.len());
+    scroll::selection_scroll_offset(
+        selected_idx,
+        rows.len(),
+        scroll::list_viewport_height(area.height),
+        state.files_scroll_offset,
+    )
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
