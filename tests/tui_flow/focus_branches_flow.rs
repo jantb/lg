@@ -462,6 +462,55 @@ fn branches_m_shortcut_queues_merge_main_workflow() {
 }
 
 #[test]
+fn branches_m_shortcut_allows_develop_when_behind_main() {
+    let mut state = AppState::new();
+    state.focus = Pane::Branches;
+    state.branch = Some("develop".into());
+    state.branches = vec![Branch {
+        name: "develop".into(),
+        is_current: true,
+        upstream: Some("origin/develop".into()),
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 3,
+        last_commit_unix: None,
+    }];
+
+    panel::branches::handle_key(&mut state, key(KeyCode::Char('m'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::Flow(FlowAction::MergeMain))
+    );
+}
+
+#[test]
+fn branches_m_shortcut_blocks_release_next_when_not_behind_main() {
+    let mut state = AppState::new();
+    state.focus = Pane::Branches;
+    state.branch = Some("release/next".into());
+    state.branches = vec![Branch {
+        name: "release/next".into(),
+        is_current: true,
+        upstream: Some("origin/release/next".into()),
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 0,
+        last_commit_unix: None,
+    }];
+
+    panel::branches::handle_key(&mut state, key(KeyCode::Char('m'))).unwrap();
+
+    assert_eq!(state.pending_action, None);
+    assert_eq!(
+        state.status.as_ref().map(|s| s.text.as_str()),
+        Some("current branch is not behind origin/main")
+    );
+}
+
+#[test]
 fn delete_branch_modal_hides_remote_option_for_local_only_branch() {
     let mut state = AppState::new();
     let branch = Branch {
@@ -582,35 +631,84 @@ fn pressing_f_does_not_open_flow_without_release_branches() {
     assert_eq!(app.state.modal, Modal::None);
 }
 
+fn render_flow_text(state: &AppState) -> String {
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::flow::render(state, frame.area(), frame);
+        })
+        .unwrap();
+
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>()
+}
+
 #[test]
-fn flow_modal_hides_merge_main_on_protected_branches() {
+fn flow_modal_hides_merge_main_on_main() {
     let mut state = AppState::new();
     add_flow_branches(&mut state);
     state.branch = Some("main".into());
     state.modal = Modal::Flow;
 
-    let backend = TestBackend::new(100, 30);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal
-        .draw(|frame| {
-            panel::flow::render(&state, frame.area(), frame);
-        })
-        .unwrap();
-
-    let buf = terminal.backend().buffer().clone();
-    let mut text = String::new();
-    for row in 0..buf.area.height {
-        for col in 0..buf.area.width {
-            text.push_str(buf[(col, row)].symbol());
-        }
-    }
+    let text = render_flow_text(&state);
 
     assert!(
         !text.contains("Merge origin/main into current branch"),
-        "merge-main should be hidden on protected branches: {text}"
+        "merge-main should be hidden on main: {text}"
     );
     assert!(
         text.contains("Start new feature from origin/main"),
         "other flow actions should remain visible: {text}"
+    );
+}
+
+#[test]
+fn flow_modal_shows_merge_main_on_develop_when_behind_main() {
+    let mut state = AppState::new();
+    add_flow_branches(&mut state);
+    state.branch = Some("develop".into());
+    if let Some(branch) = state
+        .branches
+        .iter_mut()
+        .find(|branch| branch.name == "develop")
+    {
+        branch.is_current = true;
+        branch.behind_main = 2;
+    }
+    state.modal = Modal::Flow;
+
+    let text = render_flow_text(&state);
+
+    assert!(
+        text.contains("Merge origin/main into current branch"),
+        "merge-main should be shown on stale develop: {text}"
+    );
+}
+
+#[test]
+fn flow_modal_hides_merge_main_on_release_next_when_not_behind_main() {
+    let mut state = AppState::new();
+    add_flow_branches(&mut state);
+    state.branch = Some("release/next".into());
+    if let Some(branch) = state
+        .branches
+        .iter_mut()
+        .find(|branch| branch.name == "release/next")
+    {
+        branch.is_current = true;
+    }
+    state.modal = Modal::Flow;
+
+    let text = render_flow_text(&state);
+
+    assert!(
+        !text.contains("Merge origin/main into current branch"),
+        "merge-main should be hidden on up-to-date release/next: {text}"
     );
 }

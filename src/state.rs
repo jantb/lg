@@ -5,7 +5,7 @@ use std::thread::JoinHandle;
 use chrono::{DateTime, Utc};
 
 use crate::{
-    config::{BRANCH_DEV, BRANCH_TEST},
+    config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST},
     git::{AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry, RemoteBranch},
 };
 
@@ -543,6 +543,25 @@ impl AppState {
     pub fn flow_available(&self) -> bool {
         self.flow_branches_available
             || (self.branch_exists(BRANCH_DEV) && self.branch_exists(BRANCH_TEST))
+    }
+
+    pub fn merge_main_available(&self) -> bool {
+        let Some(branch) = self.branch.as_deref() else {
+            return false;
+        };
+        match branch {
+            BRANCH_MAIN => false,
+            BRANCH_DEV | BRANCH_TEST => self.current_branch_behind_main().is_some_and(|n| n > 0),
+            _ => true,
+        }
+    }
+
+    pub fn current_branch_behind_main(&self) -> Option<u32> {
+        let branch = self.branch.as_deref()?;
+        self.branches
+            .iter()
+            .find(|candidate| candidate.is_current || candidate.name == branch)
+            .map(|candidate| candidate.behind_main)
     }
 
     pub fn pull_available(&self) -> bool {

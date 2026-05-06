@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::{
     app,
-    config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST},
+    config::{BRANCH_DEV, BRANCH_TEST},
     git::{Branch, RemoteBranch},
     state::{AppState, BranchView, FlowAction, PendingAction, SPINNER_FRAMES, clamp_index},
     ui,
@@ -169,12 +169,12 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Char('m') => {
             if state.branch_view == BranchView::Remote {
                 state.set_status("merge main from local branch view", false);
-            } else if state
-                .branch
-                .as_deref()
-                .is_some_and(|branch| matches!(branch, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST))
-            {
-                state.set_status("checkout a feature branch before merging main", true);
+            } else if !state.merge_main_available() {
+                let status = match state.branch.as_deref() {
+                    Some(BRANCH_DEV | BRANCH_TEST) => "current branch is not behind origin/main",
+                    _ => "checkout a feature branch before merging main",
+                };
+                state.set_status(status, true);
             } else {
                 state.pending_action = Some(PendingAction::Flow(FlowAction::MergeMain));
             }

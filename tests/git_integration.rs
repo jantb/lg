@@ -1519,6 +1519,55 @@ fn merge_main_flow_stashes_dirty_work_updates_main_and_returns_to_feature() {
 }
 
 #[test]
+fn merge_main_flow_allows_release_branches_when_main_is_ahead() {
+    for target in ["develop", "release/next"] {
+        let dir = init_repo();
+        fs::write(dir.path().join("init.txt"), "init").unwrap();
+        stage_in(dir.path(), "init.txt");
+        commit_in(dir.path(), "initial commit");
+
+        let bare = tempfile::tempdir().expect("bare tempdir");
+        git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+        git_ok(
+            dir.path(),
+            &["remote", "add", "origin", bare.path().to_str().unwrap()],
+        );
+        git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+
+        git_ok(dir.path(), &["checkout", "-b", target]);
+        fs::write(dir.path().join("target.txt"), target).unwrap();
+        stage_in(dir.path(), "target.txt");
+        commit_in(dir.path(), "target commit");
+        git_ok(dir.path(), &["push", "-u", "origin", target]);
+
+        let updater = tempfile::tempdir().expect("updater tempdir");
+        git_ok(
+            updater.path(),
+            &["clone", bare.path().to_str().unwrap(), "."],
+        );
+        git_ok(
+            updater.path(),
+            &["config", "user.email", "test@example.com"],
+        );
+        git_ok(updater.path(), &["config", "user.name", "Test User"]);
+        fs::write(updater.path().join("main.txt"), "main update").unwrap();
+        stage_in(updater.path(), "main.txt");
+        commit_in(updater.path(), "main update");
+        git_ok(updater.path(), &["push", "origin", "main"]);
+
+        let _cwd = CwdGuard::new(dir.path());
+        lg::git::flow_merge_main_into_current(target).expect("merge main into release branch");
+
+        assert_eq!(head_branch(dir.path()), target);
+        let log = git(dir.path(), &["log", "--oneline", target]);
+        assert!(
+            String::from_utf8_lossy(&log.stdout).contains("main update"),
+            "{target} did not receive origin/main"
+        );
+    }
+}
+
+#[test]
 fn reset_flow_cleans_safety_backup_after_success() {
     let dir = init_repo();
     fs::write(dir.path().join("init.txt"), "init\n").unwrap();

@@ -54,7 +54,7 @@ pub fn flow_merge_main_into_current_with_progress(
     current_branch: &str,
     progress: &mut impl FnMut(),
 ) -> Result<String> {
-    ensure_feature_branch(current_branch)?;
+    ensure_merge_main_branch(current_branch)?;
     progress();
     let stashed = stash_uncommitted_changes("lg flow: auto-stash before merging main")?;
     progress();
@@ -444,6 +444,13 @@ fn ensure_feature_branch(branch: &str) -> Result<()> {
         anyhow::bail!(
             "checkout a feature branch first; protected branches: {BRANCH_MAIN}, {BRANCH_DEV}, {BRANCH_TEST}"
         );
+    }
+    Ok(())
+}
+
+fn ensure_merge_main_branch(branch: &str) -> Result<()> {
+    if branch.is_empty() || branch == BRANCH_MAIN {
+        anyhow::bail!("checkout a feature, {BRANCH_DEV}, or {BRANCH_TEST} branch first");
     }
     Ok(())
 }

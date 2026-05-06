@@ -10,7 +10,6 @@ use ratatui::{
 
 use crate::{
     app,
-    config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST},
     state::{AppState, FlowAction, Modal, SPINNER_FRAMES, clamp_index},
     ui,
 };
@@ -18,10 +17,7 @@ use crate::{
 use super::scroll;
 
 fn merge_main_available(state: &AppState) -> bool {
-    state
-        .branch
-        .as_deref()
-        .is_some_and(|branch| !matches!(branch, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST))
+    state.merge_main_available()
 }
 
 pub(crate) fn available_actions(state: &AppState) -> Vec<FlowAction> {

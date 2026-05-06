@@ -10,12 +10,10 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
         return;
     }
     let current = state.branch.clone().unwrap_or_default();
-    if matches!(action, FlowAction::MergeMain)
-        && (current.is_empty()
-            || matches!(current.as_str(), BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST))
-    {
+    if matches!(action, FlowAction::MergeMain) && !state.merge_main_available() {
         state.modal = Modal::None;
-        state.set_status("checkout a feature branch before merging main", true);
+        let status = merge_main_unavailable_status(&current);
+        state.set_status(status, true);
         return;
     }
     if !matches!(action, FlowAction::MergeMain) && !state.flow_available() {
@@ -87,6 +85,13 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
         current_step: None,
     });
     state.set_status("running flow workflow\u{2026}", false);
+}
+
+fn merge_main_unavailable_status(current: &str) -> &'static str {
+    match current {
+        BRANCH_DEV | BRANCH_TEST => "current branch is not behind origin/main",
+        _ => "checkout a feature branch before merging main",
+    }
 }
 
 fn conflict_followup_for_flow(action: FlowAction, current: &str) -> Option<ConflictFollowup> {
