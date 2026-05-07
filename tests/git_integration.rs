@@ -1749,6 +1749,44 @@ fn merge_main_all_branches_continues_after_push_rejection() {
 }
 
 #[test]
+fn merge_main_all_branches_reports_git_conflict_output() {
+    let dir = init_repo();
+    fs::write(dir.path().join("conflict.txt"), "base\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let feature = "feature/sync-conflict";
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("conflict.txt"), "feature\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "feature side");
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("conflict.txt"), "main\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "main side");
+    git_ok(dir.path(), &["checkout", feature]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    let err = lg::git::flow_merge_main_into_all_local_branches()
+        .expect_err("sync branches should stop on conflict")
+        .to_string();
+
+    assert!(
+        err.contains("merge main into feature/sync-conflict failed"),
+        "missing branch context: {err}"
+    );
+    assert!(
+        err.contains("CONFLICT") && err.contains("conflict.txt"),
+        "missing git conflict output: {err}"
+    );
+    assert!(
+        err.contains("Automatic merge failed"),
+        "missing git merge failure message: {err}"
+    );
+}
+
+#[test]
 fn delete_current_feature_branch_checks_out_main_first() {
     let dir = init_repo();
     fs::write(dir.path().join("init.txt"), "init").unwrap();

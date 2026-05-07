@@ -86,12 +86,12 @@ pub fn flow_merge_main_into_all_local_branches() -> Result<String> {
         }
 
         run_combined(&["checkout", &branch.name])?;
-        run_combined(&["merge", "--no-edit", &base_ref]).with_context(|| {
-            format!(
-                "merge {base_ref} into {} failed; resolve conflicts outside lg, then commit or abort",
+        if let Err(err) = run_combined(&["merge", "--no-edit", &base_ref]) {
+            anyhow::bail!(
+                "merge {base_ref} into {} failed:\n{err}\nresolve conflicts outside lg, then commit or abort",
                 branch.name
-            )
-        })?;
+            );
+        }
         merged += 1;
 
         if !branch.upstream_gone
