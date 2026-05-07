@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::{
     app,
-    config::{BRANCH_DEV, BRANCH_TEST},
+    config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST},
     git::{Branch, RemoteBranch},
     state::{AppState, BranchView, FlowAction, PendingAction, SPINNER_FRAMES, clamp_index},
     ui,
@@ -151,12 +151,36 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 return Ok(());
             }
             if let Some(b) = state.branches.get(state.branches_idx) {
-                if b.is_current {
-                    state.set_status("cannot delete the current branch", true);
+                if protected_branch(&b.name) {
+                    state.set_status(format!("cannot delete protected branch {}", b.name), true);
                 } else {
                     let snapshot = b.clone();
                     state.open_delete_branch_modal(&snapshot);
                 }
+            }
+        }
+        KeyCode::Char('d') => {
+            if state.branch_view == BranchView::Remote {
+                state.set_status("delete remote branches from local branch view", false);
+                return Ok(());
+            }
+            let Some(branch) = state.branches.get(state.branches_idx) else {
+                return Ok(());
+            };
+            if protected_branch(&branch.name) {
+                state.set_status(
+                    format!("cannot delete protected branch {}", branch.name),
+                    true,
+                );
+            } else if branch.upstream.is_some() && !branch.upstream_gone {
+                state.set_status("branch has a remote; use D for delete options", false);
+            } else {
+                state.pending_action = Some(PendingAction::DeleteBranch {
+                    name: branch.name.clone(),
+                    delete_local: true,
+                    delete_remote: false,
+                    force: false,
+                });
             }
         }
         KeyCode::Char('r') => {
@@ -179,9 +203,20 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.pending_action = Some(PendingAction::Flow(FlowAction::MergeMain));
             }
         }
+        KeyCode::Char('M') => {
+            if state.branch_view == BranchView::Remote {
+                state.set_status("sync local branches from local branch view", false);
+            } else {
+                state.pending_action = Some(PendingAction::MergeMainAllBranches);
+            }
+        }
         _ => {}
     }
     Ok(())
+}
+
+fn protected_branch(name: &str) -> bool {
+    matches!(name, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST)
 }
 
 fn local_branch_line(state: &AppState, branch: &Branch, row_width: usize) -> Line<'static> {
@@ -296,6 +331,14 @@ fn append_local_branch_status(spans: &mut Vec<Span<'static>>, branch: &Branch) {
                 .fg(Color::LightGreen)
                 .add_modifier(Modifier::BOLD),
         ));
+    } else {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            "no remote",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ));
     }
     append_main_behind_count(spans, branch);
     append_branch_age(spans, branch.last_commit_unix);
@@ -309,7 +352,7 @@ fn local_branch_status_width(branch: &Branch) -> usize {
     } else if branch.upstream.is_some() {
         " \u{2713}".chars().count()
     } else {
-        0
+        " no remote".chars().count()
     };
     remote_width + main_behind_width(branch) + branch_age_width(branch.last_commit_unix)
 }

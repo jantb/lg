@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST, DEFAULT_PUSH_REMOTE};
 
-use super::{head_branch, run, run_combined, stage};
+use super::{head_branch, list_branches, run, run_combined, stage};
 
 const SAFETY_REF_PREFIX: &str = "lg/backup/";
 const SAFETY_REF_KEEP: usize = 20;
@@ -48,6 +48,76 @@ pub fn checkout_remote_branch(remote_ref: &str) -> Result<String> {
 
 pub fn flow_merge_main_into_current(current_branch: &str) -> Result<String> {
     flow_merge_main_into_current_with_progress(current_branch, &mut || {})
+}
+
+pub fn flow_merge_main_into_all_local_branches() -> Result<String> {
+    if has_uncommitted_changes()? {
+        anyhow::bail!("commit or stash local changes before syncing all branches");
+    }
+
+    let original_branch = head_branch().ok();
+    run(&["fetch", "--all", "--prune"])?;
+    if !ref_exists(BRANCH_MAIN) {
+        anyhow::bail!("could not find local {BRANCH_MAIN}");
+    }
+
+    if head_branch()
+        .map(|current| current != BRANCH_MAIN)
+        .unwrap_or(true)
+    {
+        run_combined(&["checkout", BRANCH_MAIN])?;
+    }
+    let remote_main = format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
+    let base_ref = if ref_exists(&remote_main) {
+        run_combined(&["pull", "--rebase", DEFAULT_PUSH_REMOTE, BRANCH_MAIN])?;
+        remote_main
+    } else {
+        BRANCH_MAIN.to_string()
+    };
+
+    let branches = list_branches()?;
+    let mut merged = 0usize;
+    let mut pushed = 0usize;
+    let mut skipped_push = 0usize;
+    for branch in branches {
+        if branch.name == BRANCH_MAIN || branch.name.starts_with(SAFETY_REF_PREFIX) {
+            continue;
+        }
+
+        run_combined(&["checkout", &branch.name])?;
+        run_combined(&["merge", "--no-edit", &base_ref]).with_context(|| {
+            format!(
+                "merge {base_ref} into {} failed; resolve conflicts outside lg, then commit or abort",
+                branch.name
+            )
+        })?;
+        merged += 1;
+
+        if !branch.upstream_gone
+            && let Some((remote, remote_branch)) =
+                branch.upstream.as_deref().and_then(upstream_push_target)
+        {
+            let refspec = format!("refs/heads/{}:refs/heads/{remote_branch}", branch.name);
+            run_combined(&["push", remote, &refspec])
+                .with_context(|| format!("push {} to {remote}/{remote_branch}", branch.name))?;
+            pushed += 1;
+        } else {
+            skipped_push += 1;
+        }
+    }
+
+    if let Some(original) = original_branch
+        && ref_exists(&original)
+        && head_branch()
+            .map(|current| current != original)
+            .unwrap_or(true)
+    {
+        run_combined(&["checkout", &original])?;
+    }
+
+    Ok(format!(
+        "merged {base_ref} into {merged} branches, pushed {pushed}, skipped push {skipped_push}"
+    ))
 }
 
 pub fn flow_merge_main_into_current_with_progress(
@@ -512,6 +582,11 @@ fn ensure_release_branch(branch: &str) -> Result<()> {
 
 fn is_release_branch(branch: &str) -> bool {
     matches!(branch, BRANCH_DEV | BRANCH_TEST)
+}
+
+fn upstream_push_target(upstream: &str) -> Option<(&str, &str)> {
+    let (remote, branch) = upstream.split_once('/')?;
+    (!remote.is_empty() && !branch.is_empty()).then_some((remote, branch))
 }
 
 fn ref_exists(name: &str) -> bool {

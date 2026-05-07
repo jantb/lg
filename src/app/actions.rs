@@ -64,6 +64,14 @@ impl App {
                     },
                 );
             }
+            PendingAction::MergeMainAllBranches => {
+                spawn_operation(
+                    &mut self.state,
+                    "syncing branches",
+                    OperationKind::Worktree,
+                    crate::git::flow_merge_main_into_all_local_branches,
+                );
+            }
             PendingAction::Flow(action) => {
                 super::run_flow_action(&mut self.state, action, None);
             }

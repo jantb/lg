@@ -53,6 +53,16 @@ fn branches_panel_shows_remote_and_missing_upstream_indicators() {
             behind_main: 0,
             last_commit_unix: None,
         },
+        Branch {
+            name: "feature/local".into(),
+            is_current: false,
+            upstream: None,
+            upstream_gone: false,
+            ahead: 0,
+            behind: 0,
+            behind_main: 0,
+            last_commit_unix: None,
+        },
     ];
 
     let backend = TestBackend::new(80, 6);
@@ -77,6 +87,10 @@ fn branches_panel_shows_remote_and_missing_upstream_indicators() {
     assert!(
         text.contains("(upstream gone)"),
         "missing upstream gone indicator: {text}"
+    );
+    assert!(
+        text.contains("no remote"),
+        "missing local-only indicator: {text}"
     );
 }
 
@@ -410,7 +424,7 @@ fn remote_branch_view_hides_checked_out_branches() {
 
 #[test]
 fn branches_shortcuts_show_remote_toggle() {
-    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 48)).unwrap();
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(160, 48)).unwrap();
     app.state.focus = Pane::Branches;
     app.render().unwrap();
     let footer = buffer_text(&app);
@@ -421,6 +435,14 @@ fn branches_shortcuts_show_remote_toggle() {
     assert!(
         footer.contains("m merge main"),
         "branches footer should show merge-main shortcut: {footer}"
+    );
+    assert!(
+        footer.contains("M sync all"),
+        "branches footer should show sync-all shortcut: {footer}"
+    );
+    assert!(
+        footer.contains("d drop local"),
+        "branches footer should show local-only delete shortcut: {footer}"
     );
 
     app.state.prev_focus = Pane::Branches;
@@ -434,6 +456,14 @@ fn branches_shortcuts_show_remote_toggle() {
     assert!(
         help.contains("Merge origin/main into the current branch"),
         "help should show merge-main shortcut: {help}"
+    );
+    assert!(
+        help.contains("Merge main into all branches and push"),
+        "help should show sync-all shortcut: {help}"
+    );
+    assert!(
+        help.contains("Delete selected local branch with no remote"),
+        "help should show local-only delete shortcut: {help}"
     );
 }
 
@@ -508,6 +538,116 @@ fn branches_m_shortcut_blocks_release_next_when_not_behind_main() {
         state.status.as_ref().map(|s| s.text.as_str()),
         Some("current branch is not behind origin/main")
     );
+}
+
+#[test]
+fn branches_shift_m_shortcut_queues_sync_all_branches() {
+    let mut state = AppState::new();
+    state.focus = Pane::Branches;
+
+    panel::branches::handle_key(&mut state, key(KeyCode::Char('M'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::MergeMainAllBranches)
+    );
+}
+
+#[test]
+fn branches_d_shortcut_deletes_local_only_branch() {
+    let mut state = AppState::new();
+    state.focus = Pane::Branches;
+    state.branches = vec![Branch {
+        name: "feature/local-only".into(),
+        is_current: true,
+        upstream: None,
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 0,
+        last_commit_unix: None,
+    }];
+
+    panel::branches::handle_key(&mut state, key(KeyCode::Char('d'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::DeleteBranch {
+            name: "feature/local-only".into(),
+            delete_local: true,
+            delete_remote: false,
+            force: false,
+        })
+    );
+}
+
+#[test]
+fn branches_d_shortcut_blocks_protected_branch() {
+    let mut state = AppState::new();
+    state.focus = Pane::Branches;
+    state.branches = vec![Branch {
+        name: "main".into(),
+        is_current: true,
+        upstream: Some("origin/main".into()),
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 0,
+        last_commit_unix: None,
+    }];
+
+    panel::branches::handle_key(&mut state, key(KeyCode::Char('d'))).unwrap();
+
+    assert_eq!(state.pending_action, None);
+    assert_eq!(
+        state.status.as_ref().map(|status| status.text.as_str()),
+        Some("cannot delete protected branch main")
+    );
+}
+
+#[test]
+fn branches_d_shortcut_blocks_tracked_branch() {
+    let mut state = AppState::new();
+    state.focus = Pane::Branches;
+    state.branches = vec![Branch {
+        name: "feature/tracked".into(),
+        is_current: false,
+        upstream: Some("origin/feature/tracked".into()),
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 0,
+        last_commit_unix: None,
+    }];
+
+    panel::branches::handle_key(&mut state, key(KeyCode::Char('d'))).unwrap();
+
+    assert_eq!(state.pending_action, None);
+    assert_eq!(
+        state.status.as_ref().map(|status| status.text.as_str()),
+        Some("branch has a remote; use D for delete options")
+    );
+}
+
+#[test]
+fn branches_d_modal_allows_current_feature_branch() {
+    let mut state = AppState::new();
+    state.focus = Pane::Branches;
+    state.branches = vec![Branch {
+        name: "feature/current".into(),
+        is_current: true,
+        upstream: Some("origin/feature/current".into()),
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 0,
+        last_commit_unix: None,
+    }];
+
+    panel::branches::handle_key(&mut state, key(KeyCode::Char('D'))).unwrap();
+
+    assert_eq!(state.modal, Modal::DeleteBranch);
+    assert_eq!(state.delete_branch_target, "feature/current");
 }
 
 #[test]

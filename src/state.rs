@@ -101,6 +101,7 @@ pub enum PendingAction {
     Push,
     Pull,
     MergeUpstream,
+    MergeMainAllBranches,
     Flow(FlowAction),
     SaveAuthor {
         name: String,
@@ -459,6 +460,7 @@ impl AppState {
                 Some(PendingAction::Push) => Some("starting push"),
                 Some(PendingAction::Pull) => Some("starting pull"),
                 Some(PendingAction::MergeUpstream) => Some("starting merge"),
+                Some(PendingAction::MergeMainAllBranches) => Some("starting branch sync"),
                 Some(PendingAction::Flow(_)) => Some("starting workflow"),
                 Some(
                     PendingAction::SaveAuthor { .. }
