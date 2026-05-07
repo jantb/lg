@@ -1,5 +1,5 @@
 use anyhow::Result;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -111,6 +111,8 @@ fn branch_scroll_offset_mut(state: &mut AppState) -> &mut usize {
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     state.clamp();
+    let shifted_m = shifted_char(key, 'm', 'M');
+    let shifted_d = shifted_char(key, 'd', 'D');
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
             let len = state.branch_list_len();
@@ -145,7 +147,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 }
             }
         }
-        KeyCode::Char('D') => {
+        _ if shifted_d => {
             if state.branch_view == BranchView::Remote {
                 state.set_status("delete remote branches from local branch view", false);
                 return Ok(());
@@ -159,7 +161,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 }
             }
         }
-        KeyCode::Char('d') => {
+        KeyCode::Char('d') if !shifted_d => {
             if state.branch_view == BranchView::Remote {
                 state.set_status("delete remote branches from local branch view", false);
                 return Ok(());
@@ -190,7 +192,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             };
             state.clamp();
         }
-        KeyCode::Char('m') => {
+        KeyCode::Char('m') if !shifted_m => {
             if state.branch_view == BranchView::Remote {
                 state.set_status("merge main from local branch view", false);
             } else if !state.merge_main_available() {
@@ -203,7 +205,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.pending_action = Some(PendingAction::Flow(FlowAction::MergeMain));
             }
         }
-        KeyCode::Char('M') => {
+        _ if shifted_m => {
             if state.branch_view == BranchView::Remote {
                 state.set_status("sync local branches from local branch view", false);
             } else {
@@ -213,6 +215,12 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn shifted_char(key: KeyEvent, lower: char, upper: char) -> bool {
+    matches!(key.code, KeyCode::Char(c) if c == upper)
+        || (matches!(key.code, KeyCode::Char(c) if c == lower)
+            && key.modifiers.contains(KeyModifiers::SHIFT))
 }
 
 fn protected_branch(name: &str) -> bool {

@@ -554,6 +554,23 @@ fn branches_shift_m_shortcut_queues_sync_all_branches() {
 }
 
 #[test]
+fn branches_shift_modifier_m_shortcut_queues_sync_all_branches() {
+    let mut state = AppState::new();
+    state.focus = Pane::Branches;
+
+    panel::branches::handle_key(
+        &mut state,
+        KeyEvent::new(KeyCode::Char('m'), KeyModifiers::SHIFT),
+    )
+    .unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::MergeMainAllBranches)
+    );
+}
+
+#[test]
 fn branches_d_shortcut_deletes_local_only_branch() {
     let mut state = AppState::new();
     state.focus = Pane::Branches;
