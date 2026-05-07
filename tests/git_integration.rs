@@ -1669,6 +1669,86 @@ fn merge_main_all_branches_merges_and_pushes_tracked_branches() {
 }
 
 #[test]
+fn merge_main_all_branches_continues_after_push_rejection() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+
+    let rejected = "feature/rejected-push";
+    git_ok(dir.path(), &["checkout", "-b", rejected]);
+    fs::write(dir.path().join("rejected.txt"), "local").unwrap();
+    stage_in(dir.path(), "rejected.txt");
+    commit_in_at(dir.path(), "rejected local commit", "2026-01-03T00:00:00Z");
+    git_ok(dir.path(), &["push", "-u", "origin", rejected]);
+
+    let local_only = "feature/local-after-reject";
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", local_only]);
+    fs::write(dir.path().join("local.txt"), "local").unwrap();
+    stage_in(dir.path(), "local.txt");
+    commit_in_at(dir.path(), "local-only commit", "2026-01-02T00:00:00Z");
+    git_ok(dir.path(), &["checkout", rejected]);
+
+    let updater = tempfile::tempdir().expect("updater tempdir");
+    git_ok(
+        updater.path(),
+        &["clone", bare.path().to_str().unwrap(), "."],
+    );
+    git_ok(
+        updater.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git_ok(updater.path(), &["config", "user.name", "Test User"]);
+    fs::write(updater.path().join("main.txt"), "main update").unwrap();
+    stage_in(updater.path(), "main.txt");
+    commit_in(updater.path(), "main update");
+    git_ok(updater.path(), &["push", "origin", "main"]);
+    git_ok(updater.path(), &["checkout", rejected]);
+    fs::write(updater.path().join("remote.txt"), "remote-only").unwrap();
+    stage_in(updater.path(), "remote.txt");
+    commit_in(updater.path(), "remote-only rejected update");
+    git_ok(updater.path(), &["push", "origin", rejected]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    let out = lg::git::flow_merge_main_into_all_local_branches().expect("sync branches");
+
+    assert_eq!(head_branch(dir.path()), rejected);
+    assert!(
+        out.contains("merged origin/main into 2 branches, pushed 0, skipped push 1"),
+        "unexpected summary: {out}"
+    );
+    assert!(
+        out.contains("failed push 1 (origin/feature/rejected-push)"),
+        "unexpected summary: {out}"
+    );
+
+    let rejected_log = git(dir.path(), &["log", "--oneline", rejected]);
+    assert!(
+        String::from_utf8_lossy(&rejected_log.stdout).contains("main update"),
+        "rejected-push branch did not receive main update locally"
+    );
+    let local_log = git(dir.path(), &["log", "--oneline", local_only]);
+    assert!(
+        String::from_utf8_lossy(&local_log.stdout).contains("main update"),
+        "local-only branch after rejected push did not receive main update"
+    );
+    let remote_rejected_log = git(bare.path(), &["log", "--oneline", rejected]);
+    assert!(
+        !String::from_utf8_lossy(&remote_rejected_log.stdout).contains("main update"),
+        "rejected remote branch should not have been updated"
+    );
+}
+
+#[test]
 fn delete_current_feature_branch_checks_out_main_first() {
     let dir = init_repo();
     fs::write(dir.path().join("init.txt"), "init").unwrap();
