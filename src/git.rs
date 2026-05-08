@@ -216,6 +216,13 @@ pub fn pull(remote: &str, branch: &str) -> Result<String> {
     if branch.trim().is_empty() {
         anyhow::bail!("branch name must not be empty");
     }
+    let _ = fetch_updates();
+    if let Ok((ahead, behind)) = counts_ahead_behind()
+        && ahead > 0
+        && behind > 0
+    {
+        return run_combined(&["merge", "--no-edit", "@{u}"]);
+    }
     run_combined(&["pull", "--ff-only", remote, branch])
 }
 

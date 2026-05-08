@@ -965,6 +965,64 @@ fn commit_on_release_branch_updates_from_origin_main_first() {
 }
 
 #[test]
+fn pull_merges_upstream_when_current_branch_diverged() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+
+    fs::write(dir.path().join("local.txt"), "local").unwrap();
+    stage_in(dir.path(), "local.txt");
+    commit_in(dir.path(), "local commit");
+
+    let updater = tempfile::tempdir().expect("updater tempdir");
+    git_ok(
+        updater.path(),
+        &["clone", bare.path().to_str().unwrap(), "."],
+    );
+    git_ok(
+        updater.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git_ok(updater.path(), &["config", "user.name", "Test User"]);
+    fs::write(updater.path().join("remote.txt"), "remote").unwrap();
+    stage_in(updater.path(), "remote.txt");
+    commit_in(updater.path(), "remote commit");
+    git_ok(updater.path(), &["push", "origin", "main"]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    let out = lg::git::pull("origin", "main").expect("pull diverged branch");
+
+    assert!(
+        out.contains("Merge") || out.contains("merge"),
+        "expected merge output for diverged pull: {out}"
+    );
+    let remote_is_ancestor = git(
+        dir.path(),
+        &["merge-base", "--is-ancestor", "origin/main", "HEAD"],
+    );
+    assert!(
+        remote_is_ancestor.status.success(),
+        "pull should merge origin/main into the local branch"
+    );
+    let log = git(dir.path(), &["log", "--oneline", "main"]);
+    let log = String::from_utf8_lossy(&log.stdout);
+    assert!(log.contains("local commit"), "missing local commit: {log}");
+    assert!(
+        log.contains("remote commit"),
+        "missing remote commit: {log}"
+    );
+}
+
+#[test]
 fn list_branches_orders_newest_commit_first() {
     let dir = init_repo();
     fs::write(dir.path().join("README.md"), "main\n").unwrap();
