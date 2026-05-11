@@ -137,6 +137,35 @@ fn project_open_command_opens_rust_repo_root() {
     assert_eq!(command.line, 1);
 }
 
+#[test]
+fn file_diff_includes_untracked_file_contents() {
+    let dir = init_repo();
+    let _cwd = CwdGuard::new(dir.path());
+    fs::write("KNOWLEDGE.md", "# Notes\n\nnew detail\n").unwrap();
+
+    let diff = lg::git::file_diff("KNOWLEDGE.md").unwrap();
+
+    assert!(diff.contains("== worktree =="), "{diff}");
+    assert!(diff.contains("diff --git"), "{diff}");
+    assert!(diff.contains("b/KNOWLEDGE.md"), "{diff}");
+    assert!(diff.contains("+# Notes"), "{diff}");
+    assert!(diff.contains("+new detail"), "{diff}");
+}
+
+#[test]
+fn all_diffs_includes_untracked_file_contents() {
+    let dir = init_repo();
+    let _cwd = CwdGuard::new(dir.path());
+    fs::create_dir_all("docs").unwrap();
+    fs::write("docs/README.md", "# Docs\n").unwrap();
+
+    let diff = lg::git::all_diffs().unwrap();
+
+    assert!(diff.contains("== worktree =="), "{diff}");
+    assert!(diff.contains("b/docs/README.md"), "{diff}");
+    assert!(diff.contains("+# Docs"), "{diff}");
+}
+
 fn commit_in(dir: &std::path::Path, msg: &str) {
     let out = Command::new("git")
         .args(["commit", "-m", msg])
