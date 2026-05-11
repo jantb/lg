@@ -433,7 +433,7 @@ fn branches_shortcuts_show_remote_toggle() {
         "branches footer should show remote toggle: {footer}"
     );
     assert!(
-        footer.contains("m merge main"),
+        footer.contains("m pull/merge main"),
         "branches footer should show merge-main shortcut: {footer}"
     );
     assert!(
@@ -454,7 +454,7 @@ fn branches_shortcuts_show_remote_toggle() {
         "help should show remote toggle: {help}"
     );
     assert!(
-        help.contains("Merge origin/main into the current branch"),
+        help.contains("Pull main, or merge origin/main"),
         "help should show merge-main shortcut: {help}"
     );
     assert!(
@@ -513,6 +513,27 @@ fn branches_m_shortcut_allows_develop_when_behind_main() {
         state.pending_action,
         Some(PendingAction::Flow(FlowAction::MergeMain))
     );
+}
+
+#[test]
+fn branches_m_shortcut_pulls_main_when_behind_remote() {
+    let mut state = AppState::new();
+    state.focus = Pane::Branches;
+    state.branch = Some("main".into());
+    state.branches = vec![Branch {
+        name: "main".into(),
+        is_current: true,
+        upstream: Some("origin/main".into()),
+        upstream_gone: false,
+        ahead: 0,
+        behind: 3,
+        behind_main: 0,
+        last_commit_unix: None,
+    }];
+
+    panel::branches::handle_key(&mut state, key(KeyCode::Char('m'))).unwrap();
+
+    assert_eq!(state.pending_action, Some(PendingAction::Pull));
 }
 
 #[test]

@@ -1052,6 +1052,64 @@ fn pull_merges_upstream_when_current_branch_diverged() {
 }
 
 #[test]
+fn pull_stashes_dirty_work_before_updating_main() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+
+    let updater = tempfile::tempdir().expect("updater tempdir");
+    git_ok(
+        updater.path(),
+        &["clone", bare.path().to_str().unwrap(), "."],
+    );
+    git_ok(
+        updater.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git_ok(updater.path(), &["config", "user.name", "Test User"]);
+    fs::write(updater.path().join("remote.txt"), "remote\n").unwrap();
+    stage_in(updater.path(), "remote.txt");
+    commit_in(updater.path(), "remote commit");
+    git_ok(updater.path(), &["push", "origin", "main"]);
+
+    fs::write(dir.path().join("dirty.txt"), "dirty work\n").unwrap();
+    stage_in(dir.path(), "dirty.txt");
+
+    let _cwd = CwdGuard::new(dir.path());
+    let out = lg::git::pull("origin", "main").expect("pull with dirty work");
+
+    assert!(
+        out.contains("applied stashed local changes after pull"),
+        "pull output should mention stash: {out}"
+    );
+    assert!(
+        dir.path().join("remote.txt").exists(),
+        "remote update should be pulled"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("dirty.txt")).unwrap(),
+        "dirty work\n"
+    );
+    assert!(
+        status_in(dir.path()).1.contains(&"dirty.txt".to_string()),
+        "dirty file should still be staged"
+    );
+    assert!(
+        stash_list(dir.path()).is_empty(),
+        "auto-stash should be restored and dropped"
+    );
+}
+
+#[test]
 fn list_branches_orders_newest_commit_first() {
     let dir = init_repo();
     fs::write(dir.path().join("README.md"), "main\n").unwrap();

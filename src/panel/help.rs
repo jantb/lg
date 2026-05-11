@@ -61,7 +61,7 @@ const SECTIONS: &[Section] = &[
             ("j/k", "Move up/down"),
             ("Enter", "Checkout branch or remote tracking branch"),
             ("r", "Toggle local and remote branch views"),
-            ("m", "Merge origin/main into the current branch"),
+            ("m", "Pull main, or merge origin/main into current branch"),
             ("M", "Merge main into all branches and push"),
             ("d", "Delete selected local branch with no remote"),
             ("D", "Delete local/remote branch (modal)"),

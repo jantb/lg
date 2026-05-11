@@ -195,6 +195,12 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Char('m') if !shifted_m => {
             if state.branch_view == BranchView::Remote {
                 state.set_status("merge main from local branch view", false);
+            } else if state.branch.as_deref() == Some(BRANCH_MAIN) {
+                if state.pull_available() {
+                    state.pending_action = Some(PendingAction::Pull);
+                } else {
+                    state.set_status("main is not behind origin/main", false);
+                }
             } else if !state.merge_main_available() {
                 let status = match state.branch.as_deref() {
                     Some(BRANCH_DEV | BRANCH_TEST) => "current branch is not behind origin/main",

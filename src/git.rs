@@ -217,18 +217,59 @@ pub fn pull(remote: &str, branch: &str) -> Result<String> {
         anyhow::bail!("branch name must not be empty");
     }
     let _ = fetch_updates();
-    if let Ok((ahead, behind)) = counts_ahead_behind()
+    let stashed = stash_uncommitted_changes("lg: auto-stash before pull")?;
+    let res = if let Ok((ahead, behind)) = counts_ahead_behind()
         && ahead > 0
         && behind > 0
     {
-        return run_combined(&["merge", "--no-edit", "@{u}"]);
+        run_combined(&["merge", "--no-edit", "@{u}"])
+    } else {
+        run_combined(&["pull", "--ff-only", remote, branch])
+    };
+
+    match res {
+        Ok(mut out) => {
+            pop_stash_with_index_if_needed(stashed)?;
+            if stashed {
+                out.push_str("applied stashed local changes after pull\n");
+            }
+            Ok(out)
+        }
+        Err(err) => {
+            if stashed {
+                Err(anyhow::anyhow!(
+                    "{err}\nauto-stashed local changes were left in stash"
+                ))
+            } else {
+                Err(err)
+            }
+        }
     }
-    run_combined(&["pull", "--ff-only", remote, branch])
 }
 
 pub fn merge_upstream() -> Result<String> {
     let _ = fetch_updates();
     run_combined(&["merge", "--no-edit", "@{u}"])
+}
+
+fn has_uncommitted_changes() -> Result<bool> {
+    let out = run(&["status", "--porcelain"])?;
+    Ok(!out.stdout.is_empty())
+}
+
+fn stash_uncommitted_changes(message: &str) -> Result<bool> {
+    let stashed = has_uncommitted_changes()?;
+    if stashed {
+        run(&["stash", "push", "-u", "-m", message])?;
+    }
+    Ok(stashed)
+}
+
+fn pop_stash_with_index_if_needed(stashed: bool) -> Result<()> {
+    if stashed {
+        run(&["stash", "pop", "--index"])?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
