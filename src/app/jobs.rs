@@ -698,19 +698,19 @@ impl App {
                     self.state.set_status(first_status_line(&s), false);
                 }
                 WorkflowMsg::Error(e) => {
-                    if let Ok(conflicts) = crate::git::conflicted_files() {
-                        if !conflicts.is_empty() {
-                            self.state.conflicts = conflicts;
-                            self.state.conflict_idx = 0;
-                            self.state.conflict_log = e.clone();
-                            self.state.modal = Modal::Conflict;
-                            self.state.set_status("merge conflicts detected", true);
-                            self.start_refresh(true);
-                            return Ok(());
-                        }
+                    let conflicts = crate::git::conflicted_files().unwrap_or_default();
+                    self.state.conflicts = conflicts;
+                    self.state.conflict_idx = 0;
+                    if !self.state.conflicts.is_empty() {
+                        self.state.conflict_log = e.clone();
+                        self.state.modal = Modal::Conflict;
+                        self.state.set_status("merge conflicts detected", true);
+                        self.start_refresh(true);
+                        return Ok(());
                     }
                     if matches!(self.state.modal, Modal::Conflict) {
                         self.state.conflict_log = e.clone();
+                        self.state.modal = Modal::None;
                     }
                     if !matches!(self.state.modal, Modal::Conflict) {
                         self.state.conflict_followup = None;

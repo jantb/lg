@@ -490,8 +490,7 @@ pub fn validate_conflict_resolution_with_cleanup(
     }
 
     if let Some(branch) = push_branch {
-        let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-        let push = run_combined(&["push", DEFAULT_PUSH_REMOTE, &refspec])?;
+        let push = push_followup_branch(branch)?;
         out.push_str("\n\nPush:\n");
         out.push_str(push.trim());
     }
@@ -515,6 +514,41 @@ pub fn validate_conflict_resolution_with_cleanup(
     }
 
     Ok(out)
+}
+
+fn push_followup_branch(branch: &str) -> Result<String> {
+    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+    match run_combined(&["push", DEFAULT_PUSH_REMOTE, &refspec]) {
+        Ok(out) => Ok(out),
+        Err(err) => {
+            if is_non_fast_forward_error(&err.to_string()) {
+                let current = head_branch().ok();
+                let remote_ref = format!("{DEFAULT_PUSH_REMOTE}/{branch}");
+                let fetch_refspec = format!("refs/heads/{branch}:refs/remotes/{remote_ref}");
+                let mut out = format!("initial push was rejected because {remote_ref} advanced\n");
+                out.push_str(&run_combined(&[
+                    "fetch",
+                    DEFAULT_PUSH_REMOTE,
+                    &fetch_refspec,
+                ])?);
+                if current.as_deref() != Some(branch) {
+                    out.push_str(&run_combined(&["checkout", branch])?);
+                }
+                out.push_str(&run_combined(&["merge", &remote_ref])?);
+                out.push_str(&run_combined(&["push", DEFAULT_PUSH_REMOTE, &refspec])?);
+                Ok(out)
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+fn is_non_fast_forward_error(message: &str) -> bool {
+    message.contains("non-fast-forward")
+        || message.contains("fetch first")
+        || message
+            .contains("Updates were rejected because the tip of your current branch is behind")
 }
 
 pub fn abort_in_progress_operation() -> Result<String> {

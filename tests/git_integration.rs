@@ -1669,6 +1669,91 @@ fn release_conflict_validate_pushes_target_after_user_returns_to_feature() {
 }
 
 #[test]
+fn release_conflict_validate_merges_advanced_remote_target_before_push() {
+    let dir = init_repo();
+    fs::write(dir.path().join("conflict.txt"), "base\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "origin", "main"]);
+
+    git_ok(dir.path(), &["checkout", "-b", "develop"]);
+    git_ok(dir.path(), &["push", "origin", "develop"]);
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", "release/next"]);
+    fs::write(dir.path().join("conflict.txt"), "release\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "release side");
+    git_ok(dir.path(), &["push", "origin", "release/next"]);
+
+    let feature = "feature/release-conflict-remote-advanced";
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("conflict.txt"), "feature\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "feature side");
+    git_ok(dir.path(), &["push", "origin", feature]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::flow_release_current(feature, "release/next")
+        .expect_err("release should stop for manual conflict resolution");
+    assert_eq!(head_branch(dir.path()), "release/next");
+
+    let updater = tempfile::tempdir().expect("updater tempdir");
+    git_ok(
+        updater.path(),
+        &["clone", bare.path().to_str().unwrap(), "."],
+    );
+    git_ok(
+        updater.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git_ok(updater.path(), &["config", "user.name", "Test User"]);
+    git_ok(updater.path(), &["checkout", "release/next"]);
+    fs::write(updater.path().join("remote.txt"), "remote update\n").unwrap();
+    stage_in(updater.path(), "remote.txt");
+    commit_in(updater.path(), "remote target update");
+    git_ok(updater.path(), &["push", "origin", "release/next"]);
+
+    fs::write(dir.path().join("conflict.txt"), "resolved\n").unwrap();
+    let out =
+        lg::git::validate_conflict_resolution_with_followup(Some("release/next"), Some(feature))
+            .expect("continue release conflict after target advanced");
+
+    assert!(
+        out.contains("origin/release/next advanced"),
+        "validation should explain the remote-target retry: {out}"
+    );
+    assert_eq!(head_branch(dir.path()), feature);
+    let released_conflict = git(bare.path(), &["show", "release/next:conflict.txt"]);
+    assert!(
+        released_conflict.status.success(),
+        "release/next conflict file missing: {}",
+        String::from_utf8_lossy(&released_conflict.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&released_conflict.stdout),
+        "resolved\n"
+    );
+    let remote_file = git(bare.path(), &["show", "release/next:remote.txt"]);
+    assert!(
+        remote_file.status.success(),
+        "release/next remote update missing: {}",
+        String::from_utf8_lossy(&remote_file.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&remote_file.stdout),
+        "remote update\n"
+    );
+}
+
+#[test]
 fn merge_main_flow_stashes_dirty_work_updates_main_and_returns_to_feature() {
     let dir = init_repo();
     fs::write(dir.path().join("init.txt"), "init").unwrap();
