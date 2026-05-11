@@ -974,6 +974,26 @@ fn diff_pane_o_uses_diff_file_at_scroll_offset() {
 }
 
 #[test]
+fn diff_pane_o_opens_markdown_file_from_diff() {
+    let mut state = AppState::new();
+    state.diff_source = lg::state::DiffSource::All;
+    state.diff_text = [
+        "diff --git a/README.md b/README.md",
+        "--- a/README.md",
+        "+++ b/README.md",
+        "@@ -1 +1 @@",
+    ]
+    .join("\n");
+
+    panel::main::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::OpenFile("README.md".into()))
+    );
+}
+
+#[test]
 fn review_pane_o_opens_selected_source_file() {
     let mut state = AppState::new();
     state.diff_source = lg::state::DiffSource::Review;

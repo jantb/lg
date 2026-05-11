@@ -759,7 +759,13 @@ mod tests {
         assert_eq!(rust.program, "rustrover");
         assert_eq!(rust.args, vec!["/repo", "--line", "7", "/repo/src/main.rs"]);
 
-        assert!(build_ide_open_command("/repo", "README.md", 1).is_none());
+        let markdown =
+            build_ide_open_command("/repo", "README.md", 1).expect("markdown command");
+        assert_eq!(markdown.program, "idea");
+        assert_eq!(
+            markdown.args,
+            vec!["/repo", "--line", "1", "/repo/README.md"]
+        );
     }
 
     #[test]

@@ -189,6 +189,6 @@ fn is_supported_source_path(path: &str) -> bool {
         std::path::Path::new(path)
             .extension()
             .and_then(|extension| extension.to_str()),
-        Some("kt" | "kts" | "java" | "rs")
+        Some("kt" | "kts" | "java" | "md" | "rs")
     )
 }

@@ -142,7 +142,7 @@ fn ide_program_for_path(path: &str) -> Option<&'static str> {
         .extension()
         .and_then(|extension| extension.to_str())
     {
-        Some("kt" | "kts" | "java") => Some("idea"),
+        Some("kt" | "kts" | "java" | "md") => Some("idea"),
         Some("rs") => Some("rustrover"),
         _ => None,
     }
