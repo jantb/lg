@@ -24,7 +24,7 @@ where
             width: size.width,
             height: size.height,
         };
-        let show_env = show_environments(&self.state);
+        let show_env = self.state.environments_visible();
         let rects_pre = ui::split_layout_with_sizes(
             area,
             show_env,
@@ -41,7 +41,7 @@ where
             let area = frame.area();
             let rects = ui::split_layout_with_sizes(
                 area,
-                show_environments(state),
+                state.environments_visible(),
                 state.left_column_width,
                 state.left_panel_heights,
             );
@@ -98,7 +98,7 @@ impl App {
             width: size.width,
             height: size.height,
         };
-        let show_env = show_environments(&self.state);
+        let show_env = self.state.environments_visible();
         let rects_pre = ui::split_layout_with_sizes(
             area,
             show_env,
@@ -115,7 +115,7 @@ impl App {
             let area = frame.area();
             let rects = ui::split_layout_with_sizes(
                 area,
-                show_environments(state),
+                state.environments_visible(),
                 state.left_column_width,
                 state.left_panel_heights,
             );
@@ -158,17 +158,6 @@ impl App {
             .diff_offset
             .min(panel::main::max_scroll_offset(&self.state));
     }
-}
-
-fn show_environments(state: &crate::state::AppState) -> bool {
-    state.flow_available()
-        || !state.nested_repositories.is_empty()
-        || match (state.workspace_root.as_deref(), state.repo_root.as_deref()) {
-            (Some(workspace), Some(repo)) => {
-                std::path::Path::new(workspace) != std::path::Path::new(repo)
-            }
-            _ => false,
-        }
 }
 
 fn sync_selection_scroll_offsets(

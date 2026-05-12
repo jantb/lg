@@ -322,6 +322,83 @@ fn repository_panel_tree_shows_nested_branch_lists() {
 }
 
 #[test]
+fn repository_panel_keeps_deployment_status_visible_in_full_layout() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 24)).unwrap();
+    app.state.repo_root = Some("/tmp/work/lg/services/api".into());
+    app.state.workspace_root = Some("/tmp/work/lg".into());
+    app.state.branch = Some("feature/api".into());
+    add_flow_branches(&mut app.state);
+    app.state.nested_repositories = vec![NestedRepo {
+        path: "services/api".into(),
+        branch: Some("feature/api".into()),
+        detached_at: None,
+        has_changes: false,
+    }];
+    app.state.current_branch_releases = BranchReleaseStatus {
+        main: None,
+        develop: Some(ReleaseTargetStatus {
+            released_at: "2026-04-29 14:20".into(),
+            missing_commits: 0,
+        }),
+        test: None,
+    };
+
+    app.render().unwrap();
+
+    let text = buffer_text(&app);
+    assert!(text.contains("Repositories"), "missing repo panel: {text}");
+    assert!(
+        text.contains("Deployment Status"),
+        "missing deployment status panel: {text}"
+    );
+    assert!(text.contains("services/api"), "missing nested repo: {text}");
+    assert!(
+        text.contains("2026-04-29 14:20"),
+        "missing deployment timestamp: {text}"
+    );
+}
+
+#[test]
+fn repository_panel_accepts_mouse_focus_without_flow_branches() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 24)).unwrap();
+    app.state.focus = Pane::Branches;
+    app.state.nested_repositories = vec![NestedRepo {
+        path: "services/api".into(),
+        branch: Some("feature/api".into()),
+        detached_at: None,
+        has_changes: false,
+    }];
+
+    app.render().unwrap();
+    app.send_mouse(left_click(2, 8)).unwrap();
+
+    assert_eq!(app.state.focus, Pane::Status);
+    assert_eq!(app.state.nested_repo_tree_idx, 1);
+}
+
+#[test]
+fn repository_panel_divider_can_be_dragged_without_flow_branches() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 24)).unwrap();
+    app.state.nested_repositories = vec![NestedRepo {
+        path: "services/api".into(),
+        branch: Some("feature/api".into()),
+        detached_at: None,
+        has_changes: false,
+    }];
+
+    app.render().unwrap();
+    app.send_mouse(left_click(2, 14)).unwrap();
+    app.send_mouse(left_drag(2, 12)).unwrap();
+
+    let heights = app
+        .state
+        .left_panel_heights
+        .expect("drag should save left panel heights");
+    assert_eq!(heights[1], 7);
+    assert_eq!(heights[2], 4);
+}
+
+#[test]
 fn repository_panel_tree_esc_collapses_expanded_repo() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 8)).unwrap();
     app.state.focus = Pane::Status;

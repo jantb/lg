@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
@@ -624,6 +625,15 @@ impl AppState {
     pub fn flow_available(&self) -> bool {
         self.flow_branches_available
             || (self.branch_exists(BRANCH_DEV) && self.branch_exists(BRANCH_TEST))
+    }
+
+    pub fn environments_visible(&self) -> bool {
+        self.flow_available()
+            || !self.nested_repositories.is_empty()
+            || match (self.workspace_root.as_deref(), self.repo_root.as_deref()) {
+                (Some(workspace), Some(repo)) => Path::new(workspace) != Path::new(repo),
+                _ => false,
+            }
     }
 
     pub fn branch_actions_available(&self) -> bool {

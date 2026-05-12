@@ -178,6 +178,132 @@ where
         }
         self.render()
     }
+
+    pub fn send_mouse(&mut self, m: MouseEvent) -> Result<()> {
+        let size = self.terminal.size()?;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: size.width,
+            height: size.height,
+        };
+        if handle_modal_mouse(&mut self.state, area, &m) {
+            return self.render();
+        }
+
+        let rects = ui::split_layout_with_sizes(
+            area,
+            self.state.environments_visible(),
+            self.state.left_column_width,
+            self.state.left_panel_heights,
+        );
+        let divider_col = rects.main.x.saturating_sub(1);
+        let on_divider = m.row >= rects.status.y
+            && m.row < rects.footer.y
+            && (m.column == divider_col || m.column == rects.main.x);
+
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left)
+                if on_divider && !m.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                self.state.column_drag_active = true;
+                self.state.row_drag_active = None;
+                self.state.left_column_width = Some(ui::clamp_left_column_width(
+                    rects.status.width.saturating_add(rects.main.width),
+                    m.column.saturating_sub(area.x).saturating_add(1),
+                ));
+                return self.render();
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.state.column_drag_active => {
+                self.state.left_column_width = Some(ui::clamp_left_column_width(
+                    rects.status.width.saturating_add(rects.main.width),
+                    m.column.saturating_sub(area.x).saturating_add(1),
+                ));
+                return self.render();
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.state.column_drag_active = false;
+                self.state.row_drag_active = None;
+                return self.render();
+            }
+            _ => {}
+        }
+
+        let show_environments = self.state.environments_visible();
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left)
+                if !m.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                if let Some(pair) =
+                    mouse::row_divider_pair_at(&rects, show_environments, m.column, m.row)
+                {
+                    self.state.column_drag_active = false;
+                    self.state.row_drag_active = Some(pair);
+                    self.state.left_panel_heights = Some(mouse::current_left_panel_heights(&rects));
+                    mouse::resize_left_panel_pair(
+                        &mut self.state,
+                        &rects,
+                        pair,
+                        m.row,
+                        show_environments,
+                    );
+                    return self.render();
+                }
+
+                if let Some(pane) = mouse::pane_at(&rects, m.column, m.row) {
+                    self.state.focus = pane;
+                    mouse::select_mouse_row(&mut self.state, pane, &rects, m.row);
+                    return self.render();
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(pair) = self.state.row_drag_active {
+                    mouse::resize_left_panel_pair(
+                        &mut self.state,
+                        &rects,
+                        pair,
+                        m.row,
+                        show_environments,
+                    );
+                    return self.render();
+                }
+            }
+            _ => {}
+        }
+
+        if matches!(
+            m.kind,
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+        ) && let Some(pane @ (Pane::Status | Pane::Files | Pane::Branches | Pane::Commits)) =
+            mouse::pane_at(&rects, m.column, m.row)
+        {
+            self.state.focus = pane;
+            let _ = mouse::scroll_list(
+                &mut self.state,
+                pane,
+                matches!(m.kind, MouseEventKind::ScrollDown),
+                3,
+            );
+            return self.render();
+        }
+
+        let in_main = m.column >= rects.main.x
+            && m.column < rects.main.x + rects.main.width
+            && m.row >= rects.main.y
+            && m.row < rects.main.y + rects.main.height;
+        if in_main {
+            match m.kind {
+                MouseEventKind::ScrollDown => {
+                    panel::main::scroll(&mut self.state, true, 3);
+                }
+                MouseEventKind::ScrollUp => {
+                    panel::main::scroll(&mut self.state, false, 3);
+                }
+                _ => {}
+            }
+        }
+        self.render()
+    }
 }
 
 impl App {
@@ -362,7 +488,7 @@ impl App {
 
         let rects = ui::split_layout_with_sizes(
             area,
-            self.state.flow_available(),
+            self.state.environments_visible(),
             self.state.left_column_width,
             self.state.left_panel_heights,
         );
@@ -398,7 +524,7 @@ impl App {
             _ => {}
         }
 
-        let show_environments = self.state.flow_available();
+        let show_environments = self.state.environments_visible();
         match m.kind {
             MouseEventKind::Down(MouseButton::Left)
                 if !m.modifiers.contains(KeyModifiers::SHIFT) =>

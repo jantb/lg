@@ -12,7 +12,7 @@ pub use lg::{
 pub use ratatui::{
     Terminal,
     backend::TestBackend,
-    crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
+    crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},
     layout::Rect,
     style::{Color, Modifier},
 };
@@ -20,6 +20,24 @@ pub use std::{collections::HashSet, sync::mpsc};
 
 pub fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+pub fn left_click(column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+pub fn left_drag(column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
 }
 
 pub fn make_state_with_files() -> AppState {
