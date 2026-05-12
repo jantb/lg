@@ -673,6 +673,18 @@ fn assisted_review_ignores_uncommitted_local_changes() {
 }
 
 #[test]
+fn list_commits_on_empty_repo_is_empty() {
+    let dir = init_repo();
+    let _cwd = CwdGuard::new(dir.path());
+
+    let commits = lg::git::list_commits(10).unwrap();
+    let current_branch_commits = lg::git::list_commits_for_ref("main", 10).unwrap();
+
+    assert!(commits.is_empty());
+    assert!(current_branch_commits.is_empty());
+}
+
+#[test]
 fn list_commits_includes_short_author_name() {
     let dir = init_repo();
     fs::write(dir.path().join("a.txt"), "one").unwrap();

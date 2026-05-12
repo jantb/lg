@@ -601,13 +601,40 @@ pub fn list_commits_for_ref(reference: &str, limit: usize) -> Result<Vec<Commit>
         }
         Err(e) => {
             let msg = e.to_string();
-            if msg.contains("does not have any commits") || msg.contains("no commits yet") {
+            if is_empty_commit_history_error(reference, &msg) {
                 Ok(vec![])
             } else {
                 Err(e)
             }
         }
     }
+}
+
+fn is_empty_commit_history_error(reference: &str, msg: &str) -> bool {
+    if msg.contains("does not have any commits") || msg.contains("no commits yet") {
+        return true;
+    }
+
+    let looks_like_unborn_ref = msg.contains("unknown revision")
+        || msg.contains("ambiguous argument")
+        || msg.contains("bad default revision");
+    if !looks_like_unborn_ref {
+        return false;
+    }
+
+    reference == "HEAD" || current_unborn_branch().as_deref() == Some(reference)
+}
+
+fn current_unborn_branch() -> Option<String> {
+    let out = Command::new("git")
+        .args(["branch", "--show-current"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    (!branch.is_empty()).then_some(branch)
 }
 
 fn first_parent_shas(reference: &str, limit: usize) -> Result<HashSet<String>> {
