@@ -774,35 +774,31 @@ fn delete_branch_modal_shows_remote_option_for_tracked_branch() {
 }
 
 #[test]
-fn pressing_f_opens_flow_modal_with_deploy_map() {
+fn pressing_f_opens_branch_actions_from_branches_pane() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
     add_flow_branches(&mut app.state);
+    app.state.focus = Pane::Branches;
     app.send_key(key(KeyCode::Char('F'))).unwrap();
     assert_eq!(app.state.modal, Modal::Flow);
 
-    let buf = app.terminal.backend().buffer().clone();
-    let mut text = String::new();
-    for row in 0..buf.area.height {
-        for col in 0..buf.area.width {
-            text.push_str(buf[(col, row)].symbol());
-        }
-    }
+    let text = buffer_text(&app);
 
     assert!(
-        text.contains("production"),
-        "missing production path: {text}"
+        text.contains("Branch Actions"),
+        "missing branch actions title: {text}"
     );
-    assert!(text.contains("develop"), "missing develop branch: {text}");
-    assert!(text.contains("dev"), "missing dev deployment: {text}");
     assert!(
-        text.contains("release/next"),
-        "missing release/next branch: {text}"
+        text.contains("Release current branch into develop"),
+        "missing develop release action: {text}"
     );
-    assert!(text.contains("test"), "missing test deployment: {text}");
+    assert!(
+        text.contains("Start new feature from origin/main"),
+        "missing new feature action: {text}"
+    );
 }
 
 #[test]
-fn pressing_f_does_not_open_flow_without_release_branches() {
+fn pressing_f_does_not_open_branch_actions_outside_branches_pane() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
     app.send_key(key(KeyCode::Char('F'))).unwrap();
 
@@ -888,5 +884,43 @@ fn flow_modal_hides_merge_main_on_release_next_when_not_behind_main() {
     assert!(
         !text.contains("Merge origin/main into current branch"),
         "merge-main should be hidden on up-to-date release/next: {text}"
+    );
+}
+
+#[test]
+fn branch_actions_show_transfer_diff_for_selected_feature_branch() {
+    let mut state = AppState::new();
+    state.branch = Some("feature/current".into());
+    state.focus = Pane::Branches;
+    state.branches = vec![
+        Branch {
+            name: "main".into(),
+            is_current: false,
+            upstream: None,
+            upstream_gone: false,
+            ahead: 0,
+            behind: 0,
+            behind_main: 0,
+            last_commit_unix: None,
+        },
+        Branch {
+            name: "feature/current".into(),
+            is_current: true,
+            upstream: None,
+            upstream_gone: false,
+            ahead: 0,
+            behind: 0,
+            behind_main: 0,
+            last_commit_unix: None,
+        },
+    ];
+    state.branches_idx = 1;
+    state.modal = Modal::Flow;
+
+    let text = render_flow_text(&state);
+
+    assert!(
+        text.contains("Transfer selected feature diff to new branch"),
+        "missing transfer action: {text}"
     );
 }

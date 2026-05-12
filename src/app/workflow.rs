@@ -1,6 +1,7 @@
 use crate::config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST};
 use crate::state::{
-    AppState, ConflictFollowup, FlowAction, Modal, SafetyRefCleanup, WorkflowJob, WorkflowMsg,
+    AppState, BranchView, ConflictFollowup, FlowAction, Modal, Pane, SafetyRefCleanup, WorkflowJob,
+    WorkflowMsg,
 };
 
 use super::spawn::git_job_running;
@@ -16,16 +17,31 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
         state.set_status(status, true);
         return;
     }
-    if !matches!(action, FlowAction::MergeMain) && !state.flow_available() {
+    if requires_release_branches(action) && !state.flow_available() {
         state.modal = Modal::None;
-        state.set_status("flow unavailable: missing develop or release/next", true);
+        state.set_status(
+            "branch action unavailable: missing develop or release/next",
+            true,
+        );
         return;
     }
 
+    let selected_branch = selected_action_branch(state, &current);
+    if matches!(action, FlowAction::TransferDiff) && selected_branch.is_empty() {
+        state.modal = Modal::None;
+        state.set_status("select a local feature branch first", true);
+        return;
+    }
+    let action_branch = if matches!(action, FlowAction::TransferDiff) {
+        selected_branch
+    } else {
+        current.clone()
+    };
+
     let label = action.label().to_owned();
-    let steps = workflow_steps(action, &current, input.as_deref());
+    let steps = workflow_steps(action, &action_branch, input.as_deref());
     let thread_steps = steps.clone();
-    state.conflict_followup = conflict_followup_for_flow(action, &current);
+    state.conflict_followup = conflict_followup_for_flow(action, &action_branch);
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
         let mut step_idx = 0usize;
@@ -59,6 +75,13 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
                 }
                 crate::git::flow_create_feature_branch(&current, &input.unwrap_or_default())
             }
+            FlowAction::TransferDiff => {
+                crate::git::flow_transfer_diff_to_feature_branch_with_progress(
+                    &action_branch,
+                    &input.unwrap_or_default(),
+                    &mut progress,
+                )
+            }
             FlowAction::CleanOrphans => {
                 for _ in &thread_steps {
                     progress();
@@ -84,7 +107,27 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
         steps,
         current_step: None,
     });
-    state.set_status("running flow workflow\u{2026}", false);
+    state.set_status("running branch action\u{2026}", false);
+}
+
+fn requires_release_branches(action: FlowAction) -> bool {
+    matches!(
+        action,
+        FlowAction::ReleaseDev
+            | FlowAction::ReleaseTest
+            | FlowAction::ResetDev
+            | FlowAction::ResetTest
+    )
+}
+
+fn selected_action_branch(state: &AppState, current: &str) -> String {
+    if state.focus == Pane::Branches
+        && state.branch_view == BranchView::Local
+        && let Some(branch) = state.selected_branch_ref()
+    {
+        return branch.to_string();
+    }
+    current.to_string()
 }
 
 fn merge_main_unavailable_status(current: &str) -> &'static str {
@@ -123,6 +166,7 @@ fn conflict_followup_for_flow(action: FlowAction, current: &str) -> Option<Confl
         FlowAction::ResetDev
         | FlowAction::ResetTest
         | FlowAction::NewFeature
+        | FlowAction::TransferDiff
         | FlowAction::CleanOrphans => None,
     }
 }
@@ -153,6 +197,15 @@ pub(super) fn workflow_steps(
             "create {}",
             input.filter(|s| !s.is_empty()).unwrap_or("new branch")
         )],
+        FlowAction::TransferDiff => vec![
+            format!("fetch {}", BRANCH_MAIN),
+            format!("diff {current} against {}", BRANCH_MAIN),
+            format!(
+                "create {}",
+                input.filter(|s| !s.is_empty()).unwrap_or("new branch")
+            ),
+            "apply diff as staged changes".into(),
+        ],
         FlowAction::CleanOrphans => vec!["scan branches".into(), "delete orphan branches".into()],
     }
 }

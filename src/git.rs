@@ -30,7 +30,8 @@ pub use flow::{
     flow_create_feature_branch, flow_merge_main_into_all_local_branches,
     flow_merge_main_into_current, flow_merge_main_into_current_with_progress, flow_release_current,
     flow_release_current_with_progress, flow_reset_branch_from_main,
-    flow_reset_branch_from_main_with_progress, stage_resolved_conflicts,
+    flow_reset_branch_from_main_with_progress, flow_transfer_diff_to_feature_branch,
+    flow_transfer_diff_to_feature_branch_with_progress, stage_resolved_conflicts,
     validate_conflict_resolution_with_cleanup, validate_conflict_resolution_with_followup,
 };
 pub use review::{

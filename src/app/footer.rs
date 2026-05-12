@@ -21,7 +21,6 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                 ("f", "fetch"),
                 ("a", "author"),
                 ("p", "pull"),
-                ("F", "flow"),
                 ("?", "help"),
                 ("q", "quit"),
             ],
@@ -41,7 +40,6 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                 ("p", "pull"),
                 ("P", "push"),
                 ("f", "fetch"),
-                ("F", "flow"),
                 ("?", "help"),
             ],
         ),
@@ -58,7 +56,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                 ("p", "pull"),
                 ("a", "author"),
                 ("f", "fetch"),
-                ("F", "flow"),
+                ("F", "actions"),
                 ("?", "help"),
             ],
         ),
@@ -71,7 +69,6 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                 ("p", "pull"),
                 ("a", "author"),
                 ("f", "fetch"),
-                ("F", "flow"),
                 ("?", "help"),
             ],
         ),
@@ -107,7 +104,6 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                         ("p", "pull"),
                         ("a", "author"),
                         ("f", "fetch"),
-                        ("F", "flow"),
                         ("?", "help"),
                     ],
                 )
@@ -153,12 +149,12 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
         ),
         Modal::Help => modal_spans("Help ", &[("any key", "close")], Color::Cyan),
         Modal::Flow => {
-            let pairs = if state.flow_available() {
+            let pairs = if state.branch_actions_available() {
                 &[("j/k", "select"), ("Enter", "continue"), ("Esc", "back")][..]
             } else {
                 &[("Esc", "back")][..]
             };
-            modal_spans("Flow ", pairs, Color::Cyan)
+            modal_spans("Branches ", pairs, Color::Cyan)
         }
         Modal::Conflict => modal_spans(
             "Conflict ",
@@ -208,7 +204,7 @@ fn default_spans(state: &AppState) -> Vec<Span<'static>> {
             .add_modifier(Modifier::BOLD),
     )];
     for (idx, (key, label)) in pairs.iter().enumerate() {
-        if *key == "F" && !state.flow_available() {
+        if *key == "F" && !state.branch_actions_available() {
             continue;
         }
         if *key == "p" && !state.pull_available() {
@@ -218,7 +214,7 @@ fn default_spans(state: &AppState) -> Vec<Span<'static>> {
         spans.push(Span::raw(" "));
         spans.push(Span::raw(*label));
         if pairs.iter().skip(idx + 1).any(|(next_key, _)| {
-            (*next_key != "F" || state.flow_available())
+            (*next_key != "F" || state.branch_actions_available())
                 && (*next_key != "p" || state.pull_available())
         }) {
             spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));

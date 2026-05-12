@@ -210,6 +210,49 @@ fn all_diffs_includes_untracked_file_contents() {
     assert!(diff.contains("+# Docs"), "{diff}");
 }
 
+#[test]
+fn transfer_diff_to_feature_branch_recreates_branch_changes_on_main() {
+    let dir = init_repo();
+    let _cwd = CwdGuard::new(dir.path());
+
+    fs::write("app.txt", "one\n").unwrap();
+    stage_in(dir.path(), "app.txt");
+    commit_in(dir.path(), "initial commit");
+
+    git_ok(dir.path(), &["checkout", "-b", "feature/messy"]);
+    fs::write("app.txt", "one\ntwo\n").unwrap();
+    stage_in(dir.path(), "app.txt");
+    commit_in(dir.path(), "first messy commit");
+    fs::write("new.txt", "new file\n").unwrap();
+    stage_in(dir.path(), "new.txt");
+    commit_in(dir.path(), "second messy commit");
+
+    let status =
+        lg::git::flow_transfer_diff_to_feature_branch("feature/messy", "feature/clean").unwrap();
+
+    assert_eq!(head_branch(dir.path()), "feature/clean");
+    assert!(
+        status.contains("transferred feature/messy diff"),
+        "unexpected status: {status}"
+    );
+    let log = git(
+        dir.path(),
+        &["log", "--oneline", "--decorate", "--max-count=3"],
+    );
+    let log_text = String::from_utf8_lossy(&log.stdout);
+    assert!(
+        !log_text.contains("messy commit"),
+        "new branch should not copy source commits: {log_text}"
+    );
+
+    let cached = git(dir.path(), &["diff", "--cached", "--name-only"]);
+    let cached_text = String::from_utf8_lossy(&cached.stdout);
+    assert!(cached_text.contains("app.txt"), "{cached_text}");
+    assert!(cached_text.contains("new.txt"), "{cached_text}");
+    assert_eq!(fs::read_to_string("app.txt").unwrap(), "one\ntwo\n");
+    assert_eq!(fs::read_to_string("new.txt").unwrap(), "new file\n");
+}
+
 fn commit_in(dir: &std::path::Path, msg: &str) {
     let out = Command::new("git")
         .args(["commit", "-m", msg])

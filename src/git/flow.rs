@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST, DEFAULT_PUSH_REMOTE};
@@ -371,6 +372,66 @@ pub fn flow_create_feature_branch(current_branch: &str, new_branch: &str) -> Res
     Ok(format!("created {new_branch} from {start_point}"))
 }
 
+pub fn flow_transfer_diff_to_feature_branch(
+    source_branch: &str,
+    new_branch: &str,
+) -> Result<String> {
+    flow_transfer_diff_to_feature_branch_with_progress(source_branch, new_branch, &mut || {})
+}
+
+pub fn flow_transfer_diff_to_feature_branch_with_progress(
+    source_branch: &str,
+    new_branch: &str,
+    progress: &mut impl FnMut(),
+) -> Result<String> {
+    ensure_feature_branch(source_branch)?;
+    if new_branch.trim().is_empty() {
+        anyhow::bail!("branch name cannot be empty");
+    }
+    if !is_valid_branch_name(new_branch) {
+        anyhow::bail!("invalid branch name: {new_branch}");
+    }
+    if source_branch == new_branch {
+        anyhow::bail!("new branch must differ from source branch");
+    }
+    if ref_exists(new_branch) {
+        anyhow::bail!("branch already exists: {new_branch}");
+    }
+    if has_uncommitted_changes()? {
+        anyhow::bail!("stash or commit local changes before transferring a branch diff");
+    }
+    if !ref_exists(source_branch) {
+        anyhow::bail!("source branch does not exist: {source_branch}");
+    }
+
+    progress();
+    run(&["fetch"])?;
+    let remote_main = format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
+    let base_ref = if ref_exists(&remote_main) {
+        remote_main
+    } else if ref_exists(BRANCH_MAIN) {
+        BRANCH_MAIN.to_string()
+    } else {
+        anyhow::bail!("could not find {BRANCH_MAIN} or {DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
+    };
+
+    progress();
+    let patch = diff_against_base(&base_ref, source_branch)?;
+    if patch.trim().is_empty() {
+        anyhow::bail!("no diff between {source_branch} and {base_ref}");
+    }
+
+    progress();
+    run(&["checkout", "--no-track", "-b", new_branch, &base_ref])?;
+
+    progress();
+    apply_patch_to_index(&patch)?;
+
+    Ok(format!(
+        "transferred {source_branch} diff against {base_ref} to {new_branch}"
+    ))
+}
+
 pub fn delete_local_branch(name: &str, force: bool) -> Result<String> {
     if name.is_empty() {
         anyhow::bail!("branch name must not be empty");
@@ -684,6 +745,49 @@ fn is_valid_branch_name(name: &str) -> bool {
 fn has_uncommitted_changes() -> Result<bool> {
     let out = run(&["status", "--porcelain"])?;
     Ok(!out.stdout.is_empty())
+}
+
+fn diff_against_base(base_ref: &str, branch: &str) -> Result<String> {
+    let revspec = format!("{base_ref}...{branch}");
+    let out = Command::new("git")
+        .args(["diff", "--binary", "--full-index", &revspec])
+        .output()
+        .with_context(|| format!("failed to spawn git diff {revspec}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        Err(anyhow::anyhow!(
+            "git diff {revspec} failed: {}",
+            stderr.trim()
+        ))
+    }
+}
+
+fn apply_patch_to_index(patch: &str) -> Result<()> {
+    let mut child = Command::new("git")
+        .args(["apply", "--index", "--3way", "--binary"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn git apply")?;
+    child
+        .stdin
+        .as_mut()
+        .context("failed to open git apply stdin")?
+        .write_all(patch.as_bytes())
+        .context("failed to write patch to git apply")?;
+    let out = child
+        .wait_with_output()
+        .context("failed to run git apply")?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+        Err(anyhow::anyhow!("git apply failed:\n{text}"))
+    }
 }
 
 fn stash_before_branch_change(target: &str, message: &str) -> Result<bool> {

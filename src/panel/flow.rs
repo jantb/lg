@@ -10,7 +10,8 @@ use ratatui::{
 
 use crate::{
     app,
-    state::{AppState, FlowAction, Modal, SPINNER_FRAMES, clamp_index},
+    config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST},
+    state::{AppState, BranchView, FlowAction, Modal, SPINNER_FRAMES, clamp_index},
     ui,
 };
 
@@ -23,13 +24,21 @@ fn merge_main_available(state: &AppState) -> bool {
 pub(crate) fn available_actions(state: &AppState) -> Vec<FlowAction> {
     FlowAction::ALL
         .into_iter()
-        .filter(|action| *action != FlowAction::MergeMain || merge_main_available(state))
+        .filter(|action| match action {
+            FlowAction::MergeMain => merge_main_available(state),
+            FlowAction::ReleaseDev
+            | FlowAction::ReleaseTest
+            | FlowAction::ResetDev
+            | FlowAction::ResetTest => state.flow_available(),
+            FlowAction::TransferDiff => selected_feature_branch(state).is_some(),
+            FlowAction::NewFeature | FlowAction::CleanOrphans => true,
+        })
         .collect()
 }
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
-    let w = (area.width * 7 / 10).clamp(58, 96).min(area.width);
-    let h = 16.min(area.height);
+    let w = (area.width * 7 / 10).clamp(58, 88).min(area.width);
+    let h = 14.min(area.height);
     let modal = ui::centered(area, w, h);
     frame.render_widget(Clear, modal);
 
@@ -59,20 +68,23 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         } else {
             text.extend(workflow_lines(job));
         }
-        frame.render_widget(Paragraph::new(text).block(ui::bordered("Flow")), modal);
+        frame.render_widget(
+            Paragraph::new(text).block(ui::bordered("Branch Actions")),
+            modal,
+        );
         return;
     }
 
-    if !state.flow_available() {
+    if !state.branch_actions_available() {
         let text = vec![
             Line::from(Span::styled(
-                "Flow unavailable",
+                "Branch actions unavailable",
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            Line::from("Create local develop and release/next branches to enable this workflow."),
+            Line::from("Checkout or select a local branch first."),
             Line::from(""),
             Line::from(vec![
                 Span::styled("Esc", Style::default().fg(Color::Gray)),
@@ -84,11 +96,19 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     }
 
     if let Some(action) = state.flow_input {
-        let text = vec![
-            Line::from(action.label()),
-            Line::from(""),
+        let mut text = vec![Line::from(action.label()), Line::from("")];
+        if action == FlowAction::TransferDiff {
+            if let Some(source) = selected_feature_branch(state) {
+                text.push(Line::from(vec![
+                    Span::styled("source: ", Style::default().fg(Color::Yellow)),
+                    Span::raw(source),
+                ]));
+                text.push(Line::from(""));
+            }
+        }
+        text.extend([
             Line::from(vec![
-                Span::styled("branch: ", Style::default().fg(Color::Yellow)),
+                Span::styled("new branch: ", Style::default().fg(Color::Yellow)),
                 Span::raw(state.flow_text.as_str()),
                 Span::styled("\u{2588}", Style::default().fg(Color::Cyan)),
             ]),
@@ -99,8 +119,11 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 Span::styled("Esc", Style::default().fg(Color::Gray)),
                 Span::raw(" back"),
             ]),
-        ];
-        frame.render_widget(Paragraph::new(text).block(ui::bordered("Flow")), modal);
+        ]);
+        frame.render_widget(
+            Paragraph::new(text).block(ui::bordered("Branch Actions")),
+            modal,
+        );
         return;
     }
 
@@ -123,7 +146,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             ]),
         ];
         frame.render_widget(
-            Paragraph::new(text).block(ui::bordered("Confirm Flow")),
+            Paragraph::new(text).block(ui::bordered("Confirm Branch Action")),
             modal,
         );
         return;
@@ -131,18 +154,12 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(7), Constraint::Min(0)])
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(modal);
 
-    let diagram = vec![
-        Line::from("origin/main  ----------------------------> production"),
-        Line::from("     |"),
-        Line::from("     +--> feature/*  --release-->  develop      -> dev"),
-        Line::from("     |"),
-        Line::from("     +--> feature/*  --release-->  release/next -> test"),
-    ];
+    let diagram = vec![Line::from(selected_branch_line(state))];
     frame.render_widget(
-        Paragraph::new(diagram).block(ui::bordered("Flow Map")),
+        Paragraph::new(diagram).block(ui::bordered("Selected Branch")),
         chunks[0],
     );
 
@@ -152,7 +169,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         .map(|action| ListItem::new(Line::from(action.label())))
         .collect();
     let list = List::new(items)
-        .block(ui::bordered("Actions"))
+        .block(ui::bordered("Branch Actions"))
         .highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
@@ -174,7 +191,7 @@ pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
     if state.flow_confirm.is_some()
         || state.flow_input.is_some()
         || state.workflow_job.is_some()
-        || !state.flow_available()
+        || !state.branch_actions_available()
     {
         state.flow_scroll_offset = 0;
         return;
@@ -205,7 +222,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
-    if !state.flow_available() {
+    if !state.branch_actions_available() {
         state.flow_confirm = None;
         state.flow_input = None;
         state.flow_text.clear();
@@ -281,7 +298,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             else {
                 return Ok(());
             };
-            if action == FlowAction::NewFeature {
+            if action.needs_input() {
                 state.flow_input = Some(action);
                 state.flow_text.clear();
             } else if action.needs_confirmation() {
@@ -315,6 +332,27 @@ fn warning_for(action: FlowAction) -> Line<'static> {
             "Stashes local changes, updates main from origin/main, returns, merges origin/main, pushes current, then restores.",
         ),
         FlowAction::NewFeature => Line::from(""),
+        FlowAction::TransferDiff => Line::from(""),
+    }
+}
+
+fn selected_feature_branch(state: &AppState) -> Option<String> {
+    if state.branch_view != BranchView::Local {
+        return None;
+    }
+    let branch = state.selected_branch_ref()?;
+    if matches!(branch, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST) {
+        None
+    } else {
+        Some(branch.to_string())
+    }
+}
+
+fn selected_branch_line(state: &AppState) -> String {
+    match state.selected_branch_ref() {
+        Some(branch) if state.branch_view == BranchView::Local => format!("selected: {branch}"),
+        Some(branch) => format!("selected remote: {branch}"),
+        None => "no branch selected".to_string(),
     }
 }
 

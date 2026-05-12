@@ -109,7 +109,7 @@ where
                 self.state.modal = Modal::Help;
             }
             KeyCode::Char('F') => {
-                if self.state.flow_available() {
+                if self.state.focus == Pane::Branches && self.state.branch_actions_available() {
                     self.state.modal = Modal::Flow;
                 }
             }
@@ -234,8 +234,8 @@ impl App {
                 return Ok(());
             }
             KeyCode::Char('F') => {
-                self.start_refresh(false);
-                if self.state.flow_available() {
+                if self.state.focus == Pane::Branches && self.state.branch_actions_available() {
+                    self.start_refresh(false);
                     self.state.modal = Modal::Flow;
                 }
                 return Ok(());

@@ -12,7 +12,7 @@ use crate::{
     app,
     config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST},
     git::{Branch, RemoteBranch},
-    state::{AppState, BranchView, FlowAction, PendingAction, SPINNER_FRAMES, clamp_index},
+    state::{AppState, BranchView, FlowAction, Modal, PendingAction, SPINNER_FRAMES, clamp_index},
     ui,
 };
 
@@ -216,6 +216,11 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.set_status("sync local branches from local branch view", false);
             } else {
                 state.pending_action = Some(PendingAction::MergeMainAllBranches);
+            }
+        }
+        KeyCode::Char('F') => {
+            if state.branch_actions_available() {
+                state.modal = Modal::Flow;
             }
         }
         _ => {}

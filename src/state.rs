@@ -297,17 +297,19 @@ pub enum FlowAction {
     ResetDev,
     ResetTest,
     NewFeature,
+    TransferDiff,
     CleanOrphans,
 }
 
 impl FlowAction {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::MergeMain,
         Self::ReleaseDev,
         Self::ReleaseTest,
         Self::ResetDev,
         Self::ResetTest,
         Self::NewFeature,
+        Self::TransferDiff,
         Self::CleanOrphans,
     ];
 
@@ -319,12 +321,17 @@ impl FlowAction {
             Self::ResetDev => "Reset develop from origin/main",
             Self::ResetTest => "Reset release/next from origin/main",
             Self::NewFeature => "Start new feature from origin/main",
+            Self::TransferDiff => "Transfer selected feature diff to new branch",
             Self::CleanOrphans => "Clean local branches without upstream",
         }
     }
 
     pub fn needs_confirmation(self) -> bool {
-        !matches!(self, Self::NewFeature)
+        !matches!(self, Self::NewFeature | Self::TransferDiff)
+    }
+
+    pub fn needs_input(self) -> bool {
+        matches!(self, Self::NewFeature | Self::TransferDiff)
     }
 }
 
@@ -480,7 +487,7 @@ impl AppState {
         } else if self.review_chat_job.is_some() {
             Some("chatting")
         } else if self.workflow_job.is_some() {
-            Some("running workflow")
+            Some("running branch action")
         } else {
             match &self.pending_action {
                 Some(PendingAction::GenerateMessage) => Some("starting generator"),
@@ -492,7 +499,7 @@ impl AppState {
                 Some(PendingAction::Pull) => Some("starting pull"),
                 Some(PendingAction::MergeUpstream) => Some("starting merge"),
                 Some(PendingAction::MergeMainAllBranches) => Some("starting branch sync"),
-                Some(PendingAction::Flow(_)) => Some("starting workflow"),
+                Some(PendingAction::Flow(_)) => Some("starting branch action"),
                 Some(
                     PendingAction::SaveAuthor { .. }
                     | PendingAction::ClearAuthor
@@ -617,6 +624,10 @@ impl AppState {
     pub fn flow_available(&self) -> bool {
         self.flow_branches_available
             || (self.branch_exists(BRANCH_DEV) && self.branch_exists(BRANCH_TEST))
+    }
+
+    pub fn branch_actions_available(&self) -> bool {
+        self.branch.is_some() || !self.branches.is_empty()
     }
 
     pub fn merge_main_available(&self) -> bool {
@@ -794,7 +805,7 @@ impl AppState {
                 .find_map(|(idx, commit)| (!commit.is_graph_row()).then_some(idx))
                 .unwrap_or(0);
         }
-        let flow_len = usize::from(self.flow_available()) * FlowAction::ALL.len();
+        let flow_len = usize::from(self.branch_actions_available()) * FlowAction::ALL.len();
         clamp_idx(&mut self.flow_idx, flow_len);
     }
 }
