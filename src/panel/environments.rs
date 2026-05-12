@@ -66,13 +66,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
 }
 
 fn render_nested_repositories(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
-    if let Some(path) = state.nested_repo_detail_path.as_deref() {
-        render_nested_repo_branches(state, path, area, frame, focused);
-        return;
-    }
-
-    let len = state.nested_repositories.len();
-    let selected_idx = clamp_index(state.nested_repositories_idx, len);
+    let rows = nested_repo_tree_rows(state);
+    let len = rows.len();
+    let selected_idx = clamp_index(state.nested_repo_tree_idx, len);
     let block = ui::framed_with_activity(
         1,
         "Repositories",
@@ -82,10 +78,36 @@ fn render_nested_repositories(state: &AppState, area: Rect, frame: &mut Frame, f
         state.activity_label().is_some(),
     );
     let row_width = area.width.saturating_sub(4) as usize;
-    let items = state
-        .nested_repositories
+    let items = rows
         .iter()
-        .map(|repo| ListItem::new(nested_repo_line(repo, row_width)))
+        .map(|row| match row {
+            NestedRepoTreeRow::Repo { repo_idx } => {
+                let expanded = state
+                    .nested_repositories
+                    .get(*repo_idx)
+                    .is_some_and(|repo| {
+                        state.nested_repo_detail_path.as_deref() == Some(&repo.path)
+                    });
+                ListItem::new(nested_repo_line(
+                    &state.nested_repositories[*repo_idx],
+                    row_width,
+                    expanded,
+                ))
+            }
+            NestedRepoTreeRow::Branch { branch_idx, .. } => ListItem::new(nested_branch_line(
+                &state.nested_repo_branches[*branch_idx],
+                row_width,
+            )),
+            NestedRepoTreeRow::Remote { branch_idx, .. } => {
+                ListItem::new(nested_remote_branch_line(
+                    state
+                        .visible_nested_repo_remote_branches()
+                        .nth(*branch_idx)
+                        .expect("visible remote row index"),
+                    row_width,
+                ))
+            }
+        })
         .collect::<Vec<_>>();
     let offset = nested_repo_scroll_offset(state, area);
     let mut list_state = scroll::list_state(focused.then_some(selected_idx).flatten(), offset);
@@ -100,86 +122,15 @@ fn render_nested_repositories(state: &AppState, area: Rect, frame: &mut Frame, f
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
-fn render_nested_repo_branches(
-    state: &AppState,
-    path: &str,
-    area: Rect,
-    frame: &mut Frame,
-    focused: bool,
-) {
-    let len = state.nested_repo_branch_list_len();
-    let selected_idx = match state.nested_repo_branch_view {
-        BranchView::Local => clamp_index(state.nested_repo_branches_idx, len),
-        BranchView::Remote => clamp_index(state.nested_repo_remote_branches_idx, len),
-    };
-    let title = match state.nested_repo_branch_view {
-        BranchView::Local => format!("{path} branches"),
-        BranchView::Remote => format!("{path} remotes"),
-    };
-    let block = ui::framed_with_activity(
-        1,
-        &title,
-        focused,
-        selected_idx.map(|idx| (idx + 1, len)),
-        state.animation_tick,
-        state.activity_label().is_some(),
-    );
-    let row_width = area.width.saturating_sub(4) as usize;
-    let items = match state.nested_repo_branch_view {
-        BranchView::Local => state
-            .nested_repo_branches
-            .iter()
-            .map(|branch| ListItem::new(nested_branch_line(branch, row_width)))
-            .collect::<Vec<_>>(),
-        BranchView::Remote => state
-            .visible_nested_repo_remote_branches()
-            .map(|branch| ListItem::new(nested_remote_branch_line(branch, row_width)))
-            .collect::<Vec<_>>(),
-    };
-    let offset = nested_repo_branch_scroll_offset(state, area);
-    let mut list_state = scroll::list_state(focused.then_some(selected_idx).flatten(), offset);
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("\u{203a} ");
-    frame.render_stateful_widget(list, area, &mut list_state);
-}
-
 pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
-    if state.nested_repo_detail_path.is_some() {
-        let len = state.nested_repo_branch_list_len();
-        let selected_idx = match state.nested_repo_branch_view {
-            BranchView::Local => clamp_index(state.nested_repo_branches_idx, len),
-            BranchView::Remote => clamp_index(state.nested_repo_remote_branches_idx, len),
-        };
-        let current = match state.nested_repo_branch_view {
-            BranchView::Local => state.nested_repo_branches_scroll_offset,
-            BranchView::Remote => state.nested_repo_remote_branches_scroll_offset,
-        };
-        let offset = scroll::selection_scroll_offset(
-            selected_idx,
-            len,
-            scroll::list_viewport_height(area.height),
-            current,
-        );
-        match state.nested_repo_branch_view {
-            BranchView::Local => state.nested_repo_branches_scroll_offset = offset,
-            BranchView::Remote => state.nested_repo_remote_branches_scroll_offset = offset,
-        }
-    } else {
-        let len = state.nested_repositories.len();
-        let selected_idx = clamp_index(state.nested_repositories_idx, len);
-        state.nested_repositories_scroll_offset = scroll::selection_scroll_offset(
-            selected_idx,
-            len,
-            scroll::list_viewport_height(area.height),
-            state.nested_repositories_scroll_offset,
-        );
-    }
+    let len = nested_repo_tree_rows(state).len();
+    let selected_idx = clamp_index(state.nested_repo_tree_idx, len);
+    state.nested_repositories_scroll_offset = scroll::selection_scroll_offset(
+        selected_idx,
+        len,
+        scroll::list_viewport_height(area.height),
+        state.nested_repositories_scroll_offset,
+    );
 }
 
 pub fn handle_key(
@@ -191,33 +142,64 @@ pub fn handle_key(
     if state.nested_repositories.is_empty() {
         return Ok(());
     }
+    sync_repo_idx_to_tree_selection(state);
     state.clamp();
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => move_selection(state, true, 1),
         KeyCode::Char('k') | KeyCode::Up => move_selection(state, false, 1),
-        KeyCode::Enter => {
-            if let Some(path) = state.nested_repo_detail_path.clone() {
-                if let Some(branch) = state.selected_nested_repo_branch_ref().map(str::to_owned) {
-                    match state.nested_repo_branch_view {
-                        BranchView::Local => app::checkout_nested_branch_async(state, path, branch),
-                        BranchView::Remote => {
-                            app::checkout_nested_remote_branch_async(state, path, branch)
-                        }
+        KeyCode::Enter => match selected_tree_row(state) {
+            Some(NestedRepoTreeRow::Repo { repo_idx }) => {
+                if let Some(path) = state
+                    .nested_repositories
+                    .get(repo_idx)
+                    .map(|repo| repo.path.clone())
+                {
+                    if state.nested_repo_detail_path.as_deref() == Some(path.as_str()) {
+                        close_nested_repo_detail(state);
+                    } else {
+                        open_nested_repo_detail(state, path);
                     }
                 }
-            } else if let Some(path) = state
-                .nested_repositories
-                .get(state.nested_repositories_idx)
-                .map(|repo| repo.path.clone())
-            {
-                open_nested_repo_detail(state, path);
             }
-        }
+            Some(NestedRepoTreeRow::Branch {
+                repo_idx,
+                branch_idx,
+            }) => {
+                if let (Some(repo), Some(branch)) = (
+                    state.nested_repositories.get(repo_idx),
+                    state.nested_repo_branches.get(branch_idx),
+                ) {
+                    app::checkout_nested_branch_async(
+                        state,
+                        repo.path.clone(),
+                        branch.name.clone(),
+                    );
+                }
+            }
+            Some(NestedRepoTreeRow::Remote {
+                repo_idx,
+                branch_idx,
+            }) => {
+                if let Some(repo) = state.nested_repositories.get(repo_idx) {
+                    let branch = state
+                        .visible_nested_repo_remote_branches()
+                        .nth(branch_idx)
+                        .map(|branch| branch.name.clone());
+                    if let Some(branch) = branch {
+                        app::checkout_nested_remote_branch_async(state, repo.path.clone(), branch);
+                    }
+                }
+            }
+            None => {}
+        },
         KeyCode::Char('r') if state.nested_repo_detail_path.is_some() => {
             state.nested_repo_branch_view = match state.nested_repo_branch_view {
                 BranchView::Local => BranchView::Remote,
                 BranchView::Remote => BranchView::Local,
             };
+            if let Some(path) = state.nested_repo_detail_path.clone() {
+                let _ = load_nested_repo_detail(state, &path);
+            }
             state.clamp();
         }
         KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('h') => {
@@ -239,6 +221,7 @@ pub(crate) fn open_nested_repo_detail(state: &mut AppState, path: String) {
                 .position(|branch| branch.is_current)
                 .unwrap_or(0);
             state.nested_repo_remote_branches_idx = 0;
+            state.nested_repo_tree_idx = tree_idx_for_repo_path(state, &path).unwrap_or(0);
             state.set_status(format!("opened {path} branches"), false);
         }
         Err(err) => state.set_status(format!("load nested branches failed: {err}"), true),
@@ -261,52 +244,52 @@ fn load_nested_repo_detail(state: &mut AppState, path: &str) -> anyhow::Result<(
 }
 
 pub(crate) fn close_nested_repo_detail(state: &mut AppState) {
-    if state.nested_repo_detail_path.take().is_some() {
+    if let Some(path) = state.nested_repo_detail_path.take() {
         state.nested_repo_branches.clear();
         state.nested_repo_remote_branches.clear();
         state.nested_repo_branch_view = BranchView::Local;
         state.nested_repo_branches_idx = 0;
         state.nested_repo_remote_branches_idx = 0;
+        state.nested_repo_tree_idx = tree_idx_for_repo_path(state, &path).unwrap_or(0);
     }
 }
 
 pub(crate) fn nested_repo_scroll_offset(state: &AppState, area: Rect) -> usize {
+    let len = nested_repo_tree_rows(state).len();
     scroll::selection_scroll_offset(
-        clamp_index(
-            state.nested_repositories_idx,
-            state.nested_repositories.len(),
-        ),
-        state.nested_repositories.len(),
+        clamp_index(state.nested_repo_tree_idx, len),
+        len,
         scroll::list_viewport_height(area.height),
         state.nested_repositories_scroll_offset,
     )
 }
 
-pub(crate) fn nested_repo_branch_scroll_offset(state: &AppState, area: Rect) -> usize {
-    let len = state.nested_repo_branch_list_len();
-    let selected_idx = match state.nested_repo_branch_view {
-        BranchView::Local => clamp_index(state.nested_repo_branches_idx, len),
-        BranchView::Remote => clamp_index(state.nested_repo_remote_branches_idx, len),
-    };
-    let current = match state.nested_repo_branch_view {
-        BranchView::Local => state.nested_repo_branches_scroll_offset,
-        BranchView::Remote => state.nested_repo_remote_branches_scroll_offset,
-    };
-    scroll::selection_scroll_offset(
-        selected_idx,
-        len,
-        scroll::list_viewport_height(area.height),
-        current,
-    )
+pub(crate) fn nested_repo_tree_len(state: &AppState) -> usize {
+    nested_repo_tree_rows(state).len()
+}
+
+pub(crate) fn select_nested_repo_tree_row(state: &mut AppState, idx: usize) {
+    state.nested_repo_tree_idx = idx;
+    if let Some(
+        NestedRepoTreeRow::Repo { repo_idx }
+        | NestedRepoTreeRow::Branch { repo_idx, .. }
+        | NestedRepoTreeRow::Remote { repo_idx, .. },
+    ) = selected_tree_row(state)
+    {
+        state.nested_repositories_idx = repo_idx;
+    }
 }
 
 fn move_selection(state: &mut AppState, down: bool, amount: usize) {
-    if state.nested_repo_detail_path.is_some() {
-        let len = state.nested_repo_branch_list_len();
-        move_index(state.nested_repo_branch_list_idx_mut(), len, down, amount);
-    } else {
-        let len = state.nested_repositories.len();
-        move_index(&mut state.nested_repositories_idx, len, down, amount);
+    let len = nested_repo_tree_rows(state).len();
+    move_index(&mut state.nested_repo_tree_idx, len, down, amount);
+    if let Some(
+        NestedRepoTreeRow::Repo { repo_idx }
+        | NestedRepoTreeRow::Branch { repo_idx, .. }
+        | NestedRepoTreeRow::Remote { repo_idx, .. },
+    ) = selected_tree_row(state)
+    {
+        state.nested_repositories_idx = repo_idx;
     }
 }
 
@@ -320,7 +303,62 @@ fn move_index(idx: &mut usize, len: usize, down: bool, amount: usize) {
     }
 }
 
-fn nested_repo_line(repo: &NestedRepo, row_width: usize) -> Line<'static> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NestedRepoTreeRow {
+    Repo { repo_idx: usize },
+    Branch { repo_idx: usize, branch_idx: usize },
+    Remote { repo_idx: usize, branch_idx: usize },
+}
+
+fn nested_repo_tree_rows(state: &AppState) -> Vec<NestedRepoTreeRow> {
+    let mut rows = Vec::new();
+    for (repo_idx, repo) in state.nested_repositories.iter().enumerate() {
+        rows.push(NestedRepoTreeRow::Repo { repo_idx });
+        if state.nested_repo_detail_path.as_deref() == Some(repo.path.as_str()) {
+            match state.nested_repo_branch_view {
+                BranchView::Local => {
+                    rows.extend(state.nested_repo_branches.iter().enumerate().map(
+                        |(branch_idx, _)| NestedRepoTreeRow::Branch {
+                            repo_idx,
+                            branch_idx,
+                        },
+                    ))
+                }
+                BranchView::Remote => {
+                    rows.extend(state.visible_nested_repo_remote_branches().enumerate().map(
+                        |(branch_idx, _)| NestedRepoTreeRow::Remote {
+                            repo_idx,
+                            branch_idx,
+                        },
+                    ))
+                }
+            }
+        }
+    }
+    rows
+}
+
+fn selected_tree_row(state: &AppState) -> Option<NestedRepoTreeRow> {
+    nested_repo_tree_rows(state)
+        .get(state.nested_repo_tree_idx)
+        .copied()
+}
+
+fn tree_idx_for_repo_path(state: &AppState, path: &str) -> Option<usize> {
+    nested_repo_tree_rows(state)
+        .iter()
+        .position(|row| matches!(row, NestedRepoTreeRow::Repo { repo_idx } if state.nested_repositories.get(*repo_idx).is_some_and(|repo| repo.path == path)))
+}
+
+fn sync_repo_idx_to_tree_selection(state: &mut AppState) {
+    if state.nested_repo_tree_idx == 0 && state.nested_repositories_idx > 0 {
+        if let Some(repo) = state.nested_repositories.get(state.nested_repositories_idx) {
+            state.nested_repo_tree_idx = tree_idx_for_repo_path(state, &repo.path).unwrap_or(0);
+        }
+    }
+}
+
+fn nested_repo_line(repo: &NestedRepo, row_width: usize, expanded: bool) -> Line<'static> {
     let branch = repo
         .branch
         .clone()
@@ -330,13 +368,17 @@ fn nested_repo_line(repo: &NestedRepo, row_width: usize) -> Line<'static> {
                 .map(|sha| format!("detached@{sha}"))
         })
         .unwrap_or_else(|| "unknown".to_string());
-    let marker_width = if repo.has_changes { 2 } else { 0 };
+    let marker_width = 2 + if repo.has_changes { 2 } else { 0 };
     let branch_width = branch.chars().count().saturating_add(1);
     let max_path_width = row_width
         .saturating_sub(marker_width)
         .saturating_sub(branch_width);
 
     let mut spans = Vec::new();
+    spans.push(Span::styled(
+        if expanded { "\u{25be} " } else { "\u{25b8} " },
+        Style::default().fg(Color::LightMagenta),
+    ));
     if repo.has_changes {
         spans.push(Span::styled(
             "! ",
@@ -364,11 +406,11 @@ fn nested_repo_line(repo: &NestedRepo, row_width: usize) -> Line<'static> {
 }
 
 fn nested_branch_line(branch: &Branch, row_width: usize) -> Line<'static> {
-    let prefix = if branch.is_current { "* " } else { "  " };
+    let prefix = if branch.is_current { "  * " } else { "    " };
     let mut spans = vec![Span::styled(
         format!(
             "{prefix}{}",
-            truncate_chars(&branch.name, row_width.saturating_sub(2))
+            truncate_chars(&branch.name, row_width.saturating_sub(4))
         ),
         if branch.is_current {
             Style::default()
@@ -396,8 +438,8 @@ fn nested_branch_line(branch: &Branch, row_width: usize) -> Line<'static> {
 fn nested_remote_branch_line(branch: &RemoteBranch, row_width: usize) -> Line<'static> {
     Line::from(vec![Span::styled(
         format!(
-            "  {}",
-            truncate_chars(&branch.name, row_width.saturating_sub(2))
+            "    {}",
+            truncate_chars(&branch.name, row_width.saturating_sub(4))
         ),
         Style::default().fg(Color::LightMagenta),
     )])

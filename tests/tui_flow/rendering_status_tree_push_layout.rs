@@ -255,7 +255,7 @@ fn repository_panel_shows_nested_repository_branches() {
 }
 
 #[test]
-fn repository_panel_drilldown_shows_nested_branch_lists() {
+fn repository_panel_tree_shows_nested_branch_lists() {
     let mut state = AppState::new();
     state.nested_repositories = vec![NestedRepo {
         path: "services/api".into(),
@@ -309,10 +309,8 @@ fn repository_panel_drilldown_shows_nested_branch_lists() {
         }
     }
 
-    assert!(
-        text.contains("services/api branches"),
-        "missing drilldown title: {text}"
-    );
+    assert!(text.contains("Repositories"), "missing tree title: {text}");
+    assert!(text.contains("services/api"), "missing repo row: {text}");
     assert!(text.contains("* main"), "missing current branch: {text}");
     assert!(
         text.contains("feature/api"),
@@ -321,6 +319,35 @@ fn repository_panel_drilldown_shows_nested_branch_lists() {
 
     panel::environments::handle_key(&mut state, key(KeyCode::Char('r'))).unwrap();
     assert_eq!(state.nested_repo_branch_view, BranchView::Remote);
+}
+
+#[test]
+fn repository_panel_tree_esc_collapses_expanded_repo() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 8)).unwrap();
+    app.state.focus = Pane::Status;
+    app.state.nested_repositories = vec![NestedRepo {
+        path: "services/api".into(),
+        branch: Some("main".into()),
+        detached_at: None,
+        has_changes: false,
+    }];
+    app.state.nested_repo_detail_path = Some("services/api".into());
+    app.state.nested_repo_branches = vec![Branch {
+        name: "main".into(),
+        is_current: true,
+        upstream: Some("origin/main".into()),
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 0,
+        last_commit_unix: None,
+    }];
+    app.state.nested_repo_tree_idx = 1;
+
+    app.send_key(key(KeyCode::Esc)).unwrap();
+
+    assert_eq!(app.state.nested_repo_detail_path, None);
+    assert!(app.state.nested_repo_branches.is_empty());
 }
 
 #[test]

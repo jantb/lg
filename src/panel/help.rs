@@ -59,12 +59,12 @@ const SECTIONS: &[Section] = &[
         pane: Some(Pane::Status),
         bindings: &[
             ("j/k", "Move up/down"),
+            ("Enter", "Expand repo, collapse repo, or checkout branch"),
             (
-                "Enter",
-                "Drill into repo, or checkout selected nested branch",
+                "r",
+                "Toggle expanded repo between local and remote branches",
             ),
-            ("r", "Toggle local and remote branch views in drilldown"),
-            ("Esc/Backspace", "Return to repository list"),
+            ("Esc/Backspace", "Collapse expanded repository"),
         ],
     },
     Section {

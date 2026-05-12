@@ -172,22 +172,13 @@ pub(super) fn select_mouse_row(
             crate::panel::main::select_mouse_row(state, rects.main, row);
         }
         Pane::Status => {
-            if state.nested_repo_detail_path.is_some() {
-                let len = state.nested_repo_branch_list_len();
-                let offset = crate::panel::environments::nested_repo_branch_scroll_offset(
-                    state,
-                    rects.environments,
-                );
-                if let Some(idx) = list_row_at(rects.environments, row, len, offset) {
-                    *state.nested_repo_branch_list_idx_mut() = idx;
-                }
-            } else if let Some(idx) = list_row_at(
+            if let Some(idx) = list_row_at(
                 rects.environments,
                 row,
-                state.nested_repositories.len(),
+                crate::panel::environments::nested_repo_tree_len(state),
                 crate::panel::environments::nested_repo_scroll_offset(state, rects.environments),
             ) {
-                state.nested_repositories_idx = idx;
+                crate::panel::environments::select_nested_repo_tree_row(state, idx);
             }
         }
     }
@@ -210,22 +201,8 @@ pub(super) fn scroll_list(
         }
         Pane::Commits => scroll_commits(state, scroll_down, amount),
         Pane::Status => {
-            if state.nested_repo_detail_path.is_some() {
-                let len = state.nested_repo_branch_list_len();
-                scroll_index(
-                    state.nested_repo_branch_list_idx_mut(),
-                    len,
-                    scroll_down,
-                    amount,
-                )
-            } else {
-                scroll_index(
-                    &mut state.nested_repositories_idx,
-                    state.nested_repositories.len(),
-                    scroll_down,
-                    amount,
-                )
-            }
+            let len = crate::panel::environments::nested_repo_tree_len(state);
+            scroll_index(&mut state.nested_repo_tree_idx, len, scroll_down, amount)
         }
         Pane::Main => false,
     }

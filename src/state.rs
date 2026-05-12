@@ -183,6 +183,7 @@ pub struct AppState {
     pub branches_idx: usize,
     pub remote_branches_idx: usize,
     pub nested_repositories_idx: usize,
+    pub nested_repo_tree_idx: usize,
     pub nested_repo_branches_idx: usize,
     pub nested_repo_remote_branches_idx: usize,
     pub commits_idx: usize,
@@ -347,6 +348,7 @@ impl AppState {
             branches_idx: 0,
             remote_branches_idx: 0,
             nested_repositories_idx: 0,
+            nested_repo_tree_idx: 0,
             nested_repo_branches_idx: 0,
             nested_repo_remote_branches_idx: 0,
             commits_idx: 0,
@@ -755,6 +757,15 @@ impl AppState {
         clamp_idx(
             &mut self.nested_repositories_idx,
             self.nested_repositories.len(),
+        );
+        let expanded_rows = if self.nested_repo_detail_path.is_some() {
+            self.nested_repo_branch_list_len()
+        } else {
+            0
+        };
+        clamp_idx(
+            &mut self.nested_repo_tree_idx,
+            self.nested_repositories.len().saturating_add(expanded_rows),
         );
         clamp_idx(
             &mut self.nested_repo_branches_idx,

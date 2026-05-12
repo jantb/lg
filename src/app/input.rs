@@ -116,6 +116,9 @@ where
             KeyCode::Char('q') => {
                 self.state.should_quit = true;
             }
+            KeyCode::Esc if self.state.focus == Pane::Status => {
+                panel::environments::handle_key(&mut self.state, k)?;
+            }
             KeyCode::Esc => {}
             KeyCode::Char('1') => {
                 self.state.focus = Pane::Status;
@@ -239,6 +242,10 @@ impl App {
             }
             KeyCode::Char('q') => {
                 self.state.should_quit = true;
+                return Ok(());
+            }
+            KeyCode::Esc if self.state.focus == Pane::Status => {
+                panel::environments::handle_key(&mut self.state, k)?;
                 return Ok(());
             }
             KeyCode::Esc => {
