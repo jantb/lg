@@ -110,7 +110,7 @@ impl App {
         }
     }
 
-    fn defer_release_status_job(&mut self) {
+    pub(super) fn defer_release_status_job(&mut self) {
         if let Some(mut job) = self.state.release_status_job.take() {
             self.state.defer_thread_join(job.handle.take());
         }
@@ -318,7 +318,9 @@ impl App {
         snapshot: crate::state::RefreshSnapshot,
         refresh_diff: bool,
     ) {
+        let repo_before = self.state.repo_root.clone();
         self.state.repo_root = snapshot.repo_root;
+        let repo_changed = self.state.repo_root != repo_before;
         self.state.workspace_root = snapshot.workspace_root;
         if let Some(files) = snapshot.files {
             self.state.files = files;
@@ -338,7 +340,7 @@ impl App {
         }
         let branch_before = self.state.branch.clone();
         self.state.branch = snapshot.branch;
-        if self.state.branch != branch_before {
+        if self.state.branch != branch_before || repo_changed {
             self.state.current_branch_releases = Default::default();
             self.state.current_branch_releases_ref = None;
             self.defer_release_status_job();

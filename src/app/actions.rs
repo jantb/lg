@@ -231,6 +231,9 @@ impl App {
                     Ok(()) => {
                         let label = path.unwrap_or_else(|| "workspace".to_string());
                         self.state.repo_root = Some(target.to_string_lossy().into_owned());
+                        self.state.current_branch_releases = Default::default();
+                        self.state.current_branch_releases_ref = None;
+                        self.defer_release_status_job();
                         self.state.nested_repo_detail_path = None;
                         self.state.nested_repo_branches.clear();
                         self.state.nested_repo_remote_branches.clear();
