@@ -115,6 +115,7 @@ fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
 pub(super) fn pane_at(rects: &ui::LayoutRects, column: u16, row: u16) -> Option<Pane> {
     [
         (Pane::Status, rects.status),
+        (Pane::Status, rects.environments),
         (Pane::Files, rects.files),
         (Pane::Branches, rects.branches),
         (Pane::Commits, rects.commits),
@@ -170,7 +171,25 @@ pub(super) fn select_mouse_row(
         Pane::Main => {
             crate::panel::main::select_mouse_row(state, rects.main, row);
         }
-        Pane::Status => {}
+        Pane::Status => {
+            if state.nested_repo_detail_path.is_some() {
+                let len = state.nested_repo_branch_list_len();
+                let offset = crate::panel::environments::nested_repo_branch_scroll_offset(
+                    state,
+                    rects.environments,
+                );
+                if let Some(idx) = list_row_at(rects.environments, row, len, offset) {
+                    *state.nested_repo_branch_list_idx_mut() = idx;
+                }
+            } else if let Some(idx) = list_row_at(
+                rects.environments,
+                row,
+                state.nested_repositories.len(),
+                crate::panel::environments::nested_repo_scroll_offset(state, rects.environments),
+            ) {
+                state.nested_repositories_idx = idx;
+            }
+        }
     }
 }
 
@@ -190,7 +209,25 @@ pub(super) fn scroll_list(
             scroll_index(state.branch_list_idx_mut(), len, scroll_down, amount)
         }
         Pane::Commits => scroll_commits(state, scroll_down, amount),
-        Pane::Status | Pane::Main => false,
+        Pane::Status => {
+            if state.nested_repo_detail_path.is_some() {
+                let len = state.nested_repo_branch_list_len();
+                scroll_index(
+                    state.nested_repo_branch_list_idx_mut(),
+                    len,
+                    scroll_down,
+                    amount,
+                )
+            } else {
+                scroll_index(
+                    &mut state.nested_repositories_idx,
+                    state.nested_repositories.len(),
+                    scroll_down,
+                    amount,
+                )
+            }
+        }
+        Pane::Main => false,
     }
 }
 

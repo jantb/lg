@@ -119,7 +119,7 @@ fn current_branch_panel_renders_environment_history() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|frame| {
-            panel::environments::render(&state, frame.area(), frame);
+            panel::environments::render(&state, frame.area(), frame, false);
         })
         .unwrap();
 
@@ -165,7 +165,7 @@ fn current_branch_panel_shows_deployment_status_loading() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|frame| {
-            panel::environments::render(&state, frame.area(), frame);
+            panel::environments::render(&state, frame.area(), frame, false);
         })
         .unwrap();
 
@@ -187,7 +187,7 @@ fn current_branch_panel_hides_environment_history_without_release_branches() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|frame| {
-            panel::environments::render(&state, frame.area(), frame);
+            panel::environments::render(&state, frame.area(), frame, false);
         })
         .unwrap();
 
@@ -232,7 +232,7 @@ fn repository_panel_shows_nested_repository_branches() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|frame| {
-            panel::environments::render(&state, frame.area(), frame);
+            panel::environments::render(&state, frame.area(), frame, false);
         })
         .unwrap();
 
@@ -252,6 +252,75 @@ fn repository_panel_shows_nested_repository_branches() {
         "missing detached ref: {text}"
     );
     assert!(text.contains("!"), "missing dirty marker: {text}");
+}
+
+#[test]
+fn repository_panel_drilldown_shows_nested_branch_lists() {
+    let mut state = AppState::new();
+    state.nested_repositories = vec![NestedRepo {
+        path: "services/api".into(),
+        branch: Some("main".into()),
+        detached_at: None,
+        has_changes: false,
+    }];
+    state.nested_repo_detail_path = Some("services/api".into());
+    state.nested_repo_branches = vec![
+        Branch {
+            name: "main".into(),
+            is_current: true,
+            upstream: Some("origin/main".into()),
+            upstream_gone: false,
+            ahead: 0,
+            behind: 0,
+            behind_main: 0,
+            last_commit_unix: None,
+        },
+        Branch {
+            name: "feature/api".into(),
+            is_current: false,
+            upstream: None,
+            upstream_gone: false,
+            ahead: 1,
+            behind: 2,
+            behind_main: 0,
+            last_commit_unix: None,
+        },
+    ];
+    state.nested_repo_remote_branches = vec![RemoteBranch {
+        name: "origin/feature/remote".into(),
+        remote: "origin".into(),
+        local_name: "feature/remote".into(),
+        last_commit_unix: None,
+    }];
+
+    let backend = TestBackend::new(80, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::environments::render(&state, frame.area(), frame, true);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(
+        text.contains("services/api branches"),
+        "missing drilldown title: {text}"
+    );
+    assert!(text.contains("* main"), "missing current branch: {text}");
+    assert!(
+        text.contains("feature/api"),
+        "missing nested feature branch: {text}"
+    );
+
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('r'))).unwrap();
+    assert_eq!(state.nested_repo_branch_view, BranchView::Remote);
 }
 
 #[test]

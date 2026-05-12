@@ -571,6 +571,7 @@ impl App {
                 Ok(s) => self.state.set_status(s, false),
                 Err(e) => self.state.set_status(e, true),
             }
+            crate::panel::environments::reload_nested_repo_detail(&mut self.state);
             self.start_refresh(true);
         }
         Ok(())

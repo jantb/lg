@@ -248,6 +248,82 @@ pub(crate) fn checkout_remote_branch_async(state: &mut AppState, remote_ref: Str
     state.set_status(format!("checking out {remote_ref}\u{2026}"), false);
 }
 
+pub(crate) fn checkout_nested_branch_async(
+    state: &mut AppState,
+    repo_path: String,
+    branch: String,
+) {
+    if git_job_running(state) {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let target_repo = repo_path.clone();
+    let target_branch = branch.clone();
+    let handle = std::thread::spawn(move || {
+        match crate::git::checkout_nested_branch(&target_repo, &target_branch) {
+            Ok(out) => {
+                let line = out
+                    .lines()
+                    .rfind(|l| !l.trim().is_empty())
+                    .unwrap_or("checked out")
+                    .to_owned();
+                let _ = tx.send(CheckoutMsg::Done(line));
+            }
+            Err(e) => {
+                let _ = tx.send(CheckoutMsg::Error(e.to_string()));
+            }
+        }
+    });
+    state.checkout_job = Some(CheckoutJob {
+        rx,
+        handle: Some(handle),
+        spinner: 0,
+        branch: format!("{repo_path}:{branch}"),
+    });
+    state.set_status(
+        format!("checking out {branch} in {repo_path}\u{2026}"),
+        false,
+    );
+}
+
+pub(crate) fn checkout_nested_remote_branch_async(
+    state: &mut AppState,
+    repo_path: String,
+    remote_ref: String,
+) {
+    if git_job_running(state) {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let target_repo = repo_path.clone();
+    let target_ref = remote_ref.clone();
+    let handle = std::thread::spawn(move || {
+        match crate::git::checkout_nested_remote_branch(&target_repo, &target_ref) {
+            Ok(out) => {
+                let line = out
+                    .lines()
+                    .rfind(|l| !l.trim().is_empty())
+                    .unwrap_or("checked out")
+                    .to_owned();
+                let _ = tx.send(CheckoutMsg::Done(line));
+            }
+            Err(e) => {
+                let _ = tx.send(CheckoutMsg::Error(e.to_string()));
+            }
+        }
+    });
+    state.checkout_job = Some(CheckoutJob {
+        rx,
+        handle: Some(handle),
+        spinner: 0,
+        branch: format!("{repo_path}:{remote_ref}"),
+    });
+    state.set_status(
+        format!("checking out {remote_ref} in {repo_path}\u{2026}"),
+        false,
+    );
+}
+
 pub(super) fn spawn_operation<F>(
     state: &mut AppState,
     label: &'static str,

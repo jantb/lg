@@ -423,12 +423,107 @@ pub fn list_branches() -> Result<Vec<Branch>> {
     Ok(branches)
 }
 
+pub fn nested_repo_branches(repo_path: &str) -> Result<Vec<Branch>> {
+    let dir = nested_repo_dir(repo_path)?;
+    list_branches_in_dir(&dir)
+}
+
+fn list_branches_in_dir(dir: &Path) -> Result<Vec<Branch>> {
+    let main_ref = preferred_commit_ref_in_dir(
+        dir,
+        &format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}"),
+        BRANCH_MAIN,
+    );
+    let out = run_in_dir(
+        dir,
+        &[
+            "branch",
+            "--format=%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)\x1f%(upstream:track)\x1f%(committerdate:unix)",
+        ],
+    )?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut branches: Vec<_> = text
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(5, '\x1f');
+            let name = parts.next()?.trim().to_owned();
+            let head = parts.next()?.trim();
+            let upstream = parts.next().unwrap_or("").trim();
+            let track = parts.next().unwrap_or("").trim();
+            let (ahead, behind) = parse_upstream_track(track);
+            let last_commit_unix = parse_unix_timestamp(parts.next().unwrap_or("").trim());
+            if name.is_empty() {
+                return None;
+            }
+            let behind_main = branch_behind_main_in_dir(dir, &name, main_ref.as_deref());
+            Some(Branch {
+                name,
+                is_current: head == "*",
+                upstream: (!upstream.is_empty()).then(|| upstream.to_owned()),
+                upstream_gone: track.contains("gone"),
+                ahead,
+                behind,
+                behind_main,
+                last_commit_unix,
+            })
+        })
+        .collect();
+    sort_refs_by_recent_commit(
+        &mut branches,
+        |branch| branch.last_commit_unix,
+        |branch| branch.name.as_str(),
+    );
+    Ok(branches)
+}
+
 pub fn list_remote_branches() -> Result<Vec<RemoteBranch>> {
     let out = run(&[
         "for-each-ref",
         "refs/remotes",
         "--format=%(refname:short)\x1f%(committerdate:unix)",
     ])?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut branches: Vec<_> = text
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(2, '\x1f');
+            let name = parts.next()?.trim().to_owned();
+            if name.is_empty() || name.ends_with("/HEAD") {
+                return None;
+            }
+            let (remote, local_name) = name.split_once('/')?;
+            let remote = remote.to_owned();
+            let local_name = local_name.to_owned();
+            Some(RemoteBranch {
+                name,
+                remote,
+                local_name,
+                last_commit_unix: parse_unix_timestamp(parts.next().unwrap_or("").trim()),
+            })
+        })
+        .collect();
+    sort_refs_by_recent_commit(
+        &mut branches,
+        |branch| branch.last_commit_unix,
+        |branch| branch.name.as_str(),
+    );
+    Ok(branches)
+}
+
+pub fn nested_repo_remote_branches(repo_path: &str) -> Result<Vec<RemoteBranch>> {
+    let dir = nested_repo_dir(repo_path)?;
+    list_remote_branches_in_dir(&dir)
+}
+
+fn list_remote_branches_in_dir(dir: &Path) -> Result<Vec<RemoteBranch>> {
+    let out = run_in_dir(
+        dir,
+        &[
+            "for-each-ref",
+            "refs/remotes",
+            "--format=%(refname:short)\x1f%(committerdate:unix)",
+        ],
+    )?;
     let text = String::from_utf8_lossy(&out.stdout);
     let mut branches: Vec<_> = text
         .lines()
@@ -466,6 +561,34 @@ pub fn nested_repositories() -> Result<Vec<NestedRepo>> {
     dirs.into_iter()
         .map(|dir| nested_repo_status(&root, &dir))
         .collect()
+}
+
+pub fn checkout_nested_branch(repo_path: &str, branch: &str) -> Result<String> {
+    let dir = nested_repo_dir(repo_path)?;
+    checkout_branch_in_dir(&dir, branch)
+}
+
+pub fn checkout_nested_remote_branch(repo_path: &str, remote_ref: &str) -> Result<String> {
+    let dir = nested_repo_dir(repo_path)?;
+    checkout_remote_branch_in_dir(&dir, remote_ref)
+}
+
+fn nested_repo_dir(repo_path: &str) -> Result<PathBuf> {
+    let rel = Path::new(repo_path);
+    if repo_path.trim().is_empty()
+        || rel.is_absolute()
+        || rel
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        anyhow::bail!("invalid nested repository path: {repo_path}");
+    }
+    let root = PathBuf::from(repo_root()?);
+    let dir = root.join(rel);
+    if !dir.join(".git").exists() {
+        anyhow::bail!("nested repository not found: {repo_path}");
+    }
+    Ok(dir)
 }
 
 fn collect_nested_repo_dirs(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
@@ -564,6 +687,102 @@ fn branch_behind_main(branch: &str, main_ref: Option<&str>) -> u32 {
         .trim()
         .parse()
         .unwrap_or(0)
+}
+
+fn branch_behind_main_in_dir(dir: &Path, branch: &str, main_ref: Option<&str>) -> u32 {
+    let Some(main_ref) = main_ref else {
+        return 0;
+    };
+    if branch == BRANCH_MAIN || branch == main_ref {
+        return 0;
+    }
+    let Ok(out) = run_in_dir(dir, &["rev-list", "--count", main_ref, "--not", branch]) else {
+        return 0;
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0)
+}
+
+fn checkout_branch_in_dir(dir: &Path, branch: &str) -> Result<String> {
+    let stashed = if nested_head_branch(dir).is_ok_and(|current| current.as_deref() == Some(branch))
+    {
+        false
+    } else {
+        stash_uncommitted_changes_in_dir(dir, "lg: auto-stash before checkout")?
+    };
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["checkout", branch])
+        .output()
+        .with_context(|| format!("failed to spawn git -C {} checkout {branch}", dir.display()))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let combined = format!("{stdout}{stderr}");
+    if out.status.success() {
+        pop_stash_with_index_if_needed_in_dir(dir, stashed)?;
+        Ok(checkout_output_with_stash_notice(combined, stashed))
+    } else {
+        restore_stash_after_failed_checkout_in_dir(dir, stashed)?;
+        Err(anyhow::anyhow!("git checkout failed: {}", combined.trim()))
+    }
+}
+
+fn checkout_remote_branch_in_dir(dir: &Path, remote_ref: &str) -> Result<String> {
+    let stashed = stash_uncommitted_changes_in_dir(dir, "lg: auto-stash before remote checkout")?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["switch", "--track", remote_ref])
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to spawn git -C {} switch --track {remote_ref}",
+                dir.display()
+            )
+        })?;
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let combined = format!("{stdout}{stderr}");
+    if out.status.success() {
+        pop_stash_with_index_if_needed_in_dir(dir, stashed)?;
+        Ok(checkout_output_with_stash_notice(combined, stashed))
+    } else {
+        restore_stash_after_failed_checkout_in_dir(dir, stashed)?;
+        Err(anyhow::anyhow!("git switch failed: {}", combined.trim()))
+    }
+}
+
+fn stash_uncommitted_changes_in_dir(dir: &Path, message: &str) -> Result<bool> {
+    let stashed = nested_repo_has_changes(dir)?;
+    if stashed {
+        run_in_dir(dir, &["stash", "push", "-u", "-m", message])?;
+    }
+    Ok(stashed)
+}
+
+fn pop_stash_with_index_if_needed_in_dir(dir: &Path, stashed: bool) -> Result<()> {
+    if stashed {
+        run_in_dir(dir, &["stash", "pop", "--index"])?;
+    }
+    Ok(())
+}
+
+fn restore_stash_after_failed_checkout_in_dir(dir: &Path, stashed: bool) -> Result<()> {
+    if stashed {
+        pop_stash_with_index_if_needed_in_dir(dir, true)
+            .context("checkout failed after auto-stash; stash was not restored")?;
+    }
+    Ok(())
+}
+
+fn checkout_output_with_stash_notice(mut output: String, stashed: bool) -> String {
+    if stashed {
+        output.push_str("applied stashed local changes after checkout\n");
+    }
+    output
 }
 
 fn sort_refs_by_recent_commit<T, F, N>(refs: &mut [T], timestamp: F, name: N)
@@ -801,6 +1020,16 @@ fn preferred_commit_ref(remote_ref: &str, local_ref: &str) -> Option<String> {
     }
 }
 
+fn preferred_commit_ref_in_dir(dir: &Path, remote_ref: &str, local_ref: &str) -> Option<String> {
+    if commit_ref_exists_in_dir(dir, remote_ref) {
+        Some(remote_ref.to_string())
+    } else if commit_ref_exists_in_dir(dir, local_ref) {
+        Some(local_ref.to_string())
+    } else {
+        None
+    }
+}
+
 fn commit_ref_exists(reference: &str) -> bool {
     run(&[
         "rev-parse",
@@ -808,6 +1037,19 @@ fn commit_ref_exists(reference: &str) -> bool {
         "--quiet",
         &format!("{reference}^{{commit}}"),
     ])
+    .is_ok()
+}
+
+fn commit_ref_exists_in_dir(dir: &Path, reference: &str) -> bool {
+    run_in_dir(
+        dir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{reference}^{{commit}}"),
+        ],
+    )
     .is_ok()
 }
 

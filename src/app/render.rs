@@ -48,7 +48,12 @@ where
 
             header::draw(frame, rects.header, state);
             panel::status::render(state, rects.status, frame, focused_pane == Pane::Status);
-            panel::environments::render(state, rects.environments, frame);
+            panel::environments::render(
+                state,
+                rects.environments,
+                frame,
+                focused_pane == Pane::Status,
+            );
             panel::files::render(state, rects.files, frame, focused_pane == Pane::Files);
             panel::branches::render(state, rects.branches, frame, focused_pane == Pane::Branches);
             panel::commits::render(state, rects.commits, frame, focused_pane == Pane::Commits);
@@ -116,7 +121,12 @@ impl App {
 
             header::draw(frame, rects.header, state);
             panel::status::render(state, rects.status, frame, focused_pane == Pane::Status);
-            panel::environments::render(state, rects.environments, frame);
+            panel::environments::render(
+                state,
+                rects.environments,
+                frame,
+                focused_pane == Pane::Status,
+            );
             panel::files::render(state, rects.files, frame, focused_pane == Pane::Files);
             panel::branches::render(state, rects.branches, frame, focused_pane == Pane::Branches);
             panel::commits::render(state, rects.commits, frame, focused_pane == Pane::Commits);
@@ -154,6 +164,7 @@ fn sync_selection_scroll_offsets(
     area: Rect,
 ) {
     panel::files::sync_scroll_offset(state, rects.files);
+    panel::environments::sync_scroll_offset(state, rects.environments);
     panel::branches::sync_scroll_offset(state, rects.branches);
     panel::commits::sync_scroll_offset(state, rects.commits);
 

@@ -170,6 +170,8 @@ pub struct AppState {
     pub branches: Vec<Branch>,
     pub remote_branches: Vec<RemoteBranch>,
     pub nested_repositories: Vec<NestedRepo>,
+    pub nested_repo_branches: Vec<Branch>,
+    pub nested_repo_remote_branches: Vec<RemoteBranch>,
     pub commits: Vec<Commit>,
     pub commits_ref: Option<String>,
     pub current_branch_releases: BranchReleaseStatus,
@@ -180,10 +182,16 @@ pub struct AppState {
     pub files_idx: usize,
     pub branches_idx: usize,
     pub remote_branches_idx: usize,
+    pub nested_repositories_idx: usize,
+    pub nested_repo_branches_idx: usize,
+    pub nested_repo_remote_branches_idx: usize,
     pub commits_idx: usize,
     pub files_scroll_offset: usize,
     pub branches_scroll_offset: usize,
     pub remote_branches_scroll_offset: usize,
+    pub nested_repositories_scroll_offset: usize,
+    pub nested_repo_branches_scroll_offset: usize,
+    pub nested_repo_remote_branches_scroll_offset: usize,
     pub commits_scroll_offset: usize,
 
     pub collapsed_dirs: HashSet<String>,
@@ -218,6 +226,7 @@ pub struct AppState {
     pub branch: Option<String>,
     pub remote_url: Option<String>,
     pub ahead_behind: Option<(u32, u32)>,
+    pub nested_repo_detail_path: Option<String>,
 
     pub status: Option<StatusMsg>,
     pub pending_action: Option<PendingAction>,
@@ -266,6 +275,7 @@ pub struct AppState {
     pub delete_branch_force: bool,
     pub delete_branch_field: DeleteBranchField,
     pub branch_view: BranchView,
+    pub nested_repo_branch_view: BranchView,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,6 +334,8 @@ impl AppState {
             branches: Vec::new(),
             remote_branches: Vec::new(),
             nested_repositories: Vec::new(),
+            nested_repo_branches: Vec::new(),
+            nested_repo_remote_branches: Vec::new(),
             commits: Vec::new(),
             commits_ref: None,
             current_branch_releases: BranchReleaseStatus::default(),
@@ -334,10 +346,16 @@ impl AppState {
             files_idx: 0,
             branches_idx: 0,
             remote_branches_idx: 0,
+            nested_repositories_idx: 0,
+            nested_repo_branches_idx: 0,
+            nested_repo_remote_branches_idx: 0,
             commits_idx: 0,
             files_scroll_offset: 0,
             branches_scroll_offset: 0,
             remote_branches_scroll_offset: 0,
+            nested_repositories_scroll_offset: 0,
+            nested_repo_branches_scroll_offset: 0,
+            nested_repo_remote_branches_scroll_offset: 0,
             commits_scroll_offset: 0,
 
             collapsed_dirs: HashSet::new(),
@@ -372,6 +390,7 @@ impl AppState {
             branch: None,
             remote_url: None,
             ahead_behind: None,
+            nested_repo_detail_path: None,
 
             status: None,
             pending_action: None,
@@ -420,6 +439,7 @@ impl AppState {
             delete_branch_force: false,
             delete_branch_field: DeleteBranchField::Local,
             branch_view: BranchView::Local,
+            nested_repo_branch_view: BranchView::Local,
         }
     }
 
@@ -531,6 +551,46 @@ impl AppState {
                 .nth(self.remote_branches_idx)
                 .map(|branch| branch.name.as_str()),
         }
+    }
+
+    pub fn nested_repo_branch_list_len(&self) -> usize {
+        match self.nested_repo_branch_view {
+            BranchView::Local => self.nested_repo_branches.len(),
+            BranchView::Remote => self.visible_nested_repo_remote_branches().count(),
+        }
+    }
+
+    pub fn nested_repo_branch_list_idx_mut(&mut self) -> &mut usize {
+        match self.nested_repo_branch_view {
+            BranchView::Local => &mut self.nested_repo_branches_idx,
+            BranchView::Remote => &mut self.nested_repo_remote_branches_idx,
+        }
+    }
+
+    pub fn selected_nested_repo_branch_ref(&self) -> Option<&str> {
+        match self.nested_repo_branch_view {
+            BranchView::Local => self
+                .nested_repo_branches
+                .get(self.nested_repo_branches_idx)
+                .map(|branch| branch.name.as_str()),
+            BranchView::Remote => self
+                .visible_nested_repo_remote_branches()
+                .nth(self.nested_repo_remote_branches_idx)
+                .map(|branch| branch.name.as_str()),
+        }
+    }
+
+    pub fn visible_nested_repo_remote_branches(&self) -> impl Iterator<Item = &RemoteBranch> {
+        self.nested_repo_remote_branches
+            .iter()
+            .filter(|branch| !self.nested_repo_remote_branch_checked_out_locally(branch))
+    }
+
+    pub fn nested_repo_remote_branch_checked_out_locally(&self, remote: &RemoteBranch) -> bool {
+        self.nested_repo_branches.iter().any(|local| {
+            local.name == remote.local_name
+                || local.upstream.as_deref() == Some(remote.name.as_str())
+        })
     }
 
     pub fn visible_remote_branches(&self) -> impl Iterator<Item = &RemoteBranch> {
@@ -692,6 +752,16 @@ impl AppState {
         clamp_idx(&mut self.branches_idx, self.branches.len());
         let remote_len = self.visible_remote_branches().count();
         clamp_idx(&mut self.remote_branches_idx, remote_len);
+        clamp_idx(
+            &mut self.nested_repositories_idx,
+            self.nested_repositories.len(),
+        );
+        clamp_idx(
+            &mut self.nested_repo_branches_idx,
+            self.nested_repo_branches.len(),
+        );
+        let nested_remote_len = self.visible_nested_repo_remote_branches().count();
+        clamp_idx(&mut self.nested_repo_remote_branches_idx, nested_remote_len);
         clamp_idx(&mut self.commits_idx, self.commits.len());
         if self
             .commits

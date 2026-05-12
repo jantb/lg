@@ -166,7 +166,7 @@ where
                 spawn_assisted_review(&mut self.state);
             }
             _ => match self.state.focus {
-                Pane::Status => {}
+                Pane::Status => panel::environments::handle_key(&mut self.state, k)?,
                 Pane::Files => panel::files::handle_key(&mut self.state, k)?,
                 Pane::Branches => panel::branches::handle_key(&mut self.state, k)?,
                 Pane::Commits => panel::commits::handle_key(&mut self.state, k)?,
@@ -319,7 +319,7 @@ impl App {
         let commit_ref_before = selected_commit_ref(&self.state);
 
         match focus_before {
-            Pane::Status => {}
+            Pane::Status => panel::environments::handle_key(&mut self.state, k)?,
             Pane::Files => panel::files::handle_key(&mut self.state, k)?,
             Pane::Branches => panel::branches::handle_key(&mut self.state, k)?,
             Pane::Commits => panel::commits::handle_key(&mut self.state, k)?,
@@ -444,7 +444,7 @@ impl App {
             m.kind,
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
         ) {
-            if let Some(pane @ (Pane::Files | Pane::Branches | Pane::Commits)) =
+            if let Some(pane @ (Pane::Status | Pane::Files | Pane::Branches | Pane::Commits)) =
                 mouse::pane_at(&rects, m.column, m.row)
             {
                 let focus_before = self.state.focus;

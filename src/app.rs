@@ -34,7 +34,10 @@ mod review_assist;
 mod spawn;
 mod workflow;
 
-pub(crate) use spawn::{checkout_branch_async, checkout_remote_branch_async};
+pub(crate) use spawn::{
+    checkout_branch_async, checkout_nested_branch_async, checkout_nested_remote_branch_async,
+    checkout_remote_branch_async,
+};
 pub(crate) use workflow::{
     abort_conflict_operation, run_flow_action, validate_conflict_resolution,
 };

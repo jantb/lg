@@ -55,6 +55,19 @@ const SECTIONS: &[Section] = &[
         ],
     },
     Section {
+        title: "Nested Repos",
+        pane: Some(Pane::Status),
+        bindings: &[
+            ("j/k", "Move up/down"),
+            (
+                "Enter",
+                "Drill into repo, or checkout selected nested branch",
+            ),
+            ("r", "Toggle local and remote branch views in drilldown"),
+            ("Esc/Backspace", "Return to repository list"),
+        ],
+    },
+    Section {
         title: "Branches",
         pane: Some(Pane::Branches),
         bindings: &[
