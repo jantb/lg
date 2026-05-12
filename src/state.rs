@@ -6,7 +6,9 @@ use chrono::{DateTime, Utc};
 
 use crate::{
     config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST},
-    git::{AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry, RemoteBranch},
+    git::{
+        AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry, NestedRepo, RemoteBranch,
+    },
 };
 
 mod jobs;
@@ -167,6 +169,7 @@ pub struct AppState {
     pub files: Vec<FileEntry>,
     pub branches: Vec<Branch>,
     pub remote_branches: Vec<RemoteBranch>,
+    pub nested_repositories: Vec<NestedRepo>,
     pub commits: Vec<Commit>,
     pub commits_ref: Option<String>,
     pub current_branch_releases: BranchReleaseStatus,
@@ -320,6 +323,7 @@ impl AppState {
             files: Vec::new(),
             branches: Vec::new(),
             remote_branches: Vec::new(),
+            nested_repositories: Vec::new(),
             commits: Vec::new(),
             commits_ref: None,
             current_branch_releases: BranchReleaseStatus::default(),

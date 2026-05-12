@@ -211,6 +211,50 @@ fn current_branch_panel_hides_environment_history_without_release_branches() {
 }
 
 #[test]
+fn repository_panel_shows_nested_repository_branches() {
+    let mut state = AppState::new();
+    state.nested_repositories = vec![
+        NestedRepo {
+            path: "services/api".into(),
+            branch: Some("feature/api".into()),
+            detached_at: None,
+            has_changes: true,
+        },
+        NestedRepo {
+            path: "libs/core".into(),
+            branch: None,
+            detached_at: Some("abc1234".into()),
+            has_changes: false,
+        },
+    ];
+
+    let backend = TestBackend::new(80, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::environments::render(&state, frame.area(), frame);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(text.contains("Repositories"), "missing repo panel: {text}");
+    assert!(text.contains("services/api"), "missing repo path: {text}");
+    assert!(text.contains("feature/api"), "missing branch: {text}");
+    assert!(
+        text.contains("detached@abc1234"),
+        "missing detached ref: {text}"
+    );
+    assert!(text.contains("!"), "missing dirty marker: {text}");
+}
+
+#[test]
 fn flow_modal_renders_running_workflow_steps() {
     let mut state = AppState::new();
     let (_tx, rx) = std::sync::mpsc::channel();

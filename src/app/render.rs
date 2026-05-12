@@ -26,7 +26,7 @@ where
         };
         let rects_pre = ui::split_layout_with_sizes(
             area,
-            self.state.flow_available(),
+            self.state.flow_available() || !self.state.nested_repositories.is_empty(),
             self.state.left_column_width,
             self.state.left_panel_heights,
         );
@@ -40,7 +40,7 @@ where
             let area = frame.area();
             let rects = ui::split_layout_with_sizes(
                 area,
-                state.flow_available(),
+                state.flow_available() || !state.nested_repositories.is_empty(),
                 state.left_column_width,
                 state.left_panel_heights,
             );
@@ -94,7 +94,7 @@ impl App {
         };
         let rects_pre = ui::split_layout_with_sizes(
             area,
-            self.state.flow_available(),
+            self.state.flow_available() || !self.state.nested_repositories.is_empty(),
             self.state.left_column_width,
             self.state.left_panel_heights,
         );
@@ -108,7 +108,7 @@ impl App {
             let area = frame.area();
             let rects = ui::split_layout_with_sizes(
                 area,
-                state.flow_available(),
+                state.flow_available() || !state.nested_repositories.is_empty(),
                 state.left_column_width,
                 state.left_panel_heights,
             );

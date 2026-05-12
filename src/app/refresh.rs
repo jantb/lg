@@ -29,6 +29,13 @@ pub(super) fn build_refresh_snapshot() -> RefreshSnapshot {
             None
         }
     };
+    let nested_repositories = match crate::git::nested_repositories() {
+        Ok(repositories) => Some(repositories),
+        Err(e) => {
+            errors.push(format!("nested repository scan failed: {e}"));
+            None
+        }
+    };
     let unpushed_shas = match crate::git::unpushed_shas() {
         Ok(shas) => Some(shas),
         Err(e) => {
@@ -56,6 +63,7 @@ pub(super) fn build_refresh_snapshot() -> RefreshSnapshot {
         files,
         branches,
         remote_branches,
+        nested_repositories,
         flow_branches_available: crate::git::flow_branches_available(),
         commits,
         unpushed_shas,
@@ -90,12 +98,26 @@ pub(super) fn prime_files(state: &mut AppState) {
 }
 
 fn path_has_ignored_component(path: &Path) -> bool {
+    if is_git_head_path(path) {
+        return false;
+    }
     path.components().any(|component| match component {
         Component::Normal(name) => name
             .to_str()
             .is_some_and(|name| matches!(name, ".git" | "target")),
         _ => false,
     })
+}
+
+fn is_git_head_path(path: &Path) -> bool {
+    let mut components = path.components().rev();
+    matches!(
+        (components.next(), components.next()),
+        (
+            Some(Component::Normal(file)),
+            Some(Component::Normal(dir))
+        ) if file.to_str() == Some("HEAD") && dir.to_str() == Some(".git")
+    )
 }
 
 pub(super) fn should_refresh_for_fs_event(event: &notify::Event) -> bool {

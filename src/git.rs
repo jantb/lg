@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{Mutex, OnceLock};
 
@@ -67,6 +67,32 @@ fn run(args: &[&str]) -> Result<Output> {
         let stderr = String::from_utf8_lossy(&out.stderr);
         Err(anyhow::anyhow!(
             "git {} failed: {}",
+            args.join(" "),
+            stderr.trim()
+        ))
+    }
+}
+
+fn run_in_dir(dir: &Path, args: &[&str]) -> Result<Output> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to spawn git -C {} {}",
+                dir.display(),
+                args.join(" ")
+            )
+        })?;
+    if out.status.success() {
+        Ok(out)
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        Err(anyhow::anyhow!(
+            "git -C {} {} failed: {}",
+            dir.display(),
             args.join(" "),
             stderr.trim()
         ))
@@ -302,6 +328,14 @@ pub struct RemoteBranch {
     pub last_commit_unix: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NestedRepo {
+    pub path: String,
+    pub branch: Option<String>,
+    pub detached_at: Option<String>,
+    pub has_changes: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BranchReleaseStatus {
     pub main: Option<ReleaseTargetStatus>,
@@ -421,6 +455,81 @@ pub fn list_remote_branches() -> Result<Vec<RemoteBranch>> {
         |branch| branch.name.as_str(),
     );
     Ok(branches)
+}
+
+pub fn nested_repositories() -> Result<Vec<NestedRepo>> {
+    let root = PathBuf::from(repo_root()?);
+    let mut dirs = Vec::new();
+    collect_nested_repo_dirs(&root, &root, &mut dirs);
+    dirs.sort();
+
+    dirs.into_iter()
+        .map(|dir| nested_repo_status(&root, &dir))
+        .collect()
+}
+
+fn collect_nested_repo_dirs(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if ignored_discovery_dir(&path) {
+            continue;
+        }
+        if path != root && path.join(".git").exists() {
+            out.push(path);
+            continue;
+        }
+        collect_nested_repo_dirs(root, &path, out);
+    }
+}
+
+fn ignored_discovery_dir(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(".git" | "target" | "build" | ".gradle" | "node_modules")
+    )
+}
+
+fn nested_repo_status(root: &Path, dir: &Path) -> Result<NestedRepo> {
+    let path = dir
+        .strip_prefix(root)
+        .unwrap_or(dir)
+        .to_string_lossy()
+        .into_owned();
+    let branch = nested_head_branch(dir)?;
+    let detached_at = if branch.is_none() {
+        nested_head_short_sha(dir).ok()
+    } else {
+        None
+    };
+    let has_changes = nested_repo_has_changes(dir).unwrap_or(false);
+    Ok(NestedRepo {
+        path,
+        branch,
+        detached_at,
+        has_changes,
+    })
+}
+
+fn nested_head_branch(dir: &Path) -> Result<Option<String>> {
+    let out = run_in_dir(dir, &["branch", "--show-current"])?;
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    Ok((!branch.is_empty()).then_some(branch))
+}
+
+fn nested_head_short_sha(dir: &Path) -> Result<String> {
+    let out = run_in_dir(dir, &["rev-parse", "--short", "HEAD"])?;
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+fn nested_repo_has_changes(dir: &Path) -> Result<bool> {
+    let out = run_in_dir(dir, &["status", "--porcelain"])?;
+    Ok(!out.stdout.is_empty())
 }
 
 fn parse_unix_timestamp(value: &str) -> Option<i64> {

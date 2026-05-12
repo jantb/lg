@@ -310,6 +310,9 @@ impl App {
         if let Some(branches) = snapshot.remote_branches {
             self.state.remote_branches = branches;
         }
+        if let Some(repositories) = snapshot.nested_repositories {
+            self.state.nested_repositories = repositories;
+        }
         self.state.flow_branches_available = snapshot.flow_branches_available;
         if let Some(shas) = snapshot.unpushed_shas {
             self.state.unpushed_shas = shas;

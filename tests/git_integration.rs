@@ -138,6 +138,50 @@ fn project_open_command_opens_rust_repo_root() {
 }
 
 #[test]
+fn nested_repositories_report_branch_detached_head_and_dirty_state() {
+    let dir = init_repo();
+    let _cwd = CwdGuard::new(dir.path());
+
+    let api = dir.path().join("services/api");
+    fs::create_dir_all(&api).unwrap();
+    git_ok(&api, &["init", "-b", "main"]);
+    git_ok(&api, &["config", "user.email", "test@example.com"]);
+    git_ok(&api, &["config", "user.name", "Test User"]);
+    fs::write(api.join("README.md"), "api\n").unwrap();
+    git_ok(&api, &["add", "README.md"]);
+    commit_in(&api, "initial api");
+    git_ok(&api, &["checkout", "-b", "feature/api"]);
+    fs::write(api.join("scratch.txt"), "dirty\n").unwrap();
+
+    let core = dir.path().join("libs/core");
+    fs::create_dir_all(&core).unwrap();
+    git_ok(&core, &["init", "-b", "main"]);
+    git_ok(&core, &["config", "user.email", "test@example.com"]);
+    git_ok(&core, &["config", "user.name", "Test User"]);
+    fs::write(core.join("README.md"), "core\n").unwrap();
+    git_ok(&core, &["add", "README.md"]);
+    commit_in(&core, "initial core");
+    git_ok(&core, &["checkout", "--detach", "HEAD"]);
+
+    let repos = lg::git::nested_repositories().unwrap();
+    let api_status = repos
+        .iter()
+        .find(|repo| repo.path == "services/api")
+        .expect("api repo");
+    assert_eq!(api_status.branch.as_deref(), Some("feature/api"));
+    assert!(api_status.detached_at.is_none());
+    assert!(api_status.has_changes);
+
+    let core_status = repos
+        .iter()
+        .find(|repo| repo.path == "libs/core")
+        .expect("core repo");
+    assert_eq!(core_status.branch, None);
+    assert!(core_status.detached_at.is_some());
+    assert!(!core_status.has_changes);
+}
+
+#[test]
 fn file_diff_includes_untracked_file_contents() {
     let dir = init_repo();
     let _cwd = CwdGuard::new(dir.path());
