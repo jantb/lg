@@ -8,12 +8,16 @@ use ratatui::{
 
 use crate::{
     app,
+    config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST},
     git::{Branch, NestedRepo, ReleaseTargetStatus, RemoteBranch},
     state::{AppState, BranchView, SPINNER_FRAMES, clamp_index},
     ui,
 };
 
 use super::scroll;
+
+const DEPLOYMENT_STATUS_HEIGHT: u16 = 6;
+const MIN_REPOSITORY_TREE_WITH_DEPLOYMENT: u16 = 6;
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     if !state.nested_repositories.is_empty() || !active_repo_is_workspace(state) {
@@ -45,21 +49,21 @@ fn render_deployment_status(state: &AppState, area: Rect, frame: &mut Frame) {
     }
 
     lines.push(env_line(
-        "main",
+        BRANCH_MAIN,
         state.current_branch_releases.main.as_ref(),
         Color::Magenta,
         state.animation_tick,
         release_status_loading(state),
     ));
     lines.push(env_line(
-        "dev",
+        BRANCH_DEV,
         state.current_branch_releases.develop.as_ref(),
         Color::Cyan,
         state.animation_tick,
         release_status_loading(state),
     ));
     lines.push(env_line(
-        "test",
+        BRANCH_TEST,
         state.current_branch_releases.test.as_ref(),
         Color::Yellow,
         state.animation_tick,
@@ -70,8 +74,14 @@ fn render_deployment_status(state: &AppState, area: Rect, frame: &mut Frame) {
 }
 
 fn render_nested_repositories(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
-    let (tree_area, deployment_area) = if state.flow_available() && area.height >= 8 {
-        let chunks = Layout::vertical([Constraint::Min(3), Constraint::Length(5)]).split(area);
+    let show_deployment = state.flow_available()
+        && area.height >= DEPLOYMENT_STATUS_HEIGHT + MIN_REPOSITORY_TREE_WITH_DEPLOYMENT;
+    let (tree_area, deployment_area) = if show_deployment {
+        let chunks = Layout::vertical([
+            Constraint::Min(MIN_REPOSITORY_TREE_WITH_DEPLOYMENT),
+            Constraint::Length(DEPLOYMENT_STATUS_HEIGHT),
+        ])
+        .split(area);
         (chunks[0], Some(chunks[1]))
     } else {
         (area, None)
@@ -542,14 +552,16 @@ fn env_line(
 
     match status {
         Some(s) => {
-            spans.push(Span::styled(
-                s.released_at.clone(),
-                Style::default().fg(Color::Gray),
-            ));
+            let released_at = if s.released_at.is_empty() {
+                "not merged".to_string()
+            } else {
+                s.released_at.clone()
+            };
+            spans.push(Span::styled(released_at, Style::default().fg(Color::Gray)));
             if s.missing_commits > 0 {
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(
-                    format!("+{} pending", s.missing_commits),
+                    format!("+{}", s.missing_commits),
                     Style::default().fg(Color::Red),
                 ));
             }

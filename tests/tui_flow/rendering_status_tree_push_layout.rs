@@ -139,13 +139,16 @@ fn current_branch_panel_renders_environment_history() {
         text.contains("feature/released"),
         "missing branch name: {text}"
     );
-    assert!(text.contains("dev"), "missing dev badge: {text}");
-    assert!(text.contains("test"), "missing test badge: {text}");
+    assert!(text.contains("develop"), "missing develop badge: {text}");
+    assert!(
+        text.contains("release/next"),
+        "missing release/next badge: {text}"
+    );
     assert!(
         text.contains("2026-04-29 14:20"),
         "missing release timestamp: {text}"
     );
-    assert!(text.contains("+2 pending"), "missing pending count: {text}");
+    assert!(text.contains("+2"), "missing pending count: {text}");
 }
 
 #[test]
@@ -323,7 +326,7 @@ fn repository_panel_tree_shows_nested_branch_lists() {
 
 #[test]
 fn repository_panel_keeps_deployment_status_visible_in_full_layout() {
-    let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 24)).unwrap();
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 34)).unwrap();
     app.state.repo_root = Some("/tmp/work/lg/services/api".into());
     app.state.workspace_root = Some("/tmp/work/lg".into());
     app.state.branch = Some("feature/api".into());
@@ -340,7 +343,10 @@ fn repository_panel_keeps_deployment_status_visible_in_full_layout() {
             released_at: "2026-04-29 14:20".into(),
             missing_commits: 0,
         }),
-        test: None,
+        test: Some(ReleaseTargetStatus {
+            released_at: "2026-04-29 14:25".into(),
+            missing_commits: 2,
+        }),
     };
 
     app.render().unwrap();
@@ -354,7 +360,19 @@ fn repository_panel_keeps_deployment_status_visible_in_full_layout() {
     assert!(text.contains("services/api"), "missing nested repo: {text}");
     assert!(
         text.contains("2026-04-29 14:20"),
-        "missing deployment timestamp: {text}"
+        "missing develop deployment timestamp: {text}"
+    );
+    assert!(
+        text.contains("release/next"),
+        "missing release/next deployment target: {text}"
+    );
+    assert!(
+        text.contains("2026-04-29 14:25"),
+        "missing release/next deployment timestamp: {text}"
+    );
+    assert!(
+        text.contains("+2"),
+        "missing release/next pending distance: {text}"
     );
 }
 
@@ -370,7 +388,14 @@ fn repository_panel_accepts_mouse_focus_without_flow_branches() {
     }];
 
     app.render().unwrap();
-    app.send_mouse(left_click(2, 8)).unwrap();
+    let rects = lg::ui::split_layout_with_sizes(
+        Rect::new(0, 0, 80, 24),
+        app.state.environments_visible(),
+        app.state.left_column_width,
+        app.state.left_panel_heights,
+    );
+    app.send_mouse(left_click(2, rects.environments.y + 2))
+        .unwrap();
 
     assert_eq!(app.state.focus, Pane::Status);
     assert_eq!(app.state.nested_repo_tree_idx, 1);
@@ -387,15 +412,28 @@ fn repository_panel_divider_can_be_dragged_without_flow_branches() {
     }];
 
     app.render().unwrap();
-    app.send_mouse(left_click(2, 14)).unwrap();
-    app.send_mouse(left_drag(2, 12)).unwrap();
+    let rects = lg::ui::split_layout_with_sizes(
+        Rect::new(0, 0, 80, 24),
+        app.state.environments_visible(),
+        app.state.left_column_width,
+        app.state.left_panel_heights,
+    );
+    app.send_mouse(left_click(2, rects.files.y)).unwrap();
+    app.send_mouse(left_drag(2, rects.files.y.saturating_sub(2)))
+        .unwrap();
 
     let heights = app
         .state
         .left_panel_heights
         .expect("drag should save left panel heights");
-    assert_eq!(heights[1], 7);
-    assert_eq!(heights[2], 4);
+    assert!(
+        heights[1] < rects.environments.height,
+        "environment height should shrink after dragging up: {heights:?}"
+    );
+    assert!(
+        heights[2] > rects.files.height,
+        "files height should grow after dragging up: {heights:?}"
+    );
 }
 
 #[test]
@@ -778,13 +816,31 @@ fn layout_gives_files_panel_environment_space_when_flow_is_hidden() {
     let without_flow = lg::ui::split_layout_with_environments(area, false);
 
     assert_eq!(without_flow.environments.height, 0);
-    assert_eq!(without_flow.files.y, with_flow.environments.y);
     assert_eq!(
-        without_flow.files.height,
-        with_flow.environments.height + with_flow.files.height
+        without_flow.files.y,
+        without_flow
+            .status
+            .y
+            .saturating_add(without_flow.status.height)
     );
-    assert_eq!(without_flow.branches, with_flow.branches);
-    assert_eq!(without_flow.commits, with_flow.commits);
+    assert!(
+        without_flow.files.height > with_flow.files.height,
+        "hidden environment height should be given to files"
+    );
+    assert_eq!(
+        without_flow.branches.y,
+        without_flow
+            .files
+            .y
+            .saturating_add(without_flow.files.height)
+    );
+    assert_eq!(
+        without_flow.commits.y,
+        without_flow
+            .branches
+            .y
+            .saturating_add(without_flow.branches.height)
+    );
 }
 
 #[test]

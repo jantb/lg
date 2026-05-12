@@ -2372,6 +2372,9 @@ fn branch_release_status_reports_missing_commits_after_release() {
 
     git_ok(dir.path(), &["checkout", "-b", "develop"]);
     git_ok(dir.path(), &["push", "origin", "develop"]);
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", "release/next"]);
+    git_ok(dir.path(), &["push", "origin", "release/next"]);
 
     let feature = "feature/release-status";
     git_ok(dir.path(), &["checkout", "main"]);
@@ -2388,10 +2391,21 @@ fn branch_release_status_reports_missing_commits_after_release() {
     commit_in(dir.path(), "unreleased followup");
 
     let status = lg::git::branch_release_status(feature).expect("branch release status");
+    let main = status.main.expect("main release status");
+    assert!(
+        main.released_at.is_empty(),
+        "main should not have a release timestamp"
+    );
+    assert_eq!(main.missing_commits, 2);
     let develop = status.develop.expect("develop release status");
     assert!(!develop.released_at.is_empty(), "missing release timestamp");
     assert_eq!(develop.missing_commits, 1);
-    assert!(status.test.is_none(), "release/next should not be marked");
+    let test = status.test.expect("release/next release status");
+    assert!(
+        test.released_at.is_empty(),
+        "release/next should not have a release timestamp"
+    );
+    assert_eq!(test.missing_commits, 2);
 }
 
 // ── parse_porcelain unit tests (comprehensive) ─────────────────────────────

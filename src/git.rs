@@ -883,7 +883,10 @@ pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
     }
 
     let status = BranchReleaseStatus {
-        main: None,
+        main: Some(ReleaseTargetStatus {
+            released_at: String::new(),
+            missing_commits: unique_commits.len(),
+        }),
         develop: release_target_status(branch, &unique_commits, &base_ref, develop_ref.as_deref())?,
         test: release_target_status(branch, &unique_commits, &base_ref, test_ref.as_deref())?,
     };
@@ -917,7 +920,10 @@ fn release_target_status(
         .find(|sha| !missing_set.contains(sha.as_str()));
 
     let Some(latest_released) = latest_released else {
-        return Ok(None);
+        return Ok(Some(ReleaseTargetStatus {
+            released_at: String::new(),
+            missing_commits: missing.len(),
+        }));
     };
 
     let released_at = first_containing_commit_date(target_ref, latest_released)

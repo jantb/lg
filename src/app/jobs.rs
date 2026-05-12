@@ -263,6 +263,8 @@ impl App {
             return;
         }
 
+        self.state.current_branch_releases = Default::default();
+        self.state.current_branch_releases_ref = None;
         let (tx, rx) = std::sync::mpsc::channel();
         let thread_branch = branch.clone();
         let handle =
