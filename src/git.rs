@@ -161,8 +161,18 @@ pub fn delete_worktree_path(path: &str, is_dir: bool) -> Result<()> {
 }
 
 pub fn head_branch() -> Result<String> {
+    let out = run(&["branch", "--show-current"])?;
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if !branch.is_empty() {
+        return Ok(branch);
+    }
+
     let out = run(&["rev-parse", "--abbrev-ref", "HEAD"])?;
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if branch == "HEAD" {
+        anyhow::bail!("detached HEAD");
+    }
+    Ok(branch)
 }
 
 pub fn remote_url(name: &str) -> Result<String> {
@@ -626,15 +636,7 @@ fn is_empty_commit_history_error(reference: &str, msg: &str) -> bool {
 }
 
 fn current_unborn_branch() -> Option<String> {
-    let out = Command::new("git")
-        .args(["branch", "--show-current"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    (!branch.is_empty()).then_some(branch)
+    head_branch().ok()
 }
 
 fn first_parent_shas(reference: &str, limit: usize) -> Result<HashSet<String>> {

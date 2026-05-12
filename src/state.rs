@@ -598,6 +598,7 @@ impl AppState {
             || self
                 .current_branch_ahead_behind()
                 .is_some_and(|(ahead, _)| ahead > 0)
+            || (self.branch.is_some() && !self.commits.is_empty() && self.ahead_behind.is_none())
     }
 
     pub fn start_generation(&mut self, rx: Receiver<GenMsg>, handle: JoinHandle<()>) {

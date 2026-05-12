@@ -312,18 +312,20 @@ fn stage_then_unstage_round_trips() {
 #[test]
 fn head_branch_returns_current_branch() {
     let dir = init_repo();
-    // Need at least one commit for HEAD to resolve.
     fs::write(dir.path().join("init.txt"), "init").unwrap();
     stage_in(dir.path(), "init.txt");
     commit_in(dir.path(), "initial commit");
 
-    let out = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(dir.path())
-        .output()
-        .expect("git rev-parse");
-    let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    assert_eq!(branch, "main");
+    let _cwd = CwdGuard::new(dir.path());
+    assert_eq!(lg::git::head_branch().unwrap(), "main");
+}
+
+#[test]
+fn head_branch_returns_unborn_branch_before_first_commit() {
+    let dir = init_repo();
+    let _cwd = CwdGuard::new(dir.path());
+
+    assert_eq!(lg::git::head_branch().unwrap(), "main");
 }
 
 #[test]
@@ -947,6 +949,20 @@ fn commit_on_empty_message_fails() {
     // lg::git::commit guards against empty messages.
     let result = lg::git::commit("");
     assert!(result.is_err(), "expected Err for empty message");
+}
+
+#[test]
+fn commit_on_empty_repo_creates_initial_commit() {
+    let dir = init_repo();
+    fs::write(dir.path().join("first.txt"), "first").unwrap();
+    stage_in(dir.path(), "first.txt");
+    let _cwd = CwdGuard::new(dir.path());
+
+    lg::git::commit("initial commit").unwrap();
+
+    let commits = lg::git::list_commits(10).unwrap();
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].subject, "initial commit");
 }
 
 #[test]

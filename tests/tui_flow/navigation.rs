@@ -190,6 +190,23 @@ fn scroll_handlers_clamp_stale_indices_before_moving_up() {
 }
 
 #[test]
+fn branch_without_upstream_and_local_commits_can_push() {
+    let mut state = AppState::new();
+    state.branch = Some("main".into());
+    state.ahead_behind = None;
+    state.commits = vec![Commit {
+        sha: "abc1234".into(),
+        author: "Test User".into(),
+        author_short: "TU".into(),
+        parents: vec![],
+        is_first_parent: true,
+        subject: "initial commit".into(),
+    }];
+
+    assert!(state.has_unpushed_commits());
+}
+
+#[test]
 fn files_panel_o_opens_selected_source_file() {
     let mut state = make_state_with_files();
     state.files = vec![FileEntry {
