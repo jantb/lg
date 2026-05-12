@@ -428,6 +428,11 @@ pub fn nested_repo_branches(repo_path: &str) -> Result<Vec<Branch>> {
     list_branches_in_dir(&dir)
 }
 
+pub fn nested_repo_branches_at(root: &Path, repo_path: &str) -> Result<Vec<Branch>> {
+    let dir = nested_repo_dir_at(root, repo_path)?;
+    list_branches_in_dir(&dir)
+}
+
 fn list_branches_in_dir(dir: &Path) -> Result<Vec<Branch>> {
     let main_ref = preferred_commit_ref_in_dir(
         dir,
@@ -515,6 +520,11 @@ pub fn nested_repo_remote_branches(repo_path: &str) -> Result<Vec<RemoteBranch>>
     list_remote_branches_in_dir(&dir)
 }
 
+pub fn nested_repo_remote_branches_at(root: &Path, repo_path: &str) -> Result<Vec<RemoteBranch>> {
+    let dir = nested_repo_dir_at(root, repo_path)?;
+    list_remote_branches_in_dir(&dir)
+}
+
 fn list_remote_branches_in_dir(dir: &Path) -> Result<Vec<RemoteBranch>> {
     let out = run_in_dir(
         dir,
@@ -554,12 +564,16 @@ fn list_remote_branches_in_dir(dir: &Path) -> Result<Vec<RemoteBranch>> {
 
 pub fn nested_repositories() -> Result<Vec<NestedRepo>> {
     let root = PathBuf::from(repo_root()?);
+    nested_repositories_at(&root)
+}
+
+pub fn nested_repositories_at(root: &Path) -> Result<Vec<NestedRepo>> {
     let mut dirs = Vec::new();
-    collect_nested_repo_dirs(&root, &root, &mut dirs);
+    collect_nested_repo_dirs(root, root, &mut dirs);
     dirs.sort();
 
     dirs.into_iter()
-        .map(|dir| nested_repo_status(&root, &dir))
+        .map(|dir| nested_repo_status(root, &dir))
         .collect()
 }
 
@@ -568,12 +582,31 @@ pub fn checkout_nested_branch(repo_path: &str, branch: &str) -> Result<String> {
     checkout_branch_in_dir(&dir, branch)
 }
 
+pub fn checkout_nested_branch_at(root: &Path, repo_path: &str, branch: &str) -> Result<String> {
+    let dir = nested_repo_dir_at(root, repo_path)?;
+    checkout_branch_in_dir(&dir, branch)
+}
+
 pub fn checkout_nested_remote_branch(repo_path: &str, remote_ref: &str) -> Result<String> {
     let dir = nested_repo_dir(repo_path)?;
     checkout_remote_branch_in_dir(&dir, remote_ref)
 }
 
+pub fn checkout_nested_remote_branch_at(
+    root: &Path,
+    repo_path: &str,
+    remote_ref: &str,
+) -> Result<String> {
+    let dir = nested_repo_dir_at(root, repo_path)?;
+    checkout_remote_branch_in_dir(&dir, remote_ref)
+}
+
 fn nested_repo_dir(repo_path: &str) -> Result<PathBuf> {
+    let root = PathBuf::from(repo_root()?);
+    nested_repo_dir_at(&root, repo_path)
+}
+
+fn nested_repo_dir_at(root: &Path, repo_path: &str) -> Result<PathBuf> {
     let rel = Path::new(repo_path);
     if repo_path.trim().is_empty()
         || rel.is_absolute()
@@ -583,7 +616,6 @@ fn nested_repo_dir(repo_path: &str) -> Result<PathBuf> {
     {
         anyhow::bail!("invalid nested repository path: {repo_path}");
     }
-    let root = PathBuf::from(repo_root()?);
     let dir = root.join(rel);
     if !dir.join(".git").exists() {
         anyhow::bail!("nested repository not found: {repo_path}");

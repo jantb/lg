@@ -104,6 +104,7 @@ pub enum RefreshMsg {
 #[derive(Debug)]
 pub struct RefreshSnapshot {
     pub repo_root: Option<String>,
+    pub workspace_root: Option<String>,
     pub files: Option<Vec<FileEntry>>,
     pub branches: Option<Vec<Branch>>,
     pub remote_branches: Option<Vec<RemoteBranch>>,

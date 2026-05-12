@@ -259,8 +259,18 @@ pub(crate) fn checkout_nested_branch_async(
     let (tx, rx) = std::sync::mpsc::channel();
     let target_repo = repo_path.clone();
     let target_branch = branch.clone();
+    let workspace_root = state.workspace_root.clone();
     let handle = std::thread::spawn(move || {
-        match crate::git::checkout_nested_branch(&target_repo, &target_branch) {
+        let result = if let Some(root) = workspace_root {
+            crate::git::checkout_nested_branch_at(
+                std::path::Path::new(&root),
+                &target_repo,
+                &target_branch,
+            )
+        } else {
+            crate::git::checkout_nested_branch(&target_repo, &target_branch)
+        };
+        match result {
             Ok(out) => {
                 let line = out
                     .lines()
@@ -297,8 +307,18 @@ pub(crate) fn checkout_nested_remote_branch_async(
     let (tx, rx) = std::sync::mpsc::channel();
     let target_repo = repo_path.clone();
     let target_ref = remote_ref.clone();
+    let workspace_root = state.workspace_root.clone();
     let handle = std::thread::spawn(move || {
-        match crate::git::checkout_nested_remote_branch(&target_repo, &target_ref) {
+        let result = if let Some(root) = workspace_root {
+            crate::git::checkout_nested_remote_branch_at(
+                std::path::Path::new(&root),
+                &target_repo,
+                &target_ref,
+            )
+        } else {
+            crate::git::checkout_nested_remote_branch(&target_repo, &target_ref)
+        };
+        match result {
             Ok(out) => {
                 let line = out
                     .lines()

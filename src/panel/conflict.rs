@@ -33,7 +33,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 
     let header = vec![
         Line::from(Span::styled(
-            "Merge conflict detected",
+            "Git conflict detected",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),

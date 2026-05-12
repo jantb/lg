@@ -1,13 +1,15 @@
 use anyhow::{Context, Result};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
 use crate::config::{COMMIT_LIST_LIMIT, DEFAULT_PUSH_REMOTE};
 use crate::state::{AppState, RefreshSnapshot};
 
-pub(super) fn build_refresh_snapshot() -> RefreshSnapshot {
+pub(super) fn build_refresh_snapshot(workspace_root: Option<String>) -> RefreshSnapshot {
     let mut errors = Vec::new();
+    let current_root = crate::git::repo_root().ok();
+    let workspace_root = workspace_root.or_else(|| current_root.clone());
     let files = match crate::git::status_entries() {
         Ok(files) => Some(files),
         Err(e) => {
@@ -29,7 +31,12 @@ pub(super) fn build_refresh_snapshot() -> RefreshSnapshot {
             None
         }
     };
-    let nested_repositories = match crate::git::nested_repositories() {
+    let nested_repositories = match workspace_root
+        .as_deref()
+        .map(PathBuf::from)
+        .map(|root| crate::git::nested_repositories_at(&root))
+        .unwrap_or_else(crate::git::nested_repositories)
+    {
         Ok(repositories) => Some(repositories),
         Err(e) => {
             errors.push(format!("nested repository scan failed: {e}"));
@@ -59,7 +66,8 @@ pub(super) fn build_refresh_snapshot() -> RefreshSnapshot {
         }
     };
     RefreshSnapshot {
-        repo_root: crate::git::repo_root().ok(),
+        repo_root: current_root,
+        workspace_root,
         files,
         branches,
         remote_branches,
@@ -76,6 +84,9 @@ pub(super) fn build_refresh_snapshot() -> RefreshSnapshot {
 
 pub(super) fn prime_branches(state: &mut AppState) {
     state.repo_root = crate::git::repo_root().ok();
+    if state.workspace_root.is_none() {
+        state.workspace_root = state.repo_root.clone();
+    }
     if let Ok(branches) = crate::git::list_branches() {
         state.branch = branches
             .iter()

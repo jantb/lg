@@ -1928,6 +1928,7 @@ fn merge_main_all_branches_merges_and_pushes_tracked_branches() {
     stage_in(dir.path(), "local.txt");
     commit_in(dir.path(), "local commit");
     git_ok(dir.path(), &["checkout", tracked]);
+    fs::write(dir.path().join("dirty.txt"), "dirty work").unwrap();
 
     let updater = tempfile::tempdir().expect("updater tempdir");
     git_ok(
@@ -1949,6 +1950,10 @@ fn merge_main_all_branches_merges_and_pushes_tracked_branches() {
 
     assert_eq!(head_branch(dir.path()), tracked);
     assert!(
+        dir.path().join("dirty.txt").exists(),
+        "dirty work should be restored on original branch"
+    );
+    assert!(
         out.contains("merged origin/main into 2 branches, pushed 1, skipped push 1"),
         "unexpected summary: {out}"
     );
@@ -1968,10 +1973,15 @@ fn merge_main_all_branches_merges_and_pushes_tracked_branches() {
         !remote_local.status.success(),
         "local-only branch should not be pushed"
     );
+    let stash_list = git(dir.path(), &["stash", "list"]);
+    assert!(
+        String::from_utf8_lossy(&stash_list.stdout).is_empty(),
+        "auto-stash should be restored and dropped"
+    );
 }
 
 #[test]
-fn merge_main_all_branches_continues_after_push_rejection() {
+fn merge_main_all_branches_merges_remote_updates_before_pushing() {
     let dir = init_repo();
     fs::write(dir.path().join("init.txt"), "init").unwrap();
     stage_in(dir.path(), "init.txt");
@@ -2025,11 +2035,7 @@ fn merge_main_all_branches_continues_after_push_rejection() {
 
     assert_eq!(head_branch(dir.path()), rejected);
     assert!(
-        out.contains("merged origin/main into 2 branches, pushed 0, skipped push 1"),
-        "unexpected summary: {out}"
-    );
-    assert!(
-        out.contains("failed push 1 (origin/feature/rejected-push)"),
+        out.contains("merged origin/main into 2 branches, pushed 1, skipped push 1"),
         "unexpected summary: {out}"
     );
 
@@ -2045,8 +2051,8 @@ fn merge_main_all_branches_continues_after_push_rejection() {
     );
     let remote_rejected_log = git(bare.path(), &["log", "--oneline", rejected]);
     assert!(
-        !String::from_utf8_lossy(&remote_rejected_log.stdout).contains("main update"),
-        "rejected remote branch should not have been updated"
+        String::from_utf8_lossy(&remote_rejected_log.stdout).contains("main update"),
+        "remote branch should receive merged main update after upstream sync"
     );
 }
 

@@ -138,6 +138,9 @@ pub enum PendingAction {
         delete_remote: bool,
         force: bool,
     },
+    SwitchRepository {
+        path: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,6 +227,7 @@ pub struct AppState {
     pub author_has_local_override: bool,
     pub author_has_subtree_rule: bool,
     pub repo_root: Option<String>,
+    pub workspace_root: Option<String>,
     pub branch: Option<String>,
     pub remote_url: Option<String>,
     pub ahead_behind: Option<(u32, u32)>,
@@ -389,6 +393,7 @@ impl AppState {
             author_has_local_override: false,
             author_has_subtree_rule: false,
             repo_root: None,
+            workspace_root: None,
             branch: None,
             remote_url: None,
             ahead_behind: None,
@@ -503,6 +508,7 @@ impl AppState {
                 Some(PendingAction::OpenProject) => Some("opening project"),
                 Some(PendingAction::OpenFile(_)) => Some("opening file"),
                 Some(PendingAction::DeleteBranch { .. }) => Some("deleting branch"),
+                Some(PendingAction::SwitchRepository { .. }) => Some("switching repo"),
                 None => None,
             }
         }
@@ -765,7 +771,9 @@ impl AppState {
         };
         clamp_idx(
             &mut self.nested_repo_tree_idx,
-            self.nested_repositories.len().saturating_add(expanded_rows),
+            1usize
+                .saturating_add(self.nested_repositories.len())
+                .saturating_add(expanded_rows),
         );
         clamp_idx(
             &mut self.nested_repo_branches_idx,

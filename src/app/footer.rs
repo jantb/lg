@@ -117,7 +117,6 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
 }
 
 pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
-    let chunks = Layout::horizontal([Constraint::Min(0), Constraint::Length(40)]).split(area);
     let left_spans = match state.modal {
         Modal::None => default_spans(state),
         Modal::Commit => modal_spans(
@@ -183,12 +182,16 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
         ),
     };
 
+    let (right_text, right_color) = status_text(state);
+    let right_width = right_text.chars().count().min(area.width as usize) as u16;
+    let chunks =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(right_width)]).split(area);
+
     frame.render_widget(
         Paragraph::new(Line::from(left_spans)).alignment(Alignment::Left),
         chunks[0],
     );
 
-    let (right_text, right_color) = status_text(state);
     frame.render_widget(
         Paragraph::new(Span::styled(right_text, Style::default().fg(right_color)))
             .alignment(Alignment::Right),

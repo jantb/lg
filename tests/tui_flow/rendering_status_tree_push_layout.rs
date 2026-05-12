@@ -420,7 +420,7 @@ fn conflict_modal_asks_user_to_resolve_externally() {
         }
     }
 
-    assert!(text.contains("Merge conflict detected"), "{text}");
+    assert!(text.contains("Git conflict detected"), "{text}");
     assert!(
         text.contains("Resolve the conflict outside lg"),
         "modal should ask for external resolution: {text}"

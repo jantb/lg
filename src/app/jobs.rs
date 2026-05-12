@@ -33,6 +33,19 @@ fn first_status_line(s: &str) -> String {
         .collect()
 }
 
+fn open_conflict_modal_if_needed(state: &mut crate::state::AppState, log: String) -> bool {
+    let conflicts = crate::git::conflicted_files().unwrap_or_default();
+    if conflicts.is_empty() {
+        return false;
+    }
+    state.conflicts = conflicts;
+    state.conflict_idx = 0;
+    state.conflict_log = log;
+    state.modal = Modal::Conflict;
+    state.set_status("conflicts detected", true);
+    true
+}
+
 impl App {
     pub(super) fn start_refresh(&mut self, refresh_diff: bool) {
         self.start_refresh_with_status(refresh_diff, true);
@@ -46,8 +59,11 @@ impl App {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
+        let workspace_root = self.state.workspace_root.clone();
         let handle = std::thread::spawn(move || {
-            let _ = tx.send(RefreshMsg::Done(Box::new(build_refresh_snapshot())));
+            let _ = tx.send(RefreshMsg::Done(Box::new(build_refresh_snapshot(
+                workspace_root,
+            ))));
         });
         self.state.refresh_job = Some(RefreshJob {
             rx,
@@ -301,6 +317,7 @@ impl App {
         refresh_diff: bool,
     ) {
         self.state.repo_root = snapshot.repo_root;
+        self.state.workspace_root = snapshot.workspace_root;
         if let Some(files) = snapshot.files {
             self.state.files = files;
         }
@@ -596,7 +613,11 @@ impl App {
             self.state.current_branch_releases_ref = None;
             match res {
                 Ok(s) => self.state.set_status(s, false),
-                Err(e) => self.state.set_status(e, true),
+                Err(e) => {
+                    if !open_conflict_modal_if_needed(&mut self.state, e.clone()) {
+                        self.state.set_status(e, true);
+                    }
+                }
             }
             self.start_refresh(true);
         }
@@ -650,7 +671,9 @@ impl App {
                     ) {
                         self.state.push_after_commit = false;
                     }
-                    self.state.set_status(e, true);
+                    if !open_conflict_modal_if_needed(&mut self.state, e.clone()) {
+                        self.state.set_status(e, true);
+                    }
                 }
             }
             self.start_refresh(true);

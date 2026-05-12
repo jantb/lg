@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{List, ListItem, Paragraph},
@@ -16,7 +16,7 @@ use crate::{
 use super::scroll;
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
-    if !state.nested_repositories.is_empty() {
+    if !state.nested_repositories.is_empty() || !active_repo_is_workspace(state) {
         render_nested_repositories(state, area, frame, focused);
         return;
     }
@@ -26,6 +26,10 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         return;
     }
 
+    render_deployment_status(state, area, frame);
+}
+
+fn render_deployment_status(state: &AppState, area: Rect, frame: &mut Frame) {
     let block = ui::bordered("Deployment Status");
     let mut lines = Vec::new();
 
@@ -66,6 +70,12 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
 }
 
 fn render_nested_repositories(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
+    let (tree_area, deployment_area) = if state.flow_available() && area.height >= 8 {
+        let chunks = Layout::vertical([Constraint::Min(3), Constraint::Length(5)]).split(area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (area, None)
+    };
     let rows = nested_repo_tree_rows(state);
     let len = rows.len();
     let selected_idx = clamp_index(state.nested_repo_tree_idx, len);
@@ -77,10 +87,11 @@ fn render_nested_repositories(state: &AppState, area: Rect, frame: &mut Frame, f
         state.animation_tick,
         state.activity_label().is_some(),
     );
-    let row_width = area.width.saturating_sub(4) as usize;
+    let row_width = tree_area.width.saturating_sub(4) as usize;
     let items = rows
         .iter()
         .map(|row| match row {
+            NestedRepoTreeRow::Root => ListItem::new(root_repo_line(state, row_width)),
             NestedRepoTreeRow::Repo { repo_idx } => {
                 let expanded = state
                     .nested_repositories
@@ -109,7 +120,7 @@ fn render_nested_repositories(state: &AppState, area: Rect, frame: &mut Frame, f
             }
         })
         .collect::<Vec<_>>();
-    let offset = nested_repo_scroll_offset(state, area);
+    let offset = nested_repo_scroll_offset(state, tree_area);
     let mut list_state = scroll::list_state(focused.then_some(selected_idx).flatten(), offset);
     let list = List::new(items)
         .block(block)
@@ -119,7 +130,10 @@ fn render_nested_repositories(state: &AppState, area: Rect, frame: &mut Frame, f
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("\u{203a} ");
-    frame.render_stateful_widget(list, area, &mut list_state);
+    frame.render_stateful_widget(list, tree_area, &mut list_state);
+    if let Some(area) = deployment_area {
+        render_deployment_status(state, area, frame);
+    }
 }
 
 pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
@@ -139,23 +153,33 @@ pub fn handle_key(
 ) -> anyhow::Result<()> {
     use ratatui::crossterm::event::KeyCode;
 
-    if state.nested_repositories.is_empty() {
+    if state.nested_repositories.is_empty()
+        && state.workspace_root.is_none()
+        && state.repo_root.is_none()
+    {
         return Ok(());
     }
-    sync_repo_idx_to_tree_selection(state);
     state.clamp();
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => move_selection(state, true, 1),
         KeyCode::Char('k') | KeyCode::Up => move_selection(state, false, 1),
         KeyCode::Enter => match selected_tree_row(state) {
+            Some(NestedRepoTreeRow::Root) => {
+                state.pending_action =
+                    Some(crate::state::PendingAction::SwitchRepository { path: None });
+            }
             Some(NestedRepoTreeRow::Repo { repo_idx }) => {
                 if let Some(path) = state
                     .nested_repositories
                     .get(repo_idx)
                     .map(|repo| repo.path.clone())
                 {
+                    state.pending_action = Some(crate::state::PendingAction::SwitchRepository {
+                        path: Some(path.clone()),
+                    });
                     if state.nested_repo_detail_path.as_deref() == Some(path.as_str()) {
-                        close_nested_repo_detail(state);
+                        state.nested_repo_tree_idx =
+                            tree_idx_for_repo_path(state, &path).unwrap_or(0);
                     } else {
                         open_nested_repo_detail(state, path);
                     }
@@ -237,8 +261,14 @@ pub(crate) fn reload_nested_repo_detail(state: &mut AppState) {
 }
 
 fn load_nested_repo_detail(state: &mut AppState, path: &str) -> anyhow::Result<()> {
-    state.nested_repo_branches = crate::git::nested_repo_branches(path)?;
-    state.nested_repo_remote_branches = crate::git::nested_repo_remote_branches(path)?;
+    if let Some(root) = state.workspace_root.as_deref() {
+        let root = std::path::Path::new(root);
+        state.nested_repo_branches = crate::git::nested_repo_branches_at(root, path)?;
+        state.nested_repo_remote_branches = crate::git::nested_repo_remote_branches_at(root, path)?;
+    } else {
+        state.nested_repo_branches = crate::git::nested_repo_branches(path)?;
+        state.nested_repo_remote_branches = crate::git::nested_repo_remote_branches(path)?;
+    }
     state.clamp();
     Ok(())
 }
@@ -270,26 +300,26 @@ pub(crate) fn nested_repo_tree_len(state: &AppState) -> usize {
 
 pub(crate) fn select_nested_repo_tree_row(state: &mut AppState, idx: usize) {
     state.nested_repo_tree_idx = idx;
-    if let Some(
-        NestedRepoTreeRow::Repo { repo_idx }
-        | NestedRepoTreeRow::Branch { repo_idx, .. }
-        | NestedRepoTreeRow::Remote { repo_idx, .. },
-    ) = selected_tree_row(state)
-    {
-        state.nested_repositories_idx = repo_idx;
+    match selected_tree_row(state) {
+        Some(
+            NestedRepoTreeRow::Repo { repo_idx }
+            | NestedRepoTreeRow::Branch { repo_idx, .. }
+            | NestedRepoTreeRow::Remote { repo_idx, .. },
+        ) => state.nested_repositories_idx = repo_idx,
+        Some(NestedRepoTreeRow::Root) | None => {}
     }
 }
 
 fn move_selection(state: &mut AppState, down: bool, amount: usize) {
     let len = nested_repo_tree_rows(state).len();
     move_index(&mut state.nested_repo_tree_idx, len, down, amount);
-    if let Some(
-        NestedRepoTreeRow::Repo { repo_idx }
-        | NestedRepoTreeRow::Branch { repo_idx, .. }
-        | NestedRepoTreeRow::Remote { repo_idx, .. },
-    ) = selected_tree_row(state)
-    {
-        state.nested_repositories_idx = repo_idx;
+    match selected_tree_row(state) {
+        Some(
+            NestedRepoTreeRow::Repo { repo_idx }
+            | NestedRepoTreeRow::Branch { repo_idx, .. }
+            | NestedRepoTreeRow::Remote { repo_idx, .. },
+        ) => state.nested_repositories_idx = repo_idx,
+        Some(NestedRepoTreeRow::Root) | None => {}
     }
 }
 
@@ -305,6 +335,7 @@ fn move_index(idx: &mut usize, len: usize, down: bool, amount: usize) {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NestedRepoTreeRow {
+    Root,
     Repo { repo_idx: usize },
     Branch { repo_idx: usize, branch_idx: usize },
     Remote { repo_idx: usize, branch_idx: usize },
@@ -312,6 +343,7 @@ enum NestedRepoTreeRow {
 
 fn nested_repo_tree_rows(state: &AppState) -> Vec<NestedRepoTreeRow> {
     let mut rows = Vec::new();
+    rows.push(NestedRepoTreeRow::Root);
     for (repo_idx, repo) in state.nested_repositories.iter().enumerate() {
         rows.push(NestedRepoTreeRow::Repo { repo_idx });
         if state.nested_repo_detail_path.as_deref() == Some(repo.path.as_str()) {
@@ -350,11 +382,21 @@ fn tree_idx_for_repo_path(state: &AppState, path: &str) -> Option<usize> {
         .position(|row| matches!(row, NestedRepoTreeRow::Repo { repo_idx } if state.nested_repositories.get(*repo_idx).is_some_and(|repo| repo.path == path)))
 }
 
-fn sync_repo_idx_to_tree_selection(state: &mut AppState) {
-    if state.nested_repo_tree_idx == 0 && state.nested_repositories_idx > 0 {
-        if let Some(repo) = state.nested_repositories.get(state.nested_repositories_idx) {
-            state.nested_repo_tree_idx = tree_idx_for_repo_path(state, &repo.path).unwrap_or(0);
+fn root_repo_selected(state: &AppState) -> bool {
+    match (state.workspace_root.as_deref(), state.repo_root.as_deref()) {
+        (Some(workspace), Some(repo)) => {
+            std::path::Path::new(workspace) == std::path::Path::new(repo)
         }
+        _ => true,
+    }
+}
+
+fn active_repo_is_workspace(state: &AppState) -> bool {
+    match (state.workspace_root.as_deref(), state.repo_root.as_deref()) {
+        (Some(workspace), Some(repo)) => {
+            std::path::Path::new(workspace) == std::path::Path::new(repo)
+        }
+        _ => true,
     }
 }
 
@@ -403,6 +445,36 @@ fn nested_repo_line(repo: &NestedRepo, row_width: usize, expanded: bool) -> Line
             .add_modifier(Modifier::BOLD),
     ));
     Line::from(spans)
+}
+
+fn root_repo_line(state: &AppState, row_width: usize) -> Line<'static> {
+    let label = state
+        .workspace_root
+        .as_deref()
+        .and_then(|root| std::path::Path::new(root).file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or("workspace");
+    let marker = if root_repo_selected(state) {
+        "* "
+    } else {
+        "  "
+    };
+    Line::from(vec![
+        Span::styled("\u{25b8} ", Style::default().fg(Color::LightMagenta)),
+        Span::styled(
+            format!(
+                "{marker}{}",
+                truncate_chars(label, row_width.saturating_sub(4))
+            ),
+            Style::default()
+                .fg(if root_repo_selected(state) {
+                    Color::Green
+                } else {
+                    Color::Gray
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
 }
 
 fn nested_branch_line(branch: &Branch, row_width: usize) -> Line<'static> {

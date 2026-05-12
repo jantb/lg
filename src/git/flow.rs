@@ -51,11 +51,27 @@ pub fn flow_merge_main_into_current(current_branch: &str) -> Result<String> {
 }
 
 pub fn flow_merge_main_into_all_local_branches() -> Result<String> {
-    if has_uncommitted_changes()? {
-        anyhow::bail!("commit or stash local changes before syncing all branches");
+    let original_branch = head_branch().ok();
+    let stashed = stash_uncommitted_changes("lg: auto-stash before syncing all branches")?;
+    let result = flow_merge_main_into_all_local_branches_clean(original_branch.as_deref());
+
+    if result.is_err() && !conflicted_files().unwrap_or_default().is_empty() {
+        return result.map(|summary| summary_with_stash_notice(summary, stashed));
     }
 
-    let original_branch = head_branch().ok();
+    if let Some(original) = original_branch.as_deref()
+        && ref_exists(original)
+        && head_branch()
+            .map(|current| current != original)
+            .unwrap_or(true)
+    {
+        run_combined(&["checkout", original])?;
+    }
+    pop_stash_with_index_if_needed(stashed)?;
+    result.map(|summary| summary_with_stash_notice(summary, stashed))
+}
+
+fn flow_merge_main_into_all_local_branches_clean(original_branch: Option<&str>) -> Result<String> {
     run(&["fetch", "--all", "--prune"])?;
     if !ref_exists(BRANCH_MAIN) {
         anyhow::bail!("could not find local {BRANCH_MAIN}");
@@ -86,9 +102,18 @@ pub fn flow_merge_main_into_all_local_branches() -> Result<String> {
         }
 
         run_combined(&["checkout", &branch.name])?;
+        if branch.upstream.is_some()
+            && !branch.upstream_gone
+            && let Err(err) = run_combined(&["merge", "--no-edit", "@{u}"])
+        {
+            anyhow::bail!(
+                "merge upstream into {} failed:\n{err}\nresolve conflicts outside lg, then validate the conflict in lg",
+                branch.name
+            );
+        }
         if let Err(err) = run_combined(&["merge", "--no-edit", &base_ref]) {
             anyhow::bail!(
-                "merge {base_ref} into {} failed:\n{err}\nresolve conflicts outside lg, then commit or abort",
+                "merge {base_ref} into {} failed:\n{err}\nresolve conflicts outside lg, then validate the conflict in lg",
                 branch.name
             );
         }
@@ -109,12 +134,12 @@ pub fn flow_merge_main_into_all_local_branches() -> Result<String> {
     }
 
     if let Some(original) = original_branch
-        && ref_exists(&original)
+        && ref_exists(original)
         && head_branch()
             .map(|current| current != original)
             .unwrap_or(true)
     {
-        run_combined(&["checkout", &original])?;
+        run_combined(&["checkout", original])?;
     }
 
     let mut summary = format!(
@@ -128,6 +153,13 @@ pub fn flow_merge_main_into_all_local_branches() -> Result<String> {
         ));
     }
     Ok(summary)
+}
+
+fn summary_with_stash_notice(mut summary: String, stashed: bool) -> String {
+    if stashed {
+        summary.push_str(", restored stashed changes");
+    }
+    summary
 }
 
 pub fn flow_merge_main_into_current_with_progress(

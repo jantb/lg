@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::state::{Modal, OperationKind, PendingAction};
 
 use super::{App, spawn_operation, spawn_pull, spawn_push, spawn_review_assist, spawn_review_chat};
@@ -209,6 +211,36 @@ impl App {
                         Ok(report.join(" | "))
                     },
                 );
+            }
+            PendingAction::SwitchRepository { path } => {
+                let root = self
+                    .state
+                    .workspace_root
+                    .clone()
+                    .or_else(|| self.state.repo_root.clone())
+                    .unwrap_or_default();
+                if root.is_empty() {
+                    self.state.set_status("workspace root is unknown", true);
+                    return;
+                }
+                let target = match path.as_deref() {
+                    Some(path) => PathBuf::from(&root).join(path),
+                    None => PathBuf::from(&root),
+                };
+                match std::env::set_current_dir(&target) {
+                    Ok(()) => {
+                        let label = path.unwrap_or_else(|| "workspace".to_string());
+                        self.state.repo_root = Some(target.to_string_lossy().into_owned());
+                        self.state.nested_repo_detail_path = None;
+                        self.state.nested_repo_branches.clear();
+                        self.state.nested_repo_remote_branches.clear();
+                        self.state.set_status(format!("selected {label}"), false);
+                        self.start_refresh(true);
+                    }
+                    Err(err) => self
+                        .state
+                        .set_status(format!("select repo failed: {err}"), true),
+                }
             }
         }
     }
