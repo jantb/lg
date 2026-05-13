@@ -20,7 +20,14 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let modal = ui::centered(area, w, h);
 
     frame.render_widget(Clear, modal);
+    render_contents(state, modal, frame);
+}
 
+pub fn render_docked(state: &AppState, area: Rect, frame: &mut Frame) {
+    render_contents(state, area, frame);
+}
+
+fn render_contents(state: &AppState, area: Rect, frame: &mut Frame) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -28,7 +35,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             Constraint::Length(3),
             Constraint::Length(1),
         ])
-        .split(modal);
+        .split(area);
 
     let running = state.review_chat_job.is_some();
     let title = if let Some(job) = &state.review_chat_job {

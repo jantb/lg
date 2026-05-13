@@ -1199,6 +1199,47 @@ fn review_chat_modal_renders_markdown_conversation() {
 }
 
 #[test]
+fn review_chat_docks_under_review_context() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.modal = Modal::ReviewChat;
+    app.state.review = Some(AssistedReview {
+        report: "Assisted review against main".into(),
+        nodes: (0..10)
+            .map(|idx| ReviewNode {
+                id: format!("node-{idx}"),
+                parent: None,
+                depth: 0,
+                title: if idx == 7 {
+                    "Keep this review context visible".into()
+                } else {
+                    format!("Review node {idx}")
+                },
+                body: Vec::new(),
+                context: Vec::new(),
+            })
+            .collect(),
+    });
+    app.state
+        .review_chat_messages
+        .push(lg::state::ReviewChatMessage {
+            role: ReviewChatRole::User,
+            content: "why this change?".into(),
+        });
+
+    app.render().unwrap();
+
+    let rendered = buffer_text(&app);
+    assert!(
+        rendered.contains("Keep this review context visible"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Review chat"), "{rendered}");
+    assert!(rendered.contains("why this change?"), "{rendered}");
+}
+
+#[test]
 fn review_panel_renders_ollama_markdown() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(140, 32)).unwrap();
     app.state.focus = Pane::Main;

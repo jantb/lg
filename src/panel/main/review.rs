@@ -136,7 +136,7 @@ pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: b
     // re-read source files and re-parse diff overlays) and stays correct when
     // markdown::render word-wraps assist output into more lines than the raw
     // source had.
-    let max_offset = super::scroll_bound(lines.len(), state.diff_viewport_height);
+    let max_offset = super::scroll_bound(lines.len(), area.height.saturating_sub(2));
     let offset = state.diff_offset.min(max_offset);
     let para = Paragraph::new(lines)
         .block(block)

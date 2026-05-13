@@ -2,13 +2,13 @@ use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Constraint, Direction, Layout, Rect},
     widgets::{Paragraph, Wrap},
 };
 
 use crate::{
     config::DIFF_PAGE,
-    state::{AppState, DiffSource, PendingAction},
+    state::{AppState, DiffSource, Modal, PendingAction},
     ui,
 };
 
@@ -17,7 +17,13 @@ mod source;
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
-        review::render(state, area, frame, focused);
+        if state.modal == Modal::ReviewChat {
+            let chunks = review_chat_layout(area);
+            review::render(state, chunks[0], frame, false);
+            crate::panel::review_chat::render_docked(state, chunks[1], frame);
+        } else {
+            review::render(state, area, frame, focused);
+        }
         return;
     }
 
@@ -53,6 +59,16 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         .scroll((offset, 0));
 
     frame.render_widget(para, area);
+}
+
+fn review_chat_layout(area: Rect) -> std::rc::Rc<[Rect]> {
+    let min_review_height = 6.min(area.height);
+    let desired_chat_height = (area.height / 3).clamp(8, 18);
+    let chat_height = desired_chat_height.min(area.height.saturating_sub(min_review_height));
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(chat_height)])
+        .split(area)
 }
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
