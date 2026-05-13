@@ -7,7 +7,7 @@ use ratatui::{
 
 use crate::{
     panel,
-    state::{AppState, DiffSource, Modal, Pane, PendingAction},
+    state::{AppState, Modal, Pane, PendingAction},
     ui,
 };
 
@@ -60,8 +60,6 @@ fn handle_modal_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) -> bool 
 
 fn review_chat_is_docked(state: &AppState) -> bool {
     state.modal == Modal::ReviewChat
-        && matches!(state.diff_source, DiffSource::Review)
-        && state.review.is_some()
 }
 
 fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {

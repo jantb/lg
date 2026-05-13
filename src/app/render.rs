@@ -3,7 +3,7 @@ use ratatui::{backend::Backend, layout::Rect};
 
 use crate::{
     panel,
-    state::{DiffSource, Modal, Pane},
+    state::{Modal, Pane},
     ui,
 };
 
@@ -31,10 +31,7 @@ where
             self.state.left_column_width,
             self.state.left_panel_heights,
         );
-        self.state.diff_viewport_height = if self.state.modal == Modal::ReviewChat
-            && matches!(self.state.diff_source, DiffSource::Review)
-            && self.state.review.is_some()
-        {
+        self.state.diff_viewport_height = if self.state.modal == Modal::ReviewChat {
             panel::main::review_chat_layout(&self.state, rects_pre.main)[0]
                 .height
                 .saturating_sub(2)
@@ -81,13 +78,7 @@ where
                 Modal::Flow => panel::flow::render(state, area, frame),
                 Modal::Conflict => panel::conflict::render(state, area, frame),
                 Modal::DeleteBranch => panel::delete_branch::render(state, area, frame),
-                Modal::ReviewChat => {
-                    if !(matches!(state.diff_source, crate::state::DiffSource::Review)
-                        && state.review.is_some())
-                    {
-                        panel::review_chat::render(state, area, frame);
-                    }
-                }
+                Modal::ReviewChat => {}
             }
         })?;
         Ok(())
@@ -120,10 +111,7 @@ impl App {
             self.state.left_column_width,
             self.state.left_panel_heights,
         );
-        self.state.diff_viewport_height = if self.state.modal == Modal::ReviewChat
-            && matches!(self.state.diff_source, DiffSource::Review)
-            && self.state.review.is_some()
-        {
+        self.state.diff_viewport_height = if self.state.modal == Modal::ReviewChat {
             panel::main::review_chat_layout(&self.state, rects_pre.main)[0]
                 .height
                 .saturating_sub(2)
@@ -170,13 +158,7 @@ impl App {
                 Modal::Flow => panel::flow::render(state, area, frame),
                 Modal::Conflict => panel::conflict::render(state, area, frame),
                 Modal::DeleteBranch => panel::delete_branch::render(state, area, frame),
-                Modal::ReviewChat => {
-                    if !(matches!(state.diff_source, crate::state::DiffSource::Review)
-                        && state.review.is_some())
-                    {
-                        panel::review_chat::render(state, area, frame);
-                    }
-                }
+                Modal::ReviewChat => {}
             }
         })?;
         Ok(())

@@ -16,14 +16,19 @@ mod review;
 mod source;
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
+    if state.modal == Modal::ReviewChat {
+        let chunks = review_chat_layout(state, area);
+        render_main_content(state, chunks[0], frame, false);
+        crate::panel::review_chat::render_docked(state, chunks[1], frame);
+        return;
+    }
+
+    render_main_content(state, area, frame, focused);
+}
+
+fn render_main_content(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
-        if state.modal == Modal::ReviewChat {
-            let chunks = review_chat_layout(state, area);
-            review::render(state, chunks[0], frame, false);
-            crate::panel::review_chat::render_docked(state, chunks[1], frame);
-        } else {
-            review::render(state, area, frame, focused);
-        }
+        review::render(state, area, frame, focused);
         return;
     }
 

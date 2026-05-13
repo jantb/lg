@@ -1163,9 +1163,11 @@ fn review_panel_opens_chat_about_full_review() {
 }
 
 #[test]
-fn review_chat_modal_renders_markdown_conversation() {
+fn review_chat_docked_renders_markdown_conversation() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.modal = Modal::ReviewChat;
+    app.state.diff_text = "diff --git a/src/lib.rs b/src/lib.rs".into();
+    app.state.review_chat_height = Some(18);
     app.state
         .review_chat_messages
         .push(lg::state::ReviewChatMessage {
@@ -1182,6 +1184,7 @@ fn review_chat_modal_renders_markdown_conversation() {
     app.render().unwrap();
 
     let rendered = buffer_text(&app);
+    assert!(rendered.contains("diff --git"), "{rendered}");
     assert!(rendered.contains("Review chat"), "{rendered}");
     assert!(rendered.contains("you"), "{rendered}");
     assert!(rendered.contains("ollama"), "{rendered}");
