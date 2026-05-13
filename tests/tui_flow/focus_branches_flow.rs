@@ -719,11 +719,18 @@ fn delete_branch_modal_hides_remote_option_for_local_only_branch() {
         "local-only branch should not show remote delete option: {text}"
     );
     assert!(
+        text.contains("delete local branch"),
+        "local-only branch should show fixed local delete action: {text}"
+    );
+    assert!(
+        !text.contains("[x] delete local"),
+        "local-only branch should not render delete local as a peer checkbox: {text}"
+    );
+    assert!(
         text.contains("force local delete"),
         "force option should explain that it is local-only: {text}"
     );
 
-    panel::delete_branch::handle_key(&mut state, key(KeyCode::Tab)).unwrap();
     assert_eq!(
         state.delete_branch_field,
         lg::state::DeleteBranchField::Force

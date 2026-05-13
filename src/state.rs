@@ -775,7 +775,11 @@ impl AppState {
         self.delete_branch_remote_available = branch.upstream.is_some() && !branch.upstream_gone;
         self.delete_branch_remote = self.delete_branch_remote_available;
         self.delete_branch_force = false;
-        self.delete_branch_field = DeleteBranchField::Local;
+        self.delete_branch_field = if self.delete_branch_remote_available {
+            DeleteBranchField::Local
+        } else {
+            DeleteBranchField::Force
+        };
         self.modal = Modal::DeleteBranch;
     }
 

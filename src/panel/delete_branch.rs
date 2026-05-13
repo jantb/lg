@@ -42,11 +42,18 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         chunks[0],
     );
 
-    let mut body = vec![toggle_line(
-        "delete local",
-        state.delete_branch_local,
-        state.delete_branch_field == DeleteBranchField::Local,
-    )];
+    let mut body = if state.delete_branch_remote_available {
+        vec![toggle_line(
+            "delete local",
+            state.delete_branch_local,
+            state.delete_branch_field == DeleteBranchField::Local,
+        )]
+    } else {
+        vec![Line::from(vec![
+            Span::raw("  "),
+            Span::styled("delete local branch", Style::default().fg(Color::Gray)),
+        ])]
+    };
     if state.delete_branch_remote_available {
         body.push(toggle_line(
             "delete remote (origin)",
@@ -132,6 +139,9 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
 }
 
 fn next_field(state: &AppState) -> DeleteBranchField {
+    if !state.delete_branch_remote_available {
+        return DeleteBranchField::Force;
+    }
     match state.delete_branch_field {
         DeleteBranchField::Local if state.delete_branch_remote_available => {
             DeleteBranchField::Remote
@@ -143,6 +153,9 @@ fn next_field(state: &AppState) -> DeleteBranchField {
 }
 
 fn prev_field(state: &AppState) -> DeleteBranchField {
+    if !state.delete_branch_remote_available {
+        return DeleteBranchField::Force;
+    }
     match state.delete_branch_field {
         DeleteBranchField::Local => DeleteBranchField::Force,
         DeleteBranchField::Remote => DeleteBranchField::Local,
@@ -155,7 +168,10 @@ fn prev_field(state: &AppState) -> DeleteBranchField {
 
 fn toggle_current(state: &mut AppState) {
     match state.delete_branch_field {
-        DeleteBranchField::Local => state.delete_branch_local = !state.delete_branch_local,
+        DeleteBranchField::Local if state.delete_branch_remote_available => {
+            state.delete_branch_local = !state.delete_branch_local
+        }
+        DeleteBranchField::Local => {}
         DeleteBranchField::Remote if state.delete_branch_remote_available => {
             state.delete_branch_remote = !state.delete_branch_remote
         }
