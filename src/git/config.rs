@@ -91,6 +91,15 @@ pub fn project_open_command() -> Result<IdeOpenCommand> {
 
 pub fn open_project_in_ide() -> Result<String> {
     let command = project_open_command()?;
+    open_project_command(command)
+}
+
+pub fn open_project_path_in_ide(path: &Path) -> Result<String> {
+    let command = build_project_open_command(&path.to_string_lossy());
+    open_project_command(command)
+}
+
+fn open_project_command(command: IdeOpenCommand) -> Result<String> {
     Command::new(&command.program)
         .args(&command.args)
         .stdin(Stdio::null())

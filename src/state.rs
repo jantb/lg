@@ -132,6 +132,7 @@ pub enum PendingAction {
         is_dir: bool,
     },
     OpenProject,
+    OpenProjectAt(String),
     OpenFile(String),
     DeleteBranch {
         name: String,
@@ -517,7 +518,9 @@ impl AppState {
                 }
                 Some(PendingAction::DeletePath { .. }) => Some("deleting"),
                 Some(PendingAction::IgnorePath { .. }) => Some("updating gitignore"),
-                Some(PendingAction::OpenProject) => Some("opening project"),
+                Some(PendingAction::OpenProject | PendingAction::OpenProjectAt(_)) => {
+                    Some("opening project")
+                }
                 Some(PendingAction::OpenFile(_)) => Some("opening file"),
                 Some(PendingAction::DeleteBranch { .. }) => Some("deleting branch"),
                 Some(PendingAction::SwitchRepository { .. }) => Some("switching repo"),

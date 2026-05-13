@@ -208,6 +208,11 @@ pub fn handle_key(
             }
             None => {}
         },
+        KeyCode::Char('o') => {
+            if let Some(path) = selected_repository_project_path(state) {
+                state.pending_action = Some(crate::state::PendingAction::OpenProjectAt(path));
+            }
+        }
         KeyCode::Char('r') if state.nested_repo_detail_path.is_some() => {
             state.nested_repo_branch_view = match state.nested_repo_branch_view {
                 BranchView::Local => BranchView::Remote,
@@ -252,6 +257,20 @@ pub(crate) fn activate_selected_repository_row(state: &mut AppState) -> bool {
             true
         }
         _ => false,
+    }
+}
+
+fn selected_repository_project_path(state: &AppState) -> Option<String> {
+    let root = state.workspace_root.as_ref().or(state.repo_root.as_ref())?;
+    match selected_tree_row(state)? {
+        NestedRepoTreeRow::Root => Some(root.clone()),
+        NestedRepoTreeRow::Repo { repo_idx }
+        | NestedRepoTreeRow::Branch { repo_idx, .. }
+        | NestedRepoTreeRow::Remote { repo_idx, .. } => state
+            .nested_repositories
+            .get(repo_idx)
+            .map(|repo| std::path::Path::new(root).join(&repo.path))
+            .map(|path| path.to_string_lossy().into_owned()),
     }
 }
 

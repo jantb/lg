@@ -60,6 +60,7 @@ const SECTIONS: &[Section] = &[
         bindings: &[
             ("j/k", "Move up/down"),
             ("Enter", "Expand repo, collapse repo, or checkout branch"),
+            ("o", "Open selected repository in editor"),
             (
                 "r",
                 "Toggle expanded repo between local and remote branches",

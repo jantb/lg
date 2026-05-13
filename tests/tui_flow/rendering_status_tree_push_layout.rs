@@ -358,6 +358,49 @@ fn clicking_repository_row_switches_repository() {
 }
 
 #[test]
+fn repositories_o_opens_selected_repo_or_branch_project() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.nested_repositories = vec![NestedRepo {
+        path: "services/api".into(),
+        branch: Some("main".into()),
+        detached_at: None,
+        has_changes: false,
+    }];
+    state.nested_repo_detail_path = Some("services/api".into());
+    state.nested_repo_branches = vec![Branch {
+        name: "feature/api".into(),
+        is_current: false,
+        upstream: None,
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 0,
+        last_commit_unix: None,
+    }];
+
+    state.nested_repo_tree_idx = 1;
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::OpenProjectAt(
+            "/workspace/services/api".into()
+        ))
+    );
+
+    state.pending_action = None;
+    state.nested_repo_tree_idx = 2;
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::OpenProjectAt(
+            "/workspace/services/api".into()
+        ))
+    );
+}
+
+#[test]
 fn repository_panel_keeps_deployment_status_visible_in_full_layout() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 34)).unwrap();
     app.state.repo_root = Some("/tmp/work/lg/services/api".into());

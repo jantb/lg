@@ -15,7 +15,8 @@ mod status;
 pub use config::{
     AuthorConfig, IdeOpenCommand, add_to_gitignore, author_config, clear_local_author,
     clear_subtree_author, ide_open_command, open_file_in_ide, open_project_in_ide,
-    project_open_command, set_local_author, set_subtree_author, subtree_author_rule_exists,
+    open_project_path_in_ide, project_open_command, set_local_author, set_subtree_author,
+    subtree_author_rule_exists,
 };
 #[cfg(test)]
 use diff::label_commit_patch;
