@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::{
     app,
-    config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST},
+    config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST, DEFAULT_PUSH_REMOTE},
     git::{Branch, RemoteBranch},
     state::{AppState, BranchView, FlowAction, Modal, PendingAction, SPINNER_FRAMES, clamp_index},
     ui,
@@ -191,6 +191,9 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Char('o') => {
             state.pending_action = Some(PendingAction::OpenProject);
         }
+        KeyCode::Char('u') => {
+            queue_set_upstream(state);
+        }
         KeyCode::Char('m') if !shifted_m => {
             if state.branch_view == BranchView::Remote {
                 state.set_status("merge main from local branch view", false);
@@ -225,6 +228,42 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn queue_set_upstream(state: &mut AppState) {
+    if state.branch_view == BranchView::Remote {
+        state.set_status("set upstream from local branch view", false);
+        return;
+    }
+    let Some(branch) = state.branches.get(state.branches_idx) else {
+        return;
+    };
+    if branch.upstream.is_some() && !branch.upstream_gone {
+        state.set_status(
+            format!("{} already tracks a remote branch", branch.name),
+            false,
+        );
+        return;
+    }
+
+    let matching = state
+        .remote_branches
+        .iter()
+        .filter(|remote| remote.local_name == branch.name)
+        .min_by_key(|remote| usize::from(remote.remote != DEFAULT_PUSH_REMOTE));
+
+    let Some(remote) = matching else {
+        state.set_status(
+            format!("no matching remote branch for {}", branch.name),
+            true,
+        );
+        return;
+    };
+
+    state.pending_action = Some(PendingAction::SetBranchUpstream {
+        branch: branch.name.clone(),
+        upstream: remote.name.clone(),
+    });
 }
 
 fn shifted_char(key: KeyEvent, lower: char, upper: char) -> bool {
@@ -352,7 +391,7 @@ fn append_local_branch_status(spans: &mut Vec<Span<'static>>, branch: &Branch) {
     } else {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
-            "no remote",
+            "no upstream",
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
@@ -370,7 +409,7 @@ fn local_branch_status_width(branch: &Branch) -> usize {
     } else if branch.upstream.is_some() {
         " \u{2713}".chars().count()
     } else {
-        " no remote".chars().count()
+        " no upstream".chars().count()
     };
     remote_width + main_behind_width(branch) + branch_age_width(branch.last_commit_unix)
 }

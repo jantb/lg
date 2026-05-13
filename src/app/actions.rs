@@ -218,6 +218,14 @@ impl App {
                     },
                 );
             }
+            PendingAction::SetBranchUpstream { branch, upstream } => {
+                spawn_operation(
+                    &mut self.state,
+                    "setting upstream",
+                    OperationKind::Worktree,
+                    move || crate::git::set_branch_upstream(&branch, &upstream),
+                );
+            }
             PendingAction::SwitchRepository { path } => {
                 let root = self
                     .state

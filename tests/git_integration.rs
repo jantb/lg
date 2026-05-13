@@ -1439,6 +1439,45 @@ fn remote_branches_can_be_listed_and_checked_out_locally() {
 }
 
 #[test]
+fn set_branch_upstream_tracks_existing_remote_branch() {
+    let dir = init_repo();
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+
+    fs::write(dir.path().join("README.md"), "main\n").unwrap();
+    stage_in(dir.path(), "README.md");
+    commit_in(dir.path(), "initial");
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", "solution"]);
+    fs::write(dir.path().join("solution.txt"), "solution\n").unwrap();
+    stage_in(dir.path(), "solution.txt");
+    commit_in(dir.path(), "solution branch");
+    git_ok(dir.path(), &["push", "origin", "solution"]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    let out = lg::git::set_branch_upstream("solution", "origin/solution").unwrap();
+
+    assert_eq!(out, "solution tracks origin/solution");
+    let upstream = git(
+        dir.path(),
+        &["rev-parse", "--abbrev-ref", "solution@{upstream}"],
+    );
+    assert!(
+        upstream.status.success(),
+        "upstream was not configured: {}",
+        String::from_utf8_lossy(&upstream.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&upstream.stdout).trim(),
+        "origin/solution"
+    );
+}
+
+#[test]
 fn checkout_remote_branch_applies_dirty_changes_after_switching() {
     let dir = init_repo();
     let bare = tempfile::tempdir().expect("bare tempdir");

@@ -250,6 +250,17 @@ pub fn push(remote: &str, branch: &str) -> Result<String> {
     }
 }
 
+pub fn set_branch_upstream(branch: &str, upstream: &str) -> Result<String> {
+    if branch.trim().is_empty() {
+        anyhow::bail!("branch name must not be empty");
+    }
+    if upstream.trim().is_empty() {
+        anyhow::bail!("upstream name must not be empty");
+    }
+    run(&["branch", "--set-upstream-to", upstream, branch])?;
+    Ok(format!("{branch} tracks {upstream}"))
+}
+
 pub fn pull(remote: &str, branch: &str) -> Result<String> {
     if branch.trim().is_empty() {
         anyhow::bail!("branch name must not be empty");

@@ -140,6 +140,10 @@ pub enum PendingAction {
         delete_remote: bool,
         force: bool,
     },
+    SetBranchUpstream {
+        branch: String,
+        upstream: String,
+    },
     SwitchRepository {
         path: Option<String>,
     },
@@ -523,6 +527,7 @@ impl AppState {
                 }
                 Some(PendingAction::OpenFile(_)) => Some("opening file"),
                 Some(PendingAction::DeleteBranch { .. }) => Some("deleting branch"),
+                Some(PendingAction::SetBranchUpstream { .. }) => Some("setting upstream"),
                 Some(PendingAction::SwitchRepository { .. }) => Some("switching repo"),
                 None => None,
             }

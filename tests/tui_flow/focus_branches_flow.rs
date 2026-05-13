@@ -89,7 +89,7 @@ fn branches_panel_shows_remote_and_missing_upstream_indicators() {
         "missing upstream gone indicator: {text}"
     );
     assert!(
-        text.contains("no remote"),
+        text.contains("no upstream"),
         "missing local-only indicator: {text}"
     );
 }
@@ -181,6 +181,62 @@ fn branches_o_opens_project() {
     panel::branches::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
 
     assert_eq!(state.pending_action, Some(PendingAction::OpenProject));
+}
+
+#[test]
+fn branches_u_sets_matching_remote_upstream() {
+    let mut state = AppState::new();
+    state.focus = Pane::Branches;
+    state.branches = vec![Branch {
+        name: "solution".into(),
+        is_current: true,
+        upstream: None,
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 0,
+        last_commit_unix: None,
+    }];
+    state.remote_branches = vec![RemoteBranch {
+        name: "origin/solution".into(),
+        remote: "origin".into(),
+        local_name: "solution".into(),
+        last_commit_unix: None,
+    }];
+
+    panel::branches::handle_key(&mut state, key(KeyCode::Char('u'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::SetBranchUpstream {
+            branch: "solution".into(),
+            upstream: "origin/solution".into(),
+        })
+    );
+}
+
+#[test]
+fn branches_u_reports_missing_matching_remote() {
+    let mut state = AppState::new();
+    state.focus = Pane::Branches;
+    state.branches = vec![Branch {
+        name: "solution".into(),
+        is_current: true,
+        upstream: None,
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 0,
+        last_commit_unix: None,
+    }];
+
+    panel::branches::handle_key(&mut state, key(KeyCode::Char('u'))).unwrap();
+
+    assert_eq!(state.pending_action, None);
+    assert_eq!(
+        state.status.as_ref().map(|status| status.text.as_str()),
+        Some("no matching remote branch for solution")
+    );
 }
 
 #[test]
@@ -482,7 +538,7 @@ fn branches_shortcuts_show_remote_toggle() {
         "help should show sync-all shortcut: {help}"
     );
     assert!(
-        help.contains("Delete selected local branch with no remote"),
+        help.contains("Delete selected local branch with no upstream"),
         "help should show local-only delete shortcut: {help}"
     );
 }

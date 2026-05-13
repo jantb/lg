@@ -72,11 +72,11 @@ const SECTIONS: &[Section] = &[
             ("j/k", "Move up/down"),
             ("Enter", "Checkout branch or remote tracking branch"),
             ("o", "Open repository in editor"),
+            ("u", "Set upstream to matching remote branch"),
             ("r", "Toggle local and remote branch views"),
             ("m", "Pull main or merge origin/main"),
             ("M", "Merge main into all branches and push"),
-            ("d", "Delete selected local branch with no remote"),
-            ("D", "Delete local/remote branch (modal)"),
+            ("d", "Delete selected local branch with no upstream"),
         ],
     },
     Section {
