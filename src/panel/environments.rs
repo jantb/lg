@@ -174,26 +174,8 @@ pub fn handle_key(
         KeyCode::Char('j') | KeyCode::Down => move_selection(state, true, 1),
         KeyCode::Char('k') | KeyCode::Up => move_selection(state, false, 1),
         KeyCode::Enter => match selected_tree_row(state) {
-            Some(NestedRepoTreeRow::Root) => {
-                state.pending_action =
-                    Some(crate::state::PendingAction::SwitchRepository { path: None });
-            }
-            Some(NestedRepoTreeRow::Repo { repo_idx }) => {
-                if let Some(path) = state
-                    .nested_repositories
-                    .get(repo_idx)
-                    .map(|repo| repo.path.clone())
-                {
-                    state.pending_action = Some(crate::state::PendingAction::SwitchRepository {
-                        path: Some(path.clone()),
-                    });
-                    if state.nested_repo_detail_path.as_deref() == Some(path.as_str()) {
-                        state.nested_repo_tree_idx =
-                            tree_idx_for_repo_path(state, &path).unwrap_or(0);
-                    } else {
-                        open_nested_repo_detail(state, path);
-                    }
-                }
+            Some(NestedRepoTreeRow::Root | NestedRepoTreeRow::Repo { .. }) => {
+                activate_selected_repository_row(state);
             }
             Some(NestedRepoTreeRow::Branch {
                 repo_idx,
@@ -242,6 +224,35 @@ pub fn handle_key(
         _ => {}
     }
     Ok(())
+}
+
+pub(crate) fn activate_selected_repository_row(state: &mut AppState) -> bool {
+    match selected_tree_row(state) {
+        Some(NestedRepoTreeRow::Root) => {
+            state.pending_action =
+                Some(crate::state::PendingAction::SwitchRepository { path: None });
+            true
+        }
+        Some(NestedRepoTreeRow::Repo { repo_idx }) => {
+            let Some(path) = state
+                .nested_repositories
+                .get(repo_idx)
+                .map(|repo| repo.path.clone())
+            else {
+                return false;
+            };
+            state.pending_action = Some(crate::state::PendingAction::SwitchRepository {
+                path: Some(path.clone()),
+            });
+            if state.nested_repo_detail_path.as_deref() == Some(path.as_str()) {
+                state.nested_repo_tree_idx = tree_idx_for_repo_path(state, &path).unwrap_or(0);
+            } else {
+                open_nested_repo_detail(state, path);
+            }
+            true
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn open_nested_repo_detail(state: &mut AppState, path: String) {

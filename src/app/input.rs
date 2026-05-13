@@ -7,7 +7,7 @@ use ratatui::{
 
 use crate::{
     panel,
-    state::{AppState, Modal, Pane, PendingAction},
+    state::{AppState, DiffSource, Modal, Pane, PendingAction},
     ui,
 };
 
@@ -39,9 +39,11 @@ fn prev_pane(p: Pane) -> Pane {
 fn handle_modal_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) -> bool {
     match state.modal {
         Modal::None => false,
+        Modal::ReviewChat if review_chat_is_docked(state) => false,
         Modal::Commit => {
             state.column_drag_active = false;
             state.row_drag_active = None;
+            state.review_chat_drag_active = false;
             if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
                 let _ = panel::commit::place_cursor_at(state, area, m.column, m.row);
             }
@@ -50,8 +52,79 @@ fn handle_modal_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) -> bool 
         _ => {
             state.column_drag_active = false;
             state.row_drag_active = None;
+            state.review_chat_drag_active = false;
             true
         }
+    }
+}
+
+fn review_chat_is_docked(state: &AppState) -> bool {
+    state.modal == Modal::ReviewChat
+        && matches!(state.diff_source, DiffSource::Review)
+        && state.review.is_some()
+}
+
+fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
+    column >= rect.x
+        && column < rect.x.saturating_add(rect.width)
+        && row >= rect.y
+        && row < rect.y.saturating_add(rect.height)
+}
+
+fn resize_review_chat(state: &mut AppState, main: Rect, row: u16) {
+    let min_review_height = 6.min(main.height);
+    let max_chat_height = main.height.saturating_sub(min_review_height);
+    let min_chat_height = 5.min(max_chat_height);
+    let bottom = main.y.saturating_add(main.height);
+    let chat_height = bottom
+        .saturating_sub(row)
+        .max(min_chat_height)
+        .min(max_chat_height);
+    state.review_chat_height = Some(chat_height);
+}
+
+fn handle_docked_review_chat_mouse(
+    state: &mut AppState,
+    rects: &ui::LayoutRects,
+    m: &MouseEvent,
+) -> bool {
+    if !review_chat_is_docked(state) {
+        return false;
+    }
+
+    let chunks = panel::main::review_chat_layout(state, rects.main);
+    let chat_area = chunks[1];
+    let in_main = rect_contains(rects.main, m.column, m.row);
+    let in_chat = rect_contains(chat_area, m.column, m.row);
+    let on_splitter = in_main && (m.row == chat_area.y || m.row.saturating_add(1) == chat_area.y);
+
+    match m.kind {
+        MouseEventKind::Down(MouseButton::Left)
+            if on_splitter && !m.modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            state.column_drag_active = false;
+            state.row_drag_active = None;
+            state.review_chat_drag_active = true;
+            resize_review_chat(state, rects.main, m.row);
+            true
+        }
+        MouseEventKind::Drag(MouseButton::Left) if state.review_chat_drag_active => {
+            resize_review_chat(state, rects.main, m.row);
+            true
+        }
+        MouseEventKind::Up(MouseButton::Left) if state.review_chat_drag_active => {
+            state.review_chat_drag_active = false;
+            true
+        }
+        MouseEventKind::ScrollDown if in_chat => {
+            panel::review_chat::scroll(state, true, 3);
+            true
+        }
+        MouseEventKind::ScrollUp if in_chat => {
+            panel::review_chat::scroll(state, false, 3);
+            true
+        }
+        _ => in_chat,
     }
 }
 
@@ -197,6 +270,9 @@ where
             self.state.left_column_width,
             self.state.left_panel_heights,
         );
+        if handle_docked_review_chat_mouse(&mut self.state, &rects, &m) {
+            return self.render();
+        }
         let divider_col = rects.main.x.saturating_sub(1);
         let on_divider = m.row >= rects.status.y
             && m.row < rects.footer.y
@@ -224,6 +300,7 @@ where
             MouseEventKind::Up(MouseButton::Left) => {
                 self.state.column_drag_active = false;
                 self.state.row_drag_active = None;
+                self.state.review_chat_drag_active = false;
                 return self.render();
             }
             _ => {}
@@ -492,6 +569,9 @@ impl App {
             self.state.left_column_width,
             self.state.left_panel_heights,
         );
+        if handle_docked_review_chat_mouse(&mut self.state, &rects, &m) {
+            return Ok(());
+        }
         let divider_col = rects.main.x.saturating_sub(1);
         let on_divider = m.row >= rects.status.y
             && m.row < rects.footer.y
@@ -519,6 +599,7 @@ impl App {
             MouseEventKind::Up(MouseButton::Left) => {
                 self.state.column_drag_active = false;
                 self.state.row_drag_active = None;
+                self.state.review_chat_drag_active = false;
                 return Ok(());
             }
             _ => {}

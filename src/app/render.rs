@@ -3,7 +3,7 @@ use ratatui::{backend::Backend, layout::Rect};
 
 use crate::{
     panel,
-    state::{Modal, Pane},
+    state::{DiffSource, Modal, Pane},
     ui,
 };
 
@@ -31,7 +31,16 @@ where
             self.state.left_column_width,
             self.state.left_panel_heights,
         );
-        self.state.diff_viewport_height = rects_pre.main.height.saturating_sub(2);
+        self.state.diff_viewport_height = if self.state.modal == Modal::ReviewChat
+            && matches!(self.state.diff_source, DiffSource::Review)
+            && self.state.review.is_some()
+        {
+            panel::main::review_chat_layout(&self.state, rects_pre.main)[0]
+                .height
+                .saturating_sub(2)
+        } else {
+            rects_pre.main.height.saturating_sub(2)
+        };
         self.state.diff_viewport_width = rects_pre.main.width.saturating_sub(2);
         self.clamp_main_scroll_offset();
         sync_selection_scroll_offsets(&mut self.state, &rects_pre, area);
@@ -111,7 +120,16 @@ impl App {
             self.state.left_column_width,
             self.state.left_panel_heights,
         );
-        self.state.diff_viewport_height = rects_pre.main.height.saturating_sub(2);
+        self.state.diff_viewport_height = if self.state.modal == Modal::ReviewChat
+            && matches!(self.state.diff_source, DiffSource::Review)
+            && self.state.review.is_some()
+        {
+            panel::main::review_chat_layout(&self.state, rects_pre.main)[0]
+                .height
+                .saturating_sub(2)
+        } else {
+            rects_pre.main.height.saturating_sub(2)
+        };
         self.state.diff_viewport_width = rects_pre.main.width.saturating_sub(2);
         self.clamp_main_scroll_offset();
         sync_selection_scroll_offsets(&mut self.state, &rects_pre, area);

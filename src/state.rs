@@ -217,6 +217,8 @@ pub struct AppState {
     pub review_chat_input: String,
     pub review_chat_cursor: usize,
     pub review_chat_scroll: u16,
+    pub review_chat_height: Option<u16>,
+    pub review_chat_drag_active: bool,
 
     pub commit_message: String,
     pub commit_cursor: usize,
@@ -390,6 +392,8 @@ impl AppState {
             review_chat_input: String::new(),
             review_chat_cursor: 0,
             review_chat_scroll: 0,
+            review_chat_height: None,
+            review_chat_drag_active: false,
 
             commit_message: String::new(),
             commit_cursor: 0,

@@ -1240,6 +1240,67 @@ fn review_chat_docks_under_review_context() {
 }
 
 #[test]
+fn review_chat_mouse_scrolls_and_resizes_when_docked() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.modal = Modal::ReviewChat;
+    app.state.review = Some(AssistedReview {
+        report: "Assisted review against main".into(),
+        nodes: vec![ReviewNode {
+            id: "branch".into(),
+            parent: None,
+            depth: 0,
+            title: "Full diff against main".into(),
+            body: Vec::new(),
+            context: Vec::new(),
+        }],
+    });
+    for idx in 0..12 {
+        app.state
+            .review_chat_messages
+            .push(lg::state::ReviewChatMessage {
+                role: ReviewChatRole::Assistant,
+                content: format!("chat line {idx}"),
+            });
+    }
+
+    app.render().unwrap();
+    let area = Rect::new(0, 0, 120, 32);
+    let rects = lg::ui::split_layout_with_sizes(
+        area,
+        app.state.environments_visible(),
+        app.state.left_column_width,
+        app.state.left_panel_heights,
+    );
+    let chunks = panel::main::review_chat_layout(&app.state, rects.main);
+    let chat = chunks[1];
+    let initial_height = chat.height;
+
+    app.send_mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: chat.x.saturating_add(2),
+        row: chat.y.saturating_add(2),
+        modifiers: KeyModifiers::NONE,
+    })
+    .unwrap();
+    assert_eq!(app.state.review_chat_scroll, 3);
+
+    app.send_mouse(left_click(chat.x.saturating_add(2), chat.y))
+        .unwrap();
+    app.send_mouse(left_drag(
+        chat.x.saturating_add(2),
+        chat.y.saturating_sub(3),
+    ))
+    .unwrap();
+
+    assert!(
+        app.state.review_chat_height.unwrap_or_default() > initial_height,
+        "dragging the splitter upward should increase docked chat height"
+    );
+}
+
+#[test]
 fn review_panel_renders_ollama_markdown() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(140, 32)).unwrap();
     app.state.focus = Pane::Main;

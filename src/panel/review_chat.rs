@@ -200,6 +200,14 @@ fn remove_at_cursor(state: &mut AppState) {
     state.review_chat_input.replace_range(start..end, "");
 }
 
+pub(crate) fn scroll(state: &mut AppState, scroll_down: bool, amount: u16) {
+    state.review_chat_scroll = if scroll_down {
+        state.review_chat_scroll.saturating_add(amount)
+    } else {
+        state.review_chat_scroll.saturating_sub(amount)
+    };
+}
+
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let running = state.review_chat_job.is_some();
@@ -244,10 +252,10 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 .min(char_len(&state.review_chat_input));
         }
         KeyCode::Up => {
-            state.review_chat_scroll = state.review_chat_scroll.saturating_sub(1);
+            scroll(state, false, 1);
         }
         KeyCode::Down => {
-            state.review_chat_scroll = state.review_chat_scroll.saturating_add(1);
+            scroll(state, true, 1);
         }
         KeyCode::Char(c) if !ctrl && !running => {
             insert_at_cursor(state, c);

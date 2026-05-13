@@ -179,6 +179,7 @@ pub(super) fn select_mouse_row(
                 crate::panel::environments::nested_repo_scroll_offset(state, rects.environments),
             ) {
                 crate::panel::environments::select_nested_repo_tree_row(state, idx);
+                crate::panel::environments::activate_selected_repository_row(state);
             }
         }
     }

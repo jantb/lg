@@ -18,7 +18,7 @@ mod source;
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
         if state.modal == Modal::ReviewChat {
-            let chunks = review_chat_layout(area);
+            let chunks = review_chat_layout(state, area);
             review::render(state, chunks[0], frame, false);
             crate::panel::review_chat::render_docked(state, chunks[1], frame);
         } else {
@@ -61,9 +61,11 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     frame.render_widget(para, area);
 }
 
-fn review_chat_layout(area: Rect) -> std::rc::Rc<[Rect]> {
+pub fn review_chat_layout(state: &AppState, area: Rect) -> std::rc::Rc<[Rect]> {
     let min_review_height = 6.min(area.height);
-    let desired_chat_height = (area.height / 3).clamp(8, 18);
+    let desired_chat_height = state
+        .review_chat_height
+        .unwrap_or_else(|| (area.height / 3).clamp(8, 18));
     let chat_height = desired_chat_height.min(area.height.saturating_sub(min_review_height));
     Layout::default()
         .direction(Direction::Vertical)

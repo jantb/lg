@@ -325,6 +325,39 @@ fn repository_panel_tree_shows_nested_branch_lists() {
 }
 
 #[test]
+fn clicking_repository_row_switches_repository() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
+    app.state.workspace_root = Some("/workspace".into());
+    app.state.repo_root = Some("/workspace".into());
+    app.state.nested_repositories = vec![NestedRepo {
+        path: "services/api".into(),
+        branch: Some("feature/api".into()),
+        detached_at: None,
+        has_changes: false,
+    }];
+
+    let area = Rect::new(0, 0, 120, 32);
+    let rects = lg::ui::split_layout_with_sizes(
+        area,
+        app.state.environments_visible(),
+        app.state.left_column_width,
+        app.state.left_panel_heights,
+    );
+    app.send_mouse(left_click(
+        rects.environments.x.saturating_add(2),
+        rects.environments.y.saturating_add(2),
+    ))
+    .unwrap();
+
+    assert_eq!(
+        app.state.pending_action,
+        Some(PendingAction::SwitchRepository {
+            path: Some("services/api".into())
+        })
+    );
+}
+
+#[test]
 fn repository_panel_keeps_deployment_status_visible_in_full_layout() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 34)).unwrap();
     app.state.repo_root = Some("/tmp/work/lg/services/api".into());
