@@ -89,5 +89,43 @@ pub fn parse_porcelain_xy(bytes: &[u8]) -> Vec<FileEntry> {
 
 pub fn status_entries() -> Result<Vec<FileEntry>> {
     let out = run(&["status", "-z", "--porcelain=v1"])?;
-    Ok(parse_porcelain_xy(&out.stdout))
+    expand_untracked_directories(parse_porcelain_xy(&out.stdout))
+}
+
+fn expand_untracked_directories(entries: Vec<FileEntry>) -> Result<Vec<FileEntry>> {
+    let mut expanded = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if entry.x == '?' && entry.y == '?' && entry.path.ends_with('/') {
+            let files = untracked_files_under(&entry.path)?;
+            if files.is_empty() {
+                expanded.push(entry);
+            } else {
+                expanded.extend(files.into_iter().map(|path| FileEntry {
+                    path,
+                    x: entry.x,
+                    y: entry.y,
+                }));
+            }
+        } else {
+            expanded.push(entry);
+        }
+    }
+    Ok(expanded)
+}
+
+fn untracked_files_under(path: &str) -> Result<Vec<String>> {
+    let out = run(&[
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+        path,
+    ])?;
+    Ok(out
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| String::from_utf8_lossy(entry).into_owned())
+        .collect())
 }

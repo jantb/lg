@@ -53,6 +53,38 @@ fn status_in(dir: &std::path::Path) -> (Vec<String>, Vec<String>) {
     lg::git::parse_porcelain(&out.stdout)
 }
 
+#[test]
+fn status_entries_expands_untracked_directories_to_files() {
+    let dir = init_repo();
+    git_ok(
+        dir.path(),
+        &["config", "status.showUntrackedFiles", "normal"],
+    );
+    fs::create_dir_all(dir.path().join("src/test/service")).unwrap();
+    fs::write(
+        dir.path()
+            .join("src/test/service/ExchangeRateServiceTest.kt"),
+        "test\n",
+    )
+    .unwrap();
+
+    let _cwd = CwdGuard::new(dir.path());
+    let entries = lg::git::status_entries().unwrap();
+    let paths = entries
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(
+        paths.contains(&"src/test/service/ExchangeRateServiceTest.kt"),
+        "untracked directory contents should be listed: {paths:?}"
+    );
+    assert!(
+        !paths.contains(&"src/test/service/"),
+        "collapsed untracked directory row should be replaced: {paths:?}"
+    );
+}
+
 fn stage_in(dir: &std::path::Path, path: &str) {
     git_ok(dir, &["add", "--", path]);
 }
