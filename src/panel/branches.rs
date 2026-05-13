@@ -177,12 +177,8 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             } else if branch.upstream.is_some() && !branch.upstream_gone {
                 state.set_status("branch has a remote; use D for delete options", false);
             } else {
-                state.pending_action = Some(PendingAction::DeleteBranch {
-                    name: branch.name.clone(),
-                    delete_local: true,
-                    delete_remote: false,
-                    force: false,
-                });
+                let snapshot = branch.clone();
+                state.open_delete_branch_modal(&snapshot);
             }
         }
         KeyCode::Char('r') => {

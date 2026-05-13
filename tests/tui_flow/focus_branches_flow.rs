@@ -608,15 +608,10 @@ fn branches_d_shortcut_deletes_local_only_branch() {
 
     panel::branches::handle_key(&mut state, key(KeyCode::Char('d'))).unwrap();
 
-    assert_eq!(
-        state.pending_action,
-        Some(PendingAction::DeleteBranch {
-            name: "feature/local-only".into(),
-            delete_local: true,
-            delete_remote: false,
-            force: false,
-        })
-    );
+    assert_eq!(state.modal, Modal::DeleteBranch);
+    assert_eq!(state.delete_branch_target, "feature/local-only");
+    assert!(state.delete_branch_local);
+    assert!(!state.delete_branch_remote);
 }
 
 #[test]
