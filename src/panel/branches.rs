@@ -188,6 +188,9 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             };
             state.clamp();
         }
+        KeyCode::Char('o') => {
+            state.pending_action = Some(PendingAction::OpenProject);
+        }
         KeyCode::Char('m') if !shifted_m => {
             if state.branch_view == BranchView::Remote {
                 state.set_status("merge main from local branch view", false);

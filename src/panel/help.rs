@@ -61,10 +61,7 @@ const SECTIONS: &[Section] = &[
             ("j/k", "Move up/down"),
             ("Enter", "Expand repo, collapse repo, or checkout branch"),
             ("o", "Open selected repository in editor"),
-            (
-                "r",
-                "Toggle expanded repo between local and remote branches",
-            ),
+            ("r", "Toggle local/remote branches"),
             ("Esc/Backspace", "Collapse expanded repository"),
         ],
     },
@@ -74,12 +71,12 @@ const SECTIONS: &[Section] = &[
         bindings: &[
             ("j/k", "Move up/down"),
             ("Enter", "Checkout branch or remote tracking branch"),
+            ("o", "Open repository in editor"),
             ("r", "Toggle local and remote branch views"),
-            ("m", "Pull main, or merge origin/main into current branch"),
+            ("m", "Pull main or merge origin/main"),
             ("M", "Merge main into all branches and push"),
             ("d", "Delete selected local branch with no remote"),
             ("D", "Delete local/remote branch (modal)"),
-            ("select", "Commit log follows branch"),
         ],
     },
     Section {

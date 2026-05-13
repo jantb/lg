@@ -164,6 +164,26 @@ fn branches_panel_shows_behind_main_count() {
 }
 
 #[test]
+fn branches_o_opens_project() {
+    let mut state = AppState::new();
+    state.focus = Pane::Branches;
+    state.branches = vec![Branch {
+        name: "main".into(),
+        is_current: true,
+        upstream: Some("origin/main".into()),
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 0,
+        last_commit_unix: None,
+    }];
+
+    panel::branches::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
+
+    assert_eq!(state.pending_action, Some(PendingAction::OpenProject));
+}
+
+#[test]
 fn branches_panel_keeps_context_below_selected_local_row_while_scrolling() {
     let mut state = AppState::new();
     state.focus = Pane::Branches;
@@ -454,7 +474,7 @@ fn branches_shortcuts_show_remote_toggle() {
         "help should show remote toggle: {help}"
     );
     assert!(
-        help.contains("Pull main, or merge origin/main"),
+        help.contains("Pull main or merge origin/main"),
         "help should show merge-main shortcut: {help}"
     );
     assert!(
