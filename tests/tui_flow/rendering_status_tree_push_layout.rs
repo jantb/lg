@@ -28,14 +28,20 @@ fn files_panel_renders_xy_codes_with_color() {
         "expected a yellow 'M' cell for modified file"
     );
 
-    // Find the '?' cell (untracked) — should be cyan.
-    let found_cyan_q = (0..buf.area.height).any(|row| {
-        (0..buf.area.width).any(|col| {
-            let cell = &buf[(col, row)];
-            cell.symbol() == "?" && cell.style().fg == Some(Color::Cyan)
+    // Untracked files render as an unstaged marker rather than raw "??".
+    let found_unstaged = (0..buf.area.height).any(|row| {
+        (0..buf.area.width.saturating_sub("unstaged".len() as u16)).any(|col| {
+            (0.."unstaged".len()).all(|offset| {
+                let cell = &buf[((col + offset as u16), row)];
+                cell.symbol() == &"unstaged"[offset..offset + 1]
+                    && cell.style().fg == Some(Color::DarkGray)
+            })
         })
     });
-    assert!(found_cyan_q, "expected a cyan '?' cell for untracked file");
+    assert!(
+        found_unstaged,
+        "expected a grey unstaged marker for untracked file"
+    );
 }
 
 #[test]
@@ -713,6 +719,26 @@ fn tree_compacts_single_subdir_chains() {
     assert_eq!(
         rows[3].path,
         "src/main/kotlin/org/example/inventory/Service.kt"
+    );
+}
+
+#[test]
+fn tree_renders_untracked_directory_with_name() {
+    let files = vec![FileEntry {
+        path: "src/main/kotlin/no/alv/exchange_rate/model/response/".into(),
+        x: '?',
+        y: '?',
+    }];
+
+    let rows = build_tree_rows(&files, &HashSet::new());
+
+    assert!(
+        rows.iter().any(|row| row.label == "response/"),
+        "untracked directory row should keep its display name: {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.label.is_empty()),
+        "tree should not emit an empty file label: {rows:?}"
     );
 }
 

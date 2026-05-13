@@ -33,7 +33,12 @@ pub fn build_tree_rows(files: &[FileEntry], collapsed: &HashSet<String>) -> Vec<
     let mut root = DirNode::default();
     for (idx, file) in files.iter().enumerate() {
         let mut node = &mut root;
-        let parts: Vec<&str> = file.path.split('/').collect();
+        let path = file.path.trim_end_matches('/');
+        let parts: Vec<&str> = if path.is_empty() {
+            vec![file.path.as_str()]
+        } else {
+            path.split('/').collect()
+        };
         let last = parts.len().saturating_sub(1);
         for segment in &parts[..last] {
             node = node.subdirs.entry((*segment).to_string()).or_default();
@@ -125,12 +130,15 @@ fn emit_rows(
             }
             Child::File(idx) => {
                 let file = &files[idx];
-                let label = file
-                    .path
+                let path = file.path.trim_end_matches('/');
+                let mut label = path
                     .rsplit_once('/')
                     .map(|(_, name)| name)
-                    .unwrap_or(&file.path)
+                    .unwrap_or(path)
                     .to_string();
+                if file.path.ends_with('/') {
+                    label.push('/');
+                }
                 rows.push(TreeRow {
                     kind: TreeKind::File { entry_idx: idx },
                     depth,

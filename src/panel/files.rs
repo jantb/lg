@@ -77,7 +77,15 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
             TreeKind::File { entry_idx } => {
                 let e = &state.files[*entry_idx];
                 let fully_staged = e.x != ' ' && e.x != '?' && e.y == ' ';
-                if fully_staged {
+                if e.x == '?' && e.y == '?' {
+                    let marker = Style::default().fg(Color::DarkGray);
+                    let label = Style::default().fg(Color::Gray);
+                    Line::from(vec![
+                        Span::raw(indent),
+                        Span::styled("unstaged ", marker),
+                        Span::styled(row.label.clone(), label),
+                    ])
+                } else if fully_staged {
                     let green = Style::default().fg(Color::Green);
                     Line::from(vec![
                         Span::raw(indent),
