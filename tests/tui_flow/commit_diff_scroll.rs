@@ -60,6 +60,25 @@ fn commit_input_moves_cursor_vertically_and_with_control_shortcuts() {
 }
 
 #[test]
+fn commit_input_ctrl_u_clears_message() {
+    let mut state = make_state_with_files();
+    state.modal = Modal::Commit;
+    state.commit_message = "subject\n\nbody".into();
+    state.commit_cursor = state.commit_message.chars().count();
+    state.commit_scroll_offset = 3;
+
+    panel::commit::handle_key(
+        &mut state,
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+
+    assert_eq!(state.commit_message, "");
+    assert_eq!(state.commit_cursor, 0);
+    assert_eq!(state.commit_scroll_offset, 0);
+}
+
+#[test]
 fn commit_input_mouse_click_places_cursor() {
     let mut state = make_state_with_files();
     state.modal = Modal::Commit;

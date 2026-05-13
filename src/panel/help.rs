@@ -132,6 +132,7 @@ const SECTIONS: &[Section] = &[
             ("Ctrl+S", "Commit"),
             ("Enter", "New line"),
             ("Ctrl+R", "Regenerate message"),
+            ("Ctrl+U", "Clear message"),
             ("Backspace", "Delete char"),
             ("Esc", "Cancel"),
         ],

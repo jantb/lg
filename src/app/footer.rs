@@ -123,6 +123,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
                 ("Ctrl+S", "commit"),
                 ("Enter", "newline"),
                 ("Ctrl+R", "regen"),
+                ("Ctrl+U", "clear"),
                 ("Esc", "cancel"),
             ],
             Color::Cyan,

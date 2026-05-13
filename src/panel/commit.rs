@@ -51,7 +51,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         None => (
             state.commit_message.clone(),
             state.commit_cursor,
-            "Commit message  (Ctrl+S=commit  Shift+P=commit&push  Enter=newline  Ctrl+R=regenerate  Esc=back)"
+            "Commit message  (Ctrl+S=commit  Shift+P=commit&push  Enter=newline  Ctrl+R=regenerate  Ctrl+U=clear  Esc=back)"
                 .to_owned(),
             true,
         ),
@@ -91,6 +91,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             Span::raw(" newline  "),
             Span::styled("Ctrl+R", Style::default().fg(Color::Yellow)),
             Span::raw(" regenerate  "),
+            Span::styled("Ctrl+U", Style::default().fg(Color::Yellow)),
+            Span::raw(" clear  "),
             Span::styled("Esc", Style::default().fg(Color::Gray)),
             Span::raw(" back"),
         ]))
@@ -445,6 +447,13 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.commit_cursor = 0;
                 state.set_status("generating\u{2026}", false);
                 state.pending_action = Some(PendingAction::GenerateMessage);
+            }
+        }
+        KeyCode::Char('u') if ctrl => {
+            if !generating {
+                state.commit_message.clear();
+                state.commit_cursor = 0;
+                state.commit_scroll_offset = 0;
             }
         }
         KeyCode::Char('a') if ctrl => {
