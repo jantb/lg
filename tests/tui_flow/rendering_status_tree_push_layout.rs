@@ -264,6 +264,65 @@ fn repository_panel_shows_nested_repository_branches() {
 }
 
 #[test]
+fn repository_panel_highlights_active_nested_repository_background() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace/services/api".into());
+    state.nested_repositories = vec![
+        NestedRepo {
+            path: "services/api".into(),
+            branch: Some("main".into()),
+            detached_at: None,
+            has_changes: false,
+        },
+        NestedRepo {
+            path: "libs/core".into(),
+            branch: Some("main".into()),
+            detached_at: None,
+            has_changes: false,
+        },
+    ];
+
+    let backend = TestBackend::new(80, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::environments::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let active_bg = Some(Color::Rgb(24, 54, 34));
+    let mut active_repo_has_background = false;
+    let mut inactive_repo_has_background = false;
+
+    for row in 0..buf.area.height {
+        let mut row_text = String::new();
+        for col in 0..buf.area.width {
+            row_text.push_str(buf[(col, row)].symbol());
+        }
+
+        if row_text.contains("services/api") {
+            active_repo_has_background =
+                (0..buf.area.width).any(|col| buf[(col, row)].style().bg == active_bg);
+        }
+        if row_text.contains("libs/core") {
+            inactive_repo_has_background =
+                (0..buf.area.width).any(|col| buf[(col, row)].style().bg == active_bg);
+        }
+    }
+
+    assert!(
+        active_repo_has_background,
+        "active repository row should use active background"
+    );
+    assert!(
+        !inactive_repo_has_background,
+        "inactive repository row should not use active background"
+    );
+}
+
+#[test]
 fn repository_panel_tree_shows_nested_branch_lists() {
     let mut state = AppState::new();
     state.nested_repositories = vec![NestedRepo {

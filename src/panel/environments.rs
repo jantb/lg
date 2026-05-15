@@ -18,6 +18,7 @@ use super::scroll;
 
 const DEPLOYMENT_STATUS_HEIGHT: u16 = 6;
 const MIN_REPOSITORY_TREE_WITH_DEPLOYMENT: u16 = 6;
+const ACTIVE_REPOSITORY_BG: Color = Color::Rgb(24, 54, 34);
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     if !state.nested_repositories.is_empty() || !active_repo_is_workspace(state) {
@@ -101,19 +102,21 @@ fn render_nested_repositories(state: &AppState, area: Rect, frame: &mut Frame, f
     let items = rows
         .iter()
         .map(|row| match row {
-            NestedRepoTreeRow::Root => ListItem::new(root_repo_line(state, row_width)),
+            NestedRepoTreeRow::Root => {
+                repository_list_item(root_repo_line(state, row_width), root_repo_selected(state))
+            }
             NestedRepoTreeRow::Repo { repo_idx } => {
+                let repo = &state.nested_repositories[*repo_idx];
                 let expanded = state
                     .nested_repositories
                     .get(*repo_idx)
                     .is_some_and(|repo| {
                         state.nested_repo_detail_path.as_deref() == Some(&repo.path)
                     });
-                ListItem::new(nested_repo_line(
-                    &state.nested_repositories[*repo_idx],
-                    row_width,
-                    expanded,
-                ))
+                repository_list_item(
+                    nested_repo_line(repo, row_width, expanded),
+                    nested_repo_selected(state, &repo.path),
+                )
             }
             NestedRepoTreeRow::Branch { branch_idx, .. } => ListItem::new(nested_branch_line(
                 &state.nested_repo_branches[*branch_idx],
@@ -437,6 +440,27 @@ fn active_repo_is_workspace(state: &AppState) -> bool {
             std::path::Path::new(workspace) == std::path::Path::new(repo)
         }
         _ => true,
+    }
+}
+
+fn nested_repo_selected(state: &AppState, repo_path: &str) -> bool {
+    let (Some(workspace), Some(repo_root)) =
+        (state.workspace_root.as_deref(), state.repo_root.as_deref())
+    else {
+        return false;
+    };
+    let Ok(relative_path) = std::path::Path::new(repo_root).strip_prefix(workspace) else {
+        return false;
+    };
+    relative_path == std::path::Path::new(repo_path)
+}
+
+fn repository_list_item(line: Line<'static>, selected: bool) -> ListItem<'static> {
+    let item = ListItem::new(line);
+    if selected {
+        item.style(Style::default().bg(ACTIVE_REPOSITORY_BG))
+    } else {
+        item
     }
 }
 
