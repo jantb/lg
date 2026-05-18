@@ -127,6 +127,18 @@ fn build_review_chat_system_prompt(context: &str) -> String {
     )
 }
 
+fn build_review_style_flag_prompt(path: &str, context: &str) -> String {
+    format!(
+        "Review this single changed Kotlin file for concrete violations of the established repo style.\n\
+         Answer exactly FLAG or OK. Use FLAG only when the shown change gives enough evidence that\n\
+         this file likely violates the style guide and deserves manual attention. Use OK for normal\n\
+         business logic changes, tests that look consistent, or insufficient evidence.\n\n\
+         {REVIEW_REPO_STYLE_GUIDE}\n\n\
+         File: {path}\n\
+         Review context:\n{context}"
+    )
+}
+
 fn summarize_diff(diff: &str) -> String {
     let mut files: Vec<DiffFileSummary> = Vec::new();
     let mut current: Option<usize> = None;
@@ -275,6 +287,15 @@ pub fn stream_review_assist(context: String, tx: Sender<GenMsg>) {
     );
 }
 
+pub fn stream_review_style_flag(path: String, context: String, tx: Sender<GenMsg>) {
+    stream_prompt(
+        build_review_style_flag_prompt(&path, &context),
+        review_style_flag_options(),
+        finalize_review_style_flag,
+        tx,
+    );
+}
+
 pub fn stream_review_chat(
     context: String,
     history: Vec<ReviewChatMessage>,
@@ -318,6 +339,15 @@ fn review_chat_options() -> Options {
     if std::env::var_os("LG_OLLAMA_NUM_PREDICT").is_none() {
         opts.num_predict = 768;
     }
+    opts
+}
+
+fn review_style_flag_options() -> Options {
+    let mut opts = Options::default();
+    if std::env::var_os("LG_OLLAMA_NUM_PREDICT").is_none() {
+        opts.num_predict = 16;
+    }
+    opts.stop = vec!["\n"];
     opts
 }
 
@@ -583,6 +613,24 @@ fn finalize_review_chat(raw: &str) -> String {
         .collect()
 }
 
+fn finalize_review_style_flag(raw: &str) -> String {
+    let cleaned = strip_think_tags(raw);
+    let first = cleaned
+        .trim()
+        .trim_matches('"')
+        .lines()
+        .map(trim_outer_quotes)
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("OK")
+        .trim()
+        .to_ascii_uppercase();
+    if first.contains("FLAG") {
+        "FLAG".to_string()
+    } else {
+        "OK".to_string()
+    }
+}
+
 fn split_subject(s: &str) -> (String, String) {
     if s.chars().count() <= COMMIT_MSG_SUBJECT_MAX_CHARS {
         return (s.to_string(), String::new());
@@ -802,6 +850,23 @@ mod tests {
         assert!(prompt.contains("Ktor CIO adapters"));
         assert!(prompt.contains("never Mockito"));
         assert!(prompt.contains("Review context:\nfull review context"));
+    }
+
+    #[test]
+    fn review_style_flag_prompt_is_single_file() {
+        let prompt =
+            build_review_style_flag_prompt("src/main/kotlin/App.kt", "updates controller logic");
+
+        assert!(prompt.contains("Answer exactly FLAG or OK"));
+        assert!(prompt.contains("File: src/main/kotlin/App.kt"));
+        assert!(prompt.contains("updates controller logic"));
+    }
+
+    #[test]
+    fn finalize_review_style_flag_normalizes_output() {
+        assert_eq!(finalize_review_style_flag("FLAG\nbecause..."), "FLAG");
+        assert_eq!(finalize_review_style_flag("ok"), "OK");
+        assert_eq!(finalize_review_style_flag("not enough evidence"), "OK");
     }
 
     #[test]

@@ -1,9 +1,11 @@
 use crate::state::{
-    AppState, DiffSource, Pane, ReviewAssistJob, ReviewChatJob, ReviewJob, ReviewMsg,
+    AppState, DiffSource, Pane, ReviewAssistJob, ReviewChatJob, ReviewFlagJob, ReviewFlagMsg,
+    ReviewJob, ReviewMsg,
 };
 
 const MAX_REVIEW_ASSIST_CONTEXT_BYTES: usize = 18_000;
 const MAX_REVIEW_CHAT_CONTEXT_BYTES: usize = 32_000;
+const MAX_REVIEW_FLAG_CONTEXT_BYTES: usize = 14_000;
 
 pub(super) fn spawn_assisted_review(state: &mut AppState) {
     if state.review_job.is_some() {
@@ -35,11 +37,16 @@ pub(super) fn spawn_assisted_review(state: &mut AppState) {
     state.review_context_open.clear();
     state.review_context_restore_collapsed.clear();
     state.review_assists.clear();
+    state.review_flagged_paths.clear();
+    state.review_flag_active_path = None;
     state.review_chat_messages.clear();
     state.review_chat_input.clear();
     state.review_chat_cursor = 0;
     state.review_chat_scroll = 0;
     if let Some(mut job) = state.review_assist_job.take() {
+        state.defer_thread_join(job.handle.take());
+    }
+    if let Some(mut job) = state.review_flag_job.take() {
         state.defer_thread_join(job.handle.take());
     }
     if let Some(mut job) = state.review_chat_job.take() {
@@ -67,6 +74,58 @@ pub(super) fn spawn_review_assist(state: &mut AppState, node_id: String) {
         spinner: 0,
     });
     state.set_status("explaining review item...", false);
+}
+
+pub(super) fn spawn_review_style_flags(state: &mut AppState) {
+    let file_contexts = review_flag_contexts(state);
+    if file_contexts.is_empty() {
+        state.review_flagged_paths.clear();
+        state.review_flag_active_path = None;
+        return;
+    }
+    if let Some(mut job) = state.review_flag_job.take() {
+        state.defer_thread_join(job.handle.take());
+    }
+    state.review_flagged_paths.clear();
+    state.review_flag_active_path = None;
+    let total = file_contexts.len();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        for (index, (path, context)) in file_contexts.into_iter().enumerate() {
+            if tx
+                .send(ReviewFlagMsg::Started {
+                    path: path.clone(),
+                    index: index + 1,
+                    total,
+                })
+                .is_err()
+            {
+                return;
+            }
+            match review_style_flag_file(&path, context) {
+                Ok(flagged) => {
+                    if tx.send(ReviewFlagMsg::Done { path, flagged }).is_err() {
+                        return;
+                    }
+                }
+                Err(message) => {
+                    if tx.send(ReviewFlagMsg::Error { path, message }).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+        let _ = tx.send(ReviewFlagMsg::Finished);
+    });
+    state.review_flag_job = Some(ReviewFlagJob {
+        rx,
+        handle: Some(handle),
+        active_path: None,
+        completed: 0,
+        total,
+        spinner: 0,
+    });
+    state.set_status("starting style flag pass...", false);
 }
 
 pub(super) fn spawn_review_chat(state: &mut AppState, prompt: String) {
@@ -97,6 +156,83 @@ pub(super) fn spawn_review_chat(state: &mut AppState, prompt: String) {
     state.set_status("asking review chat...", false);
 }
 
+fn review_flag_contexts(state: &AppState) -> Vec<(String, String)> {
+    review_flag_candidates(state)
+        .into_iter()
+        .filter_map(|path| {
+            review_flag_context_for_path(state, &path).map(|context| (path, context))
+        })
+        .collect()
+}
+
+fn review_flag_context_for_path(state: &AppState, path: &str) -> Option<String> {
+    let review = state.review.as_ref()?;
+    let mut out = String::new();
+    push_limited_line(
+        &mut out,
+        &format!("File under review: {path}"),
+        MAX_REVIEW_FLAG_CONTEXT_BYTES,
+    );
+    push_limited_line(&mut out, "", MAX_REVIEW_FLAG_CONTEXT_BYTES);
+    push_limited_line(
+        &mut out,
+        "Relevant review nodes:",
+        MAX_REVIEW_FLAG_CONTEXT_BYTES,
+    );
+    let mut matched = false;
+    for node in &review.nodes {
+        if review_node_path(&node.title) != Some(path) {
+            continue;
+        }
+        matched = true;
+        if out.len() >= MAX_REVIEW_FLAG_CONTEXT_BYTES {
+            push_limited_line(
+                &mut out,
+                "... file review context truncated ...",
+                MAX_REVIEW_FLAG_CONTEXT_BYTES,
+            );
+            break;
+        }
+        let indent = "  ".repeat(node.depth as usize);
+        push_limited_line(
+            &mut out,
+            &format!("{indent}- {}", node.title),
+            MAX_REVIEW_FLAG_CONTEXT_BYTES,
+        );
+        for body in &node.body {
+            push_limited_line(
+                &mut out,
+                &format!("{indent}  {body}"),
+                MAX_REVIEW_FLAG_CONTEXT_BYTES,
+            );
+        }
+        for context in &node.context {
+            push_limited_line(
+                &mut out,
+                &format!("{indent}  {context}"),
+                MAX_REVIEW_FLAG_CONTEXT_BYTES,
+            );
+        }
+    }
+    matched.then_some(out)
+}
+
+fn review_flag_candidates(state: &AppState) -> Vec<String> {
+    let Some(review) = &state.review else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    for node in &review.nodes {
+        let Some(path) = review_node_path(&node.title) else {
+            continue;
+        };
+        if is_kotlin_path(path) && !paths.iter().any(|candidate| candidate == path) {
+            paths.push(path.to_string());
+        }
+    }
+    paths
+}
+
 fn review_chat_context(state: &AppState) -> Option<String> {
     let report = &state.review.as_ref()?.report;
     let mut out = String::new();
@@ -118,6 +254,45 @@ fn review_chat_context(state: &AppState) -> Option<String> {
         push_limited_line(&mut out, line, MAX_REVIEW_CHAT_CONTEXT_BYTES);
     }
     Some(out)
+}
+
+fn review_node_path(title: &str) -> Option<&str> {
+    let location = title
+        .split_once(" in ")
+        .map(|(path, _)| path)
+        .or_else(|| title.split_once(" - ").map(|(location, _)| location))
+        .unwrap_or(title);
+    let path = location
+        .rsplit_once(':')
+        .filter(|(_, line)| line.chars().all(|ch| ch.is_ascii_digit()))
+        .map(|(path, _)| path)
+        .unwrap_or(location)
+        .trim();
+    (!path.is_empty()).then_some(path)
+}
+
+fn is_kotlin_path(path: &str) -> bool {
+    path.ends_with(".kt") || path.ends_with(".kts")
+}
+
+fn review_style_flag_file(path: &str, context: String) -> Result<bool, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    crate::ollama::stream_review_style_flag(path.to_string(), context, tx);
+    let mut final_msg = None;
+    let mut error = None;
+    for msg in rx {
+        match msg {
+            crate::state::GenMsg::Done(output) => final_msg = Some(output),
+            crate::state::GenMsg::Error(message) => error = Some(message),
+            crate::state::GenMsg::Thinking(_) | crate::state::GenMsg::Output(_) => {}
+        }
+    }
+    if let Some(error) = error {
+        return Err(error);
+    }
+    Ok(final_msg
+        .as_deref()
+        .is_some_and(|output| output.trim().eq_ignore_ascii_case("FLAG")))
 }
 
 fn review_assist_context(state: &AppState, node_id: &str) -> Option<String> {

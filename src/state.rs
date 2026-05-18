@@ -218,6 +218,8 @@ pub struct AppState {
     pub review_context_open: HashSet<String>,
     pub review_context_restore_collapsed: HashSet<String>,
     pub review_assists: HashMap<String, String>,
+    pub review_flagged_paths: HashSet<String>,
+    pub review_flag_active_path: Option<String>,
     pub review_chat_messages: Vec<ReviewChatMessage>,
     pub review_chat_input: String,
     pub review_chat_cursor: usize,
@@ -260,6 +262,7 @@ pub struct AppState {
     pub diff_job: Option<DiffJob>,
     pub review_job: Option<ReviewJob>,
     pub review_assist_job: Option<ReviewAssistJob>,
+    pub review_flag_job: Option<ReviewFlagJob>,
     pub review_chat_job: Option<ReviewChatJob>,
     pub workflow_job: Option<WorkflowJob>,
     pub deferred_threads: Vec<JoinHandle<()>>,
@@ -393,6 +396,8 @@ impl AppState {
             review_context_open: HashSet::new(),
             review_context_restore_collapsed: HashSet::new(),
             review_assists: HashMap::new(),
+            review_flagged_paths: HashSet::new(),
+            review_flag_active_path: None,
             review_chat_messages: Vec::new(),
             review_chat_input: String::new(),
             review_chat_cursor: 0,
@@ -435,6 +440,7 @@ impl AppState {
             diff_job: None,
             review_job: None,
             review_assist_job: None,
+            review_flag_job: None,
             review_chat_job: None,
             workflow_job: None,
             deferred_threads: Vec::new(),
@@ -494,6 +500,8 @@ impl AppState {
             Some("reviewing")
         } else if self.review_assist_job.is_some() {
             Some("explaining")
+        } else if self.review_flag_job.is_some() {
+            Some("flagging style")
         } else if self.review_chat_job.is_some() {
             Some("chatting")
         } else if self.workflow_job.is_some() {

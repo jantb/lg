@@ -20,6 +20,7 @@ use super::source::{
 };
 
 const SUSPICIOUS_REVIEW_BG: Color = Color::Rgb(78, 57, 18);
+const ACTIVE_REVIEW_STYLE_BG: Color = Color::Rgb(28, 48, 70);
 
 pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let block = ui::framed_with_activity(
@@ -83,6 +84,7 @@ pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: b
             node.depth,
             selected,
             drillable,
+            state,
         ));
 
         if expanded {
@@ -154,6 +156,7 @@ fn review_title_line(
     depth: u16,
     selected: bool,
     drillable: bool,
+    state: &AppState,
 ) -> Line<'static> {
     let mut spans = vec![Span::styled(
         format!("{indent}{marker} "),
@@ -164,7 +167,7 @@ fn review_title_line(
             selected,
         ),
     )];
-    spans.extend(review_title_spans(title, depth, selected));
+    spans.extend(review_title_spans(title, depth, selected, state));
     if drillable {
         spans.push(Span::styled(
             " ↳".to_string(),
@@ -179,7 +182,12 @@ fn review_title_line(
     Line::from(spans)
 }
 
-fn review_title_spans(title: &str, depth: u16, selected: bool) -> Vec<Span<'static>> {
+fn review_title_spans(
+    title: &str,
+    depth: u16,
+    selected: bool,
+    state: &AppState,
+) -> Vec<Span<'static>> {
     if depth == 0 {
         return vec![Span::styled(
             title.to_string(),
@@ -195,7 +203,7 @@ fn review_title_spans(title: &str, depth: u16, selected: bool) -> Vec<Span<'stat
     if let Some((path, rest)) = title.split_once(" in ")
         && let Some((symbol, description)) = rest.split_once(" - ")
     {
-        let mut spans = styled_file_path(path, selected);
+        let mut spans = styled_file_path(path, selected, review_path_style(path, state));
         spans.push(Span::styled(
             " in ".to_string(),
             selected_style(Style::default().fg(Color::DarkGray), selected),
@@ -218,7 +226,7 @@ fn review_title_spans(title: &str, depth: u16, selected: bool) -> Vec<Span<'stat
     }
 
     if let Some((location, description)) = title.split_once(" - ") {
-        let mut spans = styled_file_location(location, selected);
+        let mut spans = styled_file_location(location, selected, state);
         spans.push(Span::styled(
             " - ".to_string(),
             selected_style(Style::default().fg(Color::DarkGray), selected),
@@ -230,19 +238,19 @@ fn review_title_spans(title: &str, depth: u16, selected: bool) -> Vec<Span<'stat
     styled_review_description(title, selected)
 }
 
-fn styled_file_location(location: &str, selected: bool) -> Vec<Span<'static>> {
+fn styled_file_location(location: &str, selected: bool, state: &AppState) -> Vec<Span<'static>> {
     let Some((path, line)) = location.rsplit_once(':') else {
-        return styled_file_path(location, selected);
+        return styled_file_path(location, selected, review_path_style(location, state));
     };
     if line.chars().all(|ch| ch.is_ascii_digit()) {
-        let mut spans = styled_file_path(path, selected);
+        let mut spans = styled_file_path(path, selected, review_path_style(path, state));
         spans.push(Span::styled(
             format!(":{line}"),
             selected_style(Style::default().fg(Color::LightBlue), selected),
         ));
         spans
     } else {
-        styled_file_path(location, selected)
+        styled_file_path(location, selected, review_path_style(location, state))
     }
 }
 
@@ -277,8 +285,24 @@ fn renders_review_body(node_id: &str) -> bool {
     !is_review_file_node(node_id) && !is_review_entry_node(node_id)
 }
 
-fn styled_file_path(path: &str, selected: bool) -> Vec<Span<'static>> {
-    let suspicious = is_suspicious_review_path(path);
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReviewPathStyle {
+    Normal,
+    Active,
+    Flagged,
+}
+
+fn review_path_style(path: &str, state: &AppState) -> ReviewPathStyle {
+    if state.review_flagged_paths.contains(path) {
+        ReviewPathStyle::Flagged
+    } else if state.review_flag_active_path.as_deref() == Some(path) {
+        ReviewPathStyle::Active
+    } else {
+        ReviewPathStyle::Normal
+    }
+}
+
+fn styled_file_path(path: &str, selected: bool, path_style: ReviewPathStyle) -> Vec<Span<'static>> {
     let mut file_style = if is_test_review_node(path) {
         Style::default()
             .fg(Color::LightMagenta)
@@ -288,10 +312,16 @@ fn styled_file_path(path: &str, selected: bool) -> Vec<Span<'static>> {
             .fg(Color::LightCyan)
             .add_modifier(Modifier::BOLD)
     };
-    if suspicious {
-        file_style = file_style.bg(SUSPICIOUS_REVIEW_BG);
+    match path_style {
+        ReviewPathStyle::Flagged => {
+            file_style = file_style.bg(SUSPICIOUS_REVIEW_BG);
+        }
+        ReviewPathStyle::Active => {
+            file_style = file_style.bg(ACTIVE_REVIEW_STYLE_BG);
+        }
+        ReviewPathStyle::Normal => {}
     }
-    let style = if suspicious && selected {
+    let style = if path_style != ReviewPathStyle::Normal && selected {
         file_style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     } else {
         selected_style(file_style, selected)
@@ -561,55 +591,6 @@ fn is_test_review_node(title: &str) -> bool {
         || title.contains(" in src/test/")
         || title.starts_with("src/test/")
         || title.contains("/src/test/")
-}
-
-fn is_suspicious_review_path(path: &str) -> bool {
-    if !is_kotlin_review_path(path) {
-        return false;
-    }
-    let lower = path.to_ascii_lowercase();
-    [
-        "adapter",
-        "cache",
-        "client",
-        "configuredjson",
-        "controller",
-        "converter",
-        "dao",
-        "database",
-        "datetime",
-        "dto",
-        "event",
-        "exposed",
-        "flow",
-        "flyway",
-        "generated-sources",
-        "http",
-        "jackson",
-        "json",
-        "kafka",
-        "ktor",
-        "logger",
-        "logging",
-        "mapper",
-        "migration",
-        "model",
-        "outbox",
-        "processor",
-        "repository",
-        "request",
-        "response",
-        "service",
-        "topic",
-        "workflow",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
-}
-
-fn is_kotlin_review_path(path: &str) -> bool {
-    let location = review_node_path(path).unwrap_or(path);
-    location.ends_with(".kt") || location.ends_with(".kts")
 }
 
 fn visible_review_node_indices(state: &AppState) -> Vec<usize> {

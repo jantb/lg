@@ -716,6 +716,9 @@ fn review_panel_styles_tree_titles_and_change_counts() {
         ],
     });
     app.state.review_idx = 1;
+    app.state
+        .review_flagged_paths
+        .insert("src/main/kotlin/BalanceService.kt".into());
 
     app.render().unwrap();
     let buf = app.terminal.backend().buffer().clone();
@@ -780,7 +783,47 @@ fn review_panel_suspicious_background_only_applies_to_kotlin_paths() {
         !buf.content()
             .iter()
             .any(|cell| cell.bg == Color::Rgb(78, 57, 18)),
-        "non-Kotlin service paths should not receive the Kotlin warning background"
+        "unflagged service paths should not receive the warning background"
+    );
+}
+
+#[test]
+fn review_panel_marks_active_style_analysis_separately() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 12)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Full diff against main".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:entry:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: "src/main/kotlin/BalanceService.kt in class BalanceService - updates flow (+1 -0)"
+                    .into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+        ],
+    });
+    app.state.review_flag_active_path = Some("src/main/kotlin/BalanceService.kt".into());
+
+    app.render().unwrap();
+    let buf = app.terminal.backend().buffer().clone();
+
+    assert!(
+        buf.content()
+            .iter()
+            .any(|cell| cell.symbol() == "B" && cell.bg == Color::Rgb(28, 48, 70)),
+        "active style analysis should have its own background"
     );
 }
 

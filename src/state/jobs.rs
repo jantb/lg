@@ -202,6 +202,34 @@ pub struct ReviewAssistJob {
 }
 
 #[derive(Debug)]
+pub enum ReviewFlagMsg {
+    Started {
+        path: String,
+        index: usize,
+        total: usize,
+    },
+    Done {
+        path: String,
+        flagged: bool,
+    },
+    Error {
+        path: String,
+        message: String,
+    },
+    Finished,
+}
+
+#[derive(Debug)]
+pub struct ReviewFlagJob {
+    pub rx: Receiver<ReviewFlagMsg>,
+    pub handle: Option<JoinHandle<()>>,
+    pub active_path: Option<String>,
+    pub completed: usize,
+    pub total: usize,
+    pub spinner: usize,
+}
+
+#[derive(Debug)]
 pub struct ReviewChatJob {
     pub rx: Receiver<GenMsg>,
     pub handle: Option<JoinHandle<()>>,

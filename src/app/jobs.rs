@@ -9,13 +9,13 @@ use crate::{
     state::{
         CheckoutMsg, CommitLogJob, CommitLogMsg, DiffJob, DiffMsg, DiffSource, FetchJob, FetchMsg,
         GenMsg, Modal, OperationKind, OperationMsg, Pane, PushMsg, RefreshJob, RefreshMsg,
-        ReleaseStatusJob, ReleaseStatusMsg, ReviewMsg, WorkflowMsg,
+        ReleaseStatusJob, ReleaseStatusMsg, ReviewFlagMsg, ReviewMsg, WorkflowMsg,
     },
 };
 
 use super::{
     App, build_refresh_snapshot, git_job_running, load_diff_text, selected_commit_ref,
-    selected_diff_source, should_refresh_for_fs_event, spawn_push,
+    selected_diff_source, should_refresh_for_fs_event, spawn_push, spawn_review_style_flags,
 };
 
 fn join_worker(handle: Option<JoinHandle<()>>) {
@@ -533,6 +533,7 @@ impl App {
                     self.state.diff_line_count =
                         self.state.diff_text.lines().count().min(u16::MAX as usize) as u16;
                     self.state.set_status("review ready", false);
+                    spawn_review_style_flags(&mut self.state);
                 }
                 Err(err) => {
                     self.state.diff_text = format!("error building assisted review: {err}");
@@ -541,6 +542,67 @@ impl App {
                     self.state.set_status(first_status_line(&err), true);
                 }
             }
+        }
+    }
+
+    pub(super) fn drain_review_flag_job(&mut self) {
+        let mut drained: Vec<ReviewFlagMsg> = Vec::new();
+        let mut handle = None;
+        if let Some(job) = self.state.review_flag_job.as_ref() {
+            while let Ok(msg) = job.rx.try_recv() {
+                drained.push(msg);
+            }
+        }
+        for msg in drained {
+            match msg {
+                ReviewFlagMsg::Started { path, index, total } => {
+                    if let Some(job) = self.state.review_flag_job.as_mut() {
+                        job.active_path = Some(path.clone());
+                    }
+                    self.state.review_flag_active_path = Some(path.clone());
+                    self.state
+                        .set_status(format!("analyzing style {index}/{total}: {path}"), false);
+                }
+                ReviewFlagMsg::Done { path, flagged } => {
+                    if let Some(job) = self.state.review_flag_job.as_mut() {
+                        job.completed = job.completed.saturating_add(1);
+                    }
+                    if self.state.review_flag_active_path.as_deref() == Some(path.as_str()) {
+                        self.state.review_flag_active_path = None;
+                    }
+                    if flagged {
+                        self.state.review_flagged_paths.insert(path.clone());
+                        self.state
+                            .set_status(format!("style flagged: {path}"), true);
+                    } else {
+                        self.state.set_status(format!("style ok: {path}"), false);
+                    }
+                }
+                ReviewFlagMsg::Error { path, message } => {
+                    if let Some(job) = self.state.review_flag_job.as_mut() {
+                        job.completed = job.completed.saturating_add(1);
+                    }
+                    if self.state.review_flag_active_path.as_deref() == Some(path.as_str()) {
+                        self.state.review_flag_active_path = None;
+                    }
+                    self.state
+                        .set_status(format!("style check failed for {path}: {message}"), true);
+                }
+                ReviewFlagMsg::Finished => {
+                    if let Some(job) = self.state.review_flag_job.as_mut() {
+                        handle = job.handle.take();
+                    }
+                    self.state.review_flag_job = None;
+                    self.state.review_flag_active_path = None;
+                    let count = self.state.review_flagged_paths.len();
+                    self.state
+                        .set_status(format!("style flag pass complete: {count} flagged"), false);
+                }
+            }
+        }
+        join_worker(handle);
+        if let Some(job) = self.state.review_flag_job.as_mut() {
+            job.spinner = job.spinner.wrapping_add(1);
         }
     }
 
@@ -929,6 +991,9 @@ impl App {
             handles.extend(job.handle.take());
         }
         if let Some(job) = self.state.review_assist_job.as_mut() {
+            handles.extend(job.handle.take());
+        }
+        if let Some(job) = self.state.review_flag_job.as_mut() {
             handles.extend(job.handle.take());
         }
         if let Some(job) = self.state.review_chat_job.as_mut() {
