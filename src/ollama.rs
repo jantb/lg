@@ -10,7 +10,7 @@ use crate::config::{
     OLLAMA_PRESENCE_PENALTY, OLLAMA_PROMPT_PREFIX, OLLAMA_REPEAT_PENALTY, OLLAMA_TEMPERATURE,
     OLLAMA_TOP_K, OLLAMA_TOP_P,
 };
-use crate::state::{GenMsg, ReviewChatMessage};
+use crate::state::{GenMsg, ReviewChatMessage, ReviewStyleFinding, ReviewStyleSeverity};
 
 const MAX_DIFF_EXCERPT_LINES: usize = 180;
 const MAX_DIFF_EXCERPT_BYTES: usize = 16_000;
@@ -130,9 +130,13 @@ fn build_review_chat_system_prompt(context: &str) -> String {
 fn build_review_style_flag_prompt(path: &str, context: &str) -> String {
     format!(
         "Review this single changed Kotlin file for concrete violations of the established repo style.\n\
-         Answer exactly FLAG or OK. Use FLAG only when the shown change gives enough evidence that\n\
-         this file likely violates the style guide and deserves manual attention. Use OK for normal\n\
-         business logic changes, tests that look consistent, or insufficient evidence.\n\n\
+         Return exactly two lines:\n\
+         severity: OK|WARN|FAIL\n\
+         reason: <one concise reason, or \"No style issue found.\">\n\n\
+         Use OK for files that look consistent or where there is insufficient evidence.\n\
+         Use WARN for likely style issues that deserve manual attention.\n\
+         Use FAIL for clear violations such as business logic in controllers, direct Kafka side effects,\n\
+         Jackson app-code usage, Mockito, java.time away from interop edges, or generated code edits.\n\n\
          {REVIEW_REPO_STYLE_GUIDE}\n\n\
          File: {path}\n\
          Review context:\n{context}"
@@ -345,9 +349,8 @@ fn review_chat_options() -> Options {
 fn review_style_flag_options() -> Options {
     let mut opts = Options::default();
     if std::env::var_os("LG_OLLAMA_NUM_PREDICT").is_none() {
-        opts.num_predict = 16;
+        opts.num_predict = 96;
     }
-    opts.stop = vec!["\n"];
     opts
 }
 
@@ -615,19 +618,61 @@ fn finalize_review_chat(raw: &str) -> String {
 
 fn finalize_review_style_flag(raw: &str) -> String {
     let cleaned = strip_think_tags(raw);
-    let first = cleaned
+    let finding = parse_review_style_finding(&cleaned);
+    format!(
+        "severity: {}\nreason: {}",
+        finding.severity.label(),
+        finding.reason
+    )
+}
+
+pub fn parse_review_style_finding(raw: &str) -> ReviewStyleFinding {
+    let mut severity = None;
+    let mut reason = None;
+    for line in raw
         .trim()
         .trim_matches('"')
         .lines()
-        .map(trim_outer_quotes)
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("OK")
-        .trim()
-        .to_ascii_uppercase();
-    if first.contains("FLAG") {
-        "FLAG".to_string()
+        .map(trim_outer_quotes_without_backticks)
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let lower = line.to_ascii_lowercase();
+        if let Some((_, value)) = lower
+            .starts_with("severity:")
+            .then(|| line.split_once(':'))
+            .flatten()
+        {
+            severity = parse_review_style_severity(value);
+        } else if let Some((_, value)) = lower
+            .starts_with("reason:")
+            .then(|| line.split_once(':'))
+            .flatten()
+        {
+            reason = Some(value.trim().to_string());
+        } else if severity.is_none() {
+            severity = parse_review_style_severity(line);
+        } else if reason.is_none() {
+            reason = Some(line.to_string());
+        }
+    }
+    let severity = severity.unwrap_or(ReviewStyleSeverity::Ok);
+    let reason = reason
+        .filter(|reason| !reason.trim().is_empty())
+        .unwrap_or_else(|| "No style issue found.".to_string());
+    ReviewStyleFinding { severity, reason }
+}
+
+fn parse_review_style_severity(s: &str) -> Option<ReviewStyleSeverity> {
+    let upper = s.trim().to_ascii_uppercase();
+    if upper.contains("FAIL") || upper.contains("RED") {
+        Some(ReviewStyleSeverity::Fail)
+    } else if upper.contains("WARN") || upper.contains("WARNING") || upper.contains("FLAG") {
+        Some(ReviewStyleSeverity::Warn)
+    } else if upper.contains("OK") || upper.contains("GREEN") {
+        Some(ReviewStyleSeverity::Ok)
     } else {
-        "OK".to_string()
+        None
     }
 }
 
@@ -857,16 +902,25 @@ mod tests {
         let prompt =
             build_review_style_flag_prompt("src/main/kotlin/App.kt", "updates controller logic");
 
-        assert!(prompt.contains("Answer exactly FLAG or OK"));
+        assert!(prompt.contains("severity: OK|WARN|FAIL"));
         assert!(prompt.contains("File: src/main/kotlin/App.kt"));
         assert!(prompt.contains("updates controller logic"));
     }
 
     #[test]
     fn finalize_review_style_flag_normalizes_output() {
-        assert_eq!(finalize_review_style_flag("FLAG\nbecause..."), "FLAG");
-        assert_eq!(finalize_review_style_flag("ok"), "OK");
-        assert_eq!(finalize_review_style_flag("not enough evidence"), "OK");
+        assert_eq!(
+            finalize_review_style_flag("severity: WARN\nreason: controller does too much"),
+            "severity: WARN\nreason: controller does too much"
+        );
+        assert_eq!(
+            finalize_review_style_flag("FAIL\nDirect Kafka publish"),
+            "severity: FAIL\nreason: Direct Kafka publish"
+        );
+        assert_eq!(
+            finalize_review_style_flag("not enough evidence"),
+            "severity: OK\nreason: No style issue found."
+        );
     }
 
     #[test]

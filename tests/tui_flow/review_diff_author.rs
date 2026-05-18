@@ -716,12 +716,17 @@ fn review_panel_styles_tree_titles_and_change_counts() {
         ],
     });
     app.state.review_idx = 1;
-    app.state
-        .review_flagged_paths
-        .insert("src/main/kotlin/BalanceService.kt".into());
+    app.state.review_style_findings.insert(
+        "src/main/kotlin/BalanceService.kt".into(),
+        ReviewStyleFinding {
+            severity: ReviewStyleSeverity::Warn,
+            reason: "Controller-style flow deserves manual attention.".into(),
+        },
+    );
 
     app.render().unwrap();
     let buf = app.terminal.backend().buffer().clone();
+    let rendered = buffer_text(&app);
 
     assert!(
         buf.content()
@@ -733,8 +738,14 @@ fn review_panel_styles_tree_titles_and_change_counts() {
         buf.content()
             .iter()
             .any(|cell| cell.symbol() == "B" && cell.bg == Color::Rgb(78, 57, 18)),
-        "suspicious file path should keep its warning background"
+        "warning style finding should keep its warning background"
     );
+    assert!(rendered.contains("style warn"), "{rendered}");
+    assert!(
+        rendered.contains("Controller-style flow deserves"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("manual attention."), "{rendered}");
     assert!(
         buf.content()
             .iter()
@@ -750,7 +761,7 @@ fn review_panel_styles_tree_titles_and_change_counts() {
 }
 
 #[test]
-fn review_panel_suspicious_background_only_applies_to_kotlin_paths() {
+fn review_panel_unanalyzed_paths_have_no_style_background() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 12)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
@@ -785,6 +796,75 @@ fn review_panel_suspicious_background_only_applies_to_kotlin_paths() {
             .any(|cell| cell.bg == Color::Rgb(78, 57, 18)),
         "unflagged service paths should not receive the warning background"
     );
+}
+
+#[test]
+fn review_panel_colors_style_severity_scale() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 12)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Full diff against main".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:entry:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: "src/main/kotlin/Good.kt in class Good - updates flow (+1 -0)".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:entry:1".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: "src/main/kotlin/Bad.kt in class Bad - updates flow (+1 -0)".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+        ],
+    });
+    app.state.review_style_findings.insert(
+        "src/main/kotlin/Good.kt".into(),
+        ReviewStyleFinding {
+            severity: ReviewStyleSeverity::Ok,
+            reason: "No style issue found.".into(),
+        },
+    );
+    app.state.review_style_findings.insert(
+        "src/main/kotlin/Bad.kt".into(),
+        ReviewStyleFinding {
+            severity: ReviewStyleSeverity::Fail,
+            reason: "Direct Kafka publish from flow.".into(),
+        },
+    );
+
+    app.render().unwrap();
+    let buf = app.terminal.backend().buffer().clone();
+    let rendered = buffer_text(&app);
+
+    assert!(
+        buf.content()
+            .iter()
+            .any(|cell| cell.symbol() == "G" && cell.bg == Color::Rgb(24, 54, 34)),
+        "OK style finding should be green"
+    );
+    assert!(
+        buf.content()
+            .iter()
+            .any(|cell| cell.symbol() == "B" && cell.bg == Color::Rgb(70, 24, 28)),
+        "FAIL style finding should be red"
+    );
+    assert!(rendered.contains("style ok"), "{rendered}");
+    assert!(rendered.contains("style fail"), "{rendered}");
 }
 
 #[test]

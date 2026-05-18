@@ -37,7 +37,7 @@ pub(super) fn spawn_assisted_review(state: &mut AppState) {
     state.review_context_open.clear();
     state.review_context_restore_collapsed.clear();
     state.review_assists.clear();
-    state.review_flagged_paths.clear();
+    state.review_style_findings.clear();
     state.review_flag_active_path = None;
     state.review_chat_messages.clear();
     state.review_chat_input.clear();
@@ -79,14 +79,14 @@ pub(super) fn spawn_review_assist(state: &mut AppState, node_id: String) {
 pub(super) fn spawn_review_style_flags(state: &mut AppState) {
     let file_contexts = review_flag_contexts(state);
     if file_contexts.is_empty() {
-        state.review_flagged_paths.clear();
+        state.review_style_findings.clear();
         state.review_flag_active_path = None;
         return;
     }
     if let Some(mut job) = state.review_flag_job.take() {
         state.defer_thread_join(job.handle.take());
     }
-    state.review_flagged_paths.clear();
+    state.review_style_findings.clear();
     state.review_flag_active_path = None;
     let total = file_contexts.len();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -103,8 +103,8 @@ pub(super) fn spawn_review_style_flags(state: &mut AppState) {
                 return;
             }
             match review_style_flag_file(&path, context) {
-                Ok(flagged) => {
-                    if tx.send(ReviewFlagMsg::Done { path, flagged }).is_err() {
+                Ok(finding) => {
+                    if tx.send(ReviewFlagMsg::Done { path, finding }).is_err() {
                         return;
                     }
                 }
@@ -275,7 +275,10 @@ fn is_kotlin_path(path: &str) -> bool {
     path.ends_with(".kt") || path.ends_with(".kts")
 }
 
-fn review_style_flag_file(path: &str, context: String) -> Result<bool, String> {
+fn review_style_flag_file(
+    path: &str,
+    context: String,
+) -> Result<crate::state::ReviewStyleFinding, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     crate::ollama::stream_review_style_flag(path.to_string(), context, tx);
     let mut final_msg = None;
@@ -290,9 +293,11 @@ fn review_style_flag_file(path: &str, context: String) -> Result<bool, String> {
     if let Some(error) = error {
         return Err(error);
     }
-    Ok(final_msg
-        .as_deref()
-        .is_some_and(|output| output.trim().eq_ignore_ascii_case("FLAG")))
+    Ok(crate::ollama::parse_review_style_finding(
+        final_msg
+            .as_deref()
+            .unwrap_or("OK\nreason: no issues found"),
+    ))
 }
 
 fn review_assist_context(state: &AppState, node_id: &str) -> Option<String> {

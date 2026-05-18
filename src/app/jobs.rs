@@ -563,20 +563,22 @@ impl App {
                     self.state
                         .set_status(format!("analyzing style {index}/{total}: {path}"), false);
                 }
-                ReviewFlagMsg::Done { path, flagged } => {
+                ReviewFlagMsg::Done { path, finding } => {
                     if let Some(job) = self.state.review_flag_job.as_mut() {
                         job.completed = job.completed.saturating_add(1);
                     }
                     if self.state.review_flag_active_path.as_deref() == Some(path.as_str()) {
                         self.state.review_flag_active_path = None;
                     }
-                    if flagged {
-                        self.state.review_flagged_paths.insert(path.clone());
-                        self.state
-                            .set_status(format!("style flagged: {path}"), true);
-                    } else {
-                        self.state.set_status(format!("style ok: {path}"), false);
-                    }
+                    let severity = finding.severity;
+                    let is_error = !matches!(severity, crate::state::ReviewStyleSeverity::Ok);
+                    self.state
+                        .review_style_findings
+                        .insert(path.clone(), finding);
+                    self.state.set_status(
+                        format!("style {}: {path}", severity.label().to_ascii_lowercase()),
+                        is_error,
+                    );
                 }
                 ReviewFlagMsg::Error { path, message } => {
                     if let Some(job) = self.state.review_flag_job.as_mut() {
@@ -594,9 +596,26 @@ impl App {
                     }
                     self.state.review_flag_job = None;
                     self.state.review_flag_active_path = None;
-                    let count = self.state.review_flagged_paths.len();
-                    self.state
-                        .set_status(format!("style flag pass complete: {count} flagged"), false);
+                    let warn_count = self
+                        .state
+                        .review_style_findings
+                        .values()
+                        .filter(|finding| {
+                            matches!(finding.severity, crate::state::ReviewStyleSeverity::Warn)
+                        })
+                        .count();
+                    let fail_count = self
+                        .state
+                        .review_style_findings
+                        .values()
+                        .filter(|finding| {
+                            matches!(finding.severity, crate::state::ReviewStyleSeverity::Fail)
+                        })
+                        .count();
+                    self.state.set_status(
+                        format!("style pass complete: {warn_count} warn, {fail_count} fail"),
+                        fail_count > 0,
+                    );
                 }
             }
         }

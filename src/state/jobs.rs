@@ -8,6 +8,29 @@ use crate::git::{
 
 use super::DiffSource;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewStyleSeverity {
+    Ok,
+    Warn,
+    Fail,
+}
+
+impl ReviewStyleSeverity {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ok => "OK",
+            Self::Warn => "WARN",
+            Self::Fail => "FAIL",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewStyleFinding {
+    pub severity: ReviewStyleSeverity,
+    pub reason: String,
+}
+
 #[derive(Debug)]
 pub enum GenMsg {
     Thinking(String),
@@ -210,7 +233,7 @@ pub enum ReviewFlagMsg {
     },
     Done {
         path: String,
-        flagged: bool,
+        finding: ReviewStyleFinding,
     },
     Error {
         path: String,

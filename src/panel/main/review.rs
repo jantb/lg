@@ -11,7 +11,7 @@ use std::collections::HashSet;
 
 use crate::{
     panel::markdown,
-    state::{AppState, PendingAction},
+    state::{AppState, PendingAction, ReviewStyleSeverity},
     ui,
 };
 
@@ -20,6 +20,8 @@ use super::source::{
 };
 
 const SUSPICIOUS_REVIEW_BG: Color = Color::Rgb(78, 57, 18);
+const OK_REVIEW_STYLE_BG: Color = Color::Rgb(24, 54, 34);
+const FAIL_REVIEW_STYLE_BG: Color = Color::Rgb(70, 24, 28);
 const ACTIVE_REVIEW_STYLE_BG: Color = Color::Rgb(28, 48, 70);
 
 pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
@@ -117,6 +119,19 @@ pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: b
                 ));
             }
             let assist = review_assist_text(state, node_id);
+            let style_finding = review_style_finding_text(state, &node.title);
+            if let Some((severity, reason)) = style_finding {
+                lines.push(Line::from(vec![
+                    Span::styled(body_prefix.clone(), body_style),
+                    Span::styled(
+                        format!("style {}: ", severity.label().to_ascii_lowercase()),
+                        Style::default()
+                            .fg(review_style_fg(severity))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(reason.to_string(), Style::default().fg(Color::Gray)),
+                ]));
+            }
             if let Some(assist) = assist {
                 lines.push(Line::from(Span::styled(
                     format!("{indent}  │ ollama"),
@@ -126,7 +141,11 @@ pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: b
                 )));
                 lines.extend(markdown::render(assist, &body_prefix, wrap_width));
             }
-            if has_body || state.review_context_open.contains(node_id) || assist.is_some() {
+            if has_body
+                || state.review_context_open.contains(node_id)
+                || assist.is_some()
+                || style_finding.is_some()
+            {
                 lines.push(Line::from(Span::styled(
                     format!("{indent}  └─"),
                     body_style,
@@ -289,12 +308,12 @@ fn renders_review_body(node_id: &str) -> bool {
 enum ReviewPathStyle {
     Normal,
     Active,
-    Flagged,
+    Finding(ReviewStyleSeverity),
 }
 
 fn review_path_style(path: &str, state: &AppState) -> ReviewPathStyle {
-    if state.review_flagged_paths.contains(path) {
-        ReviewPathStyle::Flagged
+    if let Some(finding) = state.review_style_findings.get(path) {
+        ReviewPathStyle::Finding(finding.severity)
     } else if state.review_flag_active_path.as_deref() == Some(path) {
         ReviewPathStyle::Active
     } else {
@@ -313,8 +332,8 @@ fn styled_file_path(path: &str, selected: bool, path_style: ReviewPathStyle) -> 
             .add_modifier(Modifier::BOLD)
     };
     match path_style {
-        ReviewPathStyle::Flagged => {
-            file_style = file_style.bg(SUSPICIOUS_REVIEW_BG);
+        ReviewPathStyle::Finding(severity) => {
+            file_style = file_style.bg(review_style_bg(severity));
         }
         ReviewPathStyle::Active => {
             file_style = file_style.bg(ACTIVE_REVIEW_STYLE_BG);
@@ -327,6 +346,31 @@ fn styled_file_path(path: &str, selected: bool, path_style: ReviewPathStyle) -> 
         selected_style(file_style, selected)
     };
     vec![Span::styled(path.to_string(), style)]
+}
+
+fn review_style_finding_text<'a>(
+    state: &'a AppState,
+    title: &str,
+) -> Option<(ReviewStyleSeverity, &'a str)> {
+    let path = review_node_path(title)?;
+    let finding = state.review_style_findings.get(path)?;
+    Some((finding.severity, finding.reason.trim()))
+}
+
+fn review_style_bg(severity: ReviewStyleSeverity) -> Color {
+    match severity {
+        ReviewStyleSeverity::Ok => OK_REVIEW_STYLE_BG,
+        ReviewStyleSeverity::Warn => SUSPICIOUS_REVIEW_BG,
+        ReviewStyleSeverity::Fail => FAIL_REVIEW_STYLE_BG,
+    }
+}
+
+fn review_style_fg(severity: ReviewStyleSeverity) -> Color {
+    match severity {
+        ReviewStyleSeverity::Ok => Color::LightGreen,
+        ReviewStyleSeverity::Warn => Color::LightYellow,
+        ReviewStyleSeverity::Fail => Color::LightRed,
+    }
 }
 
 fn styled_review_description(description: &str, selected: bool) -> Vec<Span<'static>> {
