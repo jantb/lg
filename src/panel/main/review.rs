@@ -19,6 +19,8 @@ use super::source::{
     RenderCache, inline_diff_overlay, review_source_context_lines, source_sections,
 };
 
+const SUSPICIOUS_REVIEW_BG: Color = Color::Rgb(78, 57, 18);
+
 pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let block = ui::framed_with_activity(
         0,
@@ -276,7 +278,8 @@ fn renders_review_body(node_id: &str) -> bool {
 }
 
 fn styled_file_path(path: &str, selected: bool) -> Vec<Span<'static>> {
-    let file_style = if is_test_review_node(path) {
+    let suspicious = is_suspicious_review_path(path);
+    let mut file_style = if is_test_review_node(path) {
         Style::default()
             .fg(Color::LightMagenta)
             .add_modifier(Modifier::BOLD)
@@ -285,10 +288,15 @@ fn styled_file_path(path: &str, selected: bool) -> Vec<Span<'static>> {
             .fg(Color::LightCyan)
             .add_modifier(Modifier::BOLD)
     };
-    vec![Span::styled(
-        path.to_string(),
-        selected_style(file_style, selected),
-    )]
+    if suspicious {
+        file_style = file_style.bg(SUSPICIOUS_REVIEW_BG);
+    }
+    let style = if suspicious && selected {
+        file_style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else {
+        selected_style(file_style, selected)
+    };
+    vec![Span::styled(path.to_string(), style)]
 }
 
 fn styled_review_description(description: &str, selected: bool) -> Vec<Span<'static>> {
@@ -553,6 +561,55 @@ fn is_test_review_node(title: &str) -> bool {
         || title.contains(" in src/test/")
         || title.starts_with("src/test/")
         || title.contains("/src/test/")
+}
+
+fn is_suspicious_review_path(path: &str) -> bool {
+    if !is_kotlin_review_path(path) {
+        return false;
+    }
+    let lower = path.to_ascii_lowercase();
+    [
+        "adapter",
+        "cache",
+        "client",
+        "configuredjson",
+        "controller",
+        "converter",
+        "dao",
+        "database",
+        "datetime",
+        "dto",
+        "event",
+        "exposed",
+        "flow",
+        "flyway",
+        "generated-sources",
+        "http",
+        "jackson",
+        "json",
+        "kafka",
+        "ktor",
+        "logger",
+        "logging",
+        "mapper",
+        "migration",
+        "model",
+        "outbox",
+        "processor",
+        "repository",
+        "request",
+        "response",
+        "service",
+        "topic",
+        "workflow",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn is_kotlin_review_path(path: &str) -> bool {
+    let location = review_node_path(path).unwrap_or(path);
+    location.ends_with(".kt") || location.ends_with(".kts")
 }
 
 fn visible_review_node_indices(state: &AppState) -> Vec<usize> {

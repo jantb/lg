@@ -18,6 +18,23 @@ const MAX_SUMMARY_FILES: usize = 24;
 const MAX_SIGNAL_LINES: usize = 48;
 const REVIEW_ASSIST_MAX_CHARS: usize = 2_400;
 const REVIEW_CHAT_MAX_CHARS: usize = 12_000;
+const REVIEW_REPO_STYLE_GUIDE: &str = "\
+Established repo style:
+- Kotlin/Spring, but immutable code by default: prefer val, immutable collections, data-class .copy(), focused functions, and pure helper functions.
+- Constructor injection only. Inject narrow interfaces/services, not broad infrastructure.
+- Controllers stay thin: auth, validation, DTO assembly, ResponseEntity. Business decisions go in services or hub flows.
+- Domain IDs use inline value classes like UserId, MembershipId; wrap raw primitives at repository boundaries.
+- Use sealed interfaces/classes for variants with different data; enums only for simple tags.
+- JSON uses the shared configuredJson; avoid Jackson in app code except generated/Spring/Avro internals.
+- Time uses kotlinx.datetime; java.time only at interop edges.
+- Logging uses private val log by Logger(), not direct LoggerFactory.
+- Outbound HTTP uses Ktor CIO adapters. Each external system gets one adapter.
+- Persistence is PostgreSQL via Exposed + Flyway.
+- Kafka/outbound side effects from flows go through the outbox, not direct Kafka publishing.
+- Tests prefer real small fakes over mocks. Use Mockk only when a fake is impractical; never Mockito.
+- Integration tests use @SpringBootTest + TestConfiguration + Testcontainers.
+- Do not edit generated code under target/generated-sources.
+- Run the repo formatter/lint before declaring work done; linter wins on formatting.";
 
 #[derive(Serialize)]
 struct ChatRequest<'a> {
@@ -90,7 +107,9 @@ fn build_review_assist_prompt(context: &str) -> String {
     format!(
         "Explain what this selected subtree from a full diff against main does.\n\
          Be concise and factual. Focus on behavior, call flow, tests, and review risks.\n\
+         Review the change against the established repo style below and call out concrete violations.\n\
          Output 3-6 bullets. Do not invent files or behavior not shown. Do not use code fences.\n\n\
+         {REVIEW_REPO_STYLE_GUIDE}\n\n\
          Selected review subtree:\n{context}"
     )
 }
@@ -101,7 +120,9 @@ fn build_review_chat_system_prompt(context: &str) -> String {
          Use only the supplied review context and the conversation. Be concrete about weaknesses,\n\
          missed tests, risky flows, compatibility concerns, and follow-up checks. When useful,\n\
          cite file paths, function names, and line numbers from the context. If the context is\n\
-         insufficient, say what is missing instead of guessing.\n\n\
+         insufficient, say what is missing instead of guessing. Review answers against the\n\
+         established repo style below and call out concrete violations.\n\n\
+         {REVIEW_REPO_STYLE_GUIDE}\n\n\
          Review context:\n{context}"
     )
 }
@@ -763,6 +784,24 @@ mod tests {
     #[test]
     fn strip_think_tags_drops_unterminated_tail() {
         assert_eq!(strip_think_tags("keep<think>unterminated"), "keep");
+    }
+
+    #[test]
+    fn review_assist_prompt_includes_repo_style() {
+        let prompt = build_review_assist_prompt("src/main/kotlin/App.kt");
+
+        assert!(prompt.contains("Constructor injection only"));
+        assert!(prompt.contains("configuredJson"));
+        assert!(prompt.contains("Selected review subtree:\nsrc/main/kotlin/App.kt"));
+    }
+
+    #[test]
+    fn review_chat_system_prompt_includes_repo_style() {
+        let prompt = build_review_chat_system_prompt("full review context");
+
+        assert!(prompt.contains("Ktor CIO adapters"));
+        assert!(prompt.contains("never Mockito"));
+        assert!(prompt.contains("Review context:\nfull review context"));
     }
 
     #[test]

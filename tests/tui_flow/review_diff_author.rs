@@ -707,12 +707,15 @@ fn review_panel_styles_tree_titles_and_change_counts() {
                 id: "branch:entry:0".into(),
                 parent: Some("branch".into()),
                 depth: 1,
-                title: "src/main/kotlin/App.kt in fun greeting - updates greeting (+5 -3)".into(),
+                title:
+                    "src/main/kotlin/BalanceService.kt in fun greeting - updates greeting (+5 -3)"
+                        .into(),
                 body: Vec::new(),
                 context: Vec::new(),
             },
         ],
     });
+    app.state.review_idx = 1;
 
     app.render().unwrap();
     let buf = app.terminal.backend().buffer().clone();
@@ -726,6 +729,12 @@ fn review_panel_styles_tree_titles_and_change_counts() {
     assert!(
         buf.content()
             .iter()
+            .any(|cell| cell.symbol() == "B" && cell.bg == Color::Rgb(78, 57, 18)),
+        "suspicious file path should keep its warning background"
+    );
+    assert!(
+        buf.content()
+            .iter()
             .any(|cell| cell.symbol() == "+" && cell.fg == Color::LightGreen),
         "addition count should be green"
     );
@@ -734,6 +743,44 @@ fn review_panel_styles_tree_titles_and_change_counts() {
             .iter()
             .any(|cell| cell.symbol() == "-" && cell.fg == Color::LightRed),
         "removal count should be red"
+    );
+}
+
+#[test]
+fn review_panel_suspicious_background_only_applies_to_kotlin_paths() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 12)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Full diff against main".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:entry:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: "src/service.rs in fn service - updates service (+1 -0)".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+        ],
+    });
+
+    app.render().unwrap();
+    let buf = app.terminal.backend().buffer().clone();
+
+    assert!(
+        !buf.content()
+            .iter()
+            .any(|cell| cell.bg == Color::Rgb(78, 57, 18)),
+        "non-Kotlin service paths should not receive the Kotlin warning background"
     );
 }
 
