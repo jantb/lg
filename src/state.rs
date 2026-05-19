@@ -349,9 +349,9 @@ impl FlowAction {
 impl AppState {
     pub fn new() -> Self {
         Self {
-            focus: Pane::Files,
+            focus: Pane::Status,
             modal: Modal::None,
-            prev_focus: Pane::Files,
+            prev_focus: Pane::Status,
 
             files: Vec::new(),
             branches: Vec::new(),

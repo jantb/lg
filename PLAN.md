@@ -59,7 +59,7 @@ Notes:
 
 ### Ollama integration
 - Endpoint: `http://localhost:11434/api/generate`.
-- Model: `qwen3.6:35b-a3b-coding-nvfp4` (installed locally; `lg` is local-only).
+- Model: `qwen3.6:27b-coding-nvfp4` (installed locally; `lg` is local-only).
 - Prompt = `OLLAMA_PROMPT_PREFIX` + `git diff --cached`.
 - Non-streaming (`"stream": false`). Parse the `response` field.
 - On any failure, fall back to an empty field the user can fill manually.
@@ -114,7 +114,7 @@ fn main() -> anyhow::Result<()> {
 use ratatui::style::Color;
 
 pub const OLLAMA_ENDPOINT: &str = "http://localhost:11434/api/generate";
-pub const OLLAMA_MODEL: &str = "qwen3.6:35b-a3b-coding-nvfp4";
+pub const OLLAMA_MODEL: &str = "qwen3.6:27b-coding-nvfp4";
 pub const OLLAMA_PROMPT_PREFIX: &str =
     "Write a concise one-line git commit message (<=72 chars) for the diff below. \
      No prose, no quotes, no trailing period.\n\n";
@@ -342,7 +342,7 @@ All via `cargo test`; no external services needed.
 | Value | Constant | File |
 |-------|----------|------|
 | `http://localhost:11434/api/generate` | `OLLAMA_ENDPOINT` | `config.rs` |
-| `qwen3.6:35b-a3b-coding-nvfp4` | `OLLAMA_MODEL` | `config.rs` |
+| `qwen3.6:27b-coding-nvfp4` | `OLLAMA_MODEL` | `config.rs` |
 | `"Write a concise one-line git commit message (<=72 chars) …"` | `OLLAMA_PROMPT_PREFIX` | `config.rs` |
 | `origin` | `DEFAULT_PUSH_REMOTE` | `config.rs` |
 | `72` | `COMMIT_MSG_MAX_CHARS` | `config.rs` |

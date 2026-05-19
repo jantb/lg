@@ -720,16 +720,18 @@ fn review_source_context_line_count(state: &AppState, node: &crate::git::ReviewN
             return 1 + sections
                 .iter()
                 .map(|section| {
+                    let note_count = section.notes.values().map(Vec::len).sum::<usize>();
                     if let Ok(text) = std::fs::read_to_string(&section.path) {
                         let removed_count = inline_diff_overlay(&section.body)
                             .removed_before
                             .values()
                             .map(Vec::len)
                             .sum::<usize>();
-                        1 + text.lines().count() + removed_count
+                        1 + text.lines().count() + removed_count + note_count
                     } else {
                         usize::from(!section.body.is_empty()) * (1 + section.body.len())
                             + usize::from(!section.context.is_empty()) * (1 + section.context.len())
+                            + usize::from(note_count > 0) * (1 + note_count)
                     }
                 })
                 .sum::<usize>();

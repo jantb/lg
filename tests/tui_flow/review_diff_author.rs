@@ -77,6 +77,7 @@ fn pressing_esc_in_commit_closes_modal_and_keeps_message() {
 #[test]
 fn help_overlay_closes_on_any_key() {
     let mut state = make_state_with_files();
+    state.focus = Pane::Files;
     state.prev_focus = Pane::Files;
     state.modal = Modal::Help;
 
@@ -270,6 +271,7 @@ fn review_panel_expands_hunks_and_source_context() {
             && !context.contains("│ diff")
             && context.contains("-     fun greeting() = \"hello\"")
             && context.contains("+    fun greeting() = \"hello review\"")
+            && context.contains("review note: updates greeting")
             && context.contains("3 |     val untouched = 1"),
         "source context should be visible: {context}"
     );
@@ -382,6 +384,10 @@ fn review_panel_sources_entry_subtree_across_files_and_drills_to_child_file() {
     );
     assert!(
         rendered.contains("+     fun nextStep() = maybeTransfer()"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("review note: updates nextStep (+1 -1)"),
         "{rendered}"
     );
     assert!(

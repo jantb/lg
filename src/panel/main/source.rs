@@ -10,6 +10,7 @@ pub(super) struct SourceSection {
     pub path: String,
     pub body: Vec<String>,
     pub context: Vec<String>,
+    pub notes: BTreeMap<usize, Vec<String>>,
 }
 
 /// Per-frame cache so file reads aren't repeated across the
@@ -41,15 +42,21 @@ pub(super) fn review_source_context_lines(
     if !sections.is_empty() {
         let multiple = sections.len() > 1;
         for section in sections {
-            if let Some(mut source) =
-                full_source_with_inline_diff(cache, &section.path, &section.body, indent, multiple)
-            {
+            if let Some(mut source) = full_source_with_inline_diff(
+                cache,
+                &section.path,
+                &section.body,
+                &section.notes,
+                indent,
+                multiple,
+            ) {
                 lines.append(&mut source);
             } else {
                 lines.extend(fallback_source_context_lines(
                     &section.body,
                     &section.context,
                     Some(&section.path),
+                    &section.notes,
                     indent,
                 ));
             }
@@ -61,6 +68,7 @@ pub(super) fn review_source_context_lines(
         &node.body,
         &node.context,
         syntax_path,
+        &BTreeMap::new(),
         indent,
     ));
     lines
@@ -74,11 +82,14 @@ pub(super) fn source_sections(
         && let Some(sections) = full_diff_source_sections(review)
         && !sections.is_empty()
     {
+        let mut sections = sections;
+        attach_inline_review_notes(review, node, &mut sections);
         return sections;
     }
 
     let mut sections = Vec::new();
     let mut seen_paths = BTreeSet::new();
+    let mut notes_by_path = inline_review_notes_by_path(review, node);
     for candidate in std::iter::once(node).chain(
         review
             .nodes
@@ -98,6 +109,7 @@ pub(super) fn source_sections(
             path: path.to_string(),
             body: candidate.body.clone(),
             context: candidate.context.clone(),
+            notes: notes_by_path.remove(path).unwrap_or_default(),
         });
     }
     sections
@@ -149,6 +161,7 @@ fn push_full_diff_section(
         path,
         body: std::mem::take(body),
         context: Vec::new(),
+        notes: BTreeMap::new(),
     });
 }
 
@@ -171,10 +184,99 @@ fn review_node_in_subtree(
     false
 }
 
+fn attach_inline_review_notes(
+    review: &crate::git::AssistedReview,
+    node: &crate::git::ReviewNode,
+    sections: &mut [SourceSection],
+) {
+    let mut notes_by_path = inline_review_notes_by_path(review, node);
+    for section in sections {
+        section.notes = notes_by_path.remove(&section.path).unwrap_or_default();
+    }
+}
+
+fn inline_review_notes_by_path(
+    review: &crate::git::AssistedReview,
+    node: &crate::git::ReviewNode,
+) -> BTreeMap<String, BTreeMap<usize, Vec<String>>> {
+    let mut notes: BTreeMap<String, BTreeMap<usize, Vec<String>>> = BTreeMap::new();
+    for candidate in std::iter::once(node).chain(
+        review
+            .nodes
+            .iter()
+            .filter(|candidate| review_node_in_subtree(review, candidate, &node.id)),
+    ) {
+        let Some(note) = inline_review_note_text(candidate) else {
+            continue;
+        };
+        let Some(path) = super::review::review_node_path(&candidate.title) else {
+            continue;
+        };
+        let Some(line) = review_node_line(&candidate.title)
+            .or_else(|| first_body_hunk_new_line(&candidate.body))
+            .map(|line| line.max(1))
+        else {
+            continue;
+        };
+        let line_notes = notes
+            .entry(path.to_string())
+            .or_default()
+            .entry(line)
+            .or_default();
+        if !line_notes.contains(&note) {
+            line_notes.push(note);
+        }
+    }
+    notes
+}
+
+fn inline_review_note_text(node: &crate::git::ReviewNode) -> Option<String> {
+    if let Some(effect) = node
+        .body
+        .iter()
+        .find_map(|line| line.trim().strip_prefix("effect: "))
+    {
+        let effect = effect.trim();
+        if !effect.is_empty() {
+            return Some(effect.to_string());
+        }
+    }
+
+    if node.id.contains(":hunk:")
+        && let Some((_, description)) = node.title.split_once(" - ")
+    {
+        let description = description.trim();
+        if !description.is_empty() {
+            return Some(description.to_string());
+        }
+    }
+
+    None
+}
+
+fn review_node_line(title: &str) -> Option<usize> {
+    let location = title
+        .split_once(" in ")
+        .map(|(path, _)| path)
+        .or_else(|| title.split_once(" - ").map(|(location, _)| location))
+        .unwrap_or(title);
+    let (_, line) = location.rsplit_once(':')?;
+    line.chars()
+        .all(|ch| ch.is_ascii_digit())
+        .then(|| line.parse().ok())
+        .flatten()
+}
+
+fn first_body_hunk_new_line(body: &[String]) -> Option<usize> {
+    body.iter()
+        .find_map(|line| parse_hunk_header(line).map(|(_, new_line)| new_line))
+}
+
 fn fallback_source_context_lines(
     body: &[String],
     context: &[String],
     syntax_path: Option<&str>,
+    notes: &BTreeMap<usize, Vec<String>>,
     indent: &str,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
@@ -195,6 +297,14 @@ fn fallback_source_context_lines(
             lines.push(source_context_line(context, syntax_path, indent));
         }
     }
+    if !notes.is_empty() {
+        lines.push(section_header(indent, "review notes"));
+        for line_notes in notes.values() {
+            for note in line_notes {
+                lines.push(source_note_line(indent, note));
+            }
+        }
+    }
     lines
 }
 
@@ -202,6 +312,7 @@ fn full_source_with_inline_diff(
     cache: &mut RenderCache,
     path: &str,
     body: &[String],
+    notes: &BTreeMap<usize, Vec<String>>,
     indent: &str,
     show_path: bool,
 ) -> Option<Vec<Line<'static>>> {
@@ -236,6 +347,7 @@ fn full_source_with_inline_diff(
             '|'
         };
         lines.push(source_line(path, indent, Some(line_no), marker, source));
+        push_source_notes(&mut lines, indent, notes.get(&line_no).map(Vec::as_slice));
     }
 
     let eof_line = total_lines + 1;
@@ -249,6 +361,9 @@ fn full_source_with_inline_diff(
                 &removed_line.text,
             ));
         }
+    }
+    for (_, line_notes) in notes.range(eof_line..) {
+        push_source_notes(&mut lines, indent, Some(line_notes.as_slice()));
     }
 
     Some(lines)
@@ -370,6 +485,34 @@ fn source_line(
     spans.push(Span::styled(format!("{marker} "), marker_style));
     let code = ui::highlight_source_line_for_path(source, path);
     spans.extend(apply_optional_bg(owned_spans(code), bg));
+    Line::from(spans)
+}
+
+fn push_source_notes(lines: &mut Vec<Line<'static>>, indent: &str, notes: Option<&[String]>) {
+    let Some(notes) = notes else {
+        return;
+    };
+    for note in notes {
+        lines.push(source_note_line(indent, note));
+    }
+}
+
+fn source_note_line(indent: &str, note: &str) -> Line<'static> {
+    let mut spans = context_prefix(indent);
+    spans.push(Span::styled(
+        "      · ".to_string(),
+        Style::default().fg(Color::DarkGray),
+    ));
+    spans.push(Span::styled(
+        "review note: ".to_string(),
+        Style::default()
+            .fg(Color::LightCyan)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(
+        note.to_string(),
+        Style::default().fg(Color::Gray),
+    ));
     Line::from(spans)
 }
 

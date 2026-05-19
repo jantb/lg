@@ -5,6 +5,8 @@ use super::common::*;
 #[test]
 fn focus_cycles_through_all_panes_with_tab() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 24)).unwrap();
+    assert_eq!(app.state.focus, Pane::Status);
+    app.send_key(key(KeyCode::Tab)).unwrap();
     assert_eq!(app.state.focus, Pane::Files);
     app.send_key(key(KeyCode::Tab)).unwrap();
     assert_eq!(app.state.focus, Pane::Branches);
@@ -14,8 +16,6 @@ fn focus_cycles_through_all_panes_with_tab() {
     assert_eq!(app.state.focus, Pane::Main);
     app.send_key(key(KeyCode::Tab)).unwrap();
     assert_eq!(app.state.focus, Pane::Status);
-    app.send_key(key(KeyCode::Tab)).unwrap();
-    assert_eq!(app.state.focus, Pane::Files);
 }
 
 #[test]

@@ -22,7 +22,8 @@ const REVIEW_REPO_STYLE_GUIDE: &str = "\
 Established repo style:
 - Kotlin/Spring, but immutable code by default: prefer val, immutable collections, data-class .copy(), focused functions, and pure helper functions.
 - Constructor injection only. Inject narrow interfaces/services, not broad infrastructure.
-- Controllers stay thin: auth, validation, DTO assembly, ResponseEntity. Business decisions go in services or hub flows.
+- Controllers stay thin: auth, validation, DTO assembly, ResponseEntity. Business decisions go in service-layer files/classes whose path or name contains Service, or in explicit hub flow code.
+- Treat business rules in controllers, adapters, Kafka consumers/listeners, repositories, DTOs, configuration, or other non-Service/non-flow files as a style issue unless the shown code only delegates or translates data.
 - Domain IDs use inline value classes like UserId, MembershipId; wrap raw primitives at repository boundaries.
 - Use sealed interfaces/classes for variants with different data; enums only for simple tags.
 - JSON uses the shared configuredJson; avoid Jackson in app code except generated/Spring/Avro internals.
@@ -135,8 +136,9 @@ fn build_review_style_flag_prompt(path: &str, context: &str) -> String {
          reason: <one concise reason, or \"No style issue found.\">\n\n\
          Use OK for files that look consistent or where there is insufficient evidence.\n\
          Use WARN for likely style issues that deserve manual attention.\n\
-         Use FAIL for clear violations such as business logic in controllers, direct Kafka side effects,\n\
-         Jackson app-code usage, Mockito, java.time away from interop edges, or generated code edits.\n\n\
+         Use FAIL for clear violations such as business logic in controllers or other non-Service/non-flow files,\n\
+         direct Kafka side effects, Jackson app-code usage, Mockito, java.time away from interop edges,\n\
+         or generated code edits.\n\n\
          {REVIEW_REPO_STYLE_GUIDE}\n\n\
          File: {path}\n\
          Review context:\n{context}"
@@ -885,6 +887,7 @@ mod tests {
 
         assert!(prompt.contains("Constructor injection only"));
         assert!(prompt.contains("configuredJson"));
+        assert!(prompt.contains("path or name contains Service"));
         assert!(prompt.contains("Selected review subtree:\nsrc/main/kotlin/App.kt"));
     }
 
@@ -903,6 +906,7 @@ mod tests {
             build_review_style_flag_prompt("src/main/kotlin/App.kt", "updates controller logic");
 
         assert!(prompt.contains("severity: OK|WARN|FAIL"));
+        assert!(prompt.contains("non-Service/non-flow files"));
         assert!(prompt.contains("File: src/main/kotlin/App.kt"));
         assert!(prompt.contains("updates controller logic"));
     }
