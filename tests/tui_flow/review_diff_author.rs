@@ -187,6 +187,38 @@ fn author_modal_shows_error_when_terminal_is_too_small() {
 }
 
 #[test]
+fn model_modal_picks_and_saves_model() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
+    app.state.ollama_model = "test-model".into();
+
+    app.render().unwrap();
+    assert!(
+        buffer_text(&app).contains("llm test-model"),
+        "footer should show active model"
+    );
+
+    app.send_key(key(KeyCode::Char('L'))).unwrap();
+    assert_eq!(app.state.modal, Modal::Model);
+    assert_eq!(app.state.ollama_model_input, app.state.ollama_model);
+    app.state.ollama_model_idx = 0;
+    app.state.ollama_model_input = lg::config::OLLAMA_MODEL_CHOICES[0].into();
+
+    panel::model::handle_key(&mut app.state, key(KeyCode::Down)).unwrap();
+    assert_eq!(
+        app.state.ollama_model_input,
+        lg::config::OLLAMA_MODEL_CHOICES[1]
+    );
+
+    panel::model::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
+    assert_eq!(
+        app.state.pending_action,
+        Some(PendingAction::SaveOllamaModel {
+            model: lg::config::OLLAMA_MODEL_CHOICES[1].into(),
+        })
+    );
+}
+
+#[test]
 fn review_panel_expands_hunks_and_source_context() {
     let dir = tempfile::tempdir().unwrap();
     let source_path = dir.path().join("App.kt");
@@ -416,6 +448,94 @@ fn review_panel_sources_entry_subtree_across_files_and_drills_to_child_file() {
 }
 
 #[test]
+fn review_source_inlines_style_and_ollama_notes_and_jumps_between_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_path = dir.path().join("App.kt");
+    let mut source = String::from(
+        "class App {\n    fun first() = \"changed\"\n    fun second() = \"changed\"\n",
+    );
+    for idx in 0..24 {
+        source.push_str(&format!("    val untouched{idx} = {idx}\n"));
+    }
+    source.push_str("}\n");
+    std::fs::write(&source_path, source).unwrap();
+    let source_path = source_path.display().to_string();
+
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 24)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Branch diff".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:file:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: format!("{source_path} - 2 entry points (+2 -2)"),
+                body: vec![
+                    "@@ -1,4 +1,4 @@".into(),
+                    " class App {".into(),
+                    "-    fun first() = \"old\"".into(),
+                    "+    fun first() = \"changed\"".into(),
+                    "-    fun second() = \"old\"".into(),
+                    "+    fun second() = \"changed\"".into(),
+                    " }".into(),
+                ],
+                context: Vec::new(),
+            },
+        ],
+    });
+    app.state.review_idx = 1;
+    app.state.review_style_findings.insert(
+        source_path.clone(),
+        ReviewStyleFinding {
+            severity: ReviewStyleSeverity::Warn,
+            reason: "Business rule belongs in a Service file.".into(),
+        },
+    );
+    app.state.review_assists.insert(
+        "branch:file:0".into(),
+        "- This changes both greeting branches.".into(),
+    );
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
+    app.render().unwrap();
+    let rendered = buffer_text(&app);
+    assert!(rendered.contains("review note: style warn"), "{rendered}");
+    assert!(
+        rendered.contains("review note: ollama: This changes both"),
+        "{rendered}"
+    );
+
+    let before = app.state.diff_offset;
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('n'))).unwrap();
+    assert!(
+        app.state.diff_offset > before,
+        "n should jump to the next inline note"
+    );
+    let first_note_offset = app.state.diff_offset;
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('n'))).unwrap();
+    let second_note_offset = app.state.diff_offset;
+    assert!(
+        second_note_offset >= first_note_offset,
+        "second note jump should not move before the first note"
+    );
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('N'))).unwrap();
+    assert!(
+        app.state.diff_offset <= second_note_offset,
+        "N should jump to the previous inline note"
+    );
+}
+
+#[test]
 fn review_panel_sources_full_diff_subtree_across_files() {
     let dir = tempfile::tempdir().unwrap();
     let lib_path = dir.path().join("lib.rs");
@@ -546,6 +666,161 @@ fn review_panel_sources_full_diff_from_report() {
     assert!(app.state.review_context_open.contains("branch"));
     assert!(rendered.contains("source"), "{rendered}");
     assert!(rendered.contains("hello review"), "{rendered}");
+}
+
+#[test]
+fn review_source_shows_removed_only_hunks_inline() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_path = dir.path().join("App.kt");
+    std::fs::write(&source_path, "class App {\n    fun kept() = \"ok\"\n}\n").unwrap();
+    let source_path = source_path.display().to_string();
+
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(140, 28)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Branch diff".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:file:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: format!("{source_path} - 1 entry point (+0 -1)"),
+                body: vec![
+                    "@@ -1,4 +1,3 @@".into(),
+                    " class App {".into(),
+                    "-    fun removed() = \"old\"".into(),
+                    "     fun kept() = \"ok\"".into(),
+                    " }".into(),
+                ],
+                context: Vec::new(),
+            },
+        ],
+    });
+    app.state.review_idx = 1;
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
+    app.render().unwrap();
+    let rendered = buffer_text(&app);
+
+    assert!(
+        rendered.contains("-     fun removed() = \"old\""),
+        "{rendered}"
+    );
+    assert!(rendered.contains("fun kept()"), "{rendered}");
+}
+
+#[test]
+fn review_source_falls_back_to_deleted_file_diff() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_path = dir.path().join("Deleted.kt").display().to_string();
+
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(140, 28)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Branch diff".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:file:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: format!("{source_path} - 1 entry point (+0 -2)"),
+                body: vec![
+                    "@@ -1,2 +0,0 @@".into(),
+                    "-class Deleted {".into(),
+                    "-    fun gone() = \"old\"".into(),
+                ],
+                context: Vec::new(),
+            },
+        ],
+    });
+    app.state.review_idx = 1;
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
+    app.render().unwrap();
+    let rendered = buffer_text(&app);
+
+    assert!(rendered.contains("│ diff"), "{rendered}");
+    assert!(rendered.contains("-class Deleted"), "{rendered}");
+    assert!(rendered.contains("-    fun gone()"), "{rendered}");
+}
+
+#[test]
+fn review_source_reads_renamed_file_at_new_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let old_path = dir.path().join("OldName.kt").display().to_string();
+    let new_path_buf = dir.path().join("NewName.kt");
+    std::fs::write(
+        &new_path_buf,
+        "class NewName {\n    fun renamed() = \"new\"\n}\n",
+    )
+    .unwrap();
+    let new_path = new_path_buf.display().to_string();
+
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(160, 28)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Branch diff".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:file:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: format!("{new_path} - 1 entry point (+1 -1)"),
+                body: vec![
+                    format!("diff --git a/{old_path} b/{new_path}"),
+                    "rename from OldName.kt".into(),
+                    "rename to NewName.kt".into(),
+                    "@@ -1,3 +1,3 @@".into(),
+                    "-class OldName {".into(),
+                    "+class NewName {".into(),
+                    "-    fun renamed() = \"old\"".into(),
+                    "+    fun renamed() = \"new\"".into(),
+                    " }".into(),
+                ],
+                context: Vec::new(),
+            },
+        ],
+    });
+    app.state.review_idx = 1;
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
+    app.render().unwrap();
+    let rendered = buffer_text(&app);
+
+    assert!(rendered.contains("source"), "{rendered}");
+    assert!(rendered.contains("NewName.kt"), "{rendered}");
+    assert!(rendered.contains("+ class NewName"), "{rendered}");
+    assert!(
+        rendered.contains("+     fun renamed() = \"new\""),
+        "{rendered}"
+    );
 }
 
 #[test]

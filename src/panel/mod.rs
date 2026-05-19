@@ -10,6 +10,7 @@ pub mod flow;
 pub mod help;
 pub mod main;
 pub(crate) mod markdown;
+pub mod model;
 pub mod push;
 pub mod review_chat;
 pub(crate) mod scroll;

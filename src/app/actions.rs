@@ -123,6 +123,33 @@ impl App {
                         .set_status(format!("author clear failed: {err}"), true),
                 }
             }
+            PendingAction::SaveOllamaModel { model } => match crate::ollama::save_model(&model) {
+                Ok(()) => {
+                    self.state.ollama_model = crate::ollama::current_model();
+                    self.state.ollama_model_input = self.state.ollama_model.clone();
+                    self.state.modal = Modal::None;
+                    if crate::ollama::env_model_active() {
+                        self.state
+                            .set_status("saved model; LG_OLLAMA_MODEL still overrides it", false);
+                    } else {
+                        self.state.set_status("saved Ollama model", false);
+                    }
+                }
+                Err(err) => self
+                    .state
+                    .set_status(format!("model save failed: {err}"), true),
+            },
+            PendingAction::ClearOllamaModel => match crate::ollama::clear_saved_model() {
+                Ok(()) => {
+                    self.state.ollama_model = crate::ollama::current_model();
+                    self.state.ollama_model_input = self.state.ollama_model.clone();
+                    self.state.modal = Modal::None;
+                    self.state.set_status("cleared saved Ollama model", false);
+                }
+                Err(err) => self
+                    .state
+                    .set_status(format!("model clear failed: {err}"), true),
+            },
             PendingAction::StageAll => {
                 spawn_operation(&mut self.state, "staging", OperationKind::Index, || {
                     crate::git::stage_all()?;

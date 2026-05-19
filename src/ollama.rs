@@ -1,6 +1,8 @@
+use anyhow::{Context, Result};
 use serde::Serialize;
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -18,6 +20,8 @@ const MAX_SUMMARY_FILES: usize = 24;
 const MAX_SIGNAL_LINES: usize = 48;
 const REVIEW_ASSIST_MAX_CHARS: usize = 2_400;
 const REVIEW_CHAT_MAX_CHARS: usize = 12_000;
+const CONFIG_FILE_ENV: &str = "LG_CONFIG_FILE";
+const CONFIG_MODEL_KEY: &str = "ollama_model";
 const REVIEW_REPO_STYLE_GUIDE: &str = "\
 Established repo style:
 - Kotlin/Spring, but immutable code by default: prefer val, immutable collections, data-class .copy(), focused functions, and pure helper functions.
@@ -94,6 +98,116 @@ struct DiffFileSummary {
     added: usize,
     removed: usize,
     hunks: Vec<String>,
+}
+
+pub fn current_model() -> String {
+    env_model()
+        .or_else(saved_model)
+        .unwrap_or_else(|| OLLAMA_MODEL.to_owned())
+}
+
+pub fn env_model_active() -> bool {
+    env_model().is_some()
+}
+
+pub fn save_model(model: &str) -> Result<()> {
+    let model = model.trim();
+    if model.is_empty() {
+        anyhow::bail!("model is empty");
+    }
+    if model.chars().any(|ch| ch == '\n' || ch == '\r') {
+        anyhow::bail!("model must fit on one line");
+    }
+    let path = config_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let mut entries = read_config_entries(&path);
+    set_config_entry(&mut entries, CONFIG_MODEL_KEY, model);
+    fs::write(&path, render_config_entries(&entries))
+        .with_context(|| format!("failed to write {}", path.display()))
+}
+
+pub fn clear_saved_model() -> Result<()> {
+    let path = config_path()?;
+    let mut entries = read_config_entries(&path);
+    let before = entries.len();
+    entries.retain(|(key, _)| key != CONFIG_MODEL_KEY);
+    if entries.len() == before && !path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, render_config_entries(&entries))
+        .with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn env_model() -> Option<String> {
+    std::env::var("LG_OLLAMA_MODEL")
+        .ok()
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+}
+
+fn saved_model() -> Option<String> {
+    let path = config_path().ok()?;
+    read_config_entries(&path)
+        .into_iter()
+        .find_map(|(key, value)| (key == CONFIG_MODEL_KEY && !value.is_empty()).then_some(value))
+}
+
+fn config_path() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os(CONFIG_FILE_ENV)
+        && !path.is_empty()
+    {
+        return Ok(PathBuf::from(path));
+    }
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
+        && !xdg.is_empty()
+    {
+        return Ok(PathBuf::from(xdg).join("lg/config"));
+    }
+    let Some(home) = std::env::var_os("HOME") else {
+        anyhow::bail!("HOME is not set");
+    };
+    Ok(PathBuf::from(home).join(".config/lg/config"))
+}
+
+fn read_config_entries(path: &std::path::Path) -> Vec<(String, String)> {
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (key, value) = line.split_once('=')?;
+            Some((key.trim().to_string(), value.trim().to_string()))
+        })
+        .collect()
+}
+
+fn set_config_entry(entries: &mut Vec<(String, String)>, key: &str, value: &str) {
+    if let Some((_, existing)) = entries.iter_mut().find(|(candidate, _)| candidate == key) {
+        *existing = value.to_string();
+    } else {
+        entries.push((key.to_string(), value.to_string()));
+    }
+}
+
+fn render_config_entries(entries: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (key, value) in entries {
+        out.push_str(key);
+        out.push('=');
+        out.push_str(value);
+        out.push('\n');
+    }
+    out
 }
 
 fn build_commit_prompt(diff: &str) -> String {
@@ -375,7 +489,7 @@ fn stream_messages(
     tx: Sender<GenMsg>,
 ) {
     let start = Instant::now();
-    let model = std::env::var("LG_OLLAMA_MODEL").unwrap_or_else(|_| OLLAMA_MODEL.to_owned());
+    let model = current_model();
     let endpoint = std::env::var("LG_OLLAMA_CHAT_ENDPOINT")
         .unwrap_or_else(|_| OLLAMA_CHAT_ENDPOINT.to_owned());
     let keep_alive =

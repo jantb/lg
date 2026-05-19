@@ -16,7 +16,7 @@ use crate::{
 };
 
 use super::source::{
-    RenderCache, inline_diff_overlay, review_source_context_lines, source_sections,
+    RenderCache, inline_diff_overlay, owned_spans, review_source_context_lines, source_sections,
 };
 
 const SUSPICIOUS_REVIEW_BG: Color = Color::Rgb(78, 57, 18);
@@ -35,16 +35,36 @@ pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: b
     )
     .title_bottom(
         Line::from(Span::styled(
-            "j/k move  Enter/space expand  d drill  s source  l explain  C chat  g/G top/bottom  R refresh",
+            "j/k move  Enter/space expand  d drill  s source  n/N notes  l explain  C chat  g/G top/bottom  R refresh",
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::DIM),
         ))
         .alignment(Alignment::Right),
     );
+    let Some(_) = &state.review else {
+        return;
+    };
+    let lines = render_lines(state, focused, area.width.saturating_sub(2));
+
+    // Use the lines we just built as the source of truth for the scroll bound.
+    // Avoids a second walk over every visible node (each of which would
+    // re-read source files and re-parse diff overlays) and stays correct when
+    // markdown::render word-wraps assist output into more lines than the raw
+    // source had.
+    let max_offset = super::scroll_bound(lines.len(), area.height.saturating_sub(2));
+    let offset = state.diff_offset.min(max_offset);
+    let para = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .scroll((offset, 0));
+    frame.render_widget(para, area);
+}
+
+fn render_lines(state: &AppState, focused: bool, wrap_width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let Some(review) = &state.review else {
-        return;
+        return lines;
     };
 
     // Precompute parent membership sets so the inner loop is O(1) per node
@@ -62,7 +82,6 @@ pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: b
 
     // File-read cache shared across this frame's source-context renders.
     let mut cache = RenderCache::default();
-    let wrap_width = area.width.saturating_sub(2);
     let body_style = Style::default().fg(Color::DarkGray);
 
     for idx in visible_review_node_indices(state) {
@@ -98,7 +117,7 @@ pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: b
                     for body in &node.body {
                         let mut spans = vec![Span::styled(body_prefix.clone(), body_style)];
                         let body_line = ui::highlight_diff_line_for_path(body, path);
-                        spans.extend(body_line.spans);
+                        spans.extend(owned_spans(body_line));
                         lines.push(Line::from(spans));
                     }
                 } else {
@@ -112,6 +131,7 @@ pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: b
             if state.review_context_open.contains(node_id) {
                 lines.extend(review_source_context_lines(
                     &mut cache,
+                    state,
                     review,
                     node,
                     syntax_path,
@@ -153,19 +173,7 @@ pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: b
             }
         }
     }
-
-    // Use the lines we just built as the source of truth for the scroll bound.
-    // Avoids a second walk over every visible node (each of which would
-    // re-read source files and re-parse diff overlays) and stays correct when
-    // markdown::render word-wraps assist output into more lines than the raw
-    // source had.
-    let max_offset = super::scroll_bound(lines.len(), area.height.saturating_sub(2));
-    let offset = state.diff_offset.min(max_offset);
-    let para = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false })
-        .scroll((offset, 0));
-    frame.render_widget(para, area);
+    lines
 }
 
 fn review_title_line(
@@ -495,7 +503,7 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Char('s') => {
             if let Some(review) = &state.review
                 && let Some(node) = review.nodes.get(state.review_idx)
-                && review_source_available(review, node)
+                && review_source_available(state, review, node)
             {
                 if state.review_context_open.contains(&node.id) {
                     state.review_context_open.remove(&node.id);
@@ -525,6 +533,12 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.pending_action = Some(PendingAction::ReviewAssist(node.id.clone()));
             }
         }
+        KeyCode::Char('n') => {
+            jump_to_review_note(state, false);
+        }
+        KeyCode::Char('N') => {
+            jump_to_review_note(state, true);
+        }
         KeyCode::Char('C') => {
             state.modal = crate::state::Modal::ReviewChat;
             state.review_chat_cursor = state.review_chat_input.chars().count();
@@ -551,6 +565,45 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn jump_to_review_note(state: &mut AppState, previous: bool) {
+    let lines = render_lines(state, false, state.diff_viewport_width.saturating_sub(2));
+    let note_lines: Vec<u16> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, line)| {
+            line_contains_review_note(line).then_some(idx.min(u16::MAX as usize) as u16)
+        })
+        .collect();
+    if note_lines.is_empty() {
+        state.set_status("no inline review notes", false);
+        return;
+    }
+
+    let current = state.diff_offset;
+    let target = if previous {
+        note_lines
+            .iter()
+            .rev()
+            .copied()
+            .find(|line| *line < current)
+            .or_else(|| note_lines.last().copied())
+    } else {
+        note_lines
+            .iter()
+            .copied()
+            .find(|line| *line > current)
+            .or_else(|| note_lines.first().copied())
+    }
+    .unwrap_or(0);
+    state.diff_offset = target.min(super::max_scroll_offset(state));
+}
+
+fn line_contains_review_note(line: &Line<'_>) -> bool {
+    line.spans
+        .iter()
+        .any(|span| span.content.contains("review note:"))
 }
 
 pub(super) fn select_mouse_row(state: &mut AppState, area: Rect, row: u16) {
@@ -715,7 +768,7 @@ fn review_body_line_count(state: &AppState, node: &crate::git::ReviewNode) -> us
 
 fn review_source_context_line_count(state: &AppState, node: &crate::git::ReviewNode) -> usize {
     if let Some(review) = &state.review {
-        let sections = source_sections(review, node);
+        let sections = source_sections(state, review, node);
         if !sections.is_empty() {
             return 1 + sections
                 .iter()
@@ -743,10 +796,11 @@ fn review_source_context_line_count(state: &AppState, node: &crate::git::ReviewN
 }
 
 fn review_source_available(
+    state: &AppState,
     review: &crate::git::AssistedReview,
     node: &crate::git::ReviewNode,
 ) -> bool {
-    if !source_sections(review, node).is_empty() {
+    if !source_sections(state, review, node).is_empty() {
         return true;
     }
     if !node.context.is_empty() {

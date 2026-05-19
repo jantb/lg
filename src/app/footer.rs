@@ -21,6 +21,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                 ("Esc", "back"),
                 ("f", "fetch"),
                 ("a", "author"),
+                ("L", "model"),
                 ("p", "pull"),
                 ("?", "help"),
                 ("q", "quit"),
@@ -38,6 +39,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                 ("o", "open IDE"),
                 ("c", "commit"),
                 ("a", "author"),
+                ("L", "model"),
                 ("p", "pull"),
                 ("P", "push"),
                 ("f", "fetch"),
@@ -58,6 +60,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                 ("u", "set upstream"),
                 ("p", "pull"),
                 ("a", "author"),
+                ("L", "model"),
                 ("f", "fetch"),
                 ("F", "actions"),
                 ("?", "help"),
@@ -71,6 +74,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                 ("Enter", "focus diff"),
                 ("p", "pull"),
                 ("a", "author"),
+                ("L", "model"),
                 ("f", "fetch"),
                 ("?", "help"),
             ],
@@ -85,12 +89,14 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                         ("Enter/space", "expand"),
                         ("d", "drill"),
                         ("s", "source"),
+                        ("n/N", "notes"),
                         ("o", "open IDE"),
                         ("l", "explain"),
                         ("C", "chat"),
                         ("g/G", "top/bot"),
                         ("f", "fetch"),
                         ("a", "author"),
+                        ("L", "model"),
                         ("R", "refresh"),
                         ("?", "help"),
                     ],
@@ -106,6 +112,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                         ("g/G", "top/bot"),
                         ("p", "pull"),
                         ("a", "author"),
+                        ("L", "model"),
                         ("f", "fetch"),
                         ("?", "help"),
                     ],
@@ -147,6 +154,16 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
                 ("Ctrl+L", "save local"),
                 ("Ctrl+U", "clear subtree"),
                 ("Ctrl+X", "clear local"),
+                ("Esc", "cancel"),
+            ],
+            Color::Cyan,
+        ),
+        Modal::Model => modal_spans(
+            "Model ",
+            &[
+                ("Up/Down", "pick"),
+                ("Enter", "save"),
+                ("Ctrl+U", "clear"),
                 ("Esc", "cancel"),
             ],
             Color::Cyan,
@@ -307,10 +324,24 @@ fn status_text(state: &AppState) -> (String, Color) {
         }
         (None, None) => (
             format!(
-                "\u{2022} {}",
+                "llm {} \u{2022} {}",
+                compact_model(&state.ollama_model),
                 state.branch.as_deref().unwrap_or("no branch")
             ),
             Color::DarkGray,
         ),
     }
+}
+
+fn compact_model(model: &str) -> String {
+    const MAX: usize = 34;
+    if model.chars().count() <= MAX {
+        return model.to_string();
+    }
+    let mut out = String::new();
+    for ch in model.chars().take(MAX.saturating_sub(3)) {
+        out.push(ch);
+    }
+    out.push_str("...");
+    out
 }

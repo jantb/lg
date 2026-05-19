@@ -4,7 +4,7 @@ use ratatui::{
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::ui;
+use crate::{state::AppState, ui};
 
 pub(super) struct SourceSection {
     pub path: String,
@@ -32,13 +32,14 @@ impl RenderCache {
 
 pub(super) fn review_source_context_lines(
     cache: &mut RenderCache,
+    state: &AppState,
     review: &crate::git::AssistedReview,
     node: &crate::git::ReviewNode,
     syntax_path: Option<&str>,
     indent: &str,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![section_header(indent, "source context")];
-    let sections = source_sections(review, node);
+    let sections = source_sections(state, review, node);
     if !sections.is_empty() {
         let multiple = sections.len() > 1;
         for section in sections {
@@ -75,6 +76,7 @@ pub(super) fn review_source_context_lines(
 }
 
 pub(super) fn source_sections(
+    state: &AppState,
     review: &crate::git::AssistedReview,
     node: &crate::git::ReviewNode,
 ) -> Vec<SourceSection> {
@@ -83,13 +85,13 @@ pub(super) fn source_sections(
         && !sections.is_empty()
     {
         let mut sections = sections;
-        attach_inline_review_notes(review, node, &mut sections);
+        attach_inline_review_notes(state, review, node, &mut sections);
         return sections;
     }
 
     let mut sections = Vec::new();
     let mut seen_paths = BTreeSet::new();
-    let mut notes_by_path = inline_review_notes_by_path(review, node);
+    let mut notes_by_path = inline_review_notes_by_path(state, review, node);
     for candidate in std::iter::once(node).chain(
         review
             .nodes
@@ -185,17 +187,19 @@ fn review_node_in_subtree(
 }
 
 fn attach_inline_review_notes(
+    state: &AppState,
     review: &crate::git::AssistedReview,
     node: &crate::git::ReviewNode,
     sections: &mut [SourceSection],
 ) {
-    let mut notes_by_path = inline_review_notes_by_path(review, node);
+    let mut notes_by_path = inline_review_notes_by_path(state, review, node);
     for section in sections {
         section.notes = notes_by_path.remove(&section.path).unwrap_or_default();
     }
 }
 
 fn inline_review_notes_by_path(
+    state: &AppState,
     review: &crate::git::AssistedReview,
     node: &crate::git::ReviewNode,
 ) -> BTreeMap<String, BTreeMap<usize, Vec<String>>> {
@@ -206,9 +210,6 @@ fn inline_review_notes_by_path(
             .iter()
             .filter(|candidate| review_node_in_subtree(review, candidate, &node.id)),
     ) {
-        let Some(note) = inline_review_note_text(candidate) else {
-            continue;
-        };
         let Some(path) = super::review::review_node_path(&candidate.title) else {
             continue;
         };
@@ -218,16 +219,132 @@ fn inline_review_notes_by_path(
         else {
             continue;
         };
-        let line_notes = notes
-            .entry(path.to_string())
-            .or_default()
-            .entry(line)
-            .or_default();
-        if !line_notes.contains(&note) {
-            line_notes.push(note);
+        if let Some(note) = inline_review_note_text(candidate) {
+            push_inline_note(&mut notes, path, line, note);
+        }
+        if let Some(assist) = inline_assist_note_text(state, &candidate.id) {
+            push_inline_note(&mut notes, path, line, assist);
         }
     }
+
+    for (path, finding) in &state.review_style_findings {
+        if !source_sections_contain_path(review, node, path) {
+            continue;
+        }
+        if matches!(finding.severity, crate::state::ReviewStyleSeverity::Ok) {
+            continue;
+        }
+        let line = first_changed_line_for_path(review, node, path).unwrap_or(1);
+        push_inline_note(
+            &mut notes,
+            path,
+            line,
+            format!(
+                "style {}: {}",
+                finding.severity.label().to_ascii_lowercase(),
+                finding.reason.trim()
+            ),
+        );
+    }
     notes
+}
+
+fn push_inline_note(
+    notes: &mut BTreeMap<String, BTreeMap<usize, Vec<String>>>,
+    path: &str,
+    line: usize,
+    note: String,
+) {
+    let line_notes = notes
+        .entry(path.to_string())
+        .or_default()
+        .entry(line.max(1))
+        .or_default();
+    if !line_notes.contains(&note) {
+        line_notes.push(note);
+    }
+}
+
+fn source_sections_contain_path(
+    review: &crate::git::AssistedReview,
+    node: &crate::git::ReviewNode,
+    path: &str,
+) -> bool {
+    std::iter::once(node)
+        .chain(
+            review
+                .nodes
+                .iter()
+                .filter(|candidate| review_node_in_subtree(review, candidate, &node.id)),
+        )
+        .any(|candidate| super::review::review_node_path(&candidate.title) == Some(path))
+        || (is_full_diff_root(node)
+            && full_diff_source_sections(review)
+                .is_some_and(|sections| sections.iter().any(|section| section.path == path)))
+}
+
+fn first_changed_line_for_path(
+    review: &crate::git::AssistedReview,
+    node: &crate::git::ReviewNode,
+    path: &str,
+) -> Option<usize> {
+    std::iter::once(node)
+        .chain(
+            review
+                .nodes
+                .iter()
+                .filter(|candidate| review_node_in_subtree(review, candidate, &node.id)),
+        )
+        .filter(|candidate| super::review::review_node_path(&candidate.title) == Some(path))
+        .find_map(|candidate| {
+            review_node_line(&candidate.title).or_else(|| first_body_hunk_new_line(&candidate.body))
+        })
+        .or_else(|| {
+            full_diff_source_sections(review)?
+                .into_iter()
+                .find(|section| section.path == path)
+                .and_then(|section| first_body_hunk_new_line(&section.body))
+        })
+        .map(|line| line.max(1))
+}
+
+fn inline_assist_note_text(state: &AppState, node_id: &str) -> Option<String> {
+    let text = if let Some(job) = &state.review_assist_job
+        && job.node_id == node_id
+    {
+        if job.output.trim().is_empty() {
+            "thinking..."
+        } else {
+            job.output.trim()
+        }
+    } else {
+        state.review_assists.get(node_id)?.trim()
+    };
+    first_note_line(text).map(|line| format!("ollama: {line}"))
+}
+
+fn first_note_line(text: &str) -> Option<String> {
+    text.lines()
+        .map(|line| {
+            line.trim()
+                .trim_start_matches('#')
+                .trim_start_matches('-')
+                .trim_start_matches('*')
+                .trim()
+        })
+        .find(|line| !line.is_empty())
+        .map(|line| truncate_note(line, 120))
+}
+
+fn truncate_note(line: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for ch in line.chars().take(max_chars) {
+        out.push(ch);
+    }
+    if line.chars().count() > max_chars {
+        out.push_str("...");
+    }
+    out
 }
 
 fn inline_review_note_text(node: &crate::git::ReviewNode) -> Option<String> {

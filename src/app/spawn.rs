@@ -192,6 +192,16 @@ pub(super) fn open_author_modal(state: &mut AppState) {
     }
 }
 
+pub(super) fn open_model_modal(state: &mut AppState) {
+    state.ollama_model = crate::ollama::current_model();
+    state.ollama_model_input = state.ollama_model.clone();
+    state.ollama_model_idx = crate::config::OLLAMA_MODEL_CHOICES
+        .iter()
+        .position(|model| *model == state.ollama_model_input)
+        .unwrap_or(0);
+    state.modal = Modal::Model;
+}
+
 pub(crate) fn checkout_branch_async(state: &mut AppState, branch: String) {
     if git_job_running(state) {
         return;

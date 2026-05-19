@@ -11,6 +11,8 @@ pub const OLLAMA_NUM_PREDICT: i32 = 160;
 pub const OLLAMA_REPEAT_PENALTY: f32 = 1.05;
 pub const OLLAMA_PRESENCE_PENALTY: f32 = 0.0;
 pub const OLLAMA_MODEL: &str = "qwen3.6:27b-coding-nvfp4";
+pub const OLLAMA_MODEL_CHOICES: &[&str] =
+    &["qwen3.6:27b-coding-nvfp4", "qwen3.6:35b-a3b-coding-nvfp4"];
 pub const OLLAMA_PROMPT_PREFIX: &str = "\
 Write a concise commit message for these staged changes.
 

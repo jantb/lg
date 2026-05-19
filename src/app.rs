@@ -50,8 +50,8 @@ use review_assist::{
     spawn_assisted_review, spawn_review_assist, spawn_review_chat, spawn_review_style_flags,
 };
 use spawn::{
-    git_job_running, load_diff_text, open_author_modal, selected_commit_ref, selected_diff_source,
-    spawn_operation, spawn_pull, spawn_push,
+    git_job_running, load_diff_text, open_author_modal, open_model_modal, selected_commit_ref,
+    selected_diff_source, spawn_operation, spawn_pull, spawn_push,
 };
 
 pub struct App {

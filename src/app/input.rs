@@ -12,8 +12,8 @@ use crate::{
 };
 
 use super::{
-    App, HeadlessApp, mouse, open_author_modal, selected_commit_ref, spawn_assisted_review,
-    spawn_pull, spawn_push,
+    App, HeadlessApp, mouse, open_author_modal, open_model_modal, selected_commit_ref,
+    spawn_assisted_review, spawn_pull, spawn_push,
 };
 
 fn next_pane(p: Pane) -> Pane {
@@ -156,6 +156,10 @@ where
                 panel::author::handle_key(&mut self.state, k)?;
                 return self.render();
             }
+            Modal::Model => {
+                panel::model::handle_key(&mut self.state, k)?;
+                return self.render();
+            }
             Modal::Flow => {
                 panel::flow::handle_key(&mut self.state, k)?;
                 return self.render();
@@ -217,6 +221,9 @@ where
             }
             KeyCode::Char('a') => {
                 open_author_modal(&mut self.state);
+            }
+            KeyCode::Char('L') => {
+                open_model_modal(&mut self.state);
             }
             KeyCode::Char('p') => {
                 if self.state.pull_available() {
@@ -409,6 +416,10 @@ impl App {
                 panel::author::handle_key(&mut self.state, k)?;
                 return Ok(());
             }
+            Modal::Model => {
+                panel::model::handle_key(&mut self.state, k)?;
+                return Ok(());
+            }
             Modal::Flow => {
                 panel::flow::handle_key(&mut self.state, k)?;
                 return Ok(());
@@ -498,6 +509,10 @@ impl App {
             }
             KeyCode::Char('a') => {
                 open_author_modal(&mut self.state);
+                return Ok(());
+            }
+            KeyCode::Char('L') => {
+                open_model_modal(&mut self.state);
                 return Ok(());
             }
             KeyCode::Char('p') => {
