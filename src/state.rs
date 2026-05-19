@@ -120,10 +120,11 @@ pub enum PendingAction {
     ClearSubtreeAuthor {
         path: String,
     },
-    SaveOllamaModel {
+    SaveLlmSettings {
         model: String,
+        provider: crate::ollama::LlmProvider,
     },
-    ClearOllamaModel,
+    ClearLlmSettings,
     StageAll,
     UnstageAll,
     StagePath(String),
@@ -244,6 +245,9 @@ pub struct AppState {
     pub ollama_model: String,
     pub ollama_model_input: String,
     pub ollama_model_idx: usize,
+    pub llm_provider: crate::ollama::LlmProvider,
+    pub llm_provider_idx: usize,
+    pub llm_config_path: String,
     pub repo_root: Option<String>,
     pub workspace_root: Option<String>,
     pub branch: Option<String>,
@@ -425,6 +429,9 @@ impl AppState {
             ollama_model: crate::ollama::current_model(),
             ollama_model_input: String::new(),
             ollama_model_idx: 0,
+            llm_provider: crate::ollama::current_provider(),
+            llm_provider_idx: 0,
+            llm_config_path: crate::ollama::config_file_display(),
             repo_root: None,
             workspace_root: None,
             branch: None,
@@ -535,7 +542,7 @@ impl AppState {
                     | PendingAction::SaveSubtreeAuthor { .. }
                     | PendingAction::ClearSubtreeAuthor { .. },
                 ) => Some("saving author"),
-                Some(PendingAction::SaveOllamaModel { .. } | PendingAction::ClearOllamaModel) => {
+                Some(PendingAction::SaveLlmSettings { .. } | PendingAction::ClearLlmSettings) => {
                     Some("saving model")
                 }
                 Some(PendingAction::StageAll | PendingAction::StagePath(_)) => Some("staging"),

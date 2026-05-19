@@ -1,8 +1,18 @@
 use std::path::PathBuf;
 
-use crate::state::{Modal, OperationKind, PendingAction};
+use crate::state::{AppState, Modal, OperationKind, PendingAction};
 
 use super::{App, spawn_operation, spawn_pull, spawn_push, spawn_review_assist, spawn_review_chat};
+
+fn refresh_llm_settings_state(state: &mut AppState) {
+    state.ollama_model = crate::ollama::current_model();
+    state.llm_provider = crate::ollama::current_provider();
+    state.llm_provider_idx = crate::ollama::LlmProvider::ALL
+        .iter()
+        .position(|provider| *provider == state.llm_provider)
+        .unwrap_or(0);
+    state.llm_config_path = crate::ollama::config_file_display();
+}
 
 impl App {
     pub(super) fn dispatch_pending(&mut self, action: PendingAction) {
@@ -123,28 +133,31 @@ impl App {
                         .set_status(format!("author clear failed: {err}"), true),
                 }
             }
-            PendingAction::SaveOllamaModel { model } => match crate::ollama::save_model(&model) {
-                Ok(()) => {
-                    self.state.ollama_model = crate::ollama::current_model();
-                    self.state.ollama_model_input = self.state.ollama_model.clone();
-                    self.state.modal = Modal::None;
-                    if crate::ollama::env_model_active() {
-                        self.state
-                            .set_status("saved model; LG_OLLAMA_MODEL still overrides it", false);
-                    } else {
-                        self.state.set_status("saved Ollama model", false);
+            PendingAction::SaveLlmSettings { model, provider } => {
+                match crate::ollama::save_llm_settings(&model, provider) {
+                    Ok(()) => {
+                        refresh_llm_settings_state(&mut self.state);
+                        self.state.ollama_model_input = self.state.ollama_model.clone();
+                        self.state.modal = Modal::None;
+                        if crate::ollama::env_model_active() || crate::ollama::env_provider_active()
+                        {
+                            self.state
+                                .set_status("saved LLM settings; env override is active", false);
+                        } else {
+                            self.state.set_status("saved LLM settings", false);
+                        }
                     }
+                    Err(err) => self
+                        .state
+                        .set_status(format!("model save failed: {err}"), true),
                 }
-                Err(err) => self
-                    .state
-                    .set_status(format!("model save failed: {err}"), true),
-            },
-            PendingAction::ClearOllamaModel => match crate::ollama::clear_saved_model() {
+            }
+            PendingAction::ClearLlmSettings => match crate::ollama::clear_saved_llm_settings() {
                 Ok(()) => {
-                    self.state.ollama_model = crate::ollama::current_model();
+                    refresh_llm_settings_state(&mut self.state);
                     self.state.ollama_model_input = self.state.ollama_model.clone();
                     self.state.modal = Modal::None;
-                    self.state.set_status("cleared saved Ollama model", false);
+                    self.state.set_status("cleared saved LLM settings", false);
                 }
                 Err(err) => self
                     .state

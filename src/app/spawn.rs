@@ -199,6 +199,12 @@ pub(super) fn open_model_modal(state: &mut AppState) {
         .iter()
         .position(|model| *model == state.ollama_model_input)
         .unwrap_or(0);
+    state.llm_provider = crate::ollama::current_provider();
+    state.llm_provider_idx = crate::ollama::LlmProvider::ALL
+        .iter()
+        .position(|provider| *provider == state.llm_provider)
+        .unwrap_or(0);
+    state.llm_config_path = crate::ollama::config_file_display();
     state.modal = Modal::Model;
 }
 

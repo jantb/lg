@@ -10,25 +10,26 @@ use ratatui::{
 
 use crate::{
     config::OLLAMA_MODEL_CHOICES,
+    ollama::LlmProvider,
     state::{AppState, Modal, PendingAction},
     ui,
 };
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let w = 84.min(area.width);
-    let h = 12.min(area.height);
+    let h = 16.min(area.height);
     let modal = ui::centered(area, w, h);
     frame.render_widget(Clear, modal);
-    if modal.width < 32 || modal.height < 9 {
+    if modal.width < 32 || modal.height < 12 {
         frame.render_widget(
-            Paragraph::new("Terminal too small for model settings").block(ui::bordered("Model")),
+            Paragraph::new("Terminal too small for LLM settings").block(ui::bordered("LLM")),
             modal,
         );
         return;
     }
 
-    let mode = if crate::ollama::env_model_active() {
-        "LG_OLLAMA_MODEL override"
+    let mode = if crate::ollama::env_model_active() || crate::ollama::env_provider_active() {
+        "env override"
     } else {
         "saved/default"
     };
@@ -36,6 +37,28 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         Line::from(vec![
             Span::styled("Mode:  ", Style::default().fg(Color::Yellow)),
             Span::styled(mode, Style::default().fg(Color::Gray)),
+        ]),
+        Line::from(vec![
+            Span::styled("Store: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                state.llm_config_path.clone(),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Provider ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                state.llm_provider.label(),
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled("Endpoint ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                crate::ollama::endpoint_for_provider(state.llm_provider),
+                Style::default().fg(Color::DarkGray),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Active:", Style::default().fg(Color::Yellow)),
@@ -80,6 +103,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     lines.push(Line::from(vec![
         Span::styled("Up/Down", Style::default().fg(Color::Yellow)),
         Span::raw(" pick    "),
+        Span::styled("p", Style::default().fg(Color::Yellow)),
+        Span::raw(" provider    "),
         Span::styled("Enter", Style::default().fg(Color::Green)),
         Span::raw(" save    "),
         Span::styled("Ctrl+U", Style::default().fg(Color::Red)),
@@ -89,7 +114,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     ]));
 
     frame.render_widget(
-        Paragraph::new(lines).block(ui::bordered("Ollama Model")),
+        Paragraph::new(lines).block(ui::bordered("LLM Settings")),
         modal,
     );
 }
@@ -100,13 +125,15 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Esc => state.modal = Modal::None,
         KeyCode::Up => pick_model(state, false),
         KeyCode::Tab | KeyCode::Down => pick_model(state, true),
+        KeyCode::Char('p') if !ctrl => pick_provider(state),
         KeyCode::Enter => {
-            state.pending_action = Some(PendingAction::SaveOllamaModel {
+            state.pending_action = Some(PendingAction::SaveLlmSettings {
                 model: state.ollama_model_input.clone(),
+                provider: state.llm_provider,
             });
         }
         KeyCode::Char('u') if ctrl => {
-            state.pending_action = Some(PendingAction::ClearOllamaModel);
+            state.pending_action = Some(PendingAction::ClearLlmSettings);
         }
         KeyCode::Backspace if !ctrl => {
             state.ollama_model_input.pop();
@@ -119,6 +146,11 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn pick_provider(state: &mut AppState) {
+    state.llm_provider_idx = (state.llm_provider_idx + 1) % LlmProvider::ALL.len();
+    state.llm_provider = LlmProvider::ALL[state.llm_provider_idx];
 }
 
 fn pick_model(state: &mut AppState, next: bool) {

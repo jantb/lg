@@ -156,8 +156,9 @@ const SECTIONS: &[Section] = &[
         pane: None,
         bindings: &[
             ("Up / Down", "Pick known model"),
+            ("p", "Toggle Ollama or llama-server"),
             ("Enter", "Save selected or typed model"),
-            ("Ctrl+U", "Clear saved model"),
+            ("Ctrl+U", "Clear saved LLM settings"),
             ("Esc", "Cancel"),
         ],
     },

@@ -162,6 +162,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
             "Model ",
             &[
                 ("Up/Down", "pick"),
+                ("p", "provider"),
                 ("Enter", "save"),
                 ("Ctrl+U", "clear"),
                 ("Esc", "cancel"),
@@ -324,7 +325,8 @@ fn status_text(state: &AppState) -> (String, Color) {
         }
         (None, None) => (
             format!(
-                "llm {} \u{2022} {}",
+                "llm {}/{} \u{2022} {}",
+                state.llm_provider.label(),
                 compact_model(&state.ollama_model),
                 state.branch.as_deref().unwrap_or("no branch")
             ),

@@ -190,16 +190,19 @@ fn author_modal_shows_error_when_terminal_is_too_small() {
 fn model_modal_picks_and_saves_model() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.ollama_model = "test-model".into();
+    app.state.llm_provider = lg::ollama::LlmProvider::Ollama;
 
     app.render().unwrap();
     assert!(
-        buffer_text(&app).contains("llm test-model"),
+        buffer_text(&app).contains("llm ollama/test-model"),
         "footer should show active model"
     );
 
     app.send_key(key(KeyCode::Char('L'))).unwrap();
     assert_eq!(app.state.modal, Modal::Model);
     assert_eq!(app.state.ollama_model_input, app.state.ollama_model);
+    app.state.llm_provider = lg::ollama::LlmProvider::Ollama;
+    app.state.llm_provider_idx = 0;
     app.state.ollama_model_idx = 0;
     app.state.ollama_model_input = lg::config::OLLAMA_MODEL_CHOICES[0].into();
 
@@ -208,12 +211,15 @@ fn model_modal_picks_and_saves_model() {
         app.state.ollama_model_input,
         lg::config::OLLAMA_MODEL_CHOICES[1]
     );
+    panel::model::handle_key(&mut app.state, key(KeyCode::Char('p'))).unwrap();
+    assert_eq!(app.state.llm_provider, lg::ollama::LlmProvider::LlamaServer);
 
     panel::model::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
     assert_eq!(
         app.state.pending_action,
-        Some(PendingAction::SaveOllamaModel {
+        Some(PendingAction::SaveLlmSettings {
             model: lg::config::OLLAMA_MODEL_CHOICES[1].into(),
+            provider: lg::ollama::LlmProvider::LlamaServer,
         })
     );
 }
