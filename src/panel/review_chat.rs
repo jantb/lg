@@ -40,7 +40,7 @@ fn render_contents(state: &AppState, area: Rect, frame: &mut Frame) {
     let running = state.review_chat_job.is_some();
     let title = if let Some(job) = &state.review_chat_job {
         let spinner = SPINNER_FRAMES[job.spinner % SPINNER_FRAMES.len()];
-        format!("Review chat  {spinner} asking Ollama")
+        format!("Review chat  {spinner} asking LLM")
     } else {
         "Review chat".to_string()
     };
@@ -58,7 +58,7 @@ fn render_contents(state: &AppState, area: Rect, frame: &mut Frame) {
     frame.render_widget(conversation, chunks[0]);
 
     let input_title = if running {
-        "Prompt  (waiting for Ollama)"
+        "Prompt  (waiting for LLM)"
     } else {
         "Prompt  (Enter=send  Esc=close)"
     };
@@ -81,7 +81,7 @@ fn render_contents(state: &AppState, area: Rect, frame: &mut Frame) {
         Line::from(vec![
             Span::styled("Esc", Style::default().fg(Color::Gray)),
             Span::raw(" close  "),
-            Span::styled("Ollama", Style::default().fg(Color::LightCyan)),
+            Span::styled("LLM", Style::default().fg(Color::LightCyan)),
             Span::raw(" keeps streaming"),
         ])
     } else {
@@ -129,7 +129,7 @@ fn push_message_lines(
 ) {
     let (label, color) = match role {
         ReviewChatRole::User => ("you", Color::Yellow),
-        ReviewChatRole::Assistant => ("ollama", Color::LightCyan),
+        ReviewChatRole::Assistant => ("llm", Color::LightCyan),
     };
     lines.push(Line::from(Span::styled(
         label,

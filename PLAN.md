@@ -1,6 +1,6 @@
 # lg — Development Plan
 
-A simplified lazygit clone in Rust using ratatui. Supports only **commit** and **push** operations with Ollama-powered commit message generation.
+A simplified lazygit clone in Rust using ratatui. Supports only **commit** and **push** operations with local LLM-powered commit message generation.
 
 Git operations shell out to the `git` CLI — no libgit2 dependency. This sidesteps SSH auth, signing, and platform-specific libgit2 build pain, and inherits whatever the user already has configured.
 
@@ -45,7 +45,7 @@ Notes:
 1. `c` opens the commit panel.
 2. Panel shows: unstaged list, staged list, commit message input.
 3. `y` stages highlighted file, `u` unstages. `A`/`U` stage/unstage all.
-4. `o` generates a message via Ollama from the staged diff.
+4. `o` generates a message via local LLM from the staged diff.
 5. User edits the message (optional).
 6. `Enter` runs `git commit -m "<message>"`.
 7. On success, lists refresh; panel closes.
@@ -57,11 +57,11 @@ Notes:
 4. `Enter` runs `git push origin <branch>` (inherits user's SSH/HTTPS credentials from the shell).
 5. Shows stdout/stderr in the status area on completion.
 
-### Ollama integration
-- Endpoint: `http://localhost:11434/api/generate`.
+### LLM integration
+- Endpoint: `http://localhost:3636/v1/chat/completions`.
 - Model: `qwen3.6:27b-coding-nvfp4` (installed locally; `lg` is local-only).
-- Prompt = `OLLAMA_PROMPT_PREFIX` + `git diff --cached`.
-- Non-streaming (`"stream": false`). Parse the `response` field.
+- Prompt = `COMMIT_PROMPT_PREFIX` + `git diff --cached`.
+- Streaming (`"stream": true`). Parse OpenAI-compatible SSE deltas.
 - On any failure, fall back to an empty field the user can fill manually.
 
 ---
@@ -75,7 +75,7 @@ Notes:
 | `p` | Open push panel | Files |
 | `y` / `u` | Stage / unstage selection | Files |
 | `A` / `U` | Stage all / unstage all | Files |
-| `o` | Generate commit message (Ollama) | Commit |
+| `o` | Generate commit message (LLM) | Commit |
 | `j` / `k` / `Down` / `Up` | Move selection | All |
 | `Enter` | Confirm / commit / push | Context |
 | `Tab` | Cycle focus within panel | Files, Commit |
@@ -92,7 +92,7 @@ src/
 ├── state.rs        — AppState, Panel enum, StatusMsg
 ├── config.rs       — constants
 ├── ui.rs           — layout primitives
-├── ollama.rs       — blocking HTTP call to Ollama
+├── llm.rs          — blocking HTTP call to local LLM
 ├── git.rs          — shell wrappers around `git`
 └── panel/
     ├── mod.rs
@@ -113,9 +113,9 @@ fn main() -> anyhow::Result<()> {
 ```rust
 use ratatui::style::Color;
 
-pub const OLLAMA_ENDPOINT: &str = "http://localhost:11434/api/generate";
-pub const OLLAMA_MODEL: &str = "qwen3.6:27b-coding-nvfp4";
-pub const OLLAMA_PROMPT_PREFIX: &str =
+pub const LLAMA_SERVER_CHAT_ENDPOINT: &str = "http://localhost:3636/v1/chat/completions";
+pub const LLM_MODEL: &str = "qwen3.6:27b-coding-nvfp4";
+pub const COMMIT_PROMPT_PREFIX: &str =
     "Write a concise one-line git commit message (<=72 chars) for the diff below. \
      No prose, no quotes, no trailing period.\n\n";
 pub const DEFAULT_PUSH_REMOTE: &str = "origin";
@@ -189,9 +189,9 @@ fn run(args: &[&str]) -> Result<Output>;
 // spawns `git` in CWD, inherits env, non-zero exit → Err with stderr.
 ```
 
-### `src/ollama.rs`
+### `src/llm.rs`
 ```rust
-pub fn generate_commit_message(diff: &str) -> anyhow::Result<String>;
+pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>);
 ```
 - Build JSON body `{ "model": MODEL, "prompt": PREFIX + diff, "stream": false }`.
 - `reqwest::blocking::Client::new().post(ENDPOINT).json(&body).send()?`.
@@ -214,7 +214,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame);
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> anyhow::Result<()>;
 ```
 
-`commit.rs` additionally owns the Ollama call (blocking; the UI freezes while generating — acceptable for now, status bar shows "generating…" before the call via a redraw).
+Commit generation runs the LLM call on a worker thread and streams tokens back through app state.
 
 ### `src/app.rs`
 ```rust
@@ -289,7 +289,7 @@ loop {
 ### Phase 5 — Commit panel
 - Text input buffer in `AppState::commit_message`; Backspace/char insert.
 - Sidebar = staged list from state.
-- `o`: set status "generating…", redraw once, call `ollama::generate_commit_message(git::staged_diff()?)`, fill input on success or post an error status on failure.
+- `o`: set status "generating…", spawn `llm::stream_commit_message(git::staged_diff()?)`, fill input on success or post an error status on failure.
 - `Enter` (non-empty message): `git::commit(&msg)`, clear message, refresh, return to Files.
 - `Esc`: return to Files (keep message).
 
@@ -327,8 +327,8 @@ All via `cargo test`; no external services needed.
   — init with `-b main`, assert `"main"`.
 - `commit on empty message fails` — assert `Err`.
 
-### `ollama.rs`
-- `parses Ollama response` — fixture JSON → `"fix: …"`.
+### `llm.rs`
+- `parses llama-server SSE deltas` — fixture JSON → `"fix: …"`.
 - `truncates to COMMIT_MSG_MAX_CHARS` — synth long string.
 - `strips surrounding quotes`.
 
@@ -341,9 +341,9 @@ All via `cargo test`; no external services needed.
 
 | Value | Constant | File |
 |-------|----------|------|
-| `http://localhost:11434/api/generate` | `OLLAMA_ENDPOINT` | `config.rs` |
-| `qwen3.6:27b-coding-nvfp4` | `OLLAMA_MODEL` | `config.rs` |
-| `"Write a concise one-line git commit message (<=72 chars) …"` | `OLLAMA_PROMPT_PREFIX` | `config.rs` |
+| `http://localhost:3636/v1/chat/completions` | `LLAMA_SERVER_CHAT_ENDPOINT` | `config.rs` |
+| `qwen3.6:27b-coding-nvfp4` | `LLM_MODEL` | `config.rs` |
+| `"Write a concise one-line git commit message (<=72 chars) …"` | `COMMIT_PROMPT_PREFIX` | `config.rs` |
 | `origin` | `DEFAULT_PUSH_REMOTE` | `config.rs` |
 | `72` | `COMMIT_MSG_MAX_CHARS` | `config.rs` |
 | `1` | `STATUS_BAR_HEIGHT` | `config.rs` |
@@ -358,7 +358,7 @@ All via `cargo test`; no external services needed.
 1. **Shell-out to `git`.** Inherits user's `~/.gitconfig`, credential helpers, SSH agent, GPG signing. No libgit2 build hassle; no credential callback wiring. Cost: one fork/exec per action — negligible at human-interaction rates.
 2. **Single `AppState`.** Panels mutate it directly; no pub-sub.
 3. **Sync throughout.** `reqwest::blocking` + `event::poll` tick loop; no tokio.
-4. **Ollama call blocks the UI.** Acceptable; a spinner and pre-call "generating…" status keep it legible. If it starts to bite, move to a background thread + channel later — don't pre-build it.
+4. **LLM call runs in a worker thread.** The UI keeps ticking while streamed output updates the commit/review state.
 5. **Error type.** `anyhow::Result<T>` everywhere; library errors propagate cleanly via `?`.
 6. **Terminal restore.** `Drop` on `App` + panic hook — never leave the user's terminal in raw mode.
 7. **No external config.** All knobs live in `config.rs`.
@@ -371,7 +371,7 @@ All via `cargo test`; no external services needed.
 | `config.rs` | 20 |
 | `state.rs` | 40 |
 | `git.rs` | 140 |
-| `ollama.rs` | 50 |
+| `llm.rs` | 50 |
 | `ui.rs` | 60 |
 | `app.rs` | 140 |
 | `panel/files.rs` | 110 |
@@ -386,7 +386,7 @@ All via `cargo test`; no external services needed.
 | Risk | Mitigation |
 |------|-----------|
 | `git` not on `$PATH` | `App::new` fails fast with a clear error |
-| Ollama not running | Status shows error; user types message manually |
+| llama-server not running | Status shows error; user types message manually |
 | SSH auth prompts block the UI | Inherited from `git` CLI — agent must be pre-loaded; document in README |
 | `git push` streams progress to stderr | Capture both; display last line in status |
 | Renames in `status -z` split across records | Parser tests cover this (§6) |

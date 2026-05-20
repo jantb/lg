@@ -910,7 +910,7 @@ impl App {
                     if let Some(job) = self.state.review_assist_job.take() {
                         self.state
                             .review_assists
-                            .insert(job.node_id, format!("ollama error: {error}"));
+                            .insert(job.node_id, format!("llm error: {error}"));
                     }
                     self.state.set_status(error, true);
                 }
@@ -961,7 +961,7 @@ impl App {
                         .review_chat_messages
                         .push(crate::state::ReviewChatMessage {
                             role: crate::state::ReviewChatRole::Assistant,
-                            content: format!("ollama error: {error}"),
+                            content: format!("llm error: {error}"),
                         });
                     self.state.review_chat_scroll = u16::MAX;
                     self.state.set_status(error, true);

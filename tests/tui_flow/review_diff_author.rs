@@ -189,37 +189,32 @@ fn author_modal_shows_error_when_terminal_is_too_small() {
 #[test]
 fn model_modal_picks_and_saves_model() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
-    app.state.ollama_model = "test-model".into();
-    app.state.llm_provider = lg::ollama::LlmProvider::Ollama;
+    app.state.llm_model = "test-model".into();
+    app.state.llm_provider = lg::llm::LlmProvider::LlamaServer;
 
     app.render().unwrap();
     assert!(
-        buffer_text(&app).contains("llm ollama/test-model"),
+        buffer_text(&app).contains("llm llama-server/test-model"),
         "footer should show active model"
     );
 
     app.send_key(key(KeyCode::Char('L'))).unwrap();
     assert_eq!(app.state.modal, Modal::Model);
-    assert_eq!(app.state.ollama_model_input, app.state.ollama_model);
-    app.state.llm_provider = lg::ollama::LlmProvider::Ollama;
+    assert_eq!(app.state.llm_model_input, app.state.llm_model);
+    app.state.llm_provider = lg::llm::LlmProvider::LlamaServer;
     app.state.llm_provider_idx = 0;
-    app.state.ollama_model_idx = 0;
-    app.state.ollama_model_input = lg::config::OLLAMA_MODEL_CHOICES[0].into();
+    app.state.llm_model_idx = 0;
+    app.state.llm_model_input = lg::config::LLM_MODEL_CHOICES[0].into();
 
     panel::model::handle_key(&mut app.state, key(KeyCode::Down)).unwrap();
-    assert_eq!(
-        app.state.ollama_model_input,
-        lg::config::OLLAMA_MODEL_CHOICES[1]
-    );
-    panel::model::handle_key(&mut app.state, key(KeyCode::Char('p'))).unwrap();
-    assert_eq!(app.state.llm_provider, lg::ollama::LlmProvider::LlamaServer);
+    assert_eq!(app.state.llm_model_input, lg::config::LLM_MODEL_CHOICES[1]);
 
     panel::model::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
     assert_eq!(
         app.state.pending_action,
         Some(PendingAction::SaveLlmSettings {
-            model: lg::config::OLLAMA_MODEL_CHOICES[1].into(),
-            provider: lg::ollama::LlmProvider::LlamaServer,
+            model: lg::config::LLM_MODEL_CHOICES[1].into(),
+            provider: lg::llm::LlmProvider::LlamaServer,
         })
     );
 }
@@ -454,7 +449,7 @@ fn review_panel_sources_entry_subtree_across_files_and_drills_to_child_file() {
 }
 
 #[test]
-fn review_source_inlines_style_and_ollama_notes_and_jumps_between_them() {
+fn review_source_inlines_style_and_llm_notes_and_jumps_between_them() {
     let dir = tempfile::tempdir().unwrap();
     let source_path = dir.path().join("App.kt");
     let mut source = String::from(
@@ -517,7 +512,7 @@ fn review_source_inlines_style_and_ollama_notes_and_jumps_between_them() {
     let rendered = buffer_text(&app);
     assert!(rendered.contains("review note: style warn"), "{rendered}");
     assert!(
-        rendered.contains("review note: ollama: This changes both"),
+        rendered.contains("review note: llm: This changes both"),
         "{rendered}"
     );
 
@@ -1475,7 +1470,7 @@ fn review_pane_o_opens_selected_source_file() {
 }
 
 #[test]
-fn review_panel_explains_selected_subtree_with_ollama() {
+fn review_panel_explains_selected_subtree_with_llm() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
@@ -1520,7 +1515,7 @@ fn review_panel_explains_selected_subtree_with_ollama() {
     );
     app.render().unwrap();
     let rendered = buffer_text(&app);
-    assert!(rendered.contains("ollama"), "{rendered}");
+    assert!(rendered.contains("llm"), "{rendered}");
     assert!(
         rendered.contains("Explains the greeting change."),
         "{rendered}"
@@ -1528,7 +1523,7 @@ fn review_panel_explains_selected_subtree_with_ollama() {
 }
 
 #[test]
-fn review_panel_explains_full_diff_with_ollama() {
+fn review_panel_explains_full_diff_with_llm() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
@@ -1578,7 +1573,7 @@ fn review_panel_explains_full_diff_with_ollama() {
         .insert("branch".into(), "Explains the whole diff.".into());
     app.render().unwrap();
     let rendered = buffer_text(&app);
-    assert!(rendered.contains("ollama"), "{rendered}");
+    assert!(rendered.contains("llm"), "{rendered}");
     assert!(rendered.contains("Explains the whole diff."), "{rendered}");
 }
 
@@ -1644,7 +1639,7 @@ fn review_chat_docked_renders_markdown_conversation() {
     assert!(rendered.contains("diff --git"), "{rendered}");
     assert!(rendered.contains("Review chat"), "{rendered}");
     assert!(rendered.contains("you"), "{rendered}");
-    assert!(rendered.contains("ollama"), "{rendered}");
+    assert!(rendered.contains("llm"), "{rendered}");
     assert!(
         rendered.contains("• Risk in src/lib.rs:2 needs test coverage."),
         "{rendered}"
@@ -1761,7 +1756,7 @@ fn review_chat_mouse_scrolls_and_resizes_when_docked() {
 }
 
 #[test]
-fn review_panel_renders_ollama_markdown() {
+fn review_panel_renders_llm_markdown() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(140, 32)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;

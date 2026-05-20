@@ -966,7 +966,7 @@ fn review_checklist(files: &[ReviewFile], entries: &[ReviewEntryPoint]) -> Vec<S
     }
     if !entries.is_empty() {
         lines.push(
-            "- Use `l` on `Full diff against main` for an Ollama pass over the whole change, then use `l` again on the highest-risk file or entry nodes for focused follow-up."
+            "- Use `l` on `Full diff against main` for an LLM pass over the whole change, then use `l` again on the highest-risk file or entry nodes for focused follow-up."
                 .to_string(),
         );
     }
@@ -1290,7 +1290,7 @@ mod tests {
             "{checklist}"
         );
         assert!(checklist.contains("model/API compatibility"), "{checklist}");
-        assert!(checklist.contains("Ollama pass"), "{checklist}");
+        assert!(checklist.contains("LLM pass"), "{checklist}");
         assert!(
             checklist.contains("No test files changed"),
             "production-only domain changes should still ask about coverage: {checklist}"

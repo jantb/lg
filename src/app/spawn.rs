@@ -193,18 +193,18 @@ pub(super) fn open_author_modal(state: &mut AppState) {
 }
 
 pub(super) fn open_model_modal(state: &mut AppState) {
-    state.ollama_model = crate::ollama::current_model();
-    state.ollama_model_input = state.ollama_model.clone();
-    state.ollama_model_idx = crate::config::OLLAMA_MODEL_CHOICES
+    state.llm_model = crate::llm::current_model();
+    state.llm_model_input = state.llm_model.clone();
+    state.llm_model_idx = crate::config::LLM_MODEL_CHOICES
         .iter()
-        .position(|model| *model == state.ollama_model_input)
+        .position(|model| *model == state.llm_model_input)
         .unwrap_or(0);
-    state.llm_provider = crate::ollama::current_provider();
-    state.llm_provider_idx = crate::ollama::LlmProvider::ALL
+    state.llm_provider = crate::llm::current_provider();
+    state.llm_provider_idx = crate::llm::LlmProvider::ALL
         .iter()
         .position(|provider| *provider == state.llm_provider)
         .unwrap_or(0);
-    state.llm_config_path = crate::ollama::config_file_display();
+    state.llm_config_path = crate::llm::config_file_display();
     state.modal = Modal::Model;
 }
 

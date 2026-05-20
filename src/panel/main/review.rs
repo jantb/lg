@@ -154,7 +154,7 @@ fn render_lines(state: &AppState, focused: bool, wrap_width: u16) -> Vec<Line<'s
             }
             if let Some(assist) = assist {
                 lines.push(Line::from(Span::styled(
-                    format!("{indent}  │ ollama"),
+                    format!("{indent}  │ llm"),
                     Style::default()
                         .fg(Color::LightCyan)
                         .add_modifier(Modifier::BOLD),

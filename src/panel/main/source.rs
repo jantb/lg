@@ -320,7 +320,7 @@ fn inline_assist_note_text(state: &AppState, node_id: &str) -> Option<String> {
     } else {
         state.review_assists.get(node_id)?.trim()
     };
-    first_note_line(text).map(|line| format!("ollama: {line}"))
+    first_note_line(text).map(|line| format!("llm: {line}"))
 }
 
 fn first_note_line(text: &str) -> Option<String> {

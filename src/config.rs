@@ -1,20 +1,13 @@
 use ratatui::style::Color;
 
-pub const OLLAMA_CHAT_ENDPOINT: &str = "http://localhost:11434/api/chat";
-pub const LLAMA_SERVER_CHAT_ENDPOINT: &str = "http://localhost:8080/v1/chat/completions";
-pub const OLLAMA_KEEP_ALIVE: &str = "10m";
-pub const OLLAMA_TEMPERATURE: f32 = 0.2;
-pub const OLLAMA_TOP_P: f32 = 0.9;
-pub const OLLAMA_TOP_K: u32 = 40;
-pub const OLLAMA_MIN_P: f32 = 0.0;
-pub const OLLAMA_NUM_CTX: u32 = 16_384;
-pub const OLLAMA_NUM_PREDICT: i32 = 160;
-pub const OLLAMA_REPEAT_PENALTY: f32 = 1.05;
-pub const OLLAMA_PRESENCE_PENALTY: f32 = 0.0;
-pub const OLLAMA_MODEL: &str = "qwen3.6:27b-coding-nvfp4";
-pub const OLLAMA_MODEL_CHOICES: &[&str] =
+pub const LLAMA_SERVER_CHAT_ENDPOINT: &str = "http://localhost:3636/v1/chat/completions";
+pub const LLM_TEMPERATURE: f32 = 0.2;
+pub const LLM_TOP_P: f32 = 0.9;
+pub const LLM_NUM_PREDICT: i32 = 160;
+pub const LLM_MODEL: &str = "qwen3.6:27b-coding-nvfp4";
+pub const LLM_MODEL_CHOICES: &[&str] =
     &["qwen3.6:27b-coding-nvfp4", "qwen3.6:35b-a3b-coding-nvfp4"];
-pub const OLLAMA_PROMPT_PREFIX: &str = "\
+pub const COMMIT_PROMPT_PREFIX: &str = "\
 Write a concise commit message for these staged changes.
 
 Rules:
@@ -31,10 +24,10 @@ Rules:
 - Output ONLY the commit message. No prose, no quotes, no markdown, no code fences.
 
 Examples:
-- feat(ollama): stream commit-message tokens
+- feat(llm): stream commit-message tokens
 - fix(git): include untracked files in porcelain parse
 - refactor(state): interleave dirs and files in tree rows
-- perf(ollama): reuse shared http client across requests
+- perf(llm): reuse shared http client across requests
 - feat(tui): show staged and unstaged counts in status panel
 - feat(flow): retry release validation after conflict resolution
 

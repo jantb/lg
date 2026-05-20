@@ -122,7 +122,7 @@ pub enum PendingAction {
     },
     SaveLlmSettings {
         model: String,
-        provider: crate::ollama::LlmProvider,
+        provider: crate::llm::LlmProvider,
     },
     ClearLlmSettings,
     StageAll,
@@ -162,7 +162,7 @@ pub enum ReviewChatRole {
 }
 
 impl ReviewChatRole {
-    pub fn as_ollama_role(self) -> &'static str {
+    pub fn as_chat_role(self) -> &'static str {
         match self {
             Self::User => "user",
             Self::Assistant => "assistant",
@@ -242,10 +242,10 @@ pub struct AppState {
     pub author_field: AuthorField,
     pub author_has_local_override: bool,
     pub author_has_subtree_rule: bool,
-    pub ollama_model: String,
-    pub ollama_model_input: String,
-    pub ollama_model_idx: usize,
-    pub llm_provider: crate::ollama::LlmProvider,
+    pub llm_model: String,
+    pub llm_model_input: String,
+    pub llm_model_idx: usize,
+    pub llm_provider: crate::llm::LlmProvider,
     pub llm_provider_idx: usize,
     pub llm_config_path: String,
     pub repo_root: Option<String>,
@@ -426,12 +426,12 @@ impl AppState {
             author_field: AuthorField::Path,
             author_has_local_override: false,
             author_has_subtree_rule: false,
-            ollama_model: crate::ollama::current_model(),
-            ollama_model_input: String::new(),
-            ollama_model_idx: 0,
-            llm_provider: crate::ollama::current_provider(),
+            llm_model: crate::llm::current_model(),
+            llm_model_input: String::new(),
+            llm_model_idx: 0,
+            llm_provider: crate::llm::current_provider(),
             llm_provider_idx: 0,
-            llm_config_path: crate::ollama::config_file_display(),
+            llm_config_path: crate::llm::config_file_display(),
             repo_root: None,
             workspace_root: None,
             branch: None,

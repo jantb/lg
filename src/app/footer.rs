@@ -327,7 +327,7 @@ fn status_text(state: &AppState) -> (String, Color) {
             format!(
                 "llm {}/{} \u{2022} {}",
                 state.llm_provider.label(),
-                compact_model(&state.ollama_model),
+                compact_model(&state.llm_model),
                 state.branch.as_deref().unwrap_or("no branch")
             ),
             Color::DarkGray,

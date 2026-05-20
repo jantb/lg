@@ -9,8 +9,7 @@ use ratatui::{
 };
 
 use crate::{
-    config::OLLAMA_MODEL_CHOICES,
-    ollama::LlmProvider,
+    config::LLM_MODEL_CHOICES,
     state::{AppState, Modal, PendingAction},
     ui,
 };
@@ -28,7 +27,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         return;
     }
 
-    let mode = if crate::ollama::env_model_active() || crate::ollama::env_provider_active() {
+    let mode = if crate::llm::env_model_active() || crate::llm::env_provider_active() {
         "env override"
     } else {
         "saved/default"
@@ -56,7 +55,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             Span::raw("   "),
             Span::styled("Endpoint ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                crate::ollama::endpoint_for_provider(state.llm_provider),
+                crate::llm::endpoint_for_provider(state.llm_provider),
                 Style::default().fg(Color::DarkGray),
             ),
         ]),
@@ -64,7 +63,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             Span::styled("Active:", Style::default().fg(Color::Yellow)),
             Span::raw(" "),
             Span::styled(
-                state.ollama_model.clone(),
+                state.llm_model.clone(),
                 Style::default()
                     .fg(Color::LightCyan)
                     .add_modifier(Modifier::BOLD),
@@ -74,7 +73,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         Line::from(vec![
             Span::styled("Model ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                state.ollama_model_input.clone(),
+                state.llm_model_input.clone(),
                 Style::default()
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
@@ -83,8 +82,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         Line::from(""),
     ];
 
-    for (idx, model) in OLLAMA_MODEL_CHOICES.iter().enumerate() {
-        let selected = idx == state.ollama_model_idx;
+    for (idx, model) in LLM_MODEL_CHOICES.iter().enumerate() {
+        let selected = idx == state.llm_model_idx;
         let marker = if selected { ">" } else { " " };
         let style = if selected {
             Style::default()
@@ -103,8 +102,6 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     lines.push(Line::from(vec![
         Span::styled("Up/Down", Style::default().fg(Color::Yellow)),
         Span::raw(" pick    "),
-        Span::styled("p", Style::default().fg(Color::Yellow)),
-        Span::raw(" provider    "),
         Span::styled("Enter", Style::default().fg(Color::Green)),
         Span::raw(" save    "),
         Span::styled("Ctrl+U", Style::default().fg(Color::Red)),
@@ -125,10 +122,9 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Esc => state.modal = Modal::None,
         KeyCode::Up => pick_model(state, false),
         KeyCode::Tab | KeyCode::Down => pick_model(state, true),
-        KeyCode::Char('p') if !ctrl => pick_provider(state),
         KeyCode::Enter => {
             state.pending_action = Some(PendingAction::SaveLlmSettings {
-                model: state.ollama_model_input.clone(),
+                model: state.llm_model_input.clone(),
                 provider: state.llm_provider,
             });
         }
@@ -136,11 +132,11 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             state.pending_action = Some(PendingAction::ClearLlmSettings);
         }
         KeyCode::Backspace if !ctrl => {
-            state.ollama_model_input.pop();
+            state.llm_model_input.pop();
             sync_selection_to_input(state);
         }
         KeyCode::Char(c) if !ctrl => {
-            state.ollama_model_input.push(c);
+            state.llm_model_input.push(c);
             sync_selection_to_input(state);
         }
         _ => {}
@@ -148,31 +144,26 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-fn pick_provider(state: &mut AppState) {
-    state.llm_provider_idx = (state.llm_provider_idx + 1) % LlmProvider::ALL.len();
-    state.llm_provider = LlmProvider::ALL[state.llm_provider_idx];
-}
-
 fn pick_model(state: &mut AppState, next: bool) {
-    if OLLAMA_MODEL_CHOICES.is_empty() {
+    if LLM_MODEL_CHOICES.is_empty() {
         return;
     }
-    state.ollama_model_idx = if next {
-        (state.ollama_model_idx + 1) % OLLAMA_MODEL_CHOICES.len()
+    state.llm_model_idx = if next {
+        (state.llm_model_idx + 1) % LLM_MODEL_CHOICES.len()
     } else {
         state
-            .ollama_model_idx
+            .llm_model_idx
             .checked_sub(1)
-            .unwrap_or(OLLAMA_MODEL_CHOICES.len() - 1)
+            .unwrap_or(LLM_MODEL_CHOICES.len() - 1)
     };
-    state.ollama_model_input = OLLAMA_MODEL_CHOICES[state.ollama_model_idx].to_string();
+    state.llm_model_input = LLM_MODEL_CHOICES[state.llm_model_idx].to_string();
 }
 
 fn sync_selection_to_input(state: &mut AppState) {
-    if let Some(idx) = OLLAMA_MODEL_CHOICES
+    if let Some(idx) = LLM_MODEL_CHOICES
         .iter()
-        .position(|model| *model == state.ollama_model_input)
+        .position(|model| *model == state.llm_model_input)
     {
-        state.ollama_model_idx = idx;
+        state.llm_model_idx = idx;
     }
 }

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This is a Rust 2024 crate named `lg`. The executable entry point is `src/main.rs`, which delegates to `lg::app::App`. Shared modules live under `src/`: `app.rs` coordinates runtime behavior, `git.rs` wraps Git operations, `state.rs` holds application state, `ui.rs` handles terminal rendering, and `config.rs` / `ollama.rs` cover configuration and model integration. Panel-specific TUI code is grouped in `src/panel/`, with one file per panel such as `files.rs`, `commit.rs`, and `push.rs`. The auxiliary harness binary is `src/bin/harness.rs`. Integration tests live in `tests/`.
+This is a Rust 2024 crate named `lg`. The executable entry point is `src/main.rs`, which delegates to `lg::app::App`. Shared modules live under `src/`: `app.rs` coordinates runtime behavior, `git.rs` wraps Git operations, `state.rs` holds application state, `ui.rs` handles terminal rendering, and `config.rs` / `llm.rs` cover configuration and model integration. Panel-specific TUI code is grouped in `src/panel/`, with one file per panel such as `files.rs`, `commit.rs`, and `push.rs`. The auxiliary harness binary is `src/bin/harness.rs`. Integration tests live in `tests/`.
 
 ## Build, Test, and Development Commands
 

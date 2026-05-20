@@ -1,7 +1,7 @@
 /// Evaluation harness for `lg`.
 ///
 /// Creates throwaway git repos in tempdirs, exercises every `lg::git` function,
-/// drives a headless TUI session, and optionally calls Ollama if reachable.
+/// drives a headless TUI session, and optionally calls the local LLM if reachable.
 /// Prints a final summary and exits with code 0 iff failed == 0.
 use std::{
     fs,
@@ -138,14 +138,18 @@ fn seed_mixed_status(dir: &Path) {
     fs::write(dir.join("both.txt"), "both v2").unwrap();
 }
 
-// ── Ollama probe ──────────────────────────────────────────────────────────────
+// ── LLM probe ─────────────────────────────────────────────────────────────────
 
-fn ollama_reachable() -> bool {
+fn llama_server_reachable() -> bool {
+    let endpoint = lg::llm::current_endpoint();
+    let base = endpoint
+        .trim_end_matches("/v1/chat/completions")
+        .trim_end_matches('/');
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_millis(500))
         .build()
         .ok()
-        .and_then(|c| c.get("http://localhost:11434/api/tags").send().ok())
+        .and_then(|c| c.get(format!("{base}/v1/models")).send().ok())
         .map(|r| r.status().is_success())
         .unwrap_or(false)
 }
@@ -348,14 +352,14 @@ fn main() {
         Ok(())
     });
 
-    // ── Ollama (skipped if not reachable) ─────────────────────────────────────
-    if ollama_reachable() {
-        check!("ollama::stream_commit_message yields a final message", {
+    // ── LLM (skipped if not reachable) ────────────────────────────────────────
+    if llama_server_reachable() {
+        check!("llm stream_commit_message yields a final message", {
             let diff = "diff --git a/foo.rs b/foo.rs\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1 +1 @@\n-fn old() {}\n+fn new() {}";
             let (tx, rx) = std::sync::mpsc::channel();
             let handle = std::thread::spawn({
                 let diff = diff.to_owned();
-                move || lg::ollama::stream_commit_message(diff, tx)
+                move || lg::llm::stream_commit_message(diff, tx)
             });
             let mut final_msg: Option<String> = None;
             let mut err: Option<String> = None;
@@ -378,13 +382,13 @@ fn main() {
             }
             let msg = final_msg.unwrap_or_default();
             anyhow::ensure!(!msg.is_empty(), "expected non-empty commit message");
-            println!("       Ollama message: {msg}");
+            println!("       LLM message: {msg}");
             Ok(())
         });
     } else {
         skip!(
-            "ollama::stream_commit_message",
-            "Ollama not reachable at localhost:11434"
+            "llm stream_commit_message",
+            "llama-server not reachable at configured endpoint"
         );
     }
 

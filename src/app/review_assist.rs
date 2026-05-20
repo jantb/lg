@@ -64,7 +64,7 @@ pub(super) fn spawn_review_assist(state: &mut AppState, node_id: String) {
     };
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
-        crate::ollama::stream_review_assist(context, tx);
+        crate::llm::stream_review_assist(context, tx);
     });
     state.review_assist_job = Some(ReviewAssistJob {
         rx,
@@ -145,7 +145,7 @@ pub(super) fn spawn_review_chat(state: &mut AppState, prompt: String) {
     }
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
-        crate::ollama::stream_review_chat(context, history, prompt, tx);
+        crate::llm::stream_review_chat(context, history, prompt, tx);
     });
     state.review_chat_job = Some(ReviewChatJob {
         rx,
@@ -280,7 +280,7 @@ fn review_style_flag_file(
     context: String,
 ) -> Result<crate::state::ReviewStyleFinding, String> {
     let (tx, rx) = std::sync::mpsc::channel();
-    crate::ollama::stream_review_style_flag(path.to_string(), context, tx);
+    crate::llm::stream_review_style_flag(path.to_string(), context, tx);
     let mut final_msg = None;
     let mut error = None;
     for msg in rx {
@@ -293,7 +293,7 @@ fn review_style_flag_file(
     if let Some(error) = error {
         return Err(error);
     }
-    Ok(crate::ollama::parse_review_style_finding(
+    Ok(crate::llm::parse_review_style_finding(
         final_msg
             .as_deref()
             .unwrap_or("OK\nreason: no issues found"),
