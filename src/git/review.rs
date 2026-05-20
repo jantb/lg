@@ -415,19 +415,111 @@ fn push_entry_nodes(
         parents: &parents,
     };
     let mut emitted = BTreeSet::new();
-    for (path, group_indices) in groups_by_path(
-        groups
-            .iter()
-            .enumerate()
-            .filter(|(group_idx, _)| parents[*group_idx].is_none())
-            .map(|(group_idx, _)| group_idx),
-        &groups,
-    ) {
-        tree.push_file(nodes, &path, &group_indices, &root_id, 1, &mut emitted);
+    let mut category_nodes = BTreeSet::new();
+    for category in ReviewEntryCategory::ALL {
+        for (path, group_indices) in groups_by_path(
+            groups
+                .iter()
+                .enumerate()
+                .filter(|(group_idx, group)| {
+                    parents[*group_idx].is_none()
+                        && ReviewEntryCategory::for_path(&group.path) == category
+                })
+                .map(|(group_idx, _)| group_idx),
+            &groups,
+        ) {
+            let category_id =
+                ensure_review_category_node(nodes, prefix, &root_id, category, &mut category_nodes);
+            tree.push_file(nodes, &path, &group_indices, &category_id, 2, &mut emitted);
+        }
     }
     for (group_idx, group) in groups.iter().enumerate() {
-        tree.push_file(nodes, &group.path, &[group_idx], &root_id, 1, &mut emitted);
+        let category = ReviewEntryCategory::for_path(&group.path);
+        let category_id =
+            ensure_review_category_node(nodes, prefix, &root_id, category, &mut category_nodes);
+        tree.push_file(
+            nodes,
+            &group.path,
+            &[group_idx],
+            &category_id,
+            2,
+            &mut emitted,
+        );
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ReviewEntryCategory {
+    Production,
+    Tests,
+    Migrations,
+    Docs,
+    Other,
+}
+
+impl ReviewEntryCategory {
+    const ALL: [Self; 5] = [
+        Self::Production,
+        Self::Tests,
+        Self::Migrations,
+        Self::Docs,
+        Self::Other,
+    ];
+
+    fn for_path(path: &str) -> Self {
+        if is_test_path(path) {
+            Self::Tests
+        } else if is_migration_path(path) {
+            Self::Migrations
+        } else if is_doc_path(path) {
+            Self::Docs
+        } else if is_production_path(path) {
+            Self::Production
+        } else {
+            Self::Other
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::Tests => "tests",
+            Self::Migrations => "migrations",
+            Self::Docs => "docs",
+            Self::Other => "other",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Production => "Production",
+            Self::Tests => "Tests",
+            Self::Migrations => "Migrations",
+            Self::Docs => "Docs",
+            Self::Other => "Other",
+        }
+    }
+}
+
+fn ensure_review_category_node(
+    nodes: &mut Vec<ReviewNode>,
+    prefix: &str,
+    root_id: &str,
+    category: ReviewEntryCategory,
+    emitted: &mut BTreeSet<ReviewEntryCategory>,
+) -> String {
+    let id = format!("{prefix}:category:{}", category.id());
+    if emitted.insert(category) {
+        nodes.push(ReviewNode {
+            id: id.clone(),
+            parent: Some(root_id.to_string()),
+            depth: 1,
+            title: category.label().to_string(),
+            body: Vec::new(),
+            context: Vec::new(),
+        });
+    }
+    id
 }
 
 struct EntryTree<'a> {
@@ -1002,6 +1094,26 @@ fn is_test_path(path: &str) -> bool {
         || path.contains("/src/test/")
 }
 
+fn is_migration_path(path: &str) -> bool {
+    path.contains("/db/migration/") || path.starts_with("db/migration/") || path.ends_with(".sql")
+}
+
+fn is_doc_path(path: &str) -> bool {
+    path.starts_with("docs/")
+        || path.starts_with(".agent/")
+        || path.ends_with(".md")
+        || path.ends_with(".adoc")
+        || path.ends_with(".rst")
+        || path.ends_with(".txt")
+}
+
+fn is_production_path(path: &str) -> bool {
+    (path.starts_with("src/") || path.starts_with("app/") || path.starts_with("lib/"))
+        && !is_test_path(path)
+        && !is_migration_path(path)
+        && !is_doc_path(path)
+}
+
 fn truncate_review_text(line: &str, max_chars: usize) -> String {
     let mut chars = line.chars();
     let mut out: String = chars.by_ref().take(max_chars).collect();
@@ -1248,6 +1360,91 @@ mod tests {
     }
 
     #[test]
+    fn build_review_nodes_groups_files_by_review_category() {
+        let entries = vec![
+            review_entry("src/main/kotlin/App.kt"),
+            review_entry("src/test/kotlin/AppTest.kt"),
+            review_entry("src/main/resources/db/migration/V1__app.sql"),
+            review_entry("docs/app.md"),
+            review_entry(".gitignore"),
+        ];
+        let files = entries
+            .iter()
+            .map(|entry| ReviewFile {
+                status: "M".into(),
+                path: entry.path.clone(),
+                old_path: None,
+            })
+            .collect::<Vec<_>>();
+        let commits = vec!["abc123 update review".to_string()];
+        let render = ReviewRender {
+            branch: "feature",
+            base_ref: "main",
+            merge_base: "",
+            commits: &commits,
+            files: &files,
+            stat: "",
+            entries: &entries,
+            diff: "diff",
+        };
+
+        let nodes = build_review_nodes(&render);
+
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node.id == "branch:category:production"
+                    && node.parent.as_deref() == Some("branch")
+                    && node.depth == 1
+                    && node.title == "Production"),
+            "{nodes:#?}"
+        );
+        assert!(
+            nodes.iter().any(|node| node.id == "branch:category:tests"
+                && node.parent.as_deref() == Some("branch")
+                && node.title == "Tests"),
+            "{nodes:#?}"
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node.id == "branch:category:migrations"
+                    && node.parent.as_deref() == Some("branch")
+                    && node.title == "Migrations"),
+            "{nodes:#?}"
+        );
+        assert!(
+            nodes.iter().any(|node| node.id == "branch:category:docs"
+                && node.parent.as_deref() == Some("branch")
+                && node.title == "Docs"),
+            "{nodes:#?}"
+        );
+        assert!(
+            nodes.iter().any(|node| node.id == "branch:category:other"
+                && node.parent.as_deref() == Some("branch")
+                && node.title == "Other"),
+            "{nodes:#?}"
+        );
+
+        let production_file = nodes
+            .iter()
+            .find(|node| node.title.starts_with("src/main/kotlin/App.kt - "))
+            .expect("production file node");
+        assert_eq!(
+            production_file.parent.as_deref(),
+            Some("branch:category:production")
+        );
+        assert_eq!(production_file.depth, 2);
+
+        let test_file = nodes
+            .iter()
+            .find(|node| node.title.starts_with("src/test/kotlin/AppTest.kt - "))
+            .expect("test file node");
+        assert_eq!(test_file.parent.as_deref(), Some("branch:category:tests"));
+        assert_eq!(test_file.depth, 2);
+    }
+
+    #[test]
     fn review_checklist_adds_domain_specific_prompts() {
         let files = vec![
             ReviewFile {
@@ -1295,5 +1492,19 @@ mod tests {
             checklist.contains("No test files changed"),
             "production-only domain changes should still ask about coverage: {checklist}"
         );
+    }
+
+    fn review_entry(path: &str) -> ReviewEntryPoint {
+        ReviewEntryPoint {
+            path: path.into(),
+            line: Some(1),
+            symbol: "file scope".into(),
+            description: "adds item (+1 -0)".into(),
+            hunk: "@@ -1 +1 @@".into(),
+            patch: vec!["@@ -1 +1 @@".into(), "-old".into(), "+new".into()],
+            context: Vec::new(),
+            added: 1,
+            removed: 0,
+        }
     }
 }

@@ -7,8 +7,8 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use crate::config::{
-    COMMIT_MSG_GEN_MAX_CHARS, COMMIT_MSG_SUBJECT_MAX_CHARS, COMMIT_PROMPT_PREFIX,
-    LLAMA_SERVER_CHAT_ENDPOINT, LLM_MODEL, LLM_NUM_PREDICT, LLM_TEMPERATURE, LLM_TOP_P,
+    COMMIT_PROMPT_PREFIX, LLAMA_SERVER_CHAT_ENDPOINT, LLM_MODEL, LLM_NUM_PREDICT, LLM_TEMPERATURE,
+    LLM_TOP_P,
 };
 use crate::state::{GenMsg, ReviewChatMessage, ReviewStyleFinding, ReviewStyleSeverity};
 
@@ -844,18 +844,11 @@ fn finalize(raw: &str) -> String {
         lines.pop();
     }
 
-    let Some(subject) = lines.first_mut() else {
+    if lines.is_empty() {
         return String::new();
-    };
+    }
 
-    let (subject, _) = split_subject(subject);
-    *lines.first_mut().expect("checked above") = subject;
-
-    lines
-        .join("\n")
-        .chars()
-        .take(COMMIT_MSG_GEN_MAX_CHARS)
-        .collect()
+    lines.join("\n")
 }
 
 fn finalize_review_assist(raw: &str) -> String {
@@ -1006,28 +999,6 @@ fn parse_review_style_line_number(s: &str) -> Option<usize> {
         .and_then(|part| part.parse().ok())
 }
 
-fn split_subject(s: &str) -> (String, String) {
-    if s.chars().count() <= COMMIT_MSG_SUBJECT_MAX_CHARS {
-        return (s.to_string(), String::new());
-    }
-
-    let split_at = s
-        .char_indices()
-        .take_while(|(i, _)| s[..*i].chars().count() <= COMMIT_MSG_SUBJECT_MAX_CHARS)
-        .filter_map(|(i, c)| c.is_whitespace().then_some(i))
-        .last()
-        .unwrap_or_else(|| {
-            s.char_indices()
-                .nth(COMMIT_MSG_SUBJECT_MAX_CHARS)
-                .map(|(i, _)| i)
-                .unwrap_or(s.len())
-        });
-
-    let subject = s[..split_at].trim().to_string();
-    let overflow = s[split_at..].trim().to_string();
-    (subject, overflow)
-}
-
 fn trim_outer_quotes(s: &str) -> &str {
     s.trim()
         .trim_matches('"')
@@ -1173,16 +1144,16 @@ mod tests {
     fn finalize_strips_quotes_and_keeps_overflow() {
         assert_eq!(finalize("  \"feat: add\"  "), "feat: add");
         let long = "x".repeat(200);
-        assert_eq!(finalize(&long), "x".repeat(COMMIT_MSG_SUBJECT_MAX_CHARS));
+        assert_eq!(finalize(&long), long);
     }
 
     #[test]
-    fn finalize_trims_long_subject_without_creating_body() {
+    fn finalize_keeps_long_subject_without_cutting_it_off() {
         assert_eq!(
             finalize(
                 "feat(tui): show a longer generated message that needs extra detail instead of being cut off"
             ),
-            "feat(tui): show a longer generated message that needs extra detail"
+            "feat(tui): show a longer generated message that needs extra detail instead of being cut off"
         );
     }
 

@@ -547,6 +547,81 @@ fn review_source_inlines_style_and_llm_notes_and_jumps_between_them() {
 }
 
 #[test]
+fn review_source_arrow_keys_jump_between_changed_blocks() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_path = dir.path().join("App.kt");
+    let mut source = String::from("class App {\n    fun first() = \"changed\"\n");
+    for idx in 0..17 {
+        source.push_str(&format!("    val untouched{idx} = {idx}\n"));
+    }
+    source.push_str("    fun second() = \"changed\"\n}\n");
+    std::fs::write(&source_path, source).unwrap();
+    let source_path = source_path.display().to_string();
+
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(140, 16)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Branch diff".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:file:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: format!("{source_path} - 2 entry points (+2 -2)"),
+                body: vec![
+                    "@@ -1,4 +1,4 @@".into(),
+                    " class App {".into(),
+                    "-    fun first() = \"old\"".into(),
+                    "+    fun first() = \"changed\"".into(),
+                    "     val untouched0 = 0".into(),
+                    "@@ -18,4 +18,4 @@".into(),
+                    "     val untouched15 = 15".into(),
+                    "     val untouched16 = 16".into(),
+                    "-    fun second() = \"old\"".into(),
+                    "+    fun second() = \"changed\"".into(),
+                    " }".into(),
+                ],
+                context: Vec::new(),
+            },
+        ],
+    });
+    app.state.review_idx = 1;
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
+    app.render().unwrap();
+
+    let before = app.state.diff_offset;
+    panel::main::handle_key(&mut app.state, key(KeyCode::Down)).unwrap();
+    let first_change = app.state.diff_offset;
+    assert!(
+        first_change > before,
+        "Down should jump to the first changed source block"
+    );
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Down)).unwrap();
+    let second_change = app.state.diff_offset;
+    assert!(
+        second_change > first_change.saturating_add(8),
+        "Down should jump to the next changed source block, not the paired +/- line"
+    );
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Up)).unwrap();
+    assert_eq!(
+        app.state.diff_offset, first_change,
+        "Up should return to the previous changed source block"
+    );
+}
+
+#[test]
 fn review_panel_sources_full_diff_subtree_across_files() {
     let dir = tempfile::tempdir().unwrap();
     let lib_path = dir.path().join("lib.rs");

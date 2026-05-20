@@ -13,7 +13,8 @@ Write a concise commit message for these staged changes.
 Rules:
 - First line format: `type(scope): summary` — scope is optional.
 - type is one of: feat, fix, refactor, perf, docs, test, chore, build, ci, style.
-- First line uses imperative mood, lowercase summary, at most 72 characters, no trailing period.
+- First line uses imperative mood, lowercase summary, and no trailing period.
+- Keep the first line complete; do not omit important detail to fit a fixed character limit.
 - Describe the behavior change, not the files touched. Be specific.
 - Prefer concrete user-visible outcomes over vague words like update, improve, or change.
 - Use the change summary first; use the diff excerpt only for extra detail.
@@ -41,8 +42,6 @@ pub const DEFAULT_PUSH_REMOTE: &str = "origin";
 pub const BRANCH_MAIN: &str = "main";
 pub const BRANCH_DEV: &str = "develop";
 pub const BRANCH_TEST: &str = "release/next";
-pub const COMMIT_MSG_SUBJECT_MAX_CHARS: usize = 72;
-pub const COMMIT_MSG_GEN_MAX_CHARS: usize = 512;
 pub const STATUS_BAR_HEIGHT: u16 = 1;
 pub const STATUS_MSG_LIFETIME_SECS: i64 = 3;
 pub const BORDER_COLOR: Color = Color::LightBlue;

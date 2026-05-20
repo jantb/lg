@@ -494,25 +494,36 @@ fn assisted_review_reports_diff_and_entry_points_against_main() {
         .iter()
         .position(|node| node.id.starts_with("branch:file:") && node.title.contains("src/lib.rs"))
         .expect("file node");
+    let production_pos = review
+        .nodes
+        .iter()
+        .position(|node| node.id == "branch:category:production")
+        .expect("production category node");
     assert_eq!(review.nodes[0].title, "Full diff against main");
     assert_eq!(
-        review.nodes[file_pos].parent.as_deref(),
+        review.nodes[production_pos].parent.as_deref(),
         Some("branch"),
-        "file should be directly under the full diff root"
+        "production category should be directly under the full diff root"
     );
-    assert_eq!(review.nodes[file_pos].depth, 1);
+    assert_eq!(review.nodes[production_pos].depth, 1);
+    assert_eq!(
+        review.nodes[file_pos].parent.as_deref(),
+        Some("branch:category:production"),
+        "file should be nested under its review category"
+    );
+    assert_eq!(review.nodes[file_pos].depth, 2);
     assert_eq!(
         review.nodes[entry_pos].parent.as_deref(),
         Some(review.nodes[file_pos].id.as_str()),
         "entry point should be nested under its file"
     );
-    assert_eq!(review.nodes[entry_pos].depth, 2);
+    assert_eq!(review.nodes[entry_pos].depth, 3);
     assert_eq!(
         review.nodes[hunk_pos].parent.as_deref(),
         Some(review.nodes[entry_pos].id.as_str()),
         "hunk should be nested under its entry point"
     );
-    assert_eq!(review.nodes[hunk_pos].depth, 3);
+    assert_eq!(review.nodes[hunk_pos].depth, 4);
     assert!(file_pos < 3, "file node should appear before metadata");
     assert!(
         review.nodes.iter().all(|node| node.id != "full-diff"),
@@ -645,9 +656,13 @@ fn assisted_review_nests_entry_points_when_hunk_calls_changed_function() {
         "callee entry should be nested under caller entry: {:?}",
         review.nodes
     );
-    assert_eq!(file_nodes[0].depth, 1);
-    assert_eq!(review.nodes[next_step].depth, 2);
-    assert_eq!(review.nodes[maybe_transfer].depth, 3);
+    assert_eq!(
+        file_nodes[0].parent.as_deref(),
+        Some("branch:category:production")
+    );
+    assert_eq!(file_nodes[0].depth, 2);
+    assert_eq!(review.nodes[next_step].depth, 3);
+    assert_eq!(review.nodes[maybe_transfer].depth, 4);
 }
 
 #[test]

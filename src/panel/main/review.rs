@@ -35,7 +35,7 @@ pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: b
     )
     .title_bottom(
         Line::from(Span::styled(
-            "j/k move  Enter/space expand  d drill  s source  n/N notes  l explain  C chat  g/G top/bottom  R refresh",
+            "j/k move  ↑/↓ source changes  Enter/space expand  d drill  s source  n/N notes  l explain  C chat  R refresh",
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::DIM),
@@ -464,16 +464,20 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         .position(|idx| *idx == state.review_idx)
         .unwrap_or(0);
     match key.code {
-        KeyCode::Char('j') | KeyCode::Down => {
-            if let Some(next) = visible.get(current_pos + 1) {
-                state.review_idx = *next;
-                ensure_review_selection_visible(state);
+        KeyCode::Char('j') => {
+            move_to_next_review_node(state, &visible, current_pos);
+        }
+        KeyCode::Down => {
+            if !jump_to_source_change(state, false) {
+                move_to_next_review_node(state, &visible, current_pos);
             }
         }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if current_pos > 0 {
-                state.review_idx = visible[current_pos - 1];
-                ensure_review_selection_visible(state);
+        KeyCode::Char('k') => {
+            move_to_previous_review_node(state, &visible, current_pos);
+        }
+        KeyCode::Up => {
+            if !jump_to_source_change(state, true) {
+                move_to_previous_review_node(state, &visible, current_pos);
             }
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
@@ -565,6 +569,83 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn move_to_next_review_node(state: &mut AppState, visible: &[usize], current_pos: usize) {
+    if let Some(next) = visible.get(current_pos + 1) {
+        state.review_idx = *next;
+        ensure_review_selection_visible(state);
+    }
+}
+
+fn move_to_previous_review_node(state: &mut AppState, visible: &[usize], current_pos: usize) {
+    if current_pos > 0 {
+        state.review_idx = visible[current_pos - 1];
+        ensure_review_selection_visible(state);
+    }
+}
+
+fn jump_to_source_change(state: &mut AppState, previous: bool) -> bool {
+    let Some(review) = &state.review else {
+        return false;
+    };
+    let Some(node) = review.nodes.get(state.review_idx) else {
+        return false;
+    };
+    if !state.review_context_open.contains(&node.id) {
+        return false;
+    }
+
+    let lines = render_lines(state, false, state.diff_viewport_width.saturating_sub(2));
+    let change_lines = source_change_group_lines(&lines);
+    if change_lines.is_empty() {
+        state.set_status("no source changes", false);
+        return true;
+    }
+
+    let current = state.diff_offset;
+    let target = if previous {
+        change_lines
+            .iter()
+            .rev()
+            .copied()
+            .find(|line| *line < current)
+            .or_else(|| change_lines.last().copied())
+    } else {
+        change_lines
+            .iter()
+            .copied()
+            .find(|line| *line > current)
+            .or_else(|| change_lines.first().copied())
+    }
+    .unwrap_or(0);
+    state.diff_offset = target.min(super::max_scroll_offset(state));
+    true
+}
+
+fn line_contains_source_change(line: &Line<'_>) -> bool {
+    line.spans
+        .iter()
+        .any(|span| matches!(span.content.as_ref(), "+ " | "- "))
+}
+
+fn source_change_group_lines(lines: &[Line<'_>]) -> Vec<u16> {
+    let mut groups = Vec::new();
+    let mut previous_change: Option<usize> = None;
+    for (idx, line) in lines.iter().enumerate() {
+        if !line_contains_source_change(line) {
+            continue;
+        }
+        let starts_group = match previous_change {
+            Some(previous) => idx > previous.saturating_add(1),
+            None => true,
+        };
+        if starts_group {
+            groups.push(idx.min(u16::MAX as usize) as u16);
+        }
+        previous_change = Some(idx);
+    }
+    groups
 }
 
 fn jump_to_review_note(state: &mut AppState, previous: bool) {
