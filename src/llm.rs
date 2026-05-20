@@ -27,6 +27,7 @@ Established repo style:
 - Constructor injection only. Inject narrow interfaces/services, not broad infrastructure.
 - Controllers stay thin: auth, validation, DTO assembly, ResponseEntity. Business decisions go in service-layer files/classes whose path or name contains Service, or in explicit hub flow code.
 - Treat business rules in controllers, adapters, Kafka consumers/listeners, repositories, DTOs, configuration, or other non-Service/non-flow files as a style issue unless the shown code only delegates or translates data.
+- Flow start state construction may call repositories/services to load initial data before the flow begins. Once a flow has started, later state constructors/steps should stay pure; flag direct repository/service calls there.
 - Domain IDs use inline value classes like UserId, MembershipId; wrap raw primitives at repository boundaries.
 - Names should describe domain intent and behavior. Flag vague, misleading, or overly generic names and suggest a concrete replacement.
 - Use sealed interfaces/classes for variants with different data; enums only for simple tags.
@@ -345,6 +346,8 @@ fn build_review_style_flag_prompt(path: &str, context: &str) -> String {
          Use FAIL for clear violations such as business logic in controllers or other non-Service/non-flow files,\n\
          direct Kafka side effects, Jackson app-code usage, Mockito, java.time away from interop edges,\n\
          or generated code edits.\n\n\
+         Do not flag repository/service calls used to build the initial/start state before a flow begins;\n\
+         only flag direct repository/service calls in later states or steps after the flow has started.\n\n\
          For naming issues, include a concrete rename suggestion in the reason.\n\n\
          {REVIEW_REPO_STYLE_GUIDE}\n\n\
          File: {path}\n\
@@ -1187,6 +1190,7 @@ mod tests {
         assert!(prompt.contains("Constructor injection only"));
         assert!(prompt.contains("configuredJson"));
         assert!(prompt.contains("path or name contains Service"));
+        assert!(prompt.contains("Flow start state construction may call repositories/services"));
         assert!(prompt.contains("Selected review subtree:\nsrc/main/kotlin/App.kt"));
     }
 
@@ -1208,6 +1212,10 @@ mod tests {
         assert!(prompt.contains("line: <new-file line number, or unknown>"));
         assert!(prompt.contains("concrete rename suggestion"));
         assert!(prompt.contains("non-Service/non-flow files"));
+        assert!(prompt.contains(
+            "Do not flag repository/service calls used to build the initial/start state"
+        ));
+        assert!(prompt.contains("after the flow has started"));
         assert!(prompt.contains("File: src/main/kotlin/App.kt"));
         assert!(prompt.contains("updates controller logic"));
     }
