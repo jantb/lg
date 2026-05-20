@@ -1,5 +1,7 @@
 use anyhow::Result;
 use std::collections::BTreeSet;
+use std::path::Path;
+use std::process::Command;
 
 use crate::config::{BRANCH_MAIN, DEFAULT_PUSH_REMOTE};
 
@@ -71,24 +73,19 @@ pub fn build_assisted_review_against_main() -> Result<AssistedReview> {
                 )
             })?;
     let branch = head_branch().unwrap_or_else(|_| "HEAD".to_string());
-    let range = format!("{base_ref}...HEAD");
 
     let merge_base = run(&["merge-base", &base_ref, "HEAD"])
         .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
         .unwrap_or_default();
+    let diff_base = if merge_base.is_empty() {
+        base_ref.as_str()
+    } else {
+        merge_base.as_str()
+    };
     let commits = branch_review_commits(&base_ref)?;
-    let files = branch_review_files(&range)?;
-    let stat = run(&[
-        "diff",
-        "--ignore-all-space",
-        "--stat",
-        "--find-renames",
-        &range,
-    ])
-    .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
-    .unwrap_or_default();
-    let diff = run(&["diff", "--ignore-all-space", "--find-renames", &range])
-        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())?;
+    let files = worktree_review_files(diff_base)?;
+    let stat = worktree_review_stat(diff_base).unwrap_or_default();
+    let diff = worktree_review_diff(diff_base)?;
     let entries = review_entry_points(&diff);
 
     let render = ReviewRender {
@@ -118,16 +115,30 @@ fn branch_review_commits(base_ref: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-fn branch_review_files(range: &str) -> Result<Vec<ReviewFile>> {
+fn worktree_review_files(base: &str) -> Result<Vec<ReviewFile>> {
     let out = run(&[
         "diff",
         "--ignore-all-space",
         "--name-status",
         "--find-renames",
-        range,
+        base,
     ])?;
+    let mut files = parse_review_files(&String::from_utf8_lossy(&out.stdout));
+    for path in untracked_paths(".")? {
+        if !files.iter().any(|file| file.path == path) {
+            files.push(ReviewFile {
+                status: "A".to_string(),
+                path,
+                old_path: None,
+            });
+        }
+    }
+    Ok(files)
+}
+
+fn parse_review_files(text: &str) -> Vec<ReviewFile> {
     let mut files = Vec::new();
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
+    for line in text.lines() {
         let parts: Vec<&str> = line.split('\t').collect();
         if parts.len() >= 3 && parts[0].starts_with('R') {
             files.push(ReviewFile {
@@ -143,7 +154,99 @@ fn branch_review_files(range: &str) -> Result<Vec<ReviewFile>> {
             });
         }
     }
-    Ok(files)
+    files
+}
+
+fn worktree_review_stat(base: &str) -> Result<String> {
+    let out = run(&[
+        "diff",
+        "--ignore-all-space",
+        "--stat",
+        "--find-renames",
+        base,
+    ])?;
+    let mut stat = String::from_utf8_lossy(&out.stdout).into_owned();
+    for path in untracked_paths(".")? {
+        let untracked = untracked_file_stat(&path)?;
+        append_review_diff_part(&mut stat, &untracked);
+    }
+    Ok(stat)
+}
+
+fn worktree_review_diff(base: &str) -> Result<String> {
+    let out = run(&["diff", "--ignore-all-space", "--find-renames", base])?;
+    let mut diff = String::from_utf8_lossy(&out.stdout).into_owned();
+    for path in untracked_paths(".")? {
+        let untracked = untracked_file_diff(&path)?;
+        append_review_diff_part(&mut diff, &untracked);
+    }
+    Ok(diff)
+}
+
+fn append_review_diff_part(out: &mut String, part: &str) {
+    if part.trim().is_empty() {
+        return;
+    }
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(part);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+}
+
+fn untracked_paths(pathspec: &str) -> Result<Vec<String>> {
+    let out = run(&[
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+        pathspec,
+    ])?;
+    Ok(out
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| String::from_utf8_lossy(entry).into_owned())
+        .collect())
+}
+
+fn untracked_file_stat(path: &str) -> Result<String> {
+    untracked_no_index_diff(
+        path,
+        &["diff", "--no-index", "--stat", "--", "/dev/null", path],
+    )
+}
+
+fn untracked_file_diff(path: &str) -> Result<String> {
+    untracked_no_index_diff(path, &["diff", "--no-index", "--", "/dev/null", path])
+}
+
+fn untracked_no_index_diff(path: &str, args: &[&str]) -> Result<String> {
+    let out = Command::new("git").args(args).output()?;
+    if out.status.success() || out.status.code() == Some(1) {
+        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+        normalize_no_index_path(&mut text, path);
+        Ok(text)
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        Err(anyhow::anyhow!(
+            "git {} failed for {path}: {}",
+            args.join(" "),
+            stderr.trim()
+        ))
+    }
+}
+
+fn normalize_no_index_path(diff: &mut String, path: &str) {
+    let Some(file_name) = Path::new(path).file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let from = format!("b/{file_name}");
+    let to = format!("b/{path}");
+    *diff = diff.replace(&from, &to);
 }
 
 fn review_entry_points(diff: &str) -> Vec<ReviewEntryPoint> {
@@ -813,6 +916,7 @@ fn render_assisted_review(review: &ReviewRender<'_>) -> String {
         review.files.len(),
         plural(review.files.len())
     ));
+    out.push_str("Diff source: merge-base to current worktree, including staged, unstaged, and untracked files.\n");
     out.push_str("\nEffect summary\n");
     out.push_str("--------------\n");
     for line in effect_summary(review.files, review.entries, review.commits) {

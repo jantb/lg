@@ -545,6 +545,60 @@ fn assisted_review_reports_diff_and_entry_points_against_main() {
 }
 
 #[test]
+fn assisted_review_includes_worktree_and_untracked_changes() {
+    let dir = init_repo();
+    fs::create_dir_all(dir.path().join("src/main/kotlin")).unwrap();
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "pub fn greet() -> &'static str {\n    \"hello\"\n}\n",
+    )
+    .unwrap();
+    stage_in(dir.path(), "src/lib.rs");
+    commit_in(dir.path(), "initial commit");
+
+    git_ok(dir.path(), &["checkout", "-b", "feature/worktree-review"]);
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "pub fn greet() -> &'static str {\n    \"hello worktree\"\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("src/main/kotlin/NewFlow.kt"),
+        "class NewFlow {\n    fun newFlow() = \"worktree\"\n}\n",
+    )
+    .unwrap();
+
+    let _cwd = CwdGuard::new(dir.path());
+    let review = lg::git::build_assisted_review_against_main().unwrap();
+
+    assert!(
+        review
+            .report
+            .contains("including staged, unstaged, and untracked files"),
+        "{}",
+        review.report
+    );
+    assert!(
+        review.report.contains("\"hello worktree\""),
+        "{}",
+        review.report
+    );
+    assert!(
+        review.report.contains("src/main/kotlin/NewFlow.kt"),
+        "{}",
+        review.report
+    );
+    assert!(review.report.contains("fun newFlow"), "{}", review.report);
+    assert!(
+        review.nodes.iter().any(|node| {
+            node.id.starts_with("branch:file:") && node.title.contains("src/main/kotlin/NewFlow.kt")
+        }),
+        "{:?}",
+        review.nodes
+    );
+}
+
+#[test]
 fn assisted_review_groups_multiple_hunks_under_same_entry_point() {
     let dir = init_repo();
     fs::create_dir(dir.path().join("src")).unwrap();
@@ -771,7 +825,7 @@ fn assisted_review_reports_kotlin_entry_points() {
 }
 
 #[test]
-fn assisted_review_ignores_uncommitted_local_changes() {
+fn assisted_review_includes_uncommitted_local_changes() {
     let dir = init_repo();
     fs::write(dir.path().join("tracked.txt"), "main\n").unwrap();
     stage_in(dir.path(), "tracked.txt");
@@ -789,22 +843,32 @@ fn assisted_review_ignores_uncommitted_local_changes() {
         review.report
     );
     assert!(
-        review.report.contains("(empty)"),
-        "branch diff should be empty: {}",
-        review.report
-    );
-    assert!(
-        !review.report.contains("local only") && !review.report.contains("scratch.txt"),
-        "local changes should not be included: {}",
+        review.report.contains("local only") && review.report.contains("scratch.txt"),
+        "local changes should be included: {}",
         review.report
     );
     assert!(
         review
             .nodes
             .iter()
-            .all(|node| !node.title.contains("local")),
-        "local nodes should not exist: {:?}",
+            .any(|node| node.title.contains("tracked.txt")),
+        "tracked local node should exist: {:?}",
         review.nodes
+    );
+    assert!(
+        review
+            .nodes
+            .iter()
+            .any(|node| node.title.contains("scratch.txt")),
+        "untracked local node should exist: {:?}",
+        review.nodes
+    );
+    assert!(
+        review
+            .report
+            .contains("including staged, unstaged, and untracked files"),
+        "{}",
+        review.report
     );
 }
 

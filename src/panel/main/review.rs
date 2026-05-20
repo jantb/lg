@@ -23,6 +23,7 @@ const SUSPICIOUS_REVIEW_BG: Color = Color::Rgb(78, 57, 18);
 const OK_REVIEW_STYLE_BG: Color = Color::Rgb(24, 54, 34);
 const FAIL_REVIEW_STYLE_BG: Color = Color::Rgb(70, 24, 28);
 const ACTIVE_REVIEW_STYLE_BG: Color = Color::Rgb(28, 48, 70);
+const SOURCE_CHANGE_CONTEXT_LINES: u16 = 3;
 
 pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let block = ui::framed_with_activity(
@@ -603,7 +604,9 @@ fn jump_to_source_change(state: &mut AppState, previous: bool) -> bool {
         return true;
     }
 
-    let current = state.diff_offset;
+    let current = state
+        .diff_offset
+        .saturating_add(SOURCE_CHANGE_CONTEXT_LINES);
     let target = if previous {
         change_lines
             .iter()
@@ -619,7 +622,9 @@ fn jump_to_source_change(state: &mut AppState, previous: bool) -> bool {
             .or_else(|| change_lines.first().copied())
     }
     .unwrap_or(0);
-    state.diff_offset = target.min(super::max_scroll_offset(state));
+    state.diff_offset = target
+        .saturating_sub(SOURCE_CHANGE_CONTEXT_LINES)
+        .min(super::max_scroll_offset(state));
     true
 }
 
