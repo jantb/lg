@@ -28,6 +28,7 @@ Established repo style:
 - Controllers stay thin: auth, validation, DTO assembly, ResponseEntity. Business decisions go in service-layer files/classes whose path or name contains Service, or in explicit hub flow code.
 - Treat business rules in controllers, adapters, Kafka consumers/listeners, repositories, DTOs, configuration, or other non-Service/non-flow files as a style issue unless the shown code only delegates or translates data.
 - Domain IDs use inline value classes like UserId, MembershipId; wrap raw primitives at repository boundaries.
+- Names should describe domain intent and behavior. Flag vague, misleading, or overly generic names and suggest a concrete replacement.
 - Use sealed interfaces/classes for variants with different data; enums only for simple tags.
 - JSON uses the shared configuredJson; avoid Jackson in app code except generated/Spring/Avro internals.
 - Time uses kotlinx.datetime; java.time only at interop edges.
@@ -335,14 +336,16 @@ fn build_review_chat_system_prompt(context: &str) -> String {
 fn build_review_style_flag_prompt(path: &str, context: &str) -> String {
     format!(
         "Review this single changed Kotlin file for concrete violations of the established repo style.\n\
-         Return exactly two lines:\n\
+         Return exactly three lines:\n\
          severity: OK|WARN|FAIL\n\
+         line: <new-file line number, or unknown>\n\
          reason: <one concise reason, or \"No style issue found.\">\n\n\
          Use OK for files that look consistent or where there is insufficient evidence.\n\
-         Use WARN for likely style issues that deserve manual attention.\n\
+         Use WARN for likely style issues that deserve manual attention, including vague or misleading names.\n\
          Use FAIL for clear violations such as business logic in controllers or other non-Service/non-flow files,\n\
          direct Kafka side effects, Jackson app-code usage, Mockito, java.time away from interop edges,\n\
          or generated code edits.\n\n\
+         For naming issues, include a concrete rename suggestion in the reason.\n\n\
          {REVIEW_REPO_STYLE_GUIDE}\n\n\
          File: {path}\n\
          Review context:\n{context}"
@@ -895,14 +898,19 @@ fn finalize_review_style_flag(raw: &str) -> String {
     let cleaned = strip_think_tags(raw);
     let finding = parse_review_style_finding(&cleaned);
     format!(
-        "severity: {}\nreason: {}",
+        "severity: {}\nline: {}\nreason: {}",
         finding.severity.label(),
+        finding
+            .line
+            .map(|line| line.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
         finding.reason
     )
 }
 
 pub fn parse_review_style_finding(raw: &str) -> ReviewStyleFinding {
     let mut severity = None;
+    let mut line_number = None;
     let mut reason = None;
     for line in raw
         .trim()
@@ -922,6 +930,12 @@ pub fn parse_review_style_finding(raw: &str) -> ReviewStyleFinding {
                 reason = None;
             }
         } else if let Some((_, value)) = lower
+            .starts_with("line:")
+            .then(|| line.split_once(':'))
+            .flatten()
+        {
+            line_number = parse_review_style_line_number(value);
+        } else if let Some((_, value)) = lower
             .starts_with("reason:")
             .then(|| line.split_once(':'))
             .flatten()
@@ -939,7 +953,11 @@ pub fn parse_review_style_finding(raw: &str) -> ReviewStyleFinding {
     let reason = reason
         .filter(|reason| !reason.trim().is_empty())
         .unwrap_or_else(|| "No style issue found.".to_string());
-    ReviewStyleFinding { severity, reason }
+    ReviewStyleFinding {
+        severity,
+        line: line_number,
+        reason,
+    }
 }
 
 fn clean_review_style_line(line: &str) -> &str {
@@ -975,6 +993,17 @@ fn parse_review_style_severity(s: &str) -> Option<ReviewStyleSeverity> {
         "OK" | "GREEN" => Some(ReviewStyleSeverity::Ok),
         _ => None,
     }
+}
+
+fn parse_review_style_line_number(s: &str) -> Option<usize> {
+    let value = s.trim();
+    if value.eq_ignore_ascii_case("unknown") || value.eq_ignore_ascii_case("n/a") {
+        return None;
+    }
+    value
+        .split(|ch: char| !ch.is_ascii_digit())
+        .find(|part| !part.is_empty())
+        .and_then(|part| part.parse().ok())
 }
 
 fn split_subject(s: &str) -> (String, String) {
@@ -1205,6 +1234,8 @@ mod tests {
             build_review_style_flag_prompt("src/main/kotlin/App.kt", "updates controller logic");
 
         assert!(prompt.contains("severity: OK|WARN|FAIL"));
+        assert!(prompt.contains("line: <new-file line number, or unknown>"));
+        assert!(prompt.contains("concrete rename suggestion"));
         assert!(prompt.contains("non-Service/non-flow files"));
         assert!(prompt.contains("File: src/main/kotlin/App.kt"));
         assert!(prompt.contains("updates controller logic"));
@@ -1276,31 +1307,36 @@ mod tests {
     #[test]
     fn finalize_review_style_flag_normalizes_output() {
         assert_eq!(
-            finalize_review_style_flag("severity: WARN\nreason: controller does too much"),
-            "severity: WARN\nreason: controller does too much"
+            finalize_review_style_flag(
+                "severity: WARN\nline: 42\nreason: controller does too much"
+            ),
+            "severity: WARN\nline: 42\nreason: controller does too much"
         );
         assert_eq!(
             finalize_review_style_flag("FAIL\nDirect Kafka publish"),
-            "severity: FAIL\nreason: Direct Kafka publish"
+            "severity: FAIL\nline: unknown\nreason: Direct Kafka publish"
         );
         assert_eq!(
             finalize_review_style_flag("not enough evidence"),
-            "severity: OK\nreason: No style issue found."
+            "severity: OK\nline: unknown\nreason: No style issue found."
         );
     }
 
     #[test]
     fn review_style_parser_ignores_schema_when_reading_reasoning_fallback() {
         let finding = parse_review_style_finding(
-            "Return exactly two lines:\n\
+            "Return exactly three lines:\n\
              `severity: OK|WARN|FAIL`\n\
+             `line: <new-file line number, or unknown>`\n\
              `reason: <one concise reason>`\n\n\
              Draft output:\n\
              severity: FAIL\n\
+             line: 273\n\
              reason: Controller contains business logic instead of delegating to a service.",
         );
 
         assert_eq!(finding.severity, ReviewStyleSeverity::Fail);
+        assert_eq!(finding.line, Some(273));
         assert_eq!(
             finding.reason,
             "Controller contains business logic instead of delegating to a service."

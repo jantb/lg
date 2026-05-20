@@ -603,7 +603,7 @@ fn jump_to_review_note(state: &mut AppState, previous: bool) {
 fn line_contains_review_note(line: &Line<'_>) -> bool {
     line.spans
         .iter()
-        .any(|span| span.content.contains("review note:"))
+        .any(|span| span.content.contains("review note:") || span.content.contains(" STYLE "))
 }
 
 pub(super) fn select_mouse_row(state: &mut AppState, area: Rect, row: u16) {
@@ -628,12 +628,26 @@ pub(super) fn select_mouse_row(state: &mut AppState, area: Rect, row: u16) {
 pub(super) fn selected_open_path(state: &AppState) -> Option<String> {
     let review = state.review.as_ref()?;
     let node = review.nodes.get(state.review_idx)?;
-    path_from_review_title(&node.title).or_else(|| {
-        node.body
-            .iter()
-            .chain(node.context.iter())
-            .find_map(|line| super::diff_path_from_line(line))
-    })
+    path_from_review_title(&node.title)
+        .or_else(|| source_context_open_path(state, review, node))
+        .or_else(|| {
+            node.body
+                .iter()
+                .chain(node.context.iter())
+                .find_map(|line| super::diff_path_from_line(line))
+        })
+}
+
+fn source_context_open_path(
+    state: &AppState,
+    review: &crate::git::AssistedReview,
+    node: &crate::git::ReviewNode,
+) -> Option<String> {
+    state
+        .review_context_open
+        .contains(&node.id)
+        .then(|| source_sections(state, review, node).into_iter().next())?
+        .map(|section| section.path)
 }
 
 fn path_from_review_title(title: &str) -> Option<String> {
@@ -737,16 +751,20 @@ fn review_node_line_count(state: &AppState, idx: usize) -> usize {
     let has_body = renders_review_body(&node.id) && !node.body.is_empty();
     let context_open = state.review_context_open.contains(&node.id);
     let assist = review_assist_text(state, &node.id);
+    let style_finding = review_style_finding_text(state, &node.title);
     if renders_review_body(&node.id) {
         count += review_body_line_count(state, node);
     }
     if context_open {
         count += review_source_context_line_count(state, node);
     }
+    if style_finding.is_some() {
+        count += 1;
+    }
     if let Some(text) = assist {
         count += 1 + text.lines().count();
     }
-    if has_body || context_open || assist.is_some() {
+    if has_body || context_open || assist.is_some() || style_finding.is_some() {
         count += 1;
     }
     count

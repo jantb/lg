@@ -28,6 +28,7 @@ impl ReviewStyleSeverity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewStyleFinding {
     pub severity: ReviewStyleSeverity,
+    pub line: Option<usize>,
     pub reason: String,
 }
 

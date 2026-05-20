@@ -6,6 +6,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::{state::AppState, ui};
 
+const STYLE_WARN_NOTE_BG: Color = Color::Rgb(92, 68, 18);
+const STYLE_FAIL_NOTE_BG: Color = Color::Rgb(88, 24, 30);
+const STYLE_WARN_LABEL_BG: Color = Color::Yellow;
+const STYLE_FAIL_LABEL_BG: Color = Color::Red;
+
 pub(super) struct SourceSection {
     pub path: String,
     pub body: Vec<String>,
@@ -234,7 +239,7 @@ fn inline_review_notes_by_path(
         if matches!(finding.severity, crate::state::ReviewStyleSeverity::Ok) {
             continue;
         }
-        let line = first_changed_line_for_path(review, node, path).unwrap_or(1);
+        let line = style_finding_line(review, node, path, finding).unwrap_or(1);
         push_inline_note(
             &mut notes,
             path,
@@ -247,6 +252,19 @@ fn inline_review_notes_by_path(
         );
     }
     notes
+}
+
+fn style_finding_line(
+    review: &crate::git::AssistedReview,
+    node: &crate::git::ReviewNode,
+    path: &str,
+    finding: &crate::state::ReviewStyleFinding,
+) -> Option<usize> {
+    finding
+        .line
+        .or_else(|| line_matching_reason(review, node, path, &finding.reason))
+        .or_else(|| first_changed_line_for_path(review, node, path))
+        .map(|line| line.max(1))
 }
 
 fn push_inline_note(
@@ -306,6 +324,111 @@ fn first_changed_line_for_path(
                 .and_then(|section| first_body_hunk_new_line(&section.body))
         })
         .map(|line| line.max(1))
+}
+
+fn line_matching_reason(
+    review: &crate::git::AssistedReview,
+    node: &crate::git::ReviewNode,
+    path: &str,
+    reason: &str,
+) -> Option<usize> {
+    let fragments = code_fragments(reason);
+    if fragments.is_empty() {
+        return None;
+    }
+    std::iter::once(node)
+        .chain(
+            review
+                .nodes
+                .iter()
+                .filter(|candidate| review_node_in_subtree(review, candidate, &node.id)),
+        )
+        .filter(|candidate| super::review::review_node_path(&candidate.title) == Some(path))
+        .find_map(|candidate| {
+            line_matching_reason_in_body(&candidate.body, &fragments)
+                .or_else(|| line_matching_reason_in_context(&candidate.context, &fragments))
+        })
+        .or_else(|| {
+            full_diff_source_sections(review)?
+                .into_iter()
+                .find(|section| section.path == path)
+                .and_then(|section| line_matching_reason_in_body(&section.body, &fragments))
+        })
+        .or_else(|| line_matching_reason_in_file(path, &fragments))
+}
+
+fn line_matching_reason_in_body(body: &[String], fragments: &[String]) -> Option<usize> {
+    let mut new_line = 0usize;
+    let mut in_hunk = false;
+    for line in body {
+        if let Some((_, new_start)) = parse_hunk_header(line) {
+            new_line = new_start;
+            in_hunk = true;
+            continue;
+        }
+        if !in_hunk || line.starts_with("\\ No newline") {
+            continue;
+        }
+        if line.starts_with('-') {
+            continue;
+        }
+        let Some(source) = line.strip_prefix('+').or_else(|| line.strip_prefix(' ')) else {
+            continue;
+        };
+        if source_matches_fragments(source, fragments) {
+            return Some(new_line.max(1));
+        }
+        new_line = new_line.saturating_add(1);
+    }
+    None
+}
+
+fn line_matching_reason_in_context(context: &[String], fragments: &[String]) -> Option<usize> {
+    context.iter().find_map(|line| {
+        let (line_no, source) = line.split_once(" | ")?;
+        source_matches_fragments(source, fragments)
+            .then(|| line_no.trim().parse().ok())
+            .flatten()
+    })
+}
+
+fn line_matching_reason_in_file(path: &str, fragments: &[String]) -> Option<usize> {
+    let text = std::fs::read_to_string(path).ok()?;
+    text.lines()
+        .enumerate()
+        .find_map(|(idx, line)| source_matches_fragments(line, fragments).then_some(idx + 1))
+}
+
+fn code_fragments(reason: &str) -> Vec<String> {
+    reason
+        .split(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';' | ':' | '`' | '"' | '\''))
+        .map(|part| {
+            part.trim_matches(|ch: char| {
+                matches!(ch, '.' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>')
+            })
+        })
+        .filter(|part| {
+            part.len() >= 8
+                && part
+                    .chars()
+                    .any(|ch| matches!(ch, '.' | '(' | ')' | '_') || ch.is_ascii_uppercase())
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+fn source_matches_fragments(source: &str, fragments: &[String]) -> bool {
+    let compact_source = compact_code(source);
+    fragments
+        .iter()
+        .map(|fragment| compact_code(fragment))
+        .any(|fragment| !fragment.is_empty() && compact_source.contains(&fragment))
+}
+
+fn compact_code(s: &str) -> String {
+    s.chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect::<String>()
 }
 
 fn inline_assist_note_text(state: &AppState, node_id: &str) -> Option<String> {
@@ -615,6 +738,9 @@ fn push_source_notes(lines: &mut Vec<Line<'static>>, indent: &str, notes: Option
 }
 
 fn source_note_line(indent: &str, note: &str) -> Line<'static> {
+    if let Some((severity, reason)) = style_note_parts(note) {
+        return style_note_line(indent, severity, reason);
+    }
     let mut spans = context_prefix(indent);
     spans.push(Span::styled(
         "      · ".to_string(),
@@ -629,6 +755,56 @@ fn source_note_line(indent: &str, note: &str) -> Line<'static> {
     spans.push(Span::styled(
         note.to_string(),
         Style::default().fg(Color::Gray),
+    ));
+    Line::from(spans)
+}
+
+fn style_note_parts(note: &str) -> Option<(crate::state::ReviewStyleSeverity, &str)> {
+    note.strip_prefix("style warn: ")
+        .map(|reason| (crate::state::ReviewStyleSeverity::Warn, reason))
+        .or_else(|| {
+            note.strip_prefix("style fail: ")
+                .map(|reason| (crate::state::ReviewStyleSeverity::Fail, reason))
+        })
+}
+
+fn style_note_line(
+    indent: &str,
+    severity: crate::state::ReviewStyleSeverity,
+    reason: &str,
+) -> Line<'static> {
+    let (label_bg, note_bg, note_fg) = match severity {
+        crate::state::ReviewStyleSeverity::Ok => {
+            (Color::Green, Color::Rgb(24, 54, 34), Color::LightGreen)
+        }
+        crate::state::ReviewStyleSeverity::Warn => {
+            (STYLE_WARN_LABEL_BG, STYLE_WARN_NOTE_BG, Color::LightYellow)
+        }
+        crate::state::ReviewStyleSeverity::Fail => {
+            (STYLE_FAIL_LABEL_BG, STYLE_FAIL_NOTE_BG, Color::White)
+        }
+    };
+    let mut spans = context_prefix(indent);
+    spans.push(Span::styled(
+        "      ! ".to_string(),
+        Style::default()
+            .fg(Color::Black)
+            .bg(label_bg)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(
+        format!(" STYLE {} ", severity.label()),
+        Style::default()
+            .fg(Color::Black)
+            .bg(label_bg)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(
+        format!(" {reason}"),
+        Style::default()
+            .fg(note_fg)
+            .bg(note_bg)
+            .add_modifier(Modifier::BOLD),
     ));
     Line::from(spans)
 }

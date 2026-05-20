@@ -453,7 +453,7 @@ fn review_source_inlines_style_and_llm_notes_and_jumps_between_them() {
     let dir = tempfile::tempdir().unwrap();
     let source_path = dir.path().join("App.kt");
     let mut source = String::from(
-        "class App {\n    fun first() = \"changed\"\n    fun second() = \"changed\"\n",
+        "class App {\n    fun first() = \"changed\"\n    fun second() = usersService.findHouseholdMembers().size\n",
     );
     for idx in 0..24 {
         source.push_str(&format!("    val untouched{idx} = {idx}\n"));
@@ -487,7 +487,7 @@ fn review_source_inlines_style_and_llm_notes_and_jumps_between_them() {
                     "-    fun first() = \"old\"".into(),
                     "+    fun first() = \"changed\"".into(),
                     "-    fun second() = \"old\"".into(),
-                    "+    fun second() = \"changed\"".into(),
+                    "+    fun second() = usersService.findHouseholdMembers().size".into(),
                     " }".into(),
                 ],
                 context: Vec::new(),
@@ -499,7 +499,10 @@ fn review_source_inlines_style_and_llm_notes_and_jumps_between_them() {
         source_path.clone(),
         ReviewStyleFinding {
             severity: ReviewStyleSeverity::Warn,
-            reason: "Business rule belongs in a Service file.".into(),
+            line: None,
+            reason:
+                "Direct call to usersService.findHouseholdMembers().size belongs in a Service file."
+                    .into(),
         },
     );
     app.state.review_assists.insert(
@@ -510,7 +513,14 @@ fn review_source_inlines_style_and_llm_notes_and_jumps_between_them() {
     panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
     app.render().unwrap();
     let rendered = buffer_text(&app);
-    assert!(rendered.contains("review note: style warn"), "{rendered}");
+    assert!(rendered.contains("STYLE WARN"), "{rendered}");
+    assert!(
+        rendered.find("STYLE WARN").unwrap()
+            > rendered
+                .find("usersService.findHouseholdMembers().size")
+                .unwrap(),
+        "style note should be attached after the matching source line: {rendered}"
+    );
     assert!(
         rendered.contains("review note: llm: This changes both"),
         "{rendered}"
@@ -1002,6 +1012,7 @@ fn review_panel_styles_tree_titles_and_change_counts() {
         "src/main/kotlin/BalanceService.kt".into(),
         ReviewStyleFinding {
             severity: ReviewStyleSeverity::Warn,
+            line: None,
             reason: "Controller-style flow deserves manual attention.".into(),
         },
     );
@@ -1118,6 +1129,7 @@ fn review_panel_colors_style_severity_scale() {
         "src/main/kotlin/Good.kt".into(),
         ReviewStyleFinding {
             severity: ReviewStyleSeverity::Ok,
+            line: None,
             reason: "No style issue found.".into(),
         },
     );
@@ -1125,6 +1137,7 @@ fn review_panel_colors_style_severity_scale() {
         "src/main/kotlin/Bad.kt".into(),
         ReviewStyleFinding {
             severity: ReviewStyleSeverity::Fail,
+            line: None,
             reason: "Direct Kafka publish from flow.".into(),
         },
     );
@@ -1460,6 +1473,41 @@ fn review_pane_o_opens_selected_source_file() {
             context: Vec::new(),
         }],
     });
+
+    panel::main::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::OpenFile("src/main/kotlin/App.kt".into()))
+    );
+}
+
+#[test]
+fn review_pane_o_opens_source_context_file_from_full_diff() {
+    let mut state = AppState::new();
+    state.diff_source = lg::state::DiffSource::Review;
+    state.review = Some(AssistedReview {
+        report: [
+            "Assisted review against main",
+            "Full diff against main",
+            "diff --git a/src/main/kotlin/App.kt b/src/main/kotlin/App.kt",
+            "--- a/src/main/kotlin/App.kt",
+            "+++ b/src/main/kotlin/App.kt",
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+        ]
+        .join("\n"),
+        nodes: vec![ReviewNode {
+            id: "branch".into(),
+            parent: None,
+            depth: 0,
+            title: "Full diff against main".into(),
+            body: Vec::new(),
+            context: Vec::new(),
+        }],
+    });
+    state.review_context_open.insert("branch".into());
 
     panel::main::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
 
