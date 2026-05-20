@@ -282,22 +282,25 @@ fn review_style_flag_file(
     let (tx, rx) = std::sync::mpsc::channel();
     crate::llm::stream_review_style_flag(path.to_string(), context, tx);
     let mut final_msg = None;
+    let mut thinking = String::new();
     let mut error = None;
     for msg in rx {
         match msg {
             crate::state::GenMsg::Done(output) => final_msg = Some(output),
             crate::state::GenMsg::Error(message) => error = Some(message),
-            crate::state::GenMsg::Thinking(_) | crate::state::GenMsg::Output(_) => {}
+            crate::state::GenMsg::Thinking(chunk) => thinking.push_str(&chunk),
+            crate::state::GenMsg::Output(_) => {}
         }
     }
     if let Some(error) = error {
         return Err(error);
     }
-    Ok(crate::llm::parse_review_style_finding(
-        final_msg
-            .as_deref()
-            .unwrap_or("OK\nreason: no issues found"),
-    ))
+    let response = final_msg
+        .as_deref()
+        .filter(|output| !output.trim().is_empty())
+        .or_else(|| (!thinking.trim().is_empty()).then_some(thinking.as_str()))
+        .ok_or_else(|| "empty LLM response".to_string())?;
+    Ok(crate::llm::parse_review_style_finding(response))
 }
 
 fn review_assist_context(state: &AppState, node_id: &str) -> Option<String> {

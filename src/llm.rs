@@ -88,6 +88,12 @@ struct LlamaServerChatRequest<'a> {
     top_p: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<i32>,
+    chat_template_kwargs: ChatTemplateKwargs,
+}
+
+#[derive(Serialize)]
+struct ChatTemplateKwargs {
+    enable_thinking: bool,
 }
 
 #[derive(Serialize)]
@@ -754,6 +760,9 @@ fn chat_request_body(
         temperature: opts.temperature,
         top_p: opts.top_p,
         max_tokens: (opts.num_predict > 0).then_some(opts.num_predict),
+        chat_template_kwargs: ChatTemplateKwargs {
+            enable_thinking: false,
+        },
     })?)
 }
 
@@ -899,8 +908,7 @@ pub fn parse_review_style_finding(raw: &str) -> ReviewStyleFinding {
         .trim()
         .trim_matches('"')
         .lines()
-        .map(trim_outer_quotes_without_backticks)
-        .map(str::trim)
+        .map(clean_review_style_line)
         .filter(|line| !line.is_empty())
     {
         let lower = line.to_ascii_lowercase();
@@ -909,13 +917,18 @@ pub fn parse_review_style_finding(raw: &str) -> ReviewStyleFinding {
             .then(|| line.split_once(':'))
             .flatten()
         {
-            severity = parse_review_style_severity(value);
+            if let Some(parsed) = parse_review_style_severity(value) {
+                severity = Some(parsed);
+                reason = None;
+            }
         } else if let Some((_, value)) = lower
             .starts_with("reason:")
             .then(|| line.split_once(':'))
             .flatten()
         {
-            reason = Some(value.trim().to_string());
+            if severity.is_some() {
+                reason = Some(value.trim().to_string());
+            }
         } else if severity.is_none() {
             severity = parse_review_style_severity(line);
         } else if reason.is_none() {
@@ -929,16 +942,38 @@ pub fn parse_review_style_finding(raw: &str) -> ReviewStyleFinding {
     ReviewStyleFinding { severity, reason }
 }
 
+fn clean_review_style_line(line: &str) -> &str {
+    line.trim()
+        .trim_start_matches(|ch: char| {
+            ch.is_ascii_whitespace()
+                || ch == '-'
+                || ch == '*'
+                || ch == '>'
+                || ch == '`'
+                || ch == '"'
+                || ch == '\''
+        })
+        .trim_end_matches(['`', '"', '\''])
+        .trim()
+}
+
 fn parse_review_style_severity(s: &str) -> Option<ReviewStyleSeverity> {
-    let upper = s.trim().to_ascii_uppercase();
-    if upper.contains("FAIL") || upper.contains("RED") {
-        Some(ReviewStyleSeverity::Fail)
-    } else if upper.contains("WARN") || upper.contains("WARNING") || upper.contains("FLAG") {
-        Some(ReviewStyleSeverity::Warn)
-    } else if upper.contains("OK") || upper.contains("GREEN") {
-        Some(ReviewStyleSeverity::Ok)
-    } else {
-        None
+    let upper = s
+        .trim()
+        .trim_matches(|ch: char| {
+            ch.is_ascii_whitespace()
+                || ch == '`'
+                || ch == '"'
+                || ch == '\''
+                || ch == '.'
+                || ch == ':'
+        })
+        .to_ascii_uppercase();
+    match upper.as_str() {
+        "FAIL" | "RED" => Some(ReviewStyleSeverity::Fail),
+        "WARN" | "WARNING" | "FLAG" => Some(ReviewStyleSeverity::Warn),
+        "OK" | "GREEN" => Some(ReviewStyleSeverity::Ok),
+        _ => None,
     }
 }
 
@@ -1223,6 +1258,7 @@ mod tests {
         assert_eq!(body["model"], "qwen-local");
         assert_eq!(body["stream"], true);
         assert_eq!(body["max_tokens"], 42);
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
         assert!(body.get("keep_alive").is_none());
         assert!(body.get("options").is_none());
     }
@@ -1250,6 +1286,24 @@ mod tests {
         assert_eq!(
             finalize_review_style_flag("not enough evidence"),
             "severity: OK\nreason: No style issue found."
+        );
+    }
+
+    #[test]
+    fn review_style_parser_ignores_schema_when_reading_reasoning_fallback() {
+        let finding = parse_review_style_finding(
+            "Return exactly two lines:\n\
+             `severity: OK|WARN|FAIL`\n\
+             `reason: <one concise reason>`\n\n\
+             Draft output:\n\
+             severity: FAIL\n\
+             reason: Controller contains business logic instead of delegating to a service.",
+        );
+
+        assert_eq!(finding.severity, ReviewStyleSeverity::Fail);
+        assert_eq!(
+            finding.reason,
+            "Controller contains business logic instead of delegating to a service."
         );
     }
 
