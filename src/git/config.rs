@@ -65,8 +65,7 @@ fn gitignore_entry(path: &str, is_dir: bool) -> String {
 pub fn ide_open_command(path: &str) -> Result<IdeOpenCommand> {
     let root = repo_root()?;
     let line = first_changed_line(path).unwrap_or(1);
-    build_ide_open_command(&root, path, line)
-        .ok_or_else(|| anyhow::anyhow!("no JetBrains IDE mapping for {path}"))
+    Ok(build_ide_open_command(&root, path, line))
 }
 
 pub fn open_file_in_ide(path: &str) -> Result<String> {
@@ -119,12 +118,8 @@ fn build_project_open_command(root: &str) -> IdeOpenCommand {
     }
 }
 
-pub(super) fn build_ide_open_command(
-    root: &str,
-    path: &str,
-    line: usize,
-) -> Option<IdeOpenCommand> {
-    let program = ide_program_for_path(path)?;
+pub(super) fn build_ide_open_command(root: &str, path: &str, line: usize) -> IdeOpenCommand {
+    let program = ide_program_for_path(path);
     let file = {
         let path = Path::new(path);
         if path.is_absolute() {
@@ -134,7 +129,7 @@ pub(super) fn build_ide_open_command(
         }
     };
     let line = line.max(1);
-    Some(IdeOpenCommand {
+    IdeOpenCommand {
         program: program.to_string(),
         args: vec![
             root.to_string(),
@@ -143,17 +138,16 @@ pub(super) fn build_ide_open_command(
             file.to_string_lossy().into_owned(),
         ],
         line,
-    })
+    }
 }
 
-fn ide_program_for_path(path: &str) -> Option<&'static str> {
+fn ide_program_for_path(path: &str) -> &'static str {
     match Path::new(path)
         .extension()
         .and_then(|extension| extension.to_str())
     {
-        Some("kt" | "kts" | "java" | "md") => Some("idea"),
-        Some("rs") => Some("rustrover"),
-        _ => None,
+        Some("rs") => "rustrover",
+        _ => "idea",
     }
 }
 

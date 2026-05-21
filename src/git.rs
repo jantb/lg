@@ -1219,24 +1219,42 @@ mod tests {
 
     #[test]
     fn ide_open_command_uses_jetbrains_launcher_for_source_type() {
-        let kotlin =
-            build_ide_open_command("/repo", "src/main/kotlin/App.kt", 42).expect("kotlin command");
+        let kotlin = build_ide_open_command("/repo", "src/main/kotlin/App.kt", 42);
         assert_eq!(kotlin.program, "idea");
         assert_eq!(
             kotlin.args,
             vec!["/repo", "--line", "42", "/repo/src/main/kotlin/App.kt"]
         );
 
-        let rust = build_ide_open_command("/repo", "src/main.rs", 7).expect("rust command");
+        let rust = build_ide_open_command("/repo", "src/main.rs", 7);
         assert_eq!(rust.program, "rustrover");
         assert_eq!(rust.args, vec!["/repo", "--line", "7", "/repo/src/main.rs"]);
 
-        let markdown = build_ide_open_command("/repo", "README.md", 1).expect("markdown command");
+        let markdown = build_ide_open_command("/repo", "README.md", 1);
         assert_eq!(markdown.program, "idea");
         assert_eq!(
             markdown.args,
             vec!["/repo", "--line", "1", "/repo/README.md"]
         );
+
+        let toml = build_ide_open_command(
+            "/repo",
+            "scenarios/From Postman/household_join_leave_transactions_flow_v2.toml",
+            3,
+        );
+        assert_eq!(toml.program, "idea");
+        assert_eq!(
+            toml.args,
+            vec![
+                "/repo",
+                "--line",
+                "3",
+                "/repo/scenarios/From Postman/household_join_leave_transactions_flow_v2.toml"
+            ]
+        );
+
+        let extensionless = build_ide_open_command("/repo", "Dockerfile", 1);
+        assert_eq!(extensionless.program, "idea");
     }
 
     #[test]
