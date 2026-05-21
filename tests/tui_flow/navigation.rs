@@ -207,6 +207,35 @@ fn branch_without_upstream_and_local_commits_can_push() {
 }
 
 #[test]
+fn conflict_modal_o_opens_selected_conflicted_file() {
+    let mut state = AppState::new();
+    state.modal = Modal::Conflict;
+    state.conflicts = vec!["src/a.rs".into(), "src/b.rs".into()];
+
+    panel::conflict::handle_key(&mut state, key(KeyCode::Down)).unwrap();
+    panel::conflict::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::OpenFile("src/b.rs".into()))
+    );
+}
+
+#[test]
+fn conflict_modal_enter_opens_selected_conflicted_file() {
+    let mut state = AppState::new();
+    state.modal = Modal::Conflict;
+    state.conflicts = vec!["src/conflict.rs".into()];
+
+    panel::conflict::handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::OpenFile("src/conflict.rs".into()))
+    );
+}
+
+#[test]
 fn files_panel_o_opens_selected_source_file() {
     let mut state = make_state_with_files();
     state.files = vec![FileEntry {

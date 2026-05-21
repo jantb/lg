@@ -180,7 +180,13 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
         }
         Modal::Conflict => modal_spans(
             "Conflict ",
-            &[("v", "validate"), ("a", "abort"), ("Esc", "close")],
+            &[
+                ("j/k", "select"),
+                ("o/Enter", "open"),
+                ("v", "validate"),
+                ("a", "abort"),
+                ("Esc", "close"),
+            ],
             Color::Red,
         ),
         Modal::DeleteBranch => modal_spans(

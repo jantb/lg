@@ -685,6 +685,10 @@ fn conflict_modal_asks_user_to_resolve_externally() {
         text.contains("validate resolved/staged/merged state"),
         "modal should expose validate action: {text}"
     );
+    assert!(
+        text.contains("open"),
+        "modal should expose open action: {text}"
+    );
     assert!(!text.contains("ours/theirs/both"), "{text}");
     assert!(!text.contains("LLM"), "{text}");
     assert!(!text.contains("stage + continue"), "{text}");

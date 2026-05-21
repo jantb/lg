@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::{
     app,
-    state::{AppState, clamp_index},
+    state::{AppState, PendingAction, clamp_index},
     ui,
 };
 
@@ -95,6 +95,10 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     );
 
     let controls = vec![Line::from(vec![
+        Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+        Span::raw(" select  "),
+        Span::styled("o/Enter", Style::default().fg(Color::LightCyan)),
+        Span::raw(" open  "),
         Span::styled("v", Style::default().fg(Color::Green)),
         Span::raw(" validate resolved/staged/merged state  "),
         Span::styled("a", Style::default().fg(Color::Red)),
@@ -148,6 +152,13 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('k') | KeyCode::Up => {
             state.conflict_idx = state.conflict_idx.saturating_sub(1);
+        }
+        KeyCode::Char('o') | KeyCode::Enter => {
+            if let Some(path) = state.conflicts.get(state.conflict_idx) {
+                state.pending_action = Some(PendingAction::OpenFile(path.clone()));
+            } else {
+                state.set_status("no conflicted file selected", false);
+            }
         }
         KeyCode::Char('v') | KeyCode::Char('V') => app::validate_conflict_resolution(state),
         KeyCode::Char('a') | KeyCode::Char('A') => app::abort_conflict_operation(state),
