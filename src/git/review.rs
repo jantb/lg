@@ -846,6 +846,10 @@ fn entry_group_parents(entries: &[ReviewEntryPoint], groups: &[EntryGroup]) -> V
                 .iter()
                 .enumerate()
                 .filter(|(caller_idx, _)| *caller_idx != callee_idx)
+                .filter(|(_, caller)| {
+                    ReviewEntryCategory::for_path(&caller.path)
+                        == ReviewEntryCategory::for_path(&callee.path)
+                })
                 .filter(|(_, caller)| entry_group_references(entries, caller, &callable))
                 .map(|(caller_idx, _)| caller_idx)
                 .next()
@@ -1546,6 +1550,90 @@ mod tests {
             .expect("test file node");
         assert_eq!(test_file.parent.as_deref(), Some("branch:category:tests"));
         assert_eq!(test_file.depth, 2);
+    }
+
+    #[test]
+    fn build_review_nodes_keeps_called_production_file_in_production_category() {
+        let entries = vec![
+            ReviewEntryPoint {
+                path: "src/main/kotlin/app/service/BalanceService.kt".into(),
+                line: Some(162),
+                symbol: "fun updateBalanceCache".into(),
+                description: "updates cache behavior (+1 -1)".into(),
+                hunk: "@@ -162 +162 @@".into(),
+                patch: vec![
+                    "@@ -162 +162 @@".into(),
+                    "-    oldCache(items)".into(),
+                    "+    newCache(items)".into(),
+                ],
+                context: Vec::new(),
+                added: 1,
+                removed: 1,
+            },
+            ReviewEntryPoint {
+                path: "src/test/kotlin/app/service/BalanceServiceTest.kt".into(),
+                line: Some(332),
+                symbol: "fun updateBalanceCacheTest".into(),
+                description: "updates assertions (+2 -2)".into(),
+                hunk: "@@ -332 +332 @@".into(),
+                patch: vec![
+                    "@@ -332 +332 @@".into(),
+                    "     service.updateBalanceCache(items)".into(),
+                    "-    assertThat(balance).isEqualTo(oldValue)".into(),
+                    "+    assertThat(balance).isEqualTo(newValue)".into(),
+                ],
+                context: Vec::new(),
+                added: 1,
+                removed: 1,
+            },
+        ];
+        let files = entries
+            .iter()
+            .map(|entry| ReviewFile {
+                status: "M".into(),
+                path: entry.path.clone(),
+                old_path: None,
+            })
+            .collect::<Vec<_>>();
+        let commits = vec!["abc123 update cache".to_string()];
+        let render = ReviewRender {
+            branch: "feature",
+            base_ref: "main",
+            merge_base: "",
+            commits: &commits,
+            files: &files,
+            stat: "",
+            entries: &entries,
+            diff: "diff",
+        };
+
+        let nodes = build_review_nodes(&render);
+
+        let production_file = nodes
+            .iter()
+            .find(|node| {
+                node.title
+                    .starts_with("src/main/kotlin/app/service/BalanceService.kt - ")
+            })
+            .expect("production file node");
+        assert_eq!(
+            production_file.parent.as_deref(),
+            Some("branch:category:production"),
+            "{nodes:#?}"
+        );
+
+        let test_file = nodes
+            .iter()
+            .find(|node| {
+                node.title
+                    .starts_with("src/test/kotlin/app/service/BalanceServiceTest.kt - ")
+            })
+            .expect("test file node");
+        assert_eq!(
+            test_file.parent.as_deref(),
+            Some("branch:category:tests"),
+            "{nodes:#?}"
+        );
     }
 
     #[test]
