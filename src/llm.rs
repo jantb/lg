@@ -315,6 +315,8 @@ fn build_review_assist_prompt(context: &str) -> String {
     format!(
         "Explain what this selected subtree from a full diff against main does.\n\
          Be concise and factual. Focus on behavior, call flow, tests, and review risks.\n\
+         Say whether the patch appears minimal; flag unnecessary scope, simpler alternatives,\n\
+         or refactors that would reduce complexity without changing behavior.\n\
          Review the change against the established repo style below and call out concrete violations.\n\
          Output 3-6 bullets. Do not invent files or behavior not shown. Do not use code fences.\n\n\
          {REVIEW_REPO_STYLE_GUIDE}\n\n\
@@ -1260,6 +1262,9 @@ mod tests {
     fn review_assist_prompt_includes_repo_style() {
         let prompt = build_review_assist_prompt("src/main/kotlin/App.kt");
 
+        assert!(prompt.contains("whether the patch appears minimal"));
+        assert!(prompt.contains("simpler alternatives"));
+        assert!(prompt.contains("refactors that would reduce complexity"));
         assert!(prompt.contains("Constructor injection only"));
         assert!(prompt.contains("configuredJson"));
         assert!(prompt.contains("path or name contains Service"));
