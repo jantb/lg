@@ -1010,6 +1010,69 @@ fn review_navigation_keeps_selection_visible_without_early_scroll() {
 }
 
 #[test]
+fn review_source_down_at_last_change_moves_to_next_review_node() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_path = dir.path().join("BalanceService.kt");
+    std::fs::write(
+        &source_path,
+        "class BalanceService {\n    fun first() = 1\n    fun second() = 2\n}\n",
+    )
+    .unwrap();
+    let source_path = source_path.display().to_string();
+
+    let mut state = AppState::new();
+    state.focus = Pane::Main;
+    state.diff_source = lg::state::DiffSource::Review;
+    state.diff_viewport_width = 120;
+    state.diff_viewport_height = 6;
+    state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Full diff against main".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:file:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: format!("{source_path} - 1 entry point (+2 -0)"),
+                body: vec![
+                    "@@ -1,4 +1,4 @@".into(),
+                    " class BalanceService {".into(),
+                    "+    fun first() = 1".into(),
+                    "     fun second() = 2".into(),
+                    " }".into(),
+                ],
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:file:1".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: "src/test/kotlin/BalanceServiceTest.kt - 1 entry point (+1 -0)".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+        ],
+    });
+    state.review_idx = 1;
+    state.review_context_open.insert("branch:file:0".into());
+    state.diff_offset = panel::main::max_scroll_offset(&state);
+
+    panel::main::handle_key(&mut state, key(KeyCode::Down)).unwrap();
+
+    assert_eq!(
+        state.review_idx, 2,
+        "down at the last source-change group should move to the next review node"
+    );
+}
+
+#[test]
 fn review_panel_mouse_click_selects_visible_item() {
     let mut state = AppState::new();
     state.diff_source = lg::state::DiffSource::Review;

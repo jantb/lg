@@ -90,6 +90,7 @@ struct LlamaServerChatRequest<'a> {
     top_p: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<i32>,
+    enable_thinking: bool,
     chat_template_kwargs: ChatTemplateKwargs,
 }
 
@@ -335,6 +336,7 @@ fn build_review_chat_system_prompt(context: &str) -> String {
 }
 
 fn build_review_style_flag_prompt(path: &str, context: &str) -> String {
+    let file_role = review_style_file_role(path);
     format!(
         "Review this single changed Kotlin file for concrete violations of the established repo style.\n\
          Return exactly three lines:\n\
@@ -348,11 +350,26 @@ fn build_review_style_flag_prompt(path: &str, context: &str) -> String {
          or generated code edits.\n\n\
          Do not flag repository/service calls used to build the initial/start state before a flow begins;\n\
          only flag direct repository/service calls in later states or steps after the flow has started.\n\n\
+         Treat the File role below as authoritative. For service-layer or flow files, repository/service calls\n\
+         and business rule orchestration are allowed by layer placement; do not flag them merely as\n\
+         non-Service/non-flow violations. Return OK for that concern unless another concrete style rule is violated.\n\n\
          For naming issues, include a concrete rename suggestion in the reason.\n\n\
          {REVIEW_REPO_STYLE_GUIDE}\n\n\
          File: {path}\n\
+         File role: {file_role}\n\
          Review context:\n{context}"
     )
+}
+
+fn review_style_file_role(path: &str) -> &'static str {
+    let lower = path.to_ascii_lowercase();
+    if lower.contains("service") {
+        "service-layer"
+    } else if lower.contains("flow") {
+        "flow"
+    } else {
+        "non-service/non-flow"
+    }
 }
 
 fn summarize_diff(diff: &str) -> String {
@@ -504,10 +521,11 @@ pub fn stream_review_assist(context: String, tx: Sender<GenMsg>) {
 }
 
 pub fn stream_review_style_flag(path: String, context: String, tx: Sender<GenMsg>) {
+    let finalizer_path = path.clone();
     stream_prompt(
         build_review_style_flag_prompt(&path, &context),
         review_style_flag_options(),
-        finalize_review_style_flag,
+        move |raw| finalize_review_style_flag_for_path(&finalizer_path, raw),
         tx,
     );
 }
@@ -566,7 +584,10 @@ fn review_style_flag_options() -> Options {
     opts
 }
 
-fn stream_prompt(prompt: String, opts: Options, finalizer: fn(&str) -> String, tx: Sender<GenMsg>) {
+fn stream_prompt<F>(prompt: String, opts: Options, finalizer: F, tx: Sender<GenMsg>)
+where
+    F: Fn(&str) -> String,
+{
     stream_messages(
         vec![ChatMessage {
             role: "user",
@@ -581,7 +602,7 @@ fn stream_prompt(prompt: String, opts: Options, finalizer: fn(&str) -> String, t
 fn stream_messages(
     messages: Vec<ChatMessage>,
     opts: Options,
-    finalizer: fn(&str) -> String,
+    finalizer: impl Fn(&str) -> String,
     tx: Sender<GenMsg>,
 ) {
     let start = Instant::now();
@@ -697,7 +718,7 @@ fn stream_messages(
                 out_bytes += ob;
                 send_done(
                     &mut trace,
-                    finalizer,
+                    &finalizer,
                     &full_output,
                     DoneStats {
                         reason: "sse_done",
@@ -739,7 +760,7 @@ fn stream_messages(
     out_bytes += ob;
     send_done(
         &mut trace,
-        finalizer,
+        &finalizer,
         &full_output,
         DoneStats {
             reason: "loop_exhausted",
@@ -766,6 +787,7 @@ fn chat_request_body(
         temperature: opts.temperature,
         top_p: opts.top_p,
         max_tokens: (opts.num_predict > 0).then_some(opts.num_predict),
+        enable_thinking: false,
         chat_template_kwargs: ChatTemplateKwargs {
             enable_thinking: false,
         },
@@ -806,7 +828,7 @@ struct DoneStats<'a> {
 
 fn send_done(
     trace: &mut Option<std::fs::File>,
-    finalizer: fn(&str) -> String,
+    finalizer: &dyn Fn(&str) -> String,
     full_output: &str,
     stats: DoneStats<'_>,
     tx: &Sender<GenMsg>,
@@ -890,9 +912,21 @@ fn finalize_review_chat(raw: &str) -> String {
         .collect()
 }
 
+#[cfg(test)]
 fn finalize_review_style_flag(raw: &str) -> String {
     let cleaned = strip_think_tags(raw);
     let finding = parse_review_style_finding(&cleaned);
+    format_review_style_finding(&finding)
+}
+
+fn finalize_review_style_flag_for_path(path: &str, raw: &str) -> String {
+    let cleaned = strip_think_tags(raw);
+    let mut finding = parse_review_style_finding(&cleaned);
+    suppress_layer_misclassification(path, &mut finding);
+    format_review_style_finding(&finding)
+}
+
+fn format_review_style_finding(finding: &ReviewStyleFinding) -> String {
     format!(
         "severity: {}\nline: {}\nreason: {}",
         finding.severity.label(),
@@ -902,6 +936,45 @@ fn finalize_review_style_flag(raw: &str) -> String {
             .unwrap_or_else(|| "unknown".to_string()),
         finding.reason
     )
+}
+
+fn suppress_layer_misclassification(path: &str, finding: &mut ReviewStyleFinding) {
+    if !matches!(review_style_file_role(path), "service-layer" | "flow") {
+        return;
+    }
+    if !matches!(
+        finding.severity,
+        ReviewStyleSeverity::Warn | ReviewStyleSeverity::Fail
+    ) {
+        return;
+    }
+    let reason = finding.reason.to_ascii_lowercase();
+    let calls_out_wrong_layer = reason.contains("non-service")
+        || reason.contains("non service")
+        || reason.contains("service layer")
+        || reason.contains("direct repository call")
+        || reason.contains("repository call");
+    if calls_out_wrong_layer && !reason_mentions_other_style_rule(&reason) {
+        finding.severity = ReviewStyleSeverity::Ok;
+        finding.line = None;
+        finding.reason = "No style issue found.".to_string();
+    }
+}
+
+fn reason_mentions_other_style_rule(reason: &str) -> bool {
+    [
+        "kafka",
+        "jackson",
+        "java.time",
+        "mockito",
+        "loggerfactory",
+        "ktor",
+        "generated",
+        "var ",
+        "mutable",
+    ]
+    .iter()
+    .any(|needle| reason.contains(needle))
 }
 
 pub fn parse_review_style_finding(raw: &str) -> ReviewStyleFinding {
@@ -1217,7 +1290,20 @@ mod tests {
         ));
         assert!(prompt.contains("after the flow has started"));
         assert!(prompt.contains("File: src/main/kotlin/App.kt"));
+        assert!(prompt.contains("File role: non-service/non-flow"));
         assert!(prompt.contains("updates controller logic"));
+    }
+
+    #[test]
+    fn review_style_flag_prompt_classifies_service_file_names() {
+        let prompt = build_review_style_flag_prompt(
+            "src/main/kotlin/CompletePendingTransactionService.kt",
+            "pendingTransactionsRepository.fetchTransaction(...)",
+        );
+
+        assert!(prompt.contains("File role: service-layer"));
+        assert!(prompt.contains("Treat the File role below as authoritative"));
+        assert!(prompt.contains("business rule orchestration are allowed"));
     }
 
     #[test]
@@ -1268,6 +1354,7 @@ mod tests {
         assert_eq!(body["model"], "qwen-local");
         assert_eq!(body["stream"], true);
         assert_eq!(body["max_tokens"], 42);
+        assert_eq!(body["enable_thinking"], false);
         assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
         assert!(body.get("keep_alive").is_none());
         assert!(body.get("options").is_none());
@@ -1298,6 +1385,32 @@ mod tests {
         assert_eq!(
             finalize_review_style_flag("not enough evidence"),
             "severity: OK\nline: unknown\nreason: No style issue found."
+        );
+    }
+
+    #[test]
+    fn service_file_style_finalizer_suppresses_layer_false_positive() {
+        assert_eq!(
+            finalize_review_style_flag_for_path(
+                "src/main/kotlin/CompletePendingTransactionService.kt",
+                "severity: FAIL\n\
+                 line: 192\n\
+                 reason: Direct repository call in non-Service/non-flow file; business logic belongs in service layer.",
+            ),
+            "severity: OK\nline: unknown\nreason: No style issue found."
+        );
+    }
+
+    #[test]
+    fn service_file_style_finalizer_keeps_unrelated_violations() {
+        assert_eq!(
+            finalize_review_style_flag_for_path(
+                "src/main/kotlin/CompletePendingTransactionService.kt",
+                "severity: FAIL\n\
+                 line: 210\n\
+                 reason: Direct Kafka publish should go through the outbox.",
+            ),
+            "severity: FAIL\nline: 210\nreason: Direct Kafka publish should go through the outbox."
         );
     }
 

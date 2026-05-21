@@ -601,7 +601,7 @@ fn jump_to_source_change(state: &mut AppState, previous: bool) -> bool {
     let change_lines = source_change_group_lines(&lines);
     if change_lines.is_empty() {
         state.set_status("no source changes", false);
-        return true;
+        return false;
     }
 
     let current = state
@@ -613,15 +613,12 @@ fn jump_to_source_change(state: &mut AppState, previous: bool) -> bool {
             .rev()
             .copied()
             .find(|line| *line < current)
-            .or_else(|| change_lines.last().copied())
     } else {
-        change_lines
-            .iter()
-            .copied()
-            .find(|line| *line > current)
-            .or_else(|| change_lines.first().copied())
-    }
-    .unwrap_or(0);
+        change_lines.iter().copied().find(|line| *line > current)
+    };
+    let Some(target) = target else {
+        return false;
+    };
     state.diff_offset = target
         .saturating_sub(SOURCE_CHANGE_CONTEXT_LINES)
         .min(super::max_scroll_offset(state));
