@@ -140,19 +140,6 @@ fn render_lines(state: &AppState, focused: bool, wrap_width: u16) -> Vec<Line<'s
                 ));
             }
             let assist = review_assist_text(state, node_id);
-            let style_finding = review_style_finding_text(state, &node.title);
-            if let Some((severity, reason)) = style_finding {
-                lines.push(Line::from(vec![
-                    Span::styled(body_prefix.clone(), body_style),
-                    Span::styled(
-                        format!("style {}: ", severity.label().to_ascii_lowercase()),
-                        Style::default()
-                            .fg(review_style_fg(severity))
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(reason.to_string(), Style::default().fg(Color::Gray)),
-                ]));
-            }
             if let Some(assist) = assist {
                 lines.push(Line::from(Span::styled(
                     format!("{indent}  │ llm"),
@@ -162,11 +149,7 @@ fn render_lines(state: &AppState, focused: bool, wrap_width: u16) -> Vec<Line<'s
                 )));
                 lines.extend(markdown::render(assist, &body_prefix, wrap_width));
             }
-            if has_body
-                || state.review_context_open.contains(node_id)
-                || assist.is_some()
-                || style_finding.is_some()
-            {
+            if has_body || state.review_context_open.contains(node_id) || assist.is_some() {
                 lines.push(Line::from(Span::styled(
                     format!("{indent}  └─"),
                     body_style,
@@ -357,28 +340,11 @@ fn styled_file_path(path: &str, selected: bool, path_style: ReviewPathStyle) -> 
     vec![Span::styled(path.to_string(), style)]
 }
 
-fn review_style_finding_text<'a>(
-    state: &'a AppState,
-    title: &str,
-) -> Option<(ReviewStyleSeverity, &'a str)> {
-    let path = review_node_path(title)?;
-    let finding = state.review_style_findings.get(path)?;
-    Some((finding.severity, finding.reason.trim()))
-}
-
 fn review_style_bg(severity: ReviewStyleSeverity) -> Color {
     match severity {
         ReviewStyleSeverity::Ok => OK_REVIEW_STYLE_BG,
         ReviewStyleSeverity::Warn => SUSPICIOUS_REVIEW_BG,
         ReviewStyleSeverity::Fail => FAIL_REVIEW_STYLE_BG,
-    }
-}
-
-fn review_style_fg(severity: ReviewStyleSeverity) -> Color {
-    match severity {
-        ReviewStyleSeverity::Ok => Color::LightGreen,
-        ReviewStyleSeverity::Warn => Color::LightYellow,
-        ReviewStyleSeverity::Fail => Color::LightRed,
     }
 }
 
@@ -834,20 +800,16 @@ fn review_node_line_count(state: &AppState, idx: usize) -> usize {
     let has_body = renders_review_body(&node.id) && !node.body.is_empty();
     let context_open = state.review_context_open.contains(&node.id);
     let assist = review_assist_text(state, &node.id);
-    let style_finding = review_style_finding_text(state, &node.title);
     if renders_review_body(&node.id) {
         count += review_body_line_count(state, node);
     }
     if context_open {
         count += review_source_context_line_count(state, node);
     }
-    if style_finding.is_some() {
-        count += 1;
-    }
     if let Some(text) = assist {
         count += 1 + text.lines().count();
     }
-    if has_body || context_open || assist.is_some() || style_finding.is_some() {
+    if has_body || context_open || assist.is_some() {
         count += 1;
     }
     count

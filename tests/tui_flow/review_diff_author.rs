@@ -1171,12 +1171,10 @@ fn review_panel_styles_tree_titles_and_change_counts() {
             .any(|cell| cell.symbol() == "B" && cell.bg == Color::Rgb(78, 57, 18)),
         "warning style finding should keep its warning background"
     );
-    assert!(rendered.contains("style warn"), "{rendered}");
     assert!(
-        rendered.contains("Controller-style flow deserves"),
-        "{rendered}"
+        !rendered.contains("style warn") && !rendered.contains("Controller-style flow deserves"),
+        "tree should rely on path coloring instead of a separate style row: {rendered}"
     );
-    assert!(rendered.contains("manual attention."), "{rendered}");
     assert!(
         buf.content()
             .iter()
@@ -1296,8 +1294,8 @@ fn review_panel_colors_style_severity_scale() {
             .any(|cell| cell.symbol() == "B" && cell.bg == Color::Rgb(70, 24, 28)),
         "FAIL style finding should be red"
     );
-    assert!(rendered.contains("style ok"), "{rendered}");
-    assert!(rendered.contains("style fail"), "{rendered}");
+    assert!(!rendered.contains("style ok"), "{rendered}");
+    assert!(!rendered.contains("style fail"), "{rendered}");
 }
 
 #[test]
