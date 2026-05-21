@@ -369,7 +369,20 @@ pub fn flow_create_feature_branch(current_branch: &str, new_branch: &str) -> Res
     if stashed {
         run(&["stash", "pop"])?;
     }
-    Ok(format!("created {new_branch} from {start_point}"))
+    let upstream = push_new_feature_branch_upstream(new_branch)?;
+    Ok(if let Some(upstream) = upstream {
+        format!("created {new_branch} from {start_point}, tracking {upstream}")
+    } else {
+        format!("created {new_branch} from {start_point}")
+    })
+}
+
+fn push_new_feature_branch_upstream(new_branch: &str) -> Result<Option<String>> {
+    if !remote_exists(DEFAULT_PUSH_REMOTE) {
+        return Ok(None);
+    }
+    run(&["push", "-u", DEFAULT_PUSH_REMOTE, new_branch])?;
+    Ok(Some(format!("{DEFAULT_PUSH_REMOTE}/{new_branch}")))
 }
 
 pub fn flow_transfer_diff_to_feature_branch(
@@ -729,6 +742,14 @@ fn upstream_push_target(upstream: &str) -> Option<(&str, &str)> {
 fn ref_exists(name: &str) -> bool {
     Command::new("git")
         .args(["rev-parse", "--verify", "--quiet", name])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+fn remote_exists(name: &str) -> bool {
+    Command::new("git")
+        .args(["remote", "get-url", name])
         .output()
         .map(|out| out.status.success())
         .unwrap_or(false)

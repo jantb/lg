@@ -193,10 +193,13 @@ pub(super) fn workflow_steps(
         FlowAction::ReleaseTest => release_steps(current, BRANCH_TEST),
         FlowAction::ResetDev => reset_steps(current, BRANCH_DEV),
         FlowAction::ResetTest => reset_steps(current, BRANCH_TEST),
-        FlowAction::NewFeature => vec![format!(
-            "create {}",
-            input.filter(|s| !s.is_empty()).unwrap_or("new branch")
-        )],
+        FlowAction::NewFeature => vec![
+            format!(
+                "create {}",
+                input.filter(|s| !s.is_empty()).unwrap_or("new branch")
+            ),
+            "push and set upstream".into(),
+        ],
         FlowAction::TransferDiff => vec![
             format!("fetch {}", BRANCH_MAIN),
             format!("diff {current} against {}", BRANCH_MAIN),

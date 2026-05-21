@@ -285,6 +285,57 @@ fn transfer_diff_to_feature_branch_recreates_branch_changes_on_main() {
     assert_eq!(fs::read_to_string("new.txt").unwrap(), "new file\n");
 }
 
+#[test]
+fn create_feature_branch_from_main_pushes_and_sets_upstream() {
+    let dir = init_repo();
+    fs::write(dir.path().join("README.md"), "main\n").unwrap();
+    stage_in(dir.path(), "README.md");
+    commit_in(dir.path(), "initial");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    let out = lg::git::flow_create_feature_branch("main", "feature/tracked-create").unwrap();
+
+    assert_eq!(head_branch(dir.path()), "feature/tracked-create");
+    assert!(
+        out.contains("tracking origin/feature/tracked-create"),
+        "status should mention upstream: {out}"
+    );
+    let upstream = git(
+        dir.path(),
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "feature/tracked-create@{upstream}",
+        ],
+    );
+    assert!(
+        upstream.status.success(),
+        "upstream was not configured: {}",
+        String::from_utf8_lossy(&upstream.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&upstream.stdout).trim(),
+        "origin/feature/tracked-create"
+    );
+    let remote = git(
+        bare.path(),
+        &["rev-parse", "--verify", "refs/heads/feature/tracked-create"],
+    );
+    assert!(
+        remote.status.success(),
+        "remote feature branch was not created: {}",
+        String::from_utf8_lossy(&remote.stderr)
+    );
+}
+
 fn commit_in(dir: &std::path::Path, msg: &str) {
     let out = Command::new("git")
         .args(["commit", "-m", msg])
