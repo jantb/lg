@@ -16,7 +16,7 @@ const MAX_DIFF_EXCERPT_LINES: usize = 180;
 const MAX_DIFF_EXCERPT_BYTES: usize = 16_000;
 const MAX_SUMMARY_FILES: usize = 24;
 const MAX_SIGNAL_LINES: usize = 48;
-const REVIEW_ASSIST_MAX_CHARS: usize = 2_400;
+const REVIEW_ASSIST_MAX_CHARS: usize = 8_000;
 const REVIEW_CHAT_MAX_CHARS: usize = 12_000;
 const CONFIG_FILE_ENV: &str = "LG_CONFIG_FILE";
 const CONFIG_MODEL_KEY: &str = "llm_model";
@@ -314,11 +314,13 @@ fn build_commit_prompt(diff: &str) -> String {
 fn build_review_assist_prompt(context: &str) -> String {
     format!(
         "Explain what this selected subtree from a full diff against main does.\n\
-         Be concise and factual. Focus on behavior, call flow, tests, and review risks.\n\
+         Provide a deeper review, not just a functional overview. Be factual and specific.\n\
+         Focus on behavior, call flow, tests, regression risks, and maintainability concerns.\n\
          Say whether the patch appears minimal; flag unnecessary scope, simpler alternatives,\n\
          or refactors that would reduce complexity without changing behavior.\n\
          Review the change against the established repo style below and call out concrete violations.\n\
-         Output 3-6 bullets. Do not invent files or behavior not shown. Do not use code fences.\n\n\
+         Output 6-12 substantive bullets or short sections. Avoid padding. Do not invent files\n\
+         or behavior not shown. Do not use code fences.\n\n\
          {REVIEW_REPO_STYLE_GUIDE}\n\n\
          Selected review subtree:\n{context}"
     )
@@ -565,7 +567,7 @@ pub fn stream_review_chat(
 fn review_assist_options() -> Options {
     let mut opts = Options::default();
     if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
-        opts.num_predict = 256;
+        opts.num_predict = 1024;
     }
     opts
 }
@@ -890,7 +892,7 @@ fn finalize_review_assist(raw: &str) -> String {
         .filter(|line| !line.starts_with("```"))
     {
         lines.push(trim_outer_quotes(line).to_string());
-        if lines.len() >= 8 {
+        if lines.len() >= 24 {
             break;
         }
     }
@@ -1262,6 +1264,9 @@ mod tests {
     fn review_assist_prompt_includes_repo_style() {
         let prompt = build_review_assist_prompt("src/main/kotlin/App.kt");
 
+        assert!(prompt.contains("Provide a deeper review"));
+        assert!(prompt.contains("not just a functional overview"));
+        assert!(prompt.contains("6-12 substantive bullets"));
         assert!(prompt.contains("whether the patch appears minimal"));
         assert!(prompt.contains("simpler alternatives"));
         assert!(prompt.contains("refactors that would reduce complexity"));
@@ -1270,6 +1275,19 @@ mod tests {
         assert!(prompt.contains("path or name contains Service"));
         assert!(prompt.contains("Flow start state construction may call repositories/services"));
         assert!(prompt.contains("Selected review subtree:\nsrc/main/kotlin/App.kt"));
+    }
+
+    #[test]
+    fn review_assist_finalizer_keeps_deeper_analysis() {
+        let raw = (0..12)
+            .map(|idx| format!("- finding {idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let finalized = finalize_review_assist(&raw);
+
+        assert!(finalized.contains("- finding 0"));
+        assert!(finalized.contains("- finding 11"));
     }
 
     #[test]
