@@ -16,7 +16,9 @@ const MAX_DIFF_EXCERPT_LINES: usize = 180;
 const MAX_DIFF_EXCERPT_BYTES: usize = 16_000;
 const MAX_SUMMARY_FILES: usize = 24;
 const MAX_SIGNAL_LINES: usize = 48;
-const REVIEW_ASSIST_MAX_CHARS: usize = 8_000;
+const REVIEW_ASSIST_NUM_PREDICT: i32 = 16_000;
+const REVIEW_ASSIST_MAX_CHARS: usize = 16_000;
+const REVIEW_ASSIST_MAX_LINES: usize = 128;
 const REVIEW_CHAT_MAX_CHARS: usize = 12_000;
 const CONFIG_FILE_ENV: &str = "LG_CONFIG_FILE";
 const CONFIG_MODEL_KEY: &str = "llm_model";
@@ -567,7 +569,7 @@ pub fn stream_review_chat(
 fn review_assist_options() -> Options {
     let mut opts = Options::default();
     if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
-        opts.num_predict = 1024;
+        opts.num_predict = REVIEW_ASSIST_NUM_PREDICT;
     }
     opts
 }
@@ -892,7 +894,7 @@ fn finalize_review_assist(raw: &str) -> String {
         .filter(|line| !line.starts_with("```"))
     {
         lines.push(trim_outer_quotes(line).to_string());
-        if lines.len() >= 24 {
+        if lines.len() >= REVIEW_ASSIST_MAX_LINES {
             break;
         }
     }
@@ -1279,7 +1281,7 @@ mod tests {
 
     #[test]
     fn review_assist_finalizer_keeps_deeper_analysis() {
-        let raw = (0..12)
+        let raw = (0..48)
             .map(|idx| format!("- finding {idx}"))
             .collect::<Vec<_>>()
             .join("\n");
@@ -1287,7 +1289,16 @@ mod tests {
         let finalized = finalize_review_assist(&raw);
 
         assert!(finalized.contains("- finding 0"));
-        assert!(finalized.contains("- finding 11"));
+        assert!(finalized.contains("- finding 47"));
+    }
+
+    #[test]
+    fn review_assist_finalizer_allows_sixteen_k_output() {
+        let finalized = finalize_review_assist(&"x".repeat(20_000));
+
+        assert_eq!(finalized.chars().count(), REVIEW_ASSIST_MAX_CHARS);
+        assert_eq!(REVIEW_ASSIST_MAX_CHARS, 16_000);
+        assert_eq!(REVIEW_ASSIST_NUM_PREDICT, 16_000);
     }
 
     #[test]
