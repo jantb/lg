@@ -543,6 +543,15 @@ impl App {
                     if let Some(job) = self.state.review_flag_job.as_mut() {
                         job.active_path = Some(path.clone());
                     }
+                    let reveal_ids = self
+                        .state
+                        .review
+                        .as_ref()
+                        .map(|review| review_path_ancestor_ids(review, &path))
+                        .unwrap_or_default();
+                    for id in reveal_ids {
+                        self.state.review_collapsed.remove(&id);
+                    }
                     self.state.review_flag_active_path = Some(path.clone());
                     self.state
                         .set_status(format!("analyzing style {index}/{total}: {path}"), false);
@@ -1047,6 +1056,59 @@ fn initial_review_index(review: &crate::git::AssistedReview) -> usize {
         .unwrap_or(0)
 }
 
+fn review_path_ancestor_ids(review: &crate::git::AssistedReview, path: &str) -> Vec<String> {
+    let Some(node_id) = review_node_id_for_path(review, path) else {
+        return Vec::new();
+    };
+    let mut ancestors = Vec::new();
+    let mut parent = review
+        .nodes
+        .iter()
+        .find(|node| node.id == node_id)
+        .and_then(|node| node.parent.as_deref());
+    while let Some(parent_id) = parent {
+        ancestors.push(parent_id.to_string());
+        parent = review
+            .nodes
+            .iter()
+            .find(|node| node.id == parent_id)
+            .and_then(|node| node.parent.as_deref());
+    }
+    ancestors
+}
+
+fn review_node_id_for_path<'a>(
+    review: &'a crate::git::AssistedReview,
+    path: &str,
+) -> Option<&'a str> {
+    review
+        .nodes
+        .iter()
+        .find(|node| node.id.contains(":file:") && review_title_path(&node.title) == Some(path))
+        .or_else(|| {
+            review
+                .nodes
+                .iter()
+                .find(|node| review_title_path(&node.title) == Some(path))
+        })
+        .map(|node| node.id.as_str())
+}
+
+fn review_title_path(title: &str) -> Option<&str> {
+    let location = title
+        .split_once(" in ")
+        .map(|(path, _)| path)
+        .or_else(|| title.split_once(" - ").map(|(location, _)| location))
+        .unwrap_or(title);
+    let path = location
+        .rsplit_once(':')
+        .filter(|(_, line)| line.chars().all(|ch| ch.is_ascii_digit()))
+        .map(|(path, _)| path)
+        .unwrap_or(location)
+        .trim();
+    (!path.is_empty()).then_some(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1107,5 +1169,14 @@ mod tests {
         assert!(collapsed.contains("branch:file:0"));
         assert!(collapsed.contains("summary"));
         assert_eq!(initial_review_index(&review), 2);
+
+        let reveal_ids = review_path_ancestor_ids(&review, "src/lib.rs");
+        assert_eq!(
+            reveal_ids,
+            vec![
+                "branch:category:production".to_string(),
+                "branch".to_string()
+            ]
+        );
     }
 }

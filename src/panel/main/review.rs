@@ -22,7 +22,14 @@ use super::source::{
 const SUSPICIOUS_REVIEW_BG: Color = Color::Rgb(78, 57, 18);
 const OK_REVIEW_STYLE_BG: Color = Color::Rgb(24, 54, 34);
 const FAIL_REVIEW_STYLE_BG: Color = Color::Rgb(70, 24, 28);
-const ACTIVE_REVIEW_STYLE_BG: Color = Color::Rgb(28, 48, 70);
+const ACTIVE_REVIEW_STYLE_PULSE: [Color; 6] = [
+    Color::Rgb(22, 46, 56),
+    Color::Rgb(26, 62, 76),
+    Color::Rgb(34, 82, 96),
+    Color::Rgb(42, 106, 120),
+    Color::Rgb(34, 82, 96),
+    Color::Rgb(26, 62, 76),
+];
 const SOURCE_CHANGE_CONTEXT_LINES: u16 = 3;
 
 pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
@@ -303,7 +310,7 @@ fn renders_review_body(node_id: &str) -> bool {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReviewPathStyle {
     Normal,
-    Active,
+    Active(usize),
     Finding(ReviewStyleSeverity),
 }
 
@@ -311,7 +318,7 @@ fn review_path_style(path: &str, state: &AppState) -> ReviewPathStyle {
     if let Some(finding) = state.review_style_findings.get(path) {
         ReviewPathStyle::Finding(finding.severity)
     } else if state.review_flag_active_path.as_deref() == Some(path) {
-        ReviewPathStyle::Active
+        ReviewPathStyle::Active(state.animation_tick)
     } else {
         ReviewPathStyle::Normal
     }
@@ -331,8 +338,10 @@ fn styled_file_path(path: &str, selected: bool, path_style: ReviewPathStyle) -> 
         ReviewPathStyle::Finding(severity) => {
             file_style = file_style.bg(review_style_bg(severity));
         }
-        ReviewPathStyle::Active => {
-            file_style = file_style.bg(ACTIVE_REVIEW_STYLE_BG);
+        ReviewPathStyle::Active(tick) => {
+            file_style = file_style
+                .bg(active_review_style_bg(tick))
+                .add_modifier(Modifier::BOLD);
         }
         ReviewPathStyle::Normal => {}
     }
@@ -341,7 +350,32 @@ fn styled_file_path(path: &str, selected: bool, path_style: ReviewPathStyle) -> 
     } else {
         selected_style(file_style, selected)
     };
-    vec![Span::styled(path.to_string(), style)]
+    let mut spans = Vec::new();
+    if let ReviewPathStyle::Active(tick) = path_style {
+        spans.push(Span::styled(
+            format!(" {} FLAGGING ", active_review_marker(tick)),
+            Style::default()
+                .fg(Color::Black)
+                .bg(active_review_style_bg(tick))
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(path.to_string(), style));
+    spans
+}
+
+fn active_review_style_bg(tick: usize) -> Color {
+    ACTIVE_REVIEW_STYLE_PULSE[(tick / 2) % ACTIVE_REVIEW_STYLE_PULSE.len()]
+}
+
+fn active_review_marker(tick: usize) -> &'static str {
+    match (tick / 2) % 4 {
+        0 => "◌",
+        1 => "◐",
+        2 => "●",
+        _ => "◑",
+    }
 }
 
 fn review_style_bg(severity: ReviewStyleSeverity) -> Color {
@@ -735,14 +769,7 @@ fn source_context_open_path(
 }
 
 fn path_from_review_title(title: &str) -> Option<String> {
-    let path = title
-        .split(" in ")
-        .next()
-        .unwrap_or(title)
-        .split(':')
-        .next()
-        .unwrap_or(title)
-        .trim();
+    let path = review_node_path(title)?;
     super::is_supported_source_path(path).then(|| path.to_string())
 }
 

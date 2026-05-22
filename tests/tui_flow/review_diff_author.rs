@@ -1281,6 +1281,7 @@ fn review_panel_marks_active_style_analysis_separately() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 12)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.animation_tick = 0;
     app.state.review = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
@@ -1307,13 +1308,31 @@ fn review_panel_marks_active_style_analysis_separately() {
 
     app.render().unwrap();
     let buf = app.terminal.backend().buffer().clone();
+    let rendered = buffer_text(&app);
+    let first_bg = buf
+        .content()
+        .iter()
+        .find(|cell| cell.symbol() == "B")
+        .map(|cell| cell.bg);
 
+    assert!(rendered.contains("FLAGGING"), "{rendered}");
     assert!(
-        buf.content()
-            .iter()
-            .any(|cell| cell.symbol() == "B" && cell.bg == Color::Rgb(28, 48, 70)),
+        matches!(first_bg, Some(color) if color != Color::Reset),
         "active style analysis should have its own background"
     );
+
+    app.state.animation_tick = 6;
+    app.render().unwrap();
+    let pulsed_bg = app
+        .terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .find(|cell| cell.symbol() == "B")
+        .map(|cell| cell.bg);
+
+    assert_ne!(first_bg, pulsed_bg, "active style background should pulse");
 }
 
 #[test]
@@ -1583,6 +1602,30 @@ fn review_pane_o_opens_selected_source_file() {
             parent: None,
             depth: 0,
             title: "src/main/kotlin/App.kt in fun main - updates greeting".into(),
+            body: Vec::new(),
+            context: Vec::new(),
+        }],
+    });
+
+    panel::main::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::OpenFile("src/main/kotlin/App.kt".into()))
+    );
+}
+
+#[test]
+fn review_pane_o_opens_selected_file_summary_row() {
+    let mut state = AppState::new();
+    state.diff_source = lg::state::DiffSource::Review;
+    state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![ReviewNode {
+            id: "branch:file:0".into(),
+            parent: None,
+            depth: 0,
+            title: "src/main/kotlin/App.kt - 1 entry point (+4 -2)".into(),
             body: Vec::new(),
             context: Vec::new(),
         }],
