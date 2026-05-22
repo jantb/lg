@@ -1267,7 +1267,7 @@ fn review_checklist(files: &[ReviewFile], entries: &[ReviewEntryPoint]) -> Vec<S
     }
     if !entries.is_empty() {
         lines.push(
-            "- Use `l` on `Full diff against main` for an LLM pass over the whole change, then use `l` again on the highest-risk file or entry nodes for focused follow-up."
+            "- Use `l` on `Full diff against main` for an LLM pass over the whole entry-point tree, then select a risky file or entry and press `l` for focused follow-up."
                 .to_string(),
         );
     }
