@@ -278,6 +278,7 @@ pub struct AppState {
     pub diff_job: Option<DiffJob>,
     pub review_job: Option<ReviewJob>,
     pub review_assist_job: Option<ReviewAssistJob>,
+    pub review_pr_job: Option<ReviewAssistJob>,
     pub review_flag_job: Option<ReviewFlagJob>,
     pub review_chat_job: Option<ReviewChatJob>,
     pub workflow_job: Option<WorkflowJob>,
@@ -462,6 +463,7 @@ impl AppState {
             diff_job: None,
             review_job: None,
             review_assist_job: None,
+            review_pr_job: None,
             review_flag_job: None,
             review_chat_job: None,
             workflow_job: None,
@@ -524,6 +526,8 @@ impl AppState {
             Some("explaining")
         } else if self.review_flag_job.is_some() {
             Some("flagging style")
+        } else if self.review_pr_job.is_some() {
+            Some("writing PR text")
         } else if self.review_chat_job.is_some() {
             Some("chatting")
         } else if self.workflow_job.is_some() {

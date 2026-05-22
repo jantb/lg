@@ -126,6 +126,23 @@ fn handle_docked_review_chat_mouse(
     }
 }
 
+fn handle_review_mouse_scroll(state: &mut AppState, m: &MouseEvent) -> bool {
+    if !matches!(state.diff_source, crate::state::DiffSource::Review) || state.review.is_none() {
+        return false;
+    }
+    match m.kind {
+        MouseEventKind::ScrollDown => {
+            panel::main::scroll(state, true, 3);
+            true
+        }
+        MouseEventKind::ScrollUp => {
+            panel::main::scroll(state, false, 3);
+            true
+        }
+        _ => false,
+    }
+}
+
 impl<B: Backend> HeadlessApp<B>
 where
     B::Error: Send + Sync + 'static,
@@ -276,6 +293,9 @@ where
             self.state.left_panel_heights,
         );
         if handle_docked_review_chat_mouse(&mut self.state, &rects, &m) {
+            return self.render();
+        }
+        if handle_review_mouse_scroll(&mut self.state, &m) {
             return self.render();
         }
         let divider_col = rects.main.x.saturating_sub(1);
@@ -583,6 +603,9 @@ impl App {
             self.state.left_panel_heights,
         );
         if handle_docked_review_chat_mouse(&mut self.state, &rects, &m) {
+            return Ok(());
+        }
+        if handle_review_mouse_scroll(&mut self.state, &m) {
             return Ok(());
         }
         let divider_col = rects.main.x.saturating_sub(1);

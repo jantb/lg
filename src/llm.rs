@@ -19,6 +19,8 @@ const MAX_SIGNAL_LINES: usize = 48;
 const REVIEW_ASSIST_NUM_PREDICT: i32 = 16_000;
 const REVIEW_ASSIST_MAX_CHARS: usize = 16_000;
 const REVIEW_ASSIST_MAX_LINES: usize = 128;
+const REVIEW_PR_NUM_PREDICT: i32 = 4_096;
+const REVIEW_PR_MAX_CHARS: usize = 8_000;
 const REVIEW_CHAT_MAX_CHARS: usize = 12_000;
 const CONFIG_FILE_ENV: &str = "LG_CONFIG_FILE";
 const CONFIG_MODEL_KEY: &str = "llm_model";
@@ -351,6 +353,30 @@ fn build_review_chat_system_prompt(context: &str) -> String {
     )
 }
 
+fn build_review_pr_text_prompt(context: &str) -> String {
+    format!(
+        "Write a copy-ready pull request description for this branch review against main.\n\
+         Use only the supplied review context. Treat commit subjects/bodies, changed files,\n\
+         entry points, diffstat, and changed tests as evidence of the patch intent.\n\
+         Do not invent tickets, reviewers, deployment steps, commands, tests, behavior, or files.\n\
+         If testing evidence is not shown, say that explicitly instead of making up a command.\n\
+         Mention user-visible behavior and compatibility risks when the context supports them.\n\
+         Keep the writing concise and useful for a reviewer who has not read the diff yet.\n\n\
+         Output Markdown only, with this exact structure:\n\
+         ## Summary\n\
+         - 2-4 bullets describing what changed and why.\n\n\
+         ## Testing\n\
+         - Bullets naming changed tests or saying what testing is not shown.\n\n\
+         ## Review Notes\n\
+         - 2-5 bullets with the highest-risk review areas, invariants, compatibility points,\n\
+           or operational checks. Omit generic advice.\n\n\
+         ## Follow-up\n\
+         - Include only if the context shows a real follow-up or uncertainty; otherwise omit.\n\n\
+         Do not include code fences, preamble, sign-off, or placeholder text.\n\n\
+         Review context:\n{context}"
+    )
+}
+
 fn build_review_style_flag_prompt(path: &str, context: &str) -> String {
     let file_role = review_style_file_role(path);
     format!(
@@ -546,6 +572,15 @@ pub fn stream_review_style_flag(path: String, context: String, tx: Sender<GenMsg
     );
 }
 
+pub fn stream_review_pr_text(context: String, tx: Sender<GenMsg>) {
+    stream_prompt(
+        build_review_pr_text_prompt(&context),
+        review_pr_options(),
+        finalize_review_pr_text,
+        tx,
+    );
+}
+
 pub fn stream_review_chat(
     context: String,
     history: Vec<ReviewChatMessage>,
@@ -588,6 +623,14 @@ fn review_chat_options() -> Options {
     let mut opts = Options::default();
     if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
         opts.num_predict = 768;
+    }
+    opts
+}
+
+fn review_pr_options() -> Options {
+    let mut opts = Options::default();
+    if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
+        opts.num_predict = REVIEW_PR_NUM_PREDICT;
     }
     opts
 }
@@ -925,6 +968,22 @@ fn finalize_review_chat(raw: &str) -> String {
         .join("\n")
         .chars()
         .take(REVIEW_CHAT_MAX_CHARS)
+        .collect()
+}
+
+fn finalize_review_pr_text(raw: &str) -> String {
+    strip_think_tags(raw)
+        .trim()
+        .trim_matches('"')
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().starts_with("```"))
+        .map(trim_outer_quotes_without_backticks)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .chars()
+        .take(REVIEW_PR_MAX_CHARS)
         .collect()
 }
 
@@ -1325,6 +1384,29 @@ mod tests {
         assert!(prompt.contains("Ktor CIO adapters"));
         assert!(prompt.contains("never Mockito"));
         assert!(prompt.contains("Review context:\nfull review context"));
+    }
+
+    #[test]
+    fn review_pr_text_prompt_is_copy_ready_and_grounded() {
+        let prompt = build_review_pr_text_prompt("full review context");
+
+        assert!(prompt.contains("copy-ready pull request description"));
+        assert!(prompt.contains("commit subjects/bodies"));
+        assert!(prompt.contains("changed tests"));
+        assert!(prompt.contains("Do not invent"));
+        assert!(prompt.contains("## Summary"));
+        assert!(prompt.contains("## Testing"));
+        assert!(prompt.contains("## Review Notes"));
+        assert!(prompt.contains("Review context:\nfull review context"));
+    }
+
+    #[test]
+    fn finalize_review_pr_text_preserves_markdown_without_fences() {
+        let finalized = finalize_review_pr_text(
+            "<think>ignore</think>\n```markdown\n## Summary\n- Keeps markdown.\n```\n",
+        );
+
+        assert_eq!(finalized, "## Summary\n- Keeps markdown.");
     }
 
     #[test]

@@ -3,6 +3,7 @@ use crate::state::{
     ReviewJob, ReviewMsg,
 };
 
+const REVIEW_PR_NODE_ID: &str = crate::git::REVIEW_PR_TEXT_NODE_ID;
 const MAX_REVIEW_ASSIST_CONTEXT_BYTES: usize = 32_000;
 const MAX_REVIEW_CHAT_CONTEXT_BYTES: usize = 32_000;
 const MAX_REVIEW_FLAG_CONTEXT_BYTES: usize = 14_000;
@@ -47,6 +48,9 @@ pub(super) fn spawn_assisted_review(state: &mut AppState) {
     if let Some(mut job) = state.review_assist_job.take() {
         state.defer_thread_join(job.handle.take());
     }
+    if let Some(mut job) = state.review_pr_job.take() {
+        state.defer_thread_join(job.handle.take());
+    }
     if let Some(mut job) = state.review_flag_job.take() {
         state.defer_thread_join(job.handle.take());
     }
@@ -75,6 +79,28 @@ pub(super) fn spawn_review_assist(state: &mut AppState, node_id: String) {
         spinner: 0,
     });
     state.set_status("explaining review item...", false);
+}
+
+pub(super) fn spawn_review_pr_text(state: &mut AppState) {
+    let Some(context) = review_pr_context(state) else {
+        return;
+    };
+    if let Some(mut job) = state.review_pr_job.take() {
+        state.defer_thread_join(job.handle.take());
+    }
+    state.review_assists.remove(REVIEW_PR_NODE_ID);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        crate::llm::stream_review_pr_text(context, tx);
+    });
+    state.review_pr_job = Some(ReviewAssistJob {
+        rx,
+        handle: Some(handle),
+        node_id: REVIEW_PR_NODE_ID.to_string(),
+        output: String::new(),
+        spinner: 0,
+    });
+    state.set_status("writing PR text...", false);
 }
 
 pub(super) fn spawn_review_style_flags(state: &mut AppState) {
@@ -255,6 +281,10 @@ fn review_chat_context(state: &AppState) -> Option<String> {
         push_limited_line(&mut out, line, MAX_REVIEW_CHAT_CONTEXT_BYTES);
     }
     Some(out)
+}
+
+fn review_pr_context(state: &AppState) -> Option<String> {
+    review_chat_context(state)
 }
 
 fn review_node_path(title: &str) -> Option<&str> {

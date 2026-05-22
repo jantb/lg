@@ -36,7 +36,8 @@ pub use flow::{
     validate_conflict_resolution_with_cleanup, validate_conflict_resolution_with_followup,
 };
 pub use review::{
-    AssistedReview, ReviewNode, assisted_review_against_main, build_assisted_review_against_main,
+    AssistedReview, REVIEW_PR_TEXT_NODE_ID, ReviewNode, assisted_review_against_main,
+    build_assisted_review_against_main,
 };
 pub use status::{
     FileEntry, parse_porcelain, parse_porcelain_xy, status_entries, status_porcelain,

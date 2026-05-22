@@ -520,13 +520,10 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char('y') => {
-            if let Some(text) = selected_review_assessment(state) {
-                state.pending_action = Some(PendingAction::CopyToClipboard {
-                    label: "LLM assessment".into(),
-                    text,
-                });
+            if let Some((label, text)) = selected_review_copy_text(state) {
+                state.pending_action = Some(PendingAction::CopyToClipboard { label, text });
             } else {
-                state.set_status("no LLM assessment for selected item", false);
+                state.set_status("nothing copyable for selected review item", false);
             }
         }
         KeyCode::Char('n') => {
@@ -803,11 +800,24 @@ fn review_assist_text<'a>(state: &'a AppState, node_id: &str) -> Option<&'a str>
     {
         return Some("thinking...");
     }
+    if let Some(job) = &state.review_pr_job
+        && job.node_id == node_id
+    {
+        return Some("writing PR text...");
+    }
     None
 }
 
 fn copyable_review_assist_text<'a>(state: &'a AppState, node_id: &str) -> Option<&'a str> {
     if let Some(job) = &state.review_assist_job
+        && job.node_id == node_id
+    {
+        let output = job.output.trim();
+        if !output.is_empty() {
+            return Some(output);
+        }
+    }
+    if let Some(job) = &state.review_pr_job
         && job.node_id == node_id
     {
         let output = job.output.trim();
@@ -822,10 +832,15 @@ fn copyable_review_assist_text<'a>(state: &'a AppState, node_id: &str) -> Option
         .filter(|text| !text.is_empty())
 }
 
-fn selected_review_assessment(state: &AppState) -> Option<String> {
+fn selected_review_copy_text(state: &AppState) -> Option<(String, String)> {
     let review = state.review.as_ref()?;
     let node = review.nodes.get(state.review_idx)?;
-    copyable_review_assist_text(state, &node.id).map(ToOwned::to_owned)
+    let label = if node.id == crate::git::REVIEW_PR_TEXT_NODE_ID {
+        "PR text"
+    } else {
+        "LLM assessment"
+    };
+    copyable_review_assist_text(state, &node.id).map(|text| (label.to_string(), text.to_owned()))
 }
 
 fn is_test_review_node(title: &str) -> bool {
