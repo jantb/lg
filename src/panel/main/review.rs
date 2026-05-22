@@ -43,7 +43,7 @@ pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: b
     )
     .title_bottom(
         Line::from(Span::styled(
-            "j/k move  ↑/↓ source changes  Enter/s source  space expand  d drill  n/N notes  l explain  C chat  R refresh",
+            "j/k move  ↑/↓ source changes  Enter/s source  space expand  d drill  n/N notes  l explain  y copy llm  C chat  R refresh",
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::DIM),
@@ -100,6 +100,8 @@ fn render_lines(state: &AppState, focused: bool, wrap_width: u16) -> Vec<Line<'s
         let has_body = renders_review_body(node_id) && !node.body.is_empty();
         let drillable = parents_with_drill_child.contains(node_id);
         let expanded = !state.review_collapsed.contains(node_id);
+        let context_open = state.review_context_open.contains(node_id);
+        let assist = review_assist_text(state, node_id);
         let marker = if has_children || has_body {
             if expanded { "▾" } else { "▸" }
         } else {
@@ -116,11 +118,11 @@ fn render_lines(state: &AppState, focused: bool, wrap_width: u16) -> Vec<Line<'s
             state,
         ));
 
-        if expanded {
+        if expanded || context_open || assist.is_some() {
             let syntax_path = review_node_syntax_path(&node.title);
             // Each section/marker line repeats this prefix — render it once.
             let body_prefix = format!("{indent}  │ ");
-            if renders_review_body(node_id) {
+            if expanded && renders_review_body(node_id) {
                 if let Some(path) = syntax_path {
                     for body in &node.body {
                         let mut spans = vec![Span::styled(body_prefix.clone(), body_style)];
@@ -136,7 +138,7 @@ fn render_lines(state: &AppState, focused: bool, wrap_width: u16) -> Vec<Line<'s
                     ));
                 }
             }
-            if state.review_context_open.contains(node_id) {
+            if context_open {
                 lines.extend(review_source_context_lines(
                     &mut cache,
                     state,
@@ -146,7 +148,6 @@ fn render_lines(state: &AppState, focused: bool, wrap_width: u16) -> Vec<Line<'s
                     &indent,
                 ));
             }
-            let assist = review_assist_text(state, node_id);
             if let Some(assist) = assist {
                 lines.push(Line::from(Span::styled(
                     format!("{indent}  │ llm"),
@@ -156,7 +157,7 @@ fn render_lines(state: &AppState, focused: bool, wrap_width: u16) -> Vec<Line<'s
                 )));
                 lines.extend(markdown::render(assist, &body_prefix, wrap_width));
             }
-            if has_body || state.review_context_open.contains(node_id) || assist.is_some() {
+            if (expanded && has_body) || context_open || assist.is_some() {
                 lines.push(Line::from(Span::styled(
                     format!("{indent}  └─"),
                     body_style,
@@ -515,8 +516,17 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             if let Some(review) = &state.review
                 && let Some(node) = review.nodes.get(state.review_idx)
             {
-                state.review_collapsed.remove(&node.id);
                 state.pending_action = Some(PendingAction::ReviewAssist(node.id.clone()));
+            }
+        }
+        KeyCode::Char('y') => {
+            if let Some(text) = selected_review_assessment(state) {
+                state.pending_action = Some(PendingAction::CopyToClipboard {
+                    label: "LLM assessment".into(),
+                    text,
+                });
+            } else {
+                state.set_status("no LLM assessment for selected item", false);
             }
         }
         KeyCode::Char('n') => {
@@ -589,19 +599,9 @@ fn toggle_review_source(state: &mut AppState) -> bool {
     let node_id = node.id.clone();
     if state.review_context_open.contains(&node_id) {
         state.review_context_open.remove(&node_id);
-        if state.review_context_restore_collapsed.remove(&node_id) {
-            state.review_collapsed.insert(node_id);
-            clamp_review_selection(state);
-        }
+        state.review_context_restore_collapsed.remove(&node_id);
     } else {
-        if state.review_collapsed.contains(&node_id) {
-            state
-                .review_context_restore_collapsed
-                .insert(node_id.clone());
-        } else {
-            state.review_context_restore_collapsed.remove(&node_id);
-        }
-        state.review_collapsed.remove(&node_id);
+        state.review_context_restore_collapsed.remove(&node_id);
         state.review_context_open.insert(node_id);
     }
     true
@@ -795,15 +795,37 @@ fn first_drill_child<'a>(
 }
 
 fn review_assist_text<'a>(state: &'a AppState, node_id: &str) -> Option<&'a str> {
+    if let Some(text) = copyable_review_assist_text(state, node_id) {
+        return Some(text);
+    }
     if let Some(job) = &state.review_assist_job
         && job.node_id == node_id
     {
-        if job.output.trim().is_empty() {
-            return Some("thinking...");
-        }
-        return Some(job.output.trim());
+        return Some("thinking...");
     }
-    state.review_assists.get(node_id).map(|text| text.trim())
+    None
+}
+
+fn copyable_review_assist_text<'a>(state: &'a AppState, node_id: &str) -> Option<&'a str> {
+    if let Some(job) = &state.review_assist_job
+        && job.node_id == node_id
+    {
+        let output = job.output.trim();
+        if !output.is_empty() {
+            return Some(output);
+        }
+    }
+    state
+        .review_assists
+        .get(node_id)
+        .map(|text| text.trim())
+        .filter(|text| !text.is_empty())
+}
+
+fn selected_review_assessment(state: &AppState) -> Option<String> {
+    let review = state.review.as_ref()?;
+    let node = review.nodes.get(state.review_idx)?;
+    copyable_review_assist_text(state, &node.id).map(ToOwned::to_owned)
 }
 
 fn is_test_review_node(title: &str) -> bool {
@@ -855,14 +877,14 @@ fn review_node_line_count(state: &AppState, idx: usize) -> usize {
     };
     let expanded = !state.review_collapsed.contains(&node.id);
     let mut count = 1usize;
-    if !expanded {
+    let context_open = state.review_context_open.contains(&node.id);
+    let assist = review_assist_text(state, &node.id);
+    if !expanded && !context_open && assist.is_none() {
         return count;
     }
 
     let has_body = renders_review_body(&node.id) && !node.body.is_empty();
-    let context_open = state.review_context_open.contains(&node.id);
-    let assist = review_assist_text(state, &node.id);
-    if renders_review_body(&node.id) {
+    if expanded && renders_review_body(&node.id) {
         count += review_body_line_count(state, node);
     }
     if context_open {
@@ -871,7 +893,7 @@ fn review_node_line_count(state: &AppState, idx: usize) -> usize {
     if let Some(text) = assist {
         count += 1 + text.lines().count();
     }
-    if has_body || context_open || assist.is_some() {
+    if (expanded && has_body) || context_open || assist.is_some() {
         count += 1;
     }
     count

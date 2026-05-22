@@ -100,6 +100,10 @@ pub enum PendingAction {
     GenerateMessage,
     ReviewAssist(String),
     ReviewChat(String),
+    CopyToClipboard {
+        label: String,
+        text: String,
+    },
     Commit,
     StageAllAndCommit,
     Push,
@@ -529,6 +533,7 @@ impl AppState {
                 Some(PendingAction::GenerateMessage) => Some("starting generator"),
                 Some(PendingAction::ReviewAssist(_)) => Some("starting explanation"),
                 Some(PendingAction::ReviewChat(_)) => Some("starting chat"),
+                Some(PendingAction::CopyToClipboard { .. }) => Some("copying"),
                 Some(PendingAction::Commit) => Some("committing"),
                 Some(PendingAction::StageAllAndCommit) => Some("staging"),
                 Some(PendingAction::Push) => Some("starting push"),

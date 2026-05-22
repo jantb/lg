@@ -112,6 +112,10 @@ fn main_footer_and_help_call_out_review_mode() {
         help.contains("Enter review mode against main"),
         "help should describe how to enter review mode: {help}"
     );
+    assert!(
+        help.contains("Copy selected LLM assessment"),
+        "help should describe copying LLM assessment: {help}"
+    );
 }
 
 #[test]
@@ -888,7 +892,7 @@ fn review_source_reads_renamed_file_at_new_path() {
 }
 
 #[test]
-fn review_panel_enter_on_file_toggles_source_and_restores_collapsed_file() {
+fn review_panel_enter_on_file_toggles_source_without_expanding_file() {
     let dir = tempfile::tempdir().unwrap();
     let source_path = dir.path().join("lib.rs");
     std::fs::write(
@@ -942,14 +946,24 @@ fn review_panel_enter_on_file_toggles_source_and_restores_collapsed_file() {
     panel::main::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
 
     assert!(app.state.review_context_open.contains("branch:file:0"));
-    assert!(!app.state.review_collapsed.contains("branch:file:0"));
+    assert!(
+        app.state.review_collapsed.contains("branch:file:0"),
+        "opening source should keep the review tree flat"
+    );
+    app.render().unwrap();
+    let rendered = buffer_text(&app);
+    assert!(rendered.contains("hello review"), "{rendered}");
+    assert!(
+        !rendered.contains("updates greet"),
+        "opening source should not expose entry children: {rendered}"
+    );
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
 
     assert!(!app.state.review_context_open.contains("branch:file:0"));
     assert!(
         app.state.review_collapsed.contains("branch:file:0"),
-        "closing source should restore the file's prior collapsed state"
+        "closing source should keep the file collapsed"
     );
 }
 
@@ -1710,8 +1724,8 @@ fn review_panel_explains_selected_subtree_with_llm() {
         Some(PendingAction::ReviewAssist("branch:entry:0".into()))
     );
     assert!(
-        !app.state.review_collapsed.contains("branch:entry:0"),
-        "selected subtree should open before explaining"
+        app.state.review_collapsed.contains("branch:entry:0"),
+        "explaining should not expand the selected review node"
     );
 
     app.state.review_assists.insert(
@@ -1724,6 +1738,37 @@ fn review_panel_explains_selected_subtree_with_llm() {
     assert!(
         rendered.contains("Explains the greeting change."),
         "{rendered}"
+    );
+}
+
+#[test]
+fn review_panel_copies_selected_llm_assessment() {
+    let mut state = AppState::new();
+    state.diff_source = lg::state::DiffSource::Review;
+    state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![ReviewNode {
+            id: "branch".into(),
+            parent: None,
+            depth: 0,
+            title: "Full diff against main".into(),
+            body: Vec::new(),
+            context: Vec::new(),
+        }],
+    });
+    state.review_assists.insert(
+        "branch".into(),
+        "  Regression risk is covered by tests.\n".into(),
+    );
+
+    panel::main::handle_key(&mut state, key(KeyCode::Char('y'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::CopyToClipboard {
+            label: "LLM assessment".into(),
+            text: "Regression risk is covered by tests.".into(),
+        })
     );
 }
 
@@ -1769,8 +1814,8 @@ fn review_panel_explains_full_diff_with_llm() {
         Some(PendingAction::ReviewAssist("branch".into()))
     );
     assert!(
-        !app.state.review_collapsed.contains("branch"),
-        "full diff subtree should open before explaining"
+        app.state.review_collapsed.contains("branch"),
+        "explaining should keep the review tree flat"
     );
 
     app.state

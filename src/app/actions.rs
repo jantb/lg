@@ -1,4 +1,9 @@
-use std::path::PathBuf;
+use anyhow::{Context, Result};
+use std::{
+    io::Write,
+    path::PathBuf,
+    process::{Command, Stdio},
+};
 
 use crate::state::{AppState, Modal, OperationKind, PendingAction};
 
@@ -36,6 +41,12 @@ impl App {
             PendingAction::ReviewChat(prompt) => {
                 spawn_review_chat(&mut self.state, prompt);
             }
+            PendingAction::CopyToClipboard { label, text } => match copy_to_clipboard(&text) {
+                Ok(()) => self
+                    .state
+                    .set_status(format!("copied {label} to clipboard"), false),
+                Err(err) => self.state.set_status(format!("copy failed: {err}"), true),
+            },
             PendingAction::Commit => {
                 let msg = self.state.commit_message.clone();
                 spawn_operation(
@@ -299,5 +310,72 @@ impl App {
                 }
             }
         }
+    }
+}
+
+fn copy_to_clipboard(text: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        copy_with_command("pbcopy", &[], text)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        copy_with_command("clip", &[], text)
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let attempts: &[(&str, &[&str])] = &[
+            ("wl-copy", &[]),
+            ("xclip", &["-selection", "clipboard"]),
+            ("xsel", &["--clipboard", "--input"]),
+        ];
+        let mut errors = Vec::new();
+        for (program, args) in attempts {
+            match copy_with_command(program, args, text) {
+                Ok(()) => return Ok(()),
+                Err(err) => errors.push(format!("{program}: {err:#}")),
+            }
+        }
+        anyhow::bail!("no clipboard command succeeded ({})", errors.join("; "))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", unix)))]
+    {
+        let _ = text;
+        anyhow::bail!("clipboard copy is not supported on this platform")
+    }
+}
+
+fn copy_with_command(program: &str, args: &[&str], text: &str) -> Result<()> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to launch {program}"))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .with_context(|| format!("{program} did not open stdin"))?;
+    stdin
+        .write_all(text.as_bytes())
+        .with_context(|| format!("failed writing to {program}"))?;
+    drop(stdin);
+
+    let output = child
+        .wait_with_output()
+        .with_context(|| format!("failed waiting for {program}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let message = stderr.trim();
+    if message.is_empty() {
+        anyhow::bail!("{program} exited with {}", output.status)
+    } else {
+        anyhow::bail!("{program} exited with {}: {message}", output.status)
     }
 }
