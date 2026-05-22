@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
@@ -106,13 +106,43 @@ pub fn build_assisted_review_against_main() -> Result<AssistedReview> {
 
 fn branch_review_commits(base_ref: &str) -> Result<Vec<String>> {
     let range = format!("{base_ref}..HEAD");
-    let out = run(&["log", "--oneline", "--decorate=no", &range])?;
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .lines()
+    let out = run(&[
+        "log",
+        "--format=%h%x1f%s%x1f%b%x1e",
+        "--decorate=no",
+        &range,
+    ])?;
+    Ok(parse_review_commits(&String::from_utf8_lossy(&out.stdout)))
+}
+
+fn parse_review_commits(text: &str) -> Vec<String> {
+    text.split('\x1e')
+        .filter_map(|record| {
+            let record = record.trim_matches(|ch| ch == '\n' || ch == '\r');
+            if record.is_empty() {
+                return None;
+            }
+            let mut parts = record.splitn(3, '\x1f');
+            let hash = parts.next()?.trim();
+            let subject = parts.next()?.trim();
+            let body = compact_commit_body(parts.next().unwrap_or_default());
+            let line = if body.is_empty() {
+                format!("{hash} {subject}")
+            } else {
+                format!("{hash} {subject} - {body}")
+            };
+            Some(truncate_review_text(&line, 240))
+        })
+        .collect()
+}
+
+fn compact_commit_body(body: &str) -> String {
+    body.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect())
+        .take(4)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn worktree_review_files(base: &str) -> Result<Vec<ReviewFile>> {
@@ -511,6 +541,7 @@ fn push_entry_nodes(
     }
     let groups = entry_groups(entries);
     let parents = entry_group_parents(entries, &groups);
+    let category_summaries = review_category_summaries(entries, &groups);
     let tree = EntryTree {
         prefix,
         entries,
@@ -531,15 +562,27 @@ fn push_entry_nodes(
                 .map(|(group_idx, _)| group_idx),
             &groups,
         ) {
-            let category_id =
-                ensure_review_category_node(nodes, prefix, &root_id, category, &mut category_nodes);
+            let category_id = ensure_review_category_node(
+                nodes,
+                prefix,
+                &root_id,
+                category,
+                category_summaries.get(&category),
+                &mut category_nodes,
+            );
             tree.push_file(nodes, &path, &group_indices, &category_id, 2, &mut emitted);
         }
     }
     for (group_idx, group) in groups.iter().enumerate() {
         let category = ReviewEntryCategory::for_path(&group.path);
-        let category_id =
-            ensure_review_category_node(nodes, prefix, &root_id, category, &mut category_nodes);
+        let category_id = ensure_review_category_node(
+            nodes,
+            prefix,
+            &root_id,
+            category,
+            category_summaries.get(&category),
+            &mut category_nodes,
+        );
         tree.push_file(
             nodes,
             &group.path,
@@ -604,11 +647,59 @@ impl ReviewEntryCategory {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct ReviewCategorySummary {
+    files: BTreeSet<String>,
+    entries: usize,
+    added: usize,
+    removed: usize,
+}
+
+impl ReviewCategorySummary {
+    fn title(&self, category: ReviewEntryCategory) -> String {
+        format!(
+            "{} ({} file{}, {} entry point{}, +{} -{})",
+            category.label(),
+            self.files.len(),
+            plural(self.files.len()),
+            self.entries,
+            plural(self.entries),
+            self.added,
+            self.removed
+        )
+    }
+}
+
+fn review_category_summaries(
+    entries: &[ReviewEntryPoint],
+    groups: &[EntryGroup],
+) -> BTreeMap<ReviewEntryCategory, ReviewCategorySummary> {
+    let mut summaries = BTreeMap::<ReviewEntryCategory, ReviewCategorySummary>::new();
+    for group in groups {
+        let category = ReviewEntryCategory::for_path(&group.path);
+        let summary = summaries.entry(category).or_default();
+        summary.files.insert(group.path.clone());
+        summary.entries += 1;
+        summary.added += group
+            .indices
+            .iter()
+            .map(|idx| entries[*idx].added)
+            .sum::<usize>();
+        summary.removed += group
+            .indices
+            .iter()
+            .map(|idx| entries[*idx].removed)
+            .sum::<usize>();
+    }
+    summaries
+}
+
 fn ensure_review_category_node(
     nodes: &mut Vec<ReviewNode>,
     prefix: &str,
     root_id: &str,
     category: ReviewEntryCategory,
+    summary: Option<&ReviewCategorySummary>,
     emitted: &mut BTreeSet<ReviewEntryCategory>,
 ) -> String {
     let id = format!("{prefix}:category:{}", category.id());
@@ -617,7 +708,9 @@ fn ensure_review_category_node(
             id: id.clone(),
             parent: Some(root_id.to_string()),
             depth: 1,
-            title: category.label().to_string(),
+            title: summary
+                .map(|summary| summary.title(category))
+                .unwrap_or_else(|| category.label().to_string()),
             body: Vec::new(),
             context: Vec::new(),
         });
@@ -679,36 +772,26 @@ impl EntryTree<'_> {
 
         let group = &self.groups[group_idx];
         let group_id = format!("{}:entry:{group_idx}", self.prefix);
+        let location = group
+            .indices
+            .iter()
+            .filter_map(|idx| self.entries[*idx].line)
+            .min()
+            .map(|line| format!("{}:{line}", group.path))
+            .unwrap_or_else(|| group.path.clone());
         nodes.push(ReviewNode {
             id: group_id.clone(),
             parent: Some(parent_id.to_string()),
             depth,
             title: format!(
                 "{} in {} - {}",
-                group.path,
+                location,
                 group.symbol,
                 entry_group_description(self.entries, group)
             ),
             body: self.group_patch_body(group),
-            context: Vec::new(),
+            context: self.group_context(group),
         });
-        for idx in &group.indices {
-            let entry = &self.entries[*idx];
-            let location = entry
-                .line
-                .map(|line| format!(":{line}"))
-                .unwrap_or_default();
-            nodes.push(ReviewNode {
-                id: format!("{}:hunk:{idx}", self.prefix),
-                parent: Some(group_id.clone()),
-                depth: depth.saturating_add(1),
-                title: format!("{}{} - {}", entry.path, location, entry.description),
-                body: std::iter::once(format!("effect: {}", entry.description))
-                    .chain(entry.patch.iter().cloned())
-                    .collect(),
-                context: entry.context.clone(),
-            });
-        }
 
         for child_idx in 0..self.groups.len() {
             if self.parents[child_idx] == Some(group_idx) {
@@ -777,6 +860,14 @@ impl EntryTree<'_> {
             .indices
             .iter()
             .flat_map(|idx| self.entries[*idx].patch.iter().cloned())
+            .collect()
+    }
+
+    fn group_context(&self, group: &EntryGroup) -> Vec<String> {
+        group
+            .indices
+            .iter()
+            .flat_map(|idx| self.entries[*idx].context.iter().cloned())
             .collect()
     }
 }
@@ -1360,6 +1451,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_review_commits_includes_compact_body_intent() {
+        let commits = parse_review_commits(
+            "1b7004a\x1ffix(balance): convert pending points\x1fAggregate pending transaction points into the household's base currency.\n\nSet pending balances for non-household currencies to zero.\x1e",
+        );
+
+        assert_eq!(commits.len(), 1);
+        assert!(
+            commits[0].contains(
+                "fix(balance): convert pending points - Aggregate pending transaction points"
+            ),
+            "{commits:?}"
+        );
+        assert!(
+            commits[0].contains("Set pending balances for non-household currencies to zero."),
+            "{commits:?}"
+        );
+    }
+
+    #[test]
     fn effect_summary_lists_all_entry_symbols() {
         let files = vec![ReviewFile {
             status: "M".into(),
@@ -1504,13 +1614,13 @@ mod tests {
                 .any(|node| node.id == "branch:category:production"
                     && node.parent.as_deref() == Some("branch")
                     && node.depth == 1
-                    && node.title == "Production"),
+                    && node.title == "Production (1 file, 1 entry point, +1 -0)"),
             "{nodes:#?}"
         );
         assert!(
             nodes.iter().any(|node| node.id == "branch:category:tests"
                 && node.parent.as_deref() == Some("branch")
-                && node.title == "Tests"),
+                && node.title == "Tests (1 file, 1 entry point, +1 -0)"),
             "{nodes:#?}"
         );
         assert!(
@@ -1518,19 +1628,19 @@ mod tests {
                 .iter()
                 .any(|node| node.id == "branch:category:migrations"
                     && node.parent.as_deref() == Some("branch")
-                    && node.title == "Migrations"),
+                    && node.title == "Migrations (1 file, 1 entry point, +1 -0)"),
             "{nodes:#?}"
         );
         assert!(
             nodes.iter().any(|node| node.id == "branch:category:docs"
                 && node.parent.as_deref() == Some("branch")
-                && node.title == "Docs"),
+                && node.title == "Docs (1 file, 1 entry point, +1 -0)"),
             "{nodes:#?}"
         );
         assert!(
             nodes.iter().any(|node| node.id == "branch:category:other"
                 && node.parent.as_deref() == Some("branch")
-                && node.title == "Other"),
+                && node.title == "Other (1 file, 1 entry point, +1 -0)"),
             "{nodes:#?}"
         );
 

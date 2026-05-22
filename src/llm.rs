@@ -315,11 +315,18 @@ fn build_commit_prompt(diff: &str) -> String {
 
 fn build_review_assist_prompt(context: &str) -> String {
     format!(
-        "Explain what this selected subtree from a full diff against main does.\n\
-         Provide a deeper review, not just a functional overview. Be factual and specific.\n\
+        "Assess this selected subtree from a full diff against main as a patch review.\n\
+         Use the branch overview first: commit subjects/bodies and changed file lists are evidence\n\
+         of intended behavior and test coverage. Be factual and specific.\n\
+         Before calling something a regression, compare it with the stated patch intent and the\n\
+         changed tests. Treat an intentional behavior change as a bug only when it contradicts an\n\
+         invariant, API contract, data contract, or caller expectation shown in the context.\n\
+         When tests are changed, say what they cover and name any precise uncovered case; do not\n\
+         claim tests are missing merely because the selected production subtree is in focus.\n\
+         If the evidence is incomplete, say what is missing instead of inventing consumers or behavior.\n\
          Focus on behavior, call flow, tests, regression risks, and maintainability concerns.\n\
          Say whether the patch appears minimal; flag unnecessary scope, simpler alternatives,\n\
-         or refactors that would reduce complexity without changing behavior.\n\
+         or refactors that would reduce complexity without changing intended behavior.\n\
          Review the change against the established repo style below and call out concrete violations.\n\
          Output 6-12 substantive bullets or short sections. Avoid padding. Do not invent files\n\
          or behavior not shown. Do not use code fences.\n\n\
@@ -331,10 +338,13 @@ fn build_review_assist_prompt(context: &str) -> String {
 fn build_review_chat_system_prompt(context: &str) -> String {
     format!(
         "You are a senior code reviewer helping inspect a full branch review against main.\n\
-         Use only the supplied review context and the conversation. Be concrete about weaknesses,\n\
-         missed tests, risky flows, compatibility concerns, and follow-up checks. When useful,\n\
-         cite file paths, function names, and line numbers from the context. If the context is\n\
-         insufficient, say what is missing instead of guessing. Review answers against the\n\
+         Use only the supplied review context and the conversation. Treat commit subjects/bodies,\n\
+         changed file lists, and changed tests as evidence of patch intent and coverage. Be concrete\n\
+         about weaknesses, missed tests, risky flows, compatibility concerns, and follow-up checks.\n\
+         Before calling an intentional behavior change a regression, point to a shown invariant,\n\
+         contract, caller, or test expectation it violates. When useful, cite file paths, function\n\
+         names, and line numbers from the context. If the context is insufficient, say what is\n\
+         missing instead of guessing. Review answers against the\n\
          established repo style below and call out concrete violations.\n\n\
          {REVIEW_REPO_STYLE_GUIDE}\n\n\
          Review context:\n{context}"
@@ -1266,8 +1276,12 @@ mod tests {
     fn review_assist_prompt_includes_repo_style() {
         let prompt = build_review_assist_prompt("src/main/kotlin/App.kt");
 
-        assert!(prompt.contains("Provide a deeper review"));
-        assert!(prompt.contains("not just a functional overview"));
+        assert!(prompt.contains("Assess this selected subtree"));
+        assert!(prompt.contains("commit subjects/bodies"));
+        assert!(prompt.contains("stated patch intent"));
+        assert!(prompt.contains("changed tests"));
+        assert!(prompt.contains("claim tests are missing"));
+        assert!(prompt.contains("instead of inventing consumers or behavior"));
         assert!(prompt.contains("6-12 substantive bullets"));
         assert!(prompt.contains("whether the patch appears minimal"));
         assert!(prompt.contains("simpler alternatives"));
@@ -1305,6 +1319,9 @@ mod tests {
     fn review_chat_system_prompt_includes_repo_style() {
         let prompt = build_review_chat_system_prompt("full review context");
 
+        assert!(prompt.contains("commit subjects/bodies"));
+        assert!(prompt.contains("patch intent"));
+        assert!(prompt.contains("intentional behavior change"));
         assert!(prompt.contains("Ktor CIO adapters"));
         assert!(prompt.contains("never Mockito"));
         assert!(prompt.contains("Review context:\nfull review context"));

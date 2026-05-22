@@ -220,7 +220,7 @@ fn model_modal_picks_and_saves_model() {
 }
 
 #[test]
-fn review_panel_expands_hunks_and_source_context() {
+fn review_panel_opens_entry_source_with_inline_entry_point_note() {
     let dir = tempfile::tempdir().unwrap();
     let source_path = dir.path().join("App.kt");
     std::fs::write(
@@ -249,16 +249,7 @@ fn review_panel_expands_hunks_and_source_context() {
                 parent: Some("branch".into()),
                 depth: 1,
                 title: format!("{source_path}:2 in fun greeting - updates greeting (+1 -1)"),
-                body: Vec::new(),
-                context: Vec::new(),
-            },
-            ReviewNode {
-                id: "branch:hunk:0".into(),
-                parent: Some("branch:entry:0".into()),
-                depth: 2,
-                title: format!("{source_path}:2 - updates greeting (+1 -1)"),
                 body: vec![
-                    "effect: updates greeting (+1 -1)".into(),
                     "@@ -1,3 +1,3 @@".into(),
                     " class App {".into(),
                     "-    fun greeting() = \"hello\"".into(),
@@ -273,40 +264,36 @@ fn review_panel_expands_hunks_and_source_context() {
             },
         ],
     });
-    app.state.review_collapsed.insert("branch:entry:0".into());
-    app.state.review_collapsed.insert("branch:hunk:0".into());
 
     app.render().unwrap();
     let collapsed = buffer_text(&app);
     assert!(collapsed.contains("fun greeting"), "{collapsed}");
     assert!(
         !collapsed.contains("hello review"),
-        "collapsed hunk should hide patch body: {collapsed}"
+        "entry tree should not show compact patch body: {collapsed}"
     );
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Char('j'))).unwrap();
     panel::main::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
-    panel::main::handle_key(&mut app.state, key(KeyCode::Char('j'))).unwrap();
-    panel::main::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
-    app.render().unwrap();
-    let expanded = buffer_text(&app);
-    assert!(
-        expanded.contains("+    fun greeting() = \"hello review\""),
-        "expanded hunk should show patch: {expanded}"
-    );
-
-    panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
     app.render().unwrap();
     let context = buffer_text(&app);
     assert!(
         context.contains("source context")
             && context.contains("source")
             && !context.contains("│ diff")
+            && context.contains("ENTRY POINT")
             && context.contains("-     fun greeting() = \"hello\"")
-            && context.contains("+    fun greeting() = \"hello review\"")
-            && context.contains("review note: updates greeting")
+            && context.contains("+     fun greeting() = \"hello review\"")
             && context.contains("3 |     val untouched = 1"),
         "source context should be visible: {context}"
+    );
+    let note = context.find("ENTRY POINT").expect("entry point note");
+    let removed = context
+        .find("-     fun greeting() = \"hello\"")
+        .expect("removed line");
+    assert!(
+        note < removed,
+        "entry point note should be above change: {context}"
     );
     let buf = app.terminal.backend().buffer();
     assert!(
@@ -378,14 +365,6 @@ fn review_panel_sources_entry_subtree_across_files_and_drills_to_child_file() {
                 context: Vec::new(),
             },
             ReviewNode {
-                id: "branch:hunk:0".into(),
-                parent: Some("branch:entry:0".into()),
-                depth: 3,
-                title: format!("{caller_path}:2 - updates nextStep (+1 -1)"),
-                body: Vec::new(),
-                context: Vec::new(),
-            },
-            ReviewNode {
                 id: "branch:file:1".into(),
                 parent: Some("branch:entry:0".into()),
                 depth: 3,
@@ -420,7 +399,7 @@ fn review_panel_sources_entry_subtree_across_files_and_drills_to_child_file() {
         "{rendered}"
     );
     assert!(
-        rendered.contains("review note: updates nextStep (+1 -1)"),
+        rendered.contains("ENTRY POINT") && rendered.contains("updates nextStep (+1 -1)"),
         "{rendered}"
     );
     assert!(
@@ -443,8 +422,8 @@ fn review_panel_sources_entry_subtree_across_files_and_drills_to_child_file() {
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Char('d'))).unwrap();
     assert_eq!(
-        app.state.review_idx, 4,
-        "drill should prefer the nested file over the hunk"
+        app.state.review_idx, 3,
+        "drill should move to the nested file"
     );
 }
 
@@ -514,12 +493,11 @@ fn review_source_inlines_style_and_llm_notes_and_jumps_between_them() {
     app.render().unwrap();
     let rendered = buffer_text(&app);
     assert!(rendered.contains("STYLE WARN"), "{rendered}");
+    let style = rendered.find("STYLE WARN").unwrap();
+    let source = rendered.find("+     fun second() =").unwrap();
     assert!(
-        rendered.find("STYLE WARN").unwrap()
-            > rendered
-                .find("usersService.findHouseholdMembers().size")
-                .unwrap(),
-        "style note should be attached after the matching source line: {rendered}"
+        style < source,
+        "style note should be attached above the matching source line: {rendered}"
     );
     assert!(
         rendered.contains("review note: llm: This changes both"),

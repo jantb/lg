@@ -3,9 +3,10 @@ use crate::state::{
     ReviewJob, ReviewMsg,
 };
 
-const MAX_REVIEW_ASSIST_CONTEXT_BYTES: usize = 18_000;
+const MAX_REVIEW_ASSIST_CONTEXT_BYTES: usize = 32_000;
 const MAX_REVIEW_CHAT_CONTEXT_BYTES: usize = 32_000;
 const MAX_REVIEW_FLAG_CONTEXT_BYTES: usize = 14_000;
+const MAX_REVIEW_ASSIST_OVERVIEW_LINES: usize = 96;
 
 pub(super) fn spawn_assisted_review(state: &mut AppState) {
     if state.review_job.is_some() {
@@ -307,6 +308,7 @@ fn review_assist_context(state: &AppState, node_id: &str) -> Option<String> {
     let review = state.review.as_ref()?;
     let selected = review.nodes.iter().find(|node| node.id == node_id)?;
     let mut out = String::new();
+    push_review_overview(&mut out, &review.report);
     push_line(
         &mut out,
         "Full diff against main, selected drilldown subtree:",
@@ -318,24 +320,158 @@ fn review_assist_context(state: &AppState, node_id: &str) -> Option<String> {
         if !review_node_in_subtree(review, idx, node_id) {
             continue;
         }
-        if out.len() >= MAX_REVIEW_ASSIST_CONTEXT_BYTES {
+        if !push_review_node_context(&mut out, node) {
             push_line(&mut out, "... review subtree truncated ...");
             break;
         }
-        let indent = "  ".repeat(node.depth as usize);
-        push_line(&mut out, &format!("{indent}- {}", node.title));
-        for body in &node.body {
-            push_line(&mut out, &format!("{indent}  {body}"));
-        }
-        if !node.context.is_empty() {
-            push_line(&mut out, &format!("{indent}  source context:"));
-            for context in &node.context {
-                push_line(&mut out, &format!("{indent}  {context}"));
-            }
-        }
     }
+    push_related_test_context(&mut out, review, node_id);
 
     Some(out)
+}
+
+fn push_review_overview(out: &mut String, report: &str) {
+    push_line(out, "Branch review overview:");
+    let mut emitted = 0usize;
+    for line in report.lines() {
+        let trimmed = line.trim_end();
+        if matches!(
+            trimmed,
+            "Entry point trace" | "Review checklist" | "Full diff against main"
+        ) {
+            break;
+        }
+        if trimmed.chars().all(|ch| ch == '=' || ch == '-') {
+            continue;
+        }
+        push_line(out, trimmed);
+        emitted += 1;
+        if emitted >= MAX_REVIEW_ASSIST_OVERVIEW_LINES {
+            push_line(out, "... review overview truncated ...");
+            break;
+        }
+    }
+    push_line(out, "");
+}
+
+fn push_review_node_context(out: &mut String, node: &crate::git::ReviewNode) -> bool {
+    if out.len() >= MAX_REVIEW_ASSIST_CONTEXT_BYTES {
+        return false;
+    }
+    let indent = "  ".repeat(node.depth as usize);
+    push_line(out, &format!("{indent}- {}", node.title));
+    for body in &node.body {
+        push_line(out, &format!("{indent}  {body}"));
+    }
+    if !node.context.is_empty() {
+        push_line(out, &format!("{indent}  source context:"));
+        for context in &node.context {
+            push_line(out, &format!("{indent}  {context}"));
+        }
+    }
+    true
+}
+
+fn push_related_test_context(
+    out: &mut String,
+    review: &crate::git::AssistedReview,
+    selected_id: &str,
+) {
+    let selected_indices = review
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, _)| review_node_in_subtree(review, idx, selected_id).then_some(idx))
+        .collect::<Vec<_>>();
+    if selected_indices.is_empty() {
+        return;
+    }
+
+    let selected_paths = selected_indices
+        .iter()
+        .filter_map(|idx| review.nodes.get(*idx))
+        .filter_map(|node| review_node_path(&node.title))
+        .filter(|path| is_source_path(path) && !is_test_path(path))
+        .collect::<Vec<_>>();
+    if selected_paths.is_empty() {
+        return;
+    }
+
+    let related_test_roots = review
+        .nodes
+        .iter()
+        .filter(|node| node.id.contains(":file:"))
+        .filter_map(|node| review_node_path(&node.title).map(|path| (node.id.as_str(), path)))
+        .filter(|(_, path)| is_test_path(path))
+        .filter(|(_, path)| {
+            selected_paths
+                .iter()
+                .any(|production_path| related_test_path(production_path, path))
+        })
+        .map(|(id, _)| id)
+        .collect::<Vec<_>>();
+    if related_test_roots.is_empty() {
+        return;
+    }
+
+    push_line(out, "");
+    push_line(out, "Related test changes outside selected subtree:");
+    for (idx, node) in review.nodes.iter().enumerate() {
+        if selected_indices.contains(&idx) {
+            continue;
+        }
+        if !related_test_roots
+            .iter()
+            .any(|root_id| node.id == *root_id || review_node_in_subtree(review, idx, root_id))
+        {
+            continue;
+        }
+        if !push_review_node_context(out, node) {
+            push_line(out, "... related test context truncated ...");
+            break;
+        }
+    }
+}
+
+fn is_source_path(path: &str) -> bool {
+    path.contains('/')
+        && path
+            .rsplit('/')
+            .next()
+            .is_some_and(|name| name.contains('.'))
+}
+
+fn is_test_path(path: &str) -> bool {
+    path.starts_with("tests/")
+        || path.contains("/tests/")
+        || path.starts_with("src/test/")
+        || path.contains("/src/test/")
+        || file_stem(path).is_some_and(|stem| {
+            stem.ends_with("Test") || stem.ends_with("Tests") || stem.ends_with("Spec")
+        })
+}
+
+fn related_test_path(production_path: &str, test_path: &str) -> bool {
+    let Some(production_stem) = file_stem(production_path) else {
+        return false;
+    };
+    let Some(test_stem) = file_stem(test_path) else {
+        return false;
+    };
+    let test_subject = test_stem
+        .strip_suffix("Tests")
+        .or_else(|| test_stem.strip_suffix("Test"))
+        .or_else(|| test_stem.strip_suffix("Spec"))
+        .unwrap_or(test_stem);
+
+    !test_subject.is_empty()
+        && (test_subject == production_stem
+            || test_subject.contains(production_stem)
+            || production_stem.contains(test_subject))
+}
+
+fn file_stem(path: &str) -> Option<&str> {
+    std::path::Path::new(path).file_stem()?.to_str()
 }
 
 fn review_node_in_subtree(
@@ -388,4 +524,82 @@ fn push_limited_line(out: &mut String, line: &str, max_bytes: usize) {
         added += ch.len_utf8();
     }
     out.push('\n');
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::{AssistedReview, ReviewNode};
+
+    #[test]
+    fn review_assist_context_includes_branch_overview_before_subtree() {
+        let mut state = AppState::new();
+        state.review = Some(AssistedReview {
+            report: "\
+Assisted review against main
+============================
+
+Branch: bugfix/pending-should-convert-items-individually-not-as-a-sum
+Base: origin/main
+Scope: 2 commits, 2 files
+
+Commits in review range
+-----------------------
+- 1b7004a fix(balance): convert pending points to household currency - Aggregate pending transaction points into the household's base currency using exchange rates instead of reporting raw values per currency.
+
+Files changed
+-------------
+- M src/main/kotlin/me/spenn/BalanceService.kt
+- M src/test/kotlin/me/spenn/BalanceServiceTest.kt
+
+Entry point trace
+-----------------
+- hidden from overview
+
+Full diff against main
+----------------------
+diff --git a/src/main/kotlin/me/spenn/BalanceService.kt b/src/main/kotlin/me/spenn/BalanceService.kt
+"
+            .into(),
+            nodes: vec![
+                ReviewNode {
+                    id: "branch".into(),
+                    parent: None,
+                    depth: 0,
+                    title: "Full diff against main".into(),
+                    body: Vec::new(),
+                    context: Vec::new(),
+                },
+                ReviewNode {
+                    id: "branch:file:0".into(),
+                    parent: Some("branch".into()),
+                    depth: 1,
+                    title: "src/main/kotlin/me/spenn/BalanceService.kt - 1 entry point (+1 -1)"
+                        .into(),
+                    body: vec!["+ converted pending value".into()],
+                    context: Vec::new(),
+                },
+            ],
+        });
+
+        let context = review_assist_context(&state, "branch:file:0").unwrap();
+
+        assert!(context.contains("Branch review overview:"), "{context}");
+        assert!(
+            context.contains(
+                "Aggregate pending transaction points into the household's base currency"
+            ),
+            "{context}"
+        );
+        assert!(
+            context.contains("- M src/test/kotlin/me/spenn/BalanceServiceTest.kt"),
+            "{context}"
+        );
+        assert!(
+            context.contains("selected: src/main/kotlin/me/spenn/BalanceService.kt"),
+            "{context}"
+        );
+        assert!(!context.contains("- hidden from overview"), "{context}");
+        assert!(!context.contains("diff --git a/"), "{context}");
+    }
 }

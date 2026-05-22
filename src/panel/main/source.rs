@@ -478,16 +478,16 @@ fn inline_review_note_text(node: &crate::git::ReviewNode) -> Option<String> {
     {
         let effect = effect.trim();
         if !effect.is_empty() {
-            return Some(effect.to_string());
+            return Some(format!("entry point: {effect}"));
         }
     }
 
-    if node.id.contains(":hunk:")
+    if (node.id.contains(":entry:") || node.id.contains(":hunk:"))
         && let Some((_, description)) = node.title.split_once(" - ")
     {
         let description = description.trim();
         if !description.is_empty() {
-            return Some(description.to_string());
+            return Some(format!("entry point: {description}"));
         }
     }
 
@@ -570,6 +570,7 @@ fn full_source_with_inline_diff(
     for (idx, source) in text.lines().enumerate() {
         total_lines = idx + 1;
         let line_no = idx + 1;
+        push_source_notes(&mut lines, indent, notes.get(&line_no).map(Vec::as_slice));
         if let Some(removed) = overlay.removed_before.get(&line_no) {
             for removed_line in removed {
                 lines.push(source_line(
@@ -587,7 +588,6 @@ fn full_source_with_inline_diff(
             '|'
         };
         lines.push(source_line(path, indent, Some(line_no), marker, source));
-        push_source_notes(&mut lines, indent, notes.get(&line_no).map(Vec::as_slice));
     }
 
     let eof_line = total_lines + 1;
@@ -741,6 +741,9 @@ fn source_note_line(indent: &str, note: &str) -> Line<'static> {
     if let Some((severity, reason)) = style_note_parts(note) {
         return style_note_line(indent, severity, reason);
     }
+    if let Some(reason) = note.strip_prefix("entry point: ") {
+        return entry_point_note_line(indent, reason);
+    }
     let mut spans = context_prefix(indent);
     spans.push(Span::styled(
         "      · ".to_string(),
@@ -755,6 +758,32 @@ fn source_note_line(indent: &str, note: &str) -> Line<'static> {
     spans.push(Span::styled(
         note.to_string(),
         Style::default().fg(Color::Gray),
+    ));
+    Line::from(spans)
+}
+
+fn entry_point_note_line(indent: &str, reason: &str) -> Line<'static> {
+    let mut spans = context_prefix(indent);
+    spans.push(Span::styled(
+        "      ◆ ".to_string(),
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(
+        " ENTRY POINT ".to_string(),
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(
+        format!(" {reason}"),
+        Style::default()
+            .fg(Color::LightCyan)
+            .bg(Color::Rgb(18, 50, 58))
+            .add_modifier(Modifier::BOLD),
     ));
     Line::from(spans)
 }

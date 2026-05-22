@@ -36,7 +36,7 @@ pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: b
     )
     .title_bottom(
         Line::from(Span::styled(
-            "j/k move  ↑/↓ source changes  Enter/space expand  d drill  s source  n/N notes  l explain  C chat  R refresh",
+            "j/k move  ↑/↓ source changes  Enter/s source  space expand  d drill  n/N notes  l explain  C chat  R refresh",
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::DIM),
@@ -292,8 +292,12 @@ fn is_review_entry_node(node_id: &str) -> bool {
     node_id.contains(":entry:")
 }
 
+fn is_review_hunk_node(node_id: &str) -> bool {
+    node_id.contains(":hunk:")
+}
+
 fn renders_review_body(node_id: &str) -> bool {
-    !is_review_file_node(node_id) && !is_review_entry_node(node_id)
+    !is_review_file_node(node_id) && !is_review_entry_node(node_id) && !is_review_hunk_node(node_id)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -447,18 +451,15 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 move_to_previous_review_node(state, &visible, current_pos);
             }
         }
-        KeyCode::Enter | KeyCode::Char(' ') => {
-            if let Some(review) = &state.review
-                && let Some(node) = review.nodes.get(state.review_idx)
-            {
-                if state.review_collapsed.contains(&node.id) {
-                    state.review_collapsed.remove(&node.id);
-                } else {
-                    state.review_collapsed.insert(node.id.clone());
-                }
-                clamp_review_selection(state);
+        KeyCode::Enter => {
+            if toggle_review_source(state) {
                 ensure_review_selection_visible(state);
+            } else {
+                toggle_review_tree_node(state);
             }
+        }
+        KeyCode::Char(' ') => {
+            toggle_review_tree_node(state);
         }
         KeyCode::Char('d') => {
             if let Some(review) = &state.review
@@ -472,27 +473,7 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char('s') => {
-            if let Some(review) = &state.review
-                && let Some(node) = review.nodes.get(state.review_idx)
-                && review_source_available(state, review, node)
-            {
-                if state.review_context_open.contains(&node.id) {
-                    state.review_context_open.remove(&node.id);
-                    if state.review_context_restore_collapsed.remove(&node.id) {
-                        state.review_collapsed.insert(node.id.clone());
-                        clamp_review_selection(state);
-                    }
-                } else {
-                    if state.review_collapsed.contains(&node.id) {
-                        state
-                            .review_context_restore_collapsed
-                            .insert(node.id.clone());
-                    } else {
-                        state.review_context_restore_collapsed.remove(&node.id);
-                    }
-                    state.review_collapsed.remove(&node.id);
-                    state.review_context_open.insert(node.id.clone());
-                }
+            if toggle_review_source(state) {
                 ensure_review_selection_visible(state);
             }
         }
@@ -536,6 +517,60 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn toggle_review_tree_node(state: &mut AppState) {
+    if let Some(review) = &state.review
+        && let Some(node) = review.nodes.get(state.review_idx)
+    {
+        let has_child = review
+            .nodes
+            .iter()
+            .any(|candidate| candidate.parent.as_deref() == Some(node.id.as_str()));
+        let has_body = renders_review_body(&node.id) && !node.body.is_empty();
+        if !has_child && !has_body {
+            return;
+        }
+        if state.review_collapsed.contains(&node.id) {
+            state.review_collapsed.remove(&node.id);
+        } else {
+            state.review_collapsed.insert(node.id.clone());
+        }
+        clamp_review_selection(state);
+        ensure_review_selection_visible(state);
+    }
+}
+
+fn toggle_review_source(state: &mut AppState) -> bool {
+    let Some(review) = &state.review else {
+        return false;
+    };
+    let Some(node) = review.nodes.get(state.review_idx) else {
+        return false;
+    };
+    if !review_source_available(state, review, node) {
+        return false;
+    }
+
+    let node_id = node.id.clone();
+    if state.review_context_open.contains(&node_id) {
+        state.review_context_open.remove(&node_id);
+        if state.review_context_restore_collapsed.remove(&node_id) {
+            state.review_collapsed.insert(node_id);
+            clamp_review_selection(state);
+        }
+    } else {
+        if state.review_collapsed.contains(&node_id) {
+            state
+                .review_context_restore_collapsed
+                .insert(node_id.clone());
+        } else {
+            state.review_context_restore_collapsed.remove(&node_id);
+        }
+        state.review_collapsed.remove(&node_id);
+        state.review_context_open.insert(node_id);
+    }
+    true
 }
 
 fn move_to_next_review_node(state: &mut AppState, visible: &[usize], current_pos: usize) {

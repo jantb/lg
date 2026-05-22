@@ -530,11 +530,6 @@ fn assisted_review_reports_diff_and_entry_points_against_main() {
     assert!(report.contains("\"hello review\""), "{report}");
 
     let review = lg::git::build_assisted_review_against_main().unwrap();
-    let hunk_pos = review
-        .nodes
-        .iter()
-        .position(|node| node.id.starts_with("branch:hunk:"))
-        .expect("hunk node");
     let entry_pos = review
         .nodes
         .iter()
@@ -569,29 +564,33 @@ fn assisted_review_reports_diff_and_entry_points_against_main() {
         "entry point should be nested under its file"
     );
     assert_eq!(review.nodes[entry_pos].depth, 3);
-    assert_eq!(
-        review.nodes[hunk_pos].parent.as_deref(),
-        Some(review.nodes[entry_pos].id.as_str()),
-        "hunk should be nested under its entry point"
-    );
-    assert_eq!(review.nodes[hunk_pos].depth, 4);
     assert!(file_pos < 3, "file node should appear before metadata");
     assert!(
         review.nodes.iter().all(|node| node.id != "full-diff"),
         "interactive review should not have a flat full-diff lump"
     );
     assert!(
-        review.nodes[hunk_pos].title.contains(" - updates "),
-        "hunk title should include a description: {}",
-        review.nodes[hunk_pos].title
+        review.nodes[entry_pos]
+            .title
+            .contains(":2 in fn greet - updates "),
+        "entry title should include line and description: {}",
+        review.nodes[entry_pos].title
     );
     assert!(
-        review.nodes[hunk_pos]
+        review.nodes[entry_pos]
             .body
-            .first()
-            .is_some_and(|line| line.starts_with("effect: updates")),
-        "expanded hunk should start with effect description: {:?}",
-        review.nodes[hunk_pos].body
+            .iter()
+            .any(|line| line.contains("+    \"hello review\"")),
+        "entry node should carry the patch for source view: {:?}",
+        review.nodes[entry_pos].body
+    );
+    assert!(
+        review
+            .nodes
+            .iter()
+            .all(|node| !node.id.starts_with("branch:hunk:")),
+        "entry point tree should not include leaf hunk nodes: {:?}",
+        review.nodes
     );
 }
 
@@ -692,12 +691,15 @@ fn assisted_review_groups_multiple_hunks_under_same_entry_point() {
         .filter(|node| node.id.starts_with("branch:file:") && node.title.contains("src/lib.rs"))
         .collect();
     assert_eq!(file_nodes.len(), 1, "same file should be listed once");
-    let hunk_count = review
-        .nodes
+    let hunk_header_count = entry_nodes[0]
+        .body
         .iter()
-        .filter(|node| node.parent.as_deref() == Some(entry_nodes[0].id.as_str()))
+        .filter(|line| line.starts_with("@@"))
         .count();
-    assert_eq!(hunk_count, 2, "separate hunks should share one entry point");
+    assert_eq!(
+        hunk_header_count, 2,
+        "separate hunks should be carried by the shared entry point"
+    );
 }
 
 #[test]
