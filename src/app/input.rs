@@ -62,6 +62,12 @@ fn review_chat_is_docked(state: &AppState) -> bool {
     state.modal == Modal::ReviewChat
 }
 
+fn focused_review_panel(state: &AppState) -> bool {
+    state.focus == Pane::Main
+        && matches!(state.diff_source, crate::state::DiffSource::Review)
+        && state.review.is_some()
+}
+
 fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
     column >= rect.x
         && column < rect.x.saturating_add(rect.width)
@@ -248,6 +254,9 @@ where
                 } else {
                     self.state.set_status("nothing to pull", false);
                 }
+            }
+            KeyCode::Char('f') if focused_review_panel(&self.state) => {
+                panel::main::handle_key(&mut self.state, k)?;
             }
             KeyCode::Char('f') => {
                 self.state
@@ -537,6 +546,10 @@ impl App {
             }
             KeyCode::Char('p') => {
                 spawn_pull(&mut self.state);
+                return Ok(());
+            }
+            KeyCode::Char('f') if focused_review_panel(&self.state) => {
+                panel::main::handle_key(&mut self.state, k)?;
                 return Ok(());
             }
             KeyCode::Char('f') => {

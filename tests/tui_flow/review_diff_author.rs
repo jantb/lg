@@ -1819,6 +1819,35 @@ fn review_panel_copies_selected_llm_assessment() {
 }
 
 #[test]
+fn review_mode_f_starts_style_flagging_instead_of_fetching() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 20)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![ReviewNode {
+            id: "branch".into(),
+            parent: None,
+            depth: 0,
+            title: "Full diff against main".into(),
+            body: Vec::new(),
+            context: Vec::new(),
+        }],
+    });
+
+    app.send_key(key(KeyCode::Char('f'))).unwrap();
+
+    assert_eq!(
+        app.state.pending_action,
+        Some(PendingAction::ReviewStyleFlags)
+    );
+    assert_ne!(
+        app.state.status.as_ref().map(|status| status.text.as_str()),
+        Some("fetch unavailable in headless")
+    );
+}
+
+#[test]
 fn review_panel_renders_and_copies_generated_pr_text() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 20)).unwrap();
     app.state.focus = Pane::Main;
