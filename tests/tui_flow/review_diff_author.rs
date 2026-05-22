@@ -89,7 +89,7 @@ fn help_overlay_closes_on_any_key() {
 
 #[test]
 fn main_footer_and_help_call_out_review_mode() {
-    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 60)).unwrap();
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 80)).unwrap();
     app.state.focus = Pane::Main;
     app.render().unwrap();
 
@@ -113,8 +113,16 @@ fn main_footer_and_help_call_out_review_mode() {
         "help should describe how to enter review mode: {help}"
     );
     assert!(
-        help.contains("Copy selected LLM assessment"),
-        "help should describe copying LLM assessment: {help}"
+        help.contains("Copy LLM/PR text"),
+        "help should describe copying review LLM output: {help}"
+    );
+    assert!(
+        help.contains("Run style flag pass"),
+        "help should describe manual style flagging: {help}"
+    );
+    assert!(
+        help.contains("Explain or generate PR text"),
+        "help should describe manual PR text generation: {help}"
     );
 }
 
@@ -1803,6 +1811,11 @@ fn review_panel_copies_selected_llm_assessment() {
             text: "Regression risk is covered by tests.".into(),
         })
     );
+
+    state.pending_action = None;
+    panel::main::handle_key(&mut state, key(KeyCode::Char('f'))).unwrap();
+
+    assert_eq!(state.pending_action, Some(PendingAction::ReviewStyleFlags));
 }
 
 #[test]
@@ -1844,6 +1857,11 @@ fn review_panel_renders_and_copies_generated_pr_text() {
         "{rendered}"
     );
     assert!(rendered.contains("Summary"), "{rendered}");
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char('l'))).unwrap();
+
+    assert_eq!(app.state.pending_action, Some(PendingAction::ReviewPrText));
+    app.state.pending_action = None;
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Char('y'))).unwrap();
 

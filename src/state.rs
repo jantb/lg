@@ -99,6 +99,8 @@ pub struct StatusMsg {
 pub enum PendingAction {
     GenerateMessage,
     ReviewAssist(String),
+    ReviewPrText,
+    ReviewStyleFlags,
     ReviewChat(String),
     CopyToClipboard {
         label: String,
@@ -536,6 +538,8 @@ impl AppState {
             match &self.pending_action {
                 Some(PendingAction::GenerateMessage) => Some("starting generator"),
                 Some(PendingAction::ReviewAssist(_)) => Some("starting explanation"),
+                Some(PendingAction::ReviewPrText) => Some("starting PR text"),
+                Some(PendingAction::ReviewStyleFlags) => Some("starting style flag pass"),
                 Some(PendingAction::ReviewChat(_)) => Some("starting chat"),
                 Some(PendingAction::CopyToClipboard { .. }) => Some("copying"),
                 Some(PendingAction::Commit) => Some("committing"),

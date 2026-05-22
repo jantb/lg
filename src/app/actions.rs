@@ -7,7 +7,10 @@ use std::{
 
 use crate::state::{AppState, Modal, OperationKind, PendingAction};
 
-use super::{App, spawn_operation, spawn_pull, spawn_push, spawn_review_assist, spawn_review_chat};
+use super::{
+    App, spawn_operation, spawn_pull, spawn_push, spawn_review_assist, spawn_review_chat,
+    spawn_review_pr_text, spawn_review_style_flags,
+};
 
 fn refresh_llm_settings_state(state: &mut AppState) {
     state.llm_model = crate::llm::current_model();
@@ -37,6 +40,12 @@ impl App {
             },
             PendingAction::ReviewAssist(node_id) => {
                 spawn_review_assist(&mut self.state, node_id);
+            }
+            PendingAction::ReviewPrText => {
+                spawn_review_pr_text(&mut self.state);
+            }
+            PendingAction::ReviewStyleFlags => {
+                spawn_review_style_flags(&mut self.state);
             }
             PendingAction::ReviewChat(prompt) => {
                 spawn_review_chat(&mut self.state, prompt);

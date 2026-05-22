@@ -43,7 +43,7 @@ pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: b
     )
     .title_bottom(
         Line::from(Span::styled(
-            "j/k move  ↑/↓ source changes  Enter/s source  space expand  d drill  n/N notes  l explain  y copy llm  C chat  R refresh",
+            "j/k move  ↑/↓ source changes  Enter/s source  space expand  d drill  f flag  l llm/pr  y copy  C chat  R refresh",
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::DIM),
@@ -516,8 +516,15 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             if let Some(review) = &state.review
                 && let Some(node) = review.nodes.get(state.review_idx)
             {
-                state.pending_action = Some(PendingAction::ReviewAssist(node.id.clone()));
+                state.pending_action = Some(if node.id == crate::git::REVIEW_PR_TEXT_NODE_ID {
+                    PendingAction::ReviewPrText
+                } else {
+                    PendingAction::ReviewAssist(node.id.clone())
+                });
             }
+        }
+        KeyCode::Char('f') => {
+            state.pending_action = Some(PendingAction::ReviewStyleFlags);
         }
         KeyCode::Char('y') => {
             if let Some((label, text)) = selected_review_copy_text(state) {

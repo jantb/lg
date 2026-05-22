@@ -16,8 +16,7 @@ use crate::{
 
 use super::{
     App, build_refresh_snapshot, git_job_running, load_diff_text, selected_commit_ref,
-    selected_diff_source, should_refresh_for_fs_event, spawn_push, spawn_review_pr_text,
-    spawn_review_style_flags,
+    selected_diff_source, should_refresh_for_fs_event, spawn_push,
 };
 
 fn join_worker(handle: Option<JoinHandle<()>>) {
@@ -518,8 +517,6 @@ impl App {
                     self.state.diff_line_count =
                         self.state.diff_text.lines().count().min(u16::MAX as usize) as u16;
                     self.state.set_status("review ready", false);
-                    spawn_review_pr_text(&mut self.state);
-                    spawn_review_style_flags(&mut self.state);
                 }
                 Err(err) => {
                     self.state.diff_text = format!("error building assisted review: {err}");
