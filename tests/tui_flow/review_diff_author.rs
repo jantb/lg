@@ -888,7 +888,7 @@ fn review_source_reads_renamed_file_at_new_path() {
 }
 
 #[test]
-fn review_panel_source_toggle_restores_collapsed_file() {
+fn review_panel_enter_on_file_toggles_source_and_restores_collapsed_file() {
     let dir = tempfile::tempdir().unwrap();
     let source_path = dir.path().join("lib.rs");
     std::fs::write(
@@ -939,12 +939,12 @@ fn review_panel_source_toggle_restores_collapsed_file() {
     app.state.review_idx = 1;
     app.state.review_collapsed.insert("branch:file:0".into());
 
-    panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
+    panel::main::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
 
     assert!(app.state.review_context_open.contains("branch:file:0"));
     assert!(!app.state.review_collapsed.contains("branch:file:0"));
 
-    panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
+    panel::main::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
 
     assert!(!app.state.review_context_open.contains("branch:file:0"));
     assert!(

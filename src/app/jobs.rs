@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::HashSet;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -507,25 +508,8 @@ impl App {
                     self.state.review_context_open.clear();
                     self.state.review_context_restore_collapsed.clear();
                     if let Some(review) = &self.state.review {
-                        for node in &review.nodes {
-                            let expandable = !node.body.is_empty()
-                                || review.nodes.iter().any(|candidate| {
-                                    candidate
-                                        .parent
-                                        .as_ref()
-                                        .is_some_and(|parent| parent == &node.id)
-                                });
-                            if expandable {
-                                self.state.review_collapsed.insert(node.id.clone());
-                            }
-                        }
-                        self.state.review_idx = review
-                            .nodes
-                            .iter()
-                            .position(|node| {
-                                node.id == "branch" || node.id.starts_with("branch:file:")
-                            })
-                            .unwrap_or(0);
+                        self.state.review_collapsed = default_review_collapsed_nodes(review);
+                        self.state.review_idx = initial_review_index(review);
                     }
                     self.state.diff_source = DiffSource::Review;
                     self.state.diff_text = report;
@@ -1025,5 +1009,103 @@ impl App {
         for handle in handles {
             join_worker(Some(handle));
         }
+    }
+}
+
+fn default_review_collapsed_nodes(review: &crate::git::AssistedReview) -> HashSet<String> {
+    review
+        .nodes
+        .iter()
+        .filter(|node| should_start_collapsed(review, node))
+        .map(|node| node.id.clone())
+        .collect()
+}
+
+fn should_start_collapsed(
+    review: &crate::git::AssistedReview,
+    node: &crate::git::ReviewNode,
+) -> bool {
+    if node.id == "branch" || node.id.starts_with("branch:category:") {
+        return false;
+    }
+    if node.id.contains(":file:") {
+        return true;
+    }
+    let has_child = review
+        .nodes
+        .iter()
+        .any(|candidate| candidate.parent.as_deref() == Some(node.id.as_str()));
+    (node.parent.is_none() && !node.body.is_empty()) || (node.id.contains(":entry:") && has_child)
+}
+
+fn initial_review_index(review: &crate::git::AssistedReview) -> usize {
+    review
+        .nodes
+        .iter()
+        .position(|node| node.id.starts_with("branch:file:"))
+        .or_else(|| review.nodes.iter().position(|node| node.id == "branch"))
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::{AssistedReview, ReviewNode};
+
+    #[test]
+    fn review_defaults_show_file_rows_but_keep_file_children_collapsed() {
+        let review = AssistedReview {
+            report: String::new(),
+            nodes: vec![
+                ReviewNode {
+                    id: "branch".into(),
+                    parent: None,
+                    depth: 0,
+                    title: "Full diff against main".into(),
+                    body: Vec::new(),
+                    context: Vec::new(),
+                },
+                ReviewNode {
+                    id: "branch:category:production".into(),
+                    parent: Some("branch".into()),
+                    depth: 1,
+                    title: "Production (1 file, 1 entry point, +1 -1)".into(),
+                    body: Vec::new(),
+                    context: Vec::new(),
+                },
+                ReviewNode {
+                    id: "branch:file:0".into(),
+                    parent: Some("branch:category:production".into()),
+                    depth: 2,
+                    title: "src/lib.rs - 1 entry point (+1 -1)".into(),
+                    body: vec!["@@ -1 +1 @@".into()],
+                    context: Vec::new(),
+                },
+                ReviewNode {
+                    id: "branch:entry:0".into(),
+                    parent: Some("branch:file:0".into()),
+                    depth: 3,
+                    title: "src/lib.rs:1 in fn greet - updates greet (+1 -1)".into(),
+                    body: vec!["@@ -1 +1 @@".into()],
+                    context: Vec::new(),
+                },
+                ReviewNode {
+                    id: "summary".into(),
+                    parent: None,
+                    depth: 0,
+                    title: "Summary".into(),
+                    body: vec!["details".into()],
+                    context: Vec::new(),
+                },
+            ],
+        };
+
+        let collapsed = default_review_collapsed_nodes(&review);
+
+        assert!(!collapsed.contains("branch"));
+        assert!(!collapsed.contains("branch:category:production"));
+        assert!(collapsed.contains("branch:file:0"));
+        assert!(collapsed.contains("summary"));
+        assert_eq!(initial_review_index(&review), 2);
     }
 }
