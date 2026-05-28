@@ -7,8 +7,8 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use crate::config::{
-    COMMIT_PROMPT_PREFIX, LLAMA_SERVER_CHAT_ENDPOINT, LLM_MODEL, LLM_NUM_PREDICT, LLM_TEMPERATURE,
-    LLM_TOP_P,
+    COMMIT_PROMPT_PREFIX, LLM_MODEL, LLM_NUM_PREDICT, LLM_TEMPERATURE, LLM_TOP_P,
+    OLLAMA_CHAT_ENDPOINT,
 };
 use crate::state::{GenMsg, ReviewChatMessage, ReviewStyleFinding, ReviewStyleSeverity};
 
@@ -48,59 +48,57 @@ Established repo style:
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmProvider {
-    LlamaServer,
+    Ollama,
 }
 
 impl LlmProvider {
-    pub const ALL: [Self; 1] = [Self::LlamaServer];
+    pub const ALL: [Self; 1] = [Self::Ollama];
 
     pub fn label(self) -> &'static str {
-        "llama-server"
+        "ollama"
     }
 
     fn config_value(self) -> &'static str {
-        "llama-server"
+        "ollama"
     }
 
     fn from_config(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "llama" | "llama-server" | "llama_server" | "llamacpp" | "llama.cpp" => {
-                Some(Self::LlamaServer)
-            }
+            "ollama" | "ollama-server" | "ollama_server" | "llama" | "llama-server"
+            | "llama_server" | "llamacpp" | "llama.cpp" => Some(Self::Ollama),
             _ => None,
         }
     }
 
     fn default_endpoint(self) -> &'static str {
-        LLAMA_SERVER_CHAT_ENDPOINT
+        OLLAMA_CHAT_ENDPOINT
     }
 
     fn endpoint_env(self) -> Option<String> {
-        std::env::var("LG_LLAMA_SERVER_CHAT_ENDPOINT")
-            .or_else(|_| std::env::var("LG_LLAMA_SERVER_URL"))
+        std::env::var("LG_OLLAMA_CHAT_ENDPOINT")
+            .or_else(|_| std::env::var("LG_OLLAMA_URL"))
             .ok()
             .map(|endpoint| endpoint.trim().to_string())
             .filter(|endpoint| !endpoint.is_empty())
-            .map(|endpoint| normalize_llama_server_chat_endpoint(&endpoint))
+            .map(|endpoint| normalize_ollama_chat_endpoint(&endpoint))
     }
 }
 
 #[derive(Serialize)]
-struct LlamaServerChatRequest<'a> {
+struct OllamaChatRequest<'a> {
     model: &'a str,
     messages: Vec<ChatMessage>,
     stream: bool,
-    temperature: f32,
-    top_p: f32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<i32>,
-    enable_thinking: bool,
-    chat_template_kwargs: ChatTemplateKwargs,
+    options: OllamaOptions,
+    think: bool,
 }
 
 #[derive(Serialize)]
-struct ChatTemplateKwargs {
-    enable_thinking: bool,
+struct OllamaOptions {
+    temperature: f32,
+    top_p: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_predict: Option<i32>,
 }
 
 #[derive(Serialize)]
@@ -148,7 +146,7 @@ pub fn current_model() -> String {
 pub fn current_provider() -> LlmProvider {
     env_provider()
         .or_else(saved_provider)
-        .unwrap_or(LlmProvider::LlamaServer)
+        .unwrap_or(LlmProvider::Ollama)
 }
 
 pub fn current_endpoint() -> String {
@@ -161,14 +159,14 @@ pub fn endpoint_for_provider(provider: LlmProvider) -> String {
         .unwrap_or_else(|| provider.default_endpoint().to_owned())
 }
 
-fn normalize_llama_server_chat_endpoint(endpoint: &str) -> String {
+fn normalize_ollama_chat_endpoint(endpoint: &str) -> String {
     let endpoint = endpoint.trim().trim_end_matches('/');
-    if endpoint.ends_with("/v1/chat/completions") {
+    if endpoint.ends_with("/api/chat") {
         endpoint.to_string()
-    } else if endpoint.ends_with("/v1") {
-        format!("{endpoint}/chat/completions")
+    } else if endpoint.ends_with("/api") {
+        format!("{endpoint}/chat")
     } else {
-        format!("{endpoint}/v1/chat/completions")
+        format!("{endpoint}/api/chat")
     }
 }
 
@@ -545,9 +543,9 @@ fn truncate_line(line: &str, max_chars: usize) -> String {
     out
 }
 
-/// Stream tokens from the local llama-server OpenAI-compatible chat endpoint,
-/// routing reasoning chunks (and any inline `<think>...</think>` content) to
-/// [`GenMsg::Thinking`], and content chunks to [`GenMsg::Output`].
+/// Stream tokens from the local Ollama chat endpoint, routing reasoning chunks
+/// (and any inline `<think>...</think>` content) to [`GenMsg::Thinking`], and
+/// content chunks to [`GenMsg::Output`].
 /// Ends with a [`GenMsg::Done`] or [`GenMsg::Error`].
 pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
     stream_prompt(build_commit_prompt(&diff), Options::default(), finalize, tx);
@@ -769,29 +767,28 @@ fn stream_messages(
                 line,
             );
         }
+        if stream_sse_done_line(&line) {
+            let (tb, ob) = parser.flush(&tx, &mut full_output).unwrap_or((0, 0));
+            think_bytes += tb;
+            out_bytes += ob;
+            send_done(
+                &mut trace,
+                &finalizer,
+                &full_output,
+                DoneStats {
+                    reason: "sse_done".to_string(),
+                    eval_count: 0,
+                    prompt_eval_count: 0,
+                    total_ms: 0,
+                    eval_ms: 0,
+                    think_bytes,
+                    out_bytes,
+                },
+                &tx,
+            );
+            return;
+        }
         let Some(json_line) = stream_json_line(&line) else {
-            let trimmed = line.trim();
-            if trimmed == "data: [DONE]" {
-                let (tb, ob) = parser.flush(&tx, &mut full_output).unwrap_or((0, 0));
-                think_bytes += tb;
-                out_bytes += ob;
-                send_done(
-                    &mut trace,
-                    &finalizer,
-                    &full_output,
-                    DoneStats {
-                        reason: "sse_done",
-                        eval_count: 0,
-                        prompt_eval_count: 0,
-                        total_ms: 0,
-                        eval_ms: 0,
-                        think_bytes,
-                        out_bytes,
-                    },
-                    &tx,
-                );
-                return;
-            }
             continue;
         };
         let v: serde_json::Value = match serde_json::from_str(json_line) {
@@ -813,6 +810,23 @@ fn stream_messages(
             think_bytes += tb;
             out_bytes += ob;
         }
+        if let Some(done) = stream_done_stats(&v, think_bytes, out_bytes) {
+            let (tb, ob) = parser.flush(&tx, &mut full_output).unwrap_or((0, 0));
+            think_bytes += tb;
+            out_bytes += ob;
+            send_done(
+                &mut trace,
+                &finalizer,
+                &full_output,
+                DoneStats {
+                    think_bytes,
+                    out_bytes,
+                    ..done
+                },
+                &tx,
+            );
+            return;
+        }
     }
     let (tb, ob) = parser.flush(&tx, &mut full_output).unwrap_or((0, 0));
     think_bytes += tb;
@@ -822,7 +836,7 @@ fn stream_messages(
         &finalizer,
         &full_output,
         DoneStats {
-            reason: "loop_exhausted",
+            reason: "loop_exhausted".to_string(),
             eval_count: 0,
             prompt_eval_count: 0,
             total_ms: 0,
@@ -839,31 +853,37 @@ fn chat_request_body(
     messages: Vec<ChatMessage>,
     opts: Options,
 ) -> Result<serde_json::Value> {
-    Ok(serde_json::to_value(LlamaServerChatRequest {
+    Ok(serde_json::to_value(OllamaChatRequest {
         model,
         messages,
         stream: true,
-        temperature: opts.temperature,
-        top_p: opts.top_p,
-        max_tokens: (opts.num_predict > 0).then_some(opts.num_predict),
-        enable_thinking: false,
-        chat_template_kwargs: ChatTemplateKwargs {
-            enable_thinking: false,
+        options: OllamaOptions {
+            temperature: opts.temperature,
+            top_p: opts.top_p,
+            num_predict: (opts.num_predict > 0).then_some(opts.num_predict),
         },
+        think: false,
     })?)
+}
+
+fn stream_sse_done_line(line: &str) -> bool {
+    line.trim() == "data: [DONE]"
 }
 
 fn stream_json_line(line: &str) -> Option<&str> {
     let trimmed = line.trim();
-    trimmed
-        .strip_prefix("data:")
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && *line != "[DONE]")
+    if let Some(data) = trimmed.strip_prefix("data:") {
+        let data = data.trim();
+        (!data.is_empty() && data != "[DONE]").then_some(data)
+    } else {
+        trimmed.starts_with('{').then_some(trimmed)
+    }
 }
 
 fn stream_thinking_chunk(v: &serde_json::Value) -> Option<&str> {
     v.pointer("/choices/0/delta/reasoning_content")
         .or_else(|| v.pointer("/choices/0/delta/thinking"))
+        .or_else(|| v.pointer("/message/thinking"))
         .and_then(|x| x.as_str())
         .filter(|s| !s.is_empty())
 }
@@ -871,12 +891,14 @@ fn stream_thinking_chunk(v: &serde_json::Value) -> Option<&str> {
 fn stream_output_chunk(v: &serde_json::Value) -> Option<&str> {
     v.pointer("/choices/0/delta/content")
         .or_else(|| v.pointer("/choices/0/message/content"))
+        .or_else(|| v.pointer("/message/content"))
+        .or_else(|| v.pointer("/response"))
         .and_then(|x| x.as_str())
         .filter(|s| !s.is_empty())
 }
 
-struct DoneStats<'a> {
-    reason: &'a str,
+struct DoneStats {
+    reason: String,
     eval_count: u64,
     prompt_eval_count: u64,
     total_ms: u64,
@@ -885,11 +907,39 @@ struct DoneStats<'a> {
     out_bytes: usize,
 }
 
+fn stream_done_stats(
+    v: &serde_json::Value,
+    think_bytes: usize,
+    out_bytes: usize,
+) -> Option<DoneStats> {
+    (v.get("done").and_then(|done| done.as_bool()) == Some(true)).then(|| DoneStats {
+        reason: v
+            .get("done_reason")
+            .and_then(|reason| reason.as_str())
+            .unwrap_or("done")
+            .to_string(),
+        eval_count: json_u64(v, "eval_count"),
+        prompt_eval_count: json_u64(v, "prompt_eval_count"),
+        total_ms: nanos_to_ms(json_u64(v, "total_duration")),
+        eval_ms: nanos_to_ms(json_u64(v, "eval_duration")),
+        think_bytes,
+        out_bytes,
+    })
+}
+
+fn json_u64(v: &serde_json::Value, key: &str) -> u64 {
+    v.get(key).and_then(|value| value.as_u64()).unwrap_or(0)
+}
+
+fn nanos_to_ms(nanos: u64) -> u64 {
+    nanos / 1_000_000
+}
+
 fn send_done(
     trace: &mut Option<std::fs::File>,
     finalizer: &dyn Fn(&str) -> String,
     full_output: &str,
-    stats: DoneStats<'_>,
+    stats: DoneStats,
     tx: &Sender<GenMsg>,
 ) {
     let final_output = finalizer(full_output);
@@ -1440,36 +1490,40 @@ mod tests {
     }
 
     #[test]
-    fn llm_provider_parses_llama_server_aliases() {
+    fn llm_provider_parses_ollama_aliases() {
+        assert_eq!(
+            LlmProvider::from_config("ollama"),
+            Some(LlmProvider::Ollama)
+        );
         assert_eq!(
             LlmProvider::from_config("llama-server"),
-            Some(LlmProvider::LlamaServer)
+            Some(LlmProvider::Ollama)
         );
         assert_eq!(
             LlmProvider::from_config("llama.cpp"),
-            Some(LlmProvider::LlamaServer)
+            Some(LlmProvider::Ollama)
         );
         assert_eq!(LlmProvider::from_config("unsupported"), None);
     }
 
     #[test]
-    fn llama_server_url_env_accepts_base_url() {
+    fn ollama_url_env_accepts_base_url() {
         assert_eq!(
-            normalize_llama_server_chat_endpoint("http://localhost:3636"),
-            "http://localhost:3636/v1/chat/completions"
+            normalize_ollama_chat_endpoint("http://localhost:11434"),
+            "http://localhost:11434/api/chat"
         );
         assert_eq!(
-            normalize_llama_server_chat_endpoint("http://localhost:3636/v1/chat/completions"),
-            "http://localhost:3636/v1/chat/completions"
+            normalize_ollama_chat_endpoint("http://localhost:11434/api/chat"),
+            "http://localhost:11434/api/chat"
         );
         assert_eq!(
-            normalize_llama_server_chat_endpoint("http://localhost:3636/v1"),
-            "http://localhost:3636/v1/chat/completions"
+            normalize_ollama_chat_endpoint("http://localhost:11434/api"),
+            "http://localhost:11434/api/chat"
         );
     }
 
     #[test]
-    fn llama_server_request_uses_openai_chat_shape() {
+    fn ollama_request_uses_native_chat_shape() {
         let opts = Options {
             num_predict: 42,
             ..Default::default()
@@ -1486,21 +1540,52 @@ mod tests {
 
         assert_eq!(body["model"], "qwen-local");
         assert_eq!(body["stream"], true);
-        assert_eq!(body["max_tokens"], 42);
-        assert_eq!(body["enable_thinking"], false);
-        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(body["think"], false);
+        assert_eq!(body["options"]["num_predict"], 42);
+        assert_eq!(body["options"]["temperature"], LLM_TEMPERATURE);
+        assert_eq!(body["options"]["top_p"], LLM_TOP_P);
+        assert!(body.get("max_tokens").is_none());
+        assert!(body.get("enable_thinking").is_none());
+        assert!(body.get("chat_template_kwargs").is_none());
         assert!(body.get("keep_alive").is_none());
-        assert!(body.get("options").is_none());
     }
 
     #[test]
-    fn llama_server_stream_reads_sse_deltas() {
+    fn ollama_stream_reads_ndjson_chunks() {
+        let line = r#"{"message":{"content":"hello","thinking":"plan"},"done":false}"#;
+        let json = stream_json_line(line).unwrap();
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+
+        assert_eq!(stream_output_chunk(&value), Some("hello"));
+        assert_eq!(stream_thinking_chunk(&value), Some("plan"));
+        assert!(stream_done_stats(&value, 4, 5).is_none());
+    }
+
+    #[test]
+    fn openai_compatible_stream_reader_still_accepts_sse_deltas() {
         let line = r#"data: {"choices":[{"delta":{"content":"hello"}}]}"#;
         let json = stream_json_line(line).unwrap();
         let value: serde_json::Value = serde_json::from_str(json).unwrap();
 
         assert_eq!(stream_output_chunk(&value), Some("hello"));
-        assert_eq!(stream_json_line("data: [DONE]"), None);
+        assert!(stream_sse_done_line("data: [DONE]"));
+    }
+
+    #[test]
+    fn ollama_stream_done_reads_generation_stats() {
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{"done":true,"done_reason":"stop","eval_count":9,"prompt_eval_count":7,"total_duration":3000000,"eval_duration":2000000}"#,
+        )
+        .unwrap();
+        let stats = stream_done_stats(&value, 4, 5).unwrap();
+
+        assert_eq!(stats.reason, "stop");
+        assert_eq!(stats.eval_count, 9);
+        assert_eq!(stats.prompt_eval_count, 7);
+        assert_eq!(stats.total_ms, 3);
+        assert_eq!(stats.eval_ms, 2);
+        assert_eq!(stats.think_bytes, 4);
+        assert_eq!(stats.out_bytes, 5);
     }
 
     #[test]

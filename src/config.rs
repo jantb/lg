@@ -1,6 +1,6 @@
 use ratatui::style::Color;
 
-pub const LLAMA_SERVER_CHAT_ENDPOINT: &str = "http://localhost:3636/v1/chat/completions";
+pub const OLLAMA_CHAT_ENDPOINT: &str = "http://localhost:11434/api/chat";
 pub const LLM_TEMPERATURE: f32 = 0.2;
 pub const LLM_TOP_P: f32 = 0.9;
 pub const LLM_NUM_PREDICT: i32 = 160;
