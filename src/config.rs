@@ -4,9 +4,12 @@ pub const OLLAMA_CHAT_ENDPOINT: &str = "http://localhost:11434/api/chat";
 pub const LLM_TEMPERATURE: f32 = 0.2;
 pub const LLM_TOP_P: f32 = 0.9;
 pub const LLM_NUM_PREDICT: i32 = 160;
-pub const LLM_MODEL: &str = "qwen3.6:27b-coding-nvfp4";
-pub const LLM_MODEL_CHOICES: &[&str] =
-    &["qwen3.6:27b-coding-nvfp4", "qwen3.6:35b-a3b-coding-nvfp4"];
+pub const LLM_MODEL: &str = "qwen3.6:35b-mlx";
+pub const LLM_MODEL_CHOICES: &[&str] = &[
+    "qwen3.6:35b-mlx",
+    "qwen3.6:27b-coding-nvfp4",
+    "qwen3.6:35b-a3b-coding-nvfp4",
+];
 pub const COMMIT_PROMPT_PREFIX: &str = "\
 Write a concise commit message for these staged changes.
 
