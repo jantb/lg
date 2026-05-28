@@ -216,6 +216,18 @@ impl App {
                     },
                 );
             }
+            PendingAction::RollbackPath { path, is_dir } => {
+                spawn_operation(
+                    &mut self.state,
+                    "rolling back",
+                    OperationKind::FileSystem,
+                    move || {
+                        crate::git::rollback_worktree_path(&path)?;
+                        let label = if is_dir { "folder" } else { "file" };
+                        Ok(format!("rolled back {label} {path}"))
+                    },
+                );
+            }
             PendingAction::DeletePath { path, is_dir } => {
                 spawn_operation(
                     &mut self.state,

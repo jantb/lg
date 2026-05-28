@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -140,6 +140,7 @@ struct DiffFileSummary {
 pub fn current_model() -> String {
     env_model()
         .or_else(saved_model)
+        .or_else(first_available_ollama_model)
         .unwrap_or_else(|| LLM_MODEL.to_owned())
 }
 
@@ -168,6 +169,41 @@ fn normalize_ollama_chat_endpoint(endpoint: &str) -> String {
     } else {
         format!("{endpoint}/api/chat")
     }
+}
+
+fn ollama_tags_endpoint() -> String {
+    let endpoint = endpoint_for_provider(current_provider());
+    let base = endpoint.trim_end_matches("/api/chat").trim_end_matches('/');
+    format!("{base}/api/tags")
+}
+
+#[derive(Deserialize)]
+struct OllamaTagsResponse {
+    models: Vec<OllamaTagModel>,
+}
+
+#[derive(Deserialize)]
+struct OllamaTagModel {
+    name: String,
+}
+
+fn first_available_ollama_model() -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .ok()?;
+    client
+        .get(ollama_tags_endpoint())
+        .send()
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json::<OllamaTagsResponse>()
+        .ok()?
+        .models
+        .into_iter()
+        .map(|model| model.name.trim().to_string())
+        .find(|name| !name.is_empty())
 }
 
 pub fn env_model_active() -> bool {

@@ -149,6 +149,30 @@ fn delete_worktree_path_rejects_unsafe_paths() {
 }
 
 #[test]
+fn rollback_worktree_path_discards_folder_changes() {
+    let dir = init_repo();
+    let _cwd = CwdGuard::new(dir.path());
+    fs::create_dir_all("src").unwrap();
+    fs::write("src/main.rs", "original\n").unwrap();
+    git_ok(dir.path(), &["add", "src/main.rs"]);
+    commit_in(dir.path(), "initial");
+
+    fs::write("src/main.rs", "changed\n").unwrap();
+    fs::write("src/added.rs", "added\n").unwrap();
+    fs::write("src/untracked.rs", "untracked\n").unwrap();
+    git_ok(dir.path(), &["add", "src/main.rs", "src/added.rs"]);
+
+    lg::git::rollback_worktree_path("src").unwrap();
+
+    assert_eq!(fs::read_to_string("src/main.rs").unwrap(), "original\n");
+    assert!(!dir.path().join("src/added.rs").exists());
+    assert!(!dir.path().join("src/untracked.rs").exists());
+    let (unstaged, staged) = status_in(dir.path());
+    assert!(unstaged.is_empty(), "unstaged: {unstaged:?}");
+    assert!(staged.is_empty(), "staged: {staged:?}");
+}
+
+#[test]
 fn project_open_command_opens_rust_repo_root() {
     let dir = init_repo();
     fs::write(

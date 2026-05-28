@@ -343,3 +343,44 @@ fn files_panel_d_deletes_selected_file_or_folder() {
         })
     );
 }
+
+#[test]
+fn files_panel_r_rolls_back_selected_file_or_folder() {
+    let mut state = AppState::new();
+    state.files = vec![FileEntry {
+        path: "src/main.rs".into(),
+        x: ' ',
+        y: 'M',
+    }];
+
+    panel::files::handle_key(&mut state, key(KeyCode::Char('r'))).unwrap();
+    assert_eq!(state.pending_action, None);
+    assert!(
+        state
+            .status
+            .as_ref()
+            .is_some_and(|status| status.text.contains("select a file or folder"))
+    );
+
+    state.status = None;
+    state.files_idx = 1;
+    panel::files::handle_key(&mut state, key(KeyCode::Char('r'))).unwrap();
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::RollbackPath {
+            path: "src".into(),
+            is_dir: true,
+        })
+    );
+
+    state.pending_action = None;
+    state.files_idx = 2;
+    panel::files::handle_key(&mut state, key(KeyCode::Char('r'))).unwrap();
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::RollbackPath {
+            path: "src/main.rs".into(),
+            is_dir: false,
+        })
+    );
+}
