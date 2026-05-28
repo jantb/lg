@@ -127,6 +127,30 @@ fn main_footer_and_help_call_out_review_mode() {
 }
 
 #[test]
+fn review_footer_shows_flag_shortcut_in_review_mode() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 20)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![ReviewNode {
+            id: "branch".into(),
+            parent: None,
+            depth: 0,
+            title: "Full diff against main".into(),
+            body: Vec::new(),
+            context: Vec::new(),
+        }],
+    });
+
+    app.render().unwrap();
+    let footer = buffer_text(&app);
+
+    assert!(footer.contains("f flag"), "{footer}");
+    assert!(!footer.contains("f fetch"), "{footer}");
+}
+
+#[test]
 fn author_modal_saves_subtree_rule_from_fields() {
     let mut state = AppState::new();
     state.modal = Modal::Author;
