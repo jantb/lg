@@ -108,6 +108,7 @@ pub(super) fn spawn_review_style_flags(state: &mut AppState) {
     if file_contexts.is_empty() {
         state.review_style_findings.clear();
         state.review_flag_active_path = None;
+        state.set_status("no source files to flag", false);
         return;
     }
     if let Some(mut job) = state.review_flag_job.take() {
@@ -253,7 +254,10 @@ fn review_flag_candidates(state: &AppState) -> Vec<String> {
         let Some(path) = review_node_path(&node.title) else {
             continue;
         };
-        if is_kotlin_path(path) && !paths.iter().any(|candidate| candidate == path) {
+        if is_source_path(path)
+            && !is_test_path(path)
+            && !paths.iter().any(|candidate| candidate == path)
+        {
             paths.push(path.to_string());
         }
     }
@@ -300,10 +304,6 @@ fn review_node_path(title: &str) -> Option<&str> {
         .unwrap_or(location)
         .trim();
     (!path.is_empty()).then_some(path)
-}
-
-fn is_kotlin_path(path: &str) -> bool {
-    path.ends_with(".kt") || path.ends_with(".kts")
 }
 
 fn review_style_flag_file(
@@ -631,5 +631,68 @@ diff --git a/src/main/kotlin/me/spenn/BalanceService.kt b/src/main/kotlin/me/spe
         );
         assert!(!context.contains("- hidden from overview"), "{context}");
         assert!(!context.contains("diff --git a/"), "{context}");
+    }
+
+    #[test]
+    fn review_flag_candidates_include_kotlin_and_rust_source_files() {
+        let mut state = AppState::new();
+        state.review = Some(AssistedReview {
+            report: "flat report".into(),
+            nodes: vec![
+                ReviewNode {
+                    id: "branch:file:0".into(),
+                    parent: Some("branch".into()),
+                    depth: 1,
+                    title: "src/lib.rs - 1 entry point (+1 -1)".into(),
+                    body: Vec::new(),
+                    context: Vec::new(),
+                },
+                ReviewNode {
+                    id: "branch:file:1".into(),
+                    parent: Some("branch".into()),
+                    depth: 1,
+                    title: "src/main/kotlin/App.kt - 1 entry point (+1 -1)".into(),
+                    body: Vec::new(),
+                    context: Vec::new(),
+                },
+                ReviewNode {
+                    id: "branch:file:2".into(),
+                    parent: Some("branch".into()),
+                    depth: 1,
+                    title: "tests/lib_tests.rs - 1 entry point (+1 -1)".into(),
+                    body: Vec::new(),
+                    context: Vec::new(),
+                },
+            ],
+        });
+
+        assert_eq!(
+            review_flag_candidates(&state),
+            vec!["src/lib.rs", "src/main/kotlin/App.kt"]
+        );
+    }
+
+    #[test]
+    fn review_style_flag_pass_reports_when_no_source_files_are_available() {
+        let mut state = AppState::new();
+        state.review = Some(AssistedReview {
+            report: "flat report".into(),
+            nodes: vec![ReviewNode {
+                id: "branch:file:0".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: "README.md - updates docs (+1 -1)".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            }],
+        });
+
+        spawn_review_style_flags(&mut state);
+
+        assert!(state.review_flag_job.is_none());
+        assert_eq!(
+            state.status.as_ref().map(|status| status.text.as_str()),
+            Some("no source files to flag")
+        );
     }
 }

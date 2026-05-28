@@ -414,7 +414,8 @@ fn build_review_pr_text_prompt(context: &str) -> String {
 fn build_review_style_flag_prompt(path: &str, context: &str) -> String {
     let file_role = review_style_file_role(path);
     format!(
-        "Review this single changed Kotlin file for concrete violations of the established repo style.\n\
+        "Review this single changed source file for concrete violations of the established repo style.\n\
+         Apply only the style rules that are relevant to this file's language, framework, and role.\n\
          Return exactly three lines:\n\
          severity: OK|WARN|FAIL\n\
          line: <new-file line number, or unknown>\n\
@@ -1500,8 +1501,10 @@ mod tests {
         let prompt =
             build_review_style_flag_prompt("src/main/kotlin/App.kt", "updates controller logic");
 
+        assert!(prompt.contains("single changed source file"));
         assert!(prompt.contains("severity: OK|WARN|FAIL"));
         assert!(prompt.contains("line: <new-file line number, or unknown>"));
+        assert!(prompt.contains("relevant to this file's language"));
         assert!(prompt.contains("concrete rename suggestion"));
         assert!(prompt.contains("non-Service/non-flow files"));
         assert!(prompt.contains(
