@@ -2170,6 +2170,74 @@ fn merge_main_flow_stashes_dirty_work_updates_main_and_returns_to_feature() {
 }
 
 #[test]
+fn merge_main_flow_pulls_current_branch_before_merging_main() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+
+    let feature = "feature/pull-current-before-merge-main";
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("feature.txt"), "feature").unwrap();
+    stage_in(dir.path(), "feature.txt");
+    commit_in(dir.path(), "feature commit");
+    git_ok(dir.path(), &["push", "-u", "origin", feature]);
+
+    let updater = tempfile::tempdir().expect("updater tempdir");
+    git_ok(
+        updater.path(),
+        &["clone", bare.path().to_str().unwrap(), "."],
+    );
+    git_ok(
+        updater.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git_ok(updater.path(), &["config", "user.name", "Test User"]);
+
+    git_ok(updater.path(), &["checkout", feature]);
+    fs::write(updater.path().join("remote-feature.txt"), "remote feature").unwrap();
+    stage_in(updater.path(), "remote-feature.txt");
+    commit_in(updater.path(), "remote feature update");
+    git_ok(updater.path(), &["push", "origin", feature]);
+
+    git_ok(updater.path(), &["checkout", "main"]);
+    fs::write(updater.path().join("main.txt"), "main update").unwrap();
+    stage_in(updater.path(), "main.txt");
+    commit_in(updater.path(), "main update");
+    git_ok(updater.path(), &["push", "origin", "main"]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::flow_merge_main_into_current(feature).expect("merge main into feature");
+
+    assert_eq!(head_branch(dir.path()), feature);
+    let log = git(dir.path(), &["log", "--oneline", feature]);
+    let log = String::from_utf8_lossy(&log.stdout);
+    assert!(
+        log.contains("remote feature update"),
+        "feature branch did not pull the remote feature update: {log}"
+    );
+    assert!(
+        log.contains("main update"),
+        "feature branch did not receive origin/main: {log}"
+    );
+
+    let remote_log = git(bare.path(), &["log", "--oneline", feature]);
+    let remote_log = String::from_utf8_lossy(&remote_log.stdout);
+    assert!(
+        remote_log.contains("main update"),
+        "remote feature branch was not pushed after merge-main: {remote_log}"
+    );
+}
+
+#[test]
 fn merge_main_all_branches_merges_and_pushes_tracked_branches() {
     let dir = init_repo();
     fs::write(dir.path().join("init.txt"), "init").unwrap();

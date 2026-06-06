@@ -181,6 +181,7 @@ pub(super) fn workflow_steps(
             "stash current changes".into(),
             "create safety backup".into(),
             "fetch origin".into(),
+            format!("pull {current}"),
             "checkout main".into(),
             "update main from origin/main".into(),
             format!("checkout {current}"),

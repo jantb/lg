@@ -571,21 +571,51 @@ fn toggle_review_tree_node(state: &mut AppState) {
     if let Some(review) = &state.review
         && let Some(node) = review.nodes.get(state.review_idx)
     {
+        let node_id = node.id.clone();
+        let descendant_ids = review_descendant_ids(review, &node_id);
         let has_child = review
             .nodes
             .iter()
-            .any(|candidate| candidate.parent.as_deref() == Some(node.id.as_str()));
-        let has_body = renders_review_body(&node.id) && !node.body.is_empty();
+            .any(|candidate| candidate.parent.as_deref() == Some(node_id.as_str()));
+        let has_body = renders_review_body(&node_id) && !node.body.is_empty();
         if !has_child && !has_body {
             return;
         }
-        if state.review_collapsed.contains(&node.id) {
-            state.review_collapsed.remove(&node.id);
+        if state.review_collapsed.contains(&node_id) {
+            state.review_collapsed.remove(&node_id);
         } else {
-            state.review_collapsed.insert(node.id.clone());
+            state.review_collapsed.insert(node_id.clone());
+            state.review_context_open.remove(&node_id);
+            state.review_context_restore_collapsed.remove(&node_id);
+            for descendant_id in descendant_ids {
+                state.review_collapsed.insert(descendant_id.clone());
+                state.review_context_open.remove(&descendant_id);
+                state
+                    .review_context_restore_collapsed
+                    .remove(&descendant_id);
+            }
         }
         clamp_review_selection(state);
         ensure_review_selection_visible(state);
+    }
+}
+
+fn review_descendant_ids(review: &crate::git::AssistedReview, node_id: &str) -> Vec<String> {
+    let mut descendant_ids = Vec::new();
+    collect_review_descendant_ids(review, node_id, &mut descendant_ids);
+    descendant_ids
+}
+
+fn collect_review_descendant_ids(
+    review: &crate::git::AssistedReview,
+    node_id: &str,
+    descendant_ids: &mut Vec<String>,
+) {
+    for candidate in &review.nodes {
+        if candidate.parent.as_deref() == Some(node_id) {
+            descendant_ids.push(candidate.id.clone());
+            collect_review_descendant_ids(review, &candidate.id, descendant_ids);
+        }
     }
 }
 

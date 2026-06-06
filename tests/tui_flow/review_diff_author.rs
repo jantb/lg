@@ -2249,3 +2249,87 @@ fn review_panel_starts_fully_collapsed_at_entry_roots() {
         "collapsed root should hide recursive children: {collapsed}"
     );
 }
+
+#[test]
+fn review_panel_collapsing_category_recursively_closes_descendants() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review = Some(AssistedReview {
+        report: "flat report".into(),
+        nodes: vec![
+            ReviewNode {
+                id: "branch".into(),
+                parent: None,
+                depth: 0,
+                title: "Full diff against main".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:category:production".into(),
+                parent: Some("branch".into()),
+                depth: 1,
+                title: "Production (2 files, 2 entry points, +2 -2)".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:file:0".into(),
+                parent: Some("branch:category:production".into()),
+                depth: 2,
+                title: "src/lib.rs - 1 entry point (+1 -1)".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:entry:0".into(),
+                parent: Some("branch:file:0".into()),
+                depth: 3,
+                title: "src/lib.rs:2 in fn greet - updates greet (+1 -1)".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+            ReviewNode {
+                id: "branch:file:1".into(),
+                parent: Some("branch:entry:0".into()),
+                depth: 4,
+                title: "src/format.rs - 1 entry point (+1 -1)".into(),
+                body: Vec::new(),
+                context: Vec::new(),
+            },
+        ],
+    });
+    app.state.review_idx = 1;
+    app.state.review_context_open.insert("branch:file:0".into());
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char(' '))).unwrap();
+
+    assert!(
+        app.state
+            .review_collapsed
+            .contains("branch:category:production")
+    );
+    assert!(app.state.review_collapsed.contains("branch:file:0"));
+    assert!(app.state.review_collapsed.contains("branch:entry:0"));
+    assert!(app.state.review_collapsed.contains("branch:file:1"));
+    assert!(!app.state.review_context_open.contains("branch:file:0"));
+
+    app.render().unwrap();
+    let collapsed = buffer_text(&app);
+    assert!(collapsed.contains("Production"), "{collapsed}");
+    assert!(
+        !collapsed.contains("src/lib.rs"),
+        "collapsed category should hide descendant files: {collapsed}"
+    );
+
+    panel::main::handle_key(&mut app.state, key(KeyCode::Char(' '))).unwrap();
+
+    app.render().unwrap();
+    let reopened = buffer_text(&app);
+    assert!(reopened.contains("src/lib.rs"), "{reopened}");
+    assert!(
+        !reopened.contains("fn greet") && !reopened.contains("src/format.rs"),
+        "reopening the category should keep descendant branches closed: {reopened}"
+    );
+}

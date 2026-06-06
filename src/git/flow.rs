@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST, DEFAULT_PUSH_REMOTE};
 
-use super::{head_branch, list_branches, run, run_combined, stage};
+use super::{counts_ahead_behind, head_branch, list_branches, run, run_combined, stage};
 
 const SAFETY_REF_PREFIX: &str = "lg/backup/";
 const SAFETY_REF_KEEP: usize = 20;
@@ -175,6 +175,8 @@ pub fn flow_merge_main_into_current_with_progress(
     progress();
     run(&["fetch"])?;
     progress();
+    pull_current_branch_for_merge_main(current_branch)?;
+    progress();
     run(&["checkout", BRANCH_MAIN])?;
     progress();
     run(&["pull", "--rebase", DEFAULT_PUSH_REMOTE, BRANCH_MAIN])?;
@@ -189,6 +191,23 @@ pub fn flow_merge_main_into_current_with_progress(
     progress();
     delete_safety_ref(&safety_ref)?;
     Ok(format!("merged origin/{BRANCH_MAIN} into {current_branch}"))
+}
+
+fn pull_current_branch_for_merge_main(current_branch: &str) -> Result<()> {
+    if let Ok((ahead, behind)) = counts_ahead_behind() {
+        if ahead > 0 && behind > 0 {
+            run_combined(&["merge", "--no-edit", "@{u}"])?;
+        } else {
+            run_combined(&["pull", "--ff-only"])?;
+        }
+        return Ok(());
+    }
+
+    let remote_branch = format!("{DEFAULT_PUSH_REMOTE}/{current_branch}");
+    if ref_exists(&remote_branch) {
+        run_combined(&["pull", "--ff-only", DEFAULT_PUSH_REMOTE, current_branch])?;
+    }
+    Ok(())
 }
 
 pub fn flow_release_current(current_branch: &str, target_branch: &str) -> Result<String> {
