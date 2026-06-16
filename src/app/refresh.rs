@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::sync::mpsc::Receiver;
 
 use crate::config::{COMMIT_LIST_LIMIT, DEFAULT_PUSH_REMOTE};
@@ -108,27 +109,60 @@ pub(super) fn prime_files(state: &mut AppState) {
     }
 }
 
-fn path_has_ignored_component(path: &Path) -> bool {
-    if is_git_head_path(path) {
-        return false;
+fn path_should_refresh(path: &Path) -> bool {
+    let mut git_relative = Vec::new();
+    let mut in_git_dir = false;
+
+    for component in path.components() {
+        let Component::Normal(name) = component else {
+            continue;
+        };
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if in_git_dir {
+            git_relative.push(name);
+        } else if name == ".git" {
+            in_git_dir = true;
+        } else if name == "target" {
+            return false;
+        }
     }
-    path.components().any(|component| match component {
-        Component::Normal(name) => name
-            .to_str()
-            .is_some_and(|name| matches!(name, ".git" | "target")),
-        _ => false,
-    })
+
+    !in_git_dir || git_metadata_path_should_refresh(&git_relative)
 }
 
-fn is_git_head_path(path: &Path) -> bool {
-    let mut components = path.components().rev();
+fn git_metadata_path_should_refresh(path: &[&str]) -> bool {
+    let Some(first) = path.first().copied() else {
+        return true;
+    };
+
     matches!(
-        (components.next(), components.next()),
-        (
-            Some(Component::Normal(file)),
-            Some(Component::Normal(dir))
-        ) if file.to_str() == Some("HEAD") && dir.to_str() == Some(".git")
-    )
+        first,
+        "HEAD"
+            | "ORIG_HEAD"
+            | "FETCH_HEAD"
+            | "MERGE_HEAD"
+            | "MERGE_MODE"
+            | "MERGE_MSG"
+            | "REBASE_HEAD"
+            | "CHERRY_PICK_HEAD"
+            | "REVERT_HEAD"
+            | "SQUASH_MSG"
+            | "AUTO_MERGE"
+            | "index"
+            | "packed-refs"
+            | "shallow"
+            | "config"
+            | "refs"
+            | "logs"
+            | "worktrees"
+            | "modules"
+            | "rebase-apply"
+            | "rebase-merge"
+            | "sequencer"
+    ) || first.starts_with("sharedindex.")
+        || matches!(path, ["info", "exclude"])
 }
 
 pub(super) fn should_refresh_for_fs_event(event: &notify::Event) -> bool {
@@ -138,10 +172,7 @@ pub(super) fn should_refresh_for_fs_event(event: &notify::Event) -> bool {
     if event.paths.is_empty() {
         return true;
     }
-    event
-        .paths
-        .iter()
-        .any(|path| !path_has_ignored_component(path))
+    event.paths.iter().any(|path| path_should_refresh(path))
 }
 
 pub(super) fn watch_current_dir()
@@ -153,9 +184,131 @@ pub(super) fn watch_current_dir()
     .context("start file watcher")?;
 
     let cwd = std::env::current_dir().context("resolve current directory")?;
+    let repo_root = crate::git::repo_root()
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| cwd.clone());
     watcher
-        .watch(&cwd, RecursiveMode::Recursive)
-        .with_context(|| format!("watch {}", cwd.display()))?;
+        .watch(&repo_root, RecursiveMode::Recursive)
+        .with_context(|| format!("watch {}", repo_root.display()))?;
+
+    let repo_root_canonical = canonical_path(&repo_root);
+    for git_dir in git_metadata_dirs(&cwd) {
+        let git_dir_canonical = canonical_path(&git_dir);
+        if git_dir_canonical.starts_with(&repo_root_canonical) {
+            continue;
+        }
+        watcher
+            .watch(&git_dir, RecursiveMode::Recursive)
+            .with_context(|| format!("watch {}", git_dir.display()))?;
+    }
 
     Ok((watcher, rx))
+}
+
+fn git_metadata_dirs(cwd: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for arg in ["--git-dir", "--git-common-dir"] {
+        let Some(path) = git_rev_parse_path(cwd, arg) else {
+            continue;
+        };
+        push_unique_path(&mut dirs, canonical_path(&path));
+    }
+    dirs
+}
+
+fn git_rev_parse_path(cwd: &Path, arg: &str) -> Option<PathBuf> {
+    let out = Command::new("git")
+        .args(["rev-parse", arg])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let path = text.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(path);
+    Some(if path.is_absolute() {
+        path
+    } else {
+        cwd.join(path)
+    })
+}
+
+fn canonical_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_refresh_for_fs_event;
+    use notify::{
+        Event, EventKind,
+        event::{AccessKind, AccessMode, ModifyKind},
+    };
+    use std::path::PathBuf;
+
+    fn modify_event(path: &str) -> Event {
+        Event::new(EventKind::Modify(ModifyKind::Any)).add_path(PathBuf::from(path))
+    }
+
+    #[test]
+    fn refreshes_for_git_refs_written_by_external_commits_and_pushes() {
+        for path in [
+            ".git/HEAD",
+            ".git/refs/heads/main",
+            ".git/refs/heads/target",
+            ".git/refs/remotes/origin/main",
+            ".git/logs/refs/heads/main",
+            ".git/packed-refs",
+            ".git/index",
+            ".git/worktrees/feature/HEAD",
+            ".git/modules/lib/refs/heads/main",
+        ] {
+            assert!(
+                should_refresh_for_fs_event(&modify_event(path)),
+                "{path} should trigger refresh"
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_noisy_git_internals_and_build_output() {
+        for path in [
+            ".git/objects/ab/cdef",
+            ".git/gc.log",
+            ".git/hooks/pre-commit",
+            "target/debug/lg",
+        ] {
+            assert!(
+                !should_refresh_for_fs_event(&modify_event(path)),
+                "{path} should not trigger refresh"
+            );
+        }
+    }
+
+    #[test]
+    fn refreshes_for_worktree_changes_and_unknown_path_events() {
+        assert!(should_refresh_for_fs_event(&modify_event("src/main.rs")));
+        assert!(should_refresh_for_fs_event(&Event::new(EventKind::Modify(
+            ModifyKind::Any
+        ))));
+    }
+
+    #[test]
+    fn ignores_access_events() {
+        let event = Event::new(EventKind::Access(AccessKind::Close(AccessMode::Read)))
+            .add_path(PathBuf::from(".git/refs/heads/main"));
+
+        assert!(!should_refresh_for_fs_event(&event));
+    }
 }
