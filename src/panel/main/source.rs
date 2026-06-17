@@ -2,14 +2,20 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
-use crate::{state::AppState, ui};
+use crate::{
+    state::{AppState, DiffViewMode},
+    ui,
+};
 
 const STYLE_WARN_NOTE_BG: Color = Color::Rgb(92, 68, 18);
 const STYLE_FAIL_NOTE_BG: Color = Color::Rgb(88, 24, 30);
 const STYLE_WARN_LABEL_BG: Color = Color::Yellow;
 const STYLE_FAIL_LABEL_BG: Color = Color::Red;
+const INLINE_ADDED_BG: Color = Color::Rgb(24, 54, 34);
+const INLINE_REMOVED_BG: Color = Color::Rgb(60, 28, 38);
+const SIDE_SEPARATOR: &str = " | ";
 
 pub(super) struct SourceSection {
     pub path: String,
@@ -45,6 +51,8 @@ pub(super) fn review_source_context_lines(
 ) -> Vec<Line<'static>> {
     let mut lines = vec![section_header(indent, "source context")];
     let sections = source_sections(state, review, node);
+    let side_by_side = side_by_side_diff_enabled(state);
+    let viewport_width = state.diff_viewport_width;
     if !sections.is_empty() {
         let multiple = sections.len() > 1;
         for section in sections {
@@ -54,7 +62,11 @@ pub(super) fn review_source_context_lines(
                 &section.body,
                 &section.notes,
                 indent,
-                multiple,
+                SourceRenderOptions {
+                    show_path: multiple,
+                    side_by_side,
+                    viewport_width,
+                },
             ) {
                 lines.append(&mut source);
             } else {
@@ -64,6 +76,8 @@ pub(super) fn review_source_context_lines(
                     Some(&section.path),
                     &section.notes,
                     indent,
+                    side_by_side,
+                    viewport_width,
                 ));
             }
         }
@@ -76,8 +90,14 @@ pub(super) fn review_source_context_lines(
         syntax_path,
         &BTreeMap::new(),
         indent,
+        side_by_side,
+        viewport_width,
     ));
     lines
+}
+
+fn side_by_side_diff_enabled(state: &AppState) -> bool {
+    state.diff_view_mode == DiffViewMode::SideBySide
 }
 
 pub(super) fn source_sections(
@@ -518,17 +538,28 @@ fn fallback_source_context_lines(
     syntax_path: Option<&str>,
     notes: &BTreeMap<usize, Vec<String>>,
     indent: &str,
+    side_by_side: bool,
+    viewport_width: u16,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if !body.is_empty() {
         lines.push(section_header(indent, "diff"));
-        for body in body {
-            let mut spans = context_prefix(indent);
-            let body_line = syntax_path
-                .map(|path| ui::highlight_diff_line_for_path(body, path))
-                .unwrap_or_else(|| ui::highlight_diff_line(body));
-            spans.extend(owned_spans(body_line));
-            lines.push(Line::from(spans));
+        if side_by_side {
+            lines.extend(prefixed_side_by_side_diff_lines(
+                body,
+                syntax_path,
+                indent,
+                viewport_width,
+            ));
+        } else {
+            for body in body {
+                let mut spans = context_prefix(indent);
+                let body_line = syntax_path
+                    .map(|path| ui::highlight_diff_line_for_path(body, path))
+                    .unwrap_or_else(|| ui::highlight_diff_line(body));
+                spans.extend(owned_spans(body_line));
+                lines.push(Line::from(spans));
+            }
         }
     }
     if !context.is_empty() {
@@ -548,23 +579,40 @@ fn fallback_source_context_lines(
     lines
 }
 
+struct SourceRenderOptions {
+    show_path: bool,
+    side_by_side: bool,
+    viewport_width: u16,
+}
+
 fn full_source_with_inline_diff(
     cache: &mut RenderCache,
     path: &str,
     body: &[String],
     notes: &BTreeMap<usize, Vec<String>>,
     indent: &str,
-    show_path: bool,
+    options: SourceRenderOptions,
 ) -> Option<Vec<Line<'static>>> {
     // Cache file reads across the multiple times we're invoked per frame.
     let text = cache.read(path)?.to_owned();
     let overlay = inline_diff_overlay(body);
-    let label = if show_path {
+    let label = if options.show_path {
         format!("source {path}")
     } else {
         "source".to_string()
     };
     let mut lines = vec![section_header(indent, &label)];
+    if options.side_by_side {
+        lines.extend(side_by_side_inline_source_lines(
+            path,
+            &text,
+            &overlay,
+            notes,
+            indent,
+            options.viewport_width,
+        ));
+        return Some(lines);
+    }
 
     let mut total_lines = 0usize;
     for (idx, source) in text.lines().enumerate() {
@@ -609,10 +657,232 @@ fn full_source_with_inline_diff(
     Some(lines)
 }
 
+struct InlineSourceCell<'a> {
+    line_no: Option<usize>,
+    marker: char,
+    source: &'a str,
+}
+
+fn side_by_side_inline_source_lines(
+    path: &str,
+    text: &str,
+    overlay: &InlineDiffOverlay,
+    notes: &BTreeMap<usize, Vec<String>>,
+    indent: &str,
+    viewport_width: u16,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut pending_removed = VecDeque::<&RemovedSourceLine>::new();
+    let mut total_lines = 0usize;
+
+    for (idx, source) in text.lines().enumerate() {
+        total_lines = idx + 1;
+        let line_no = idx + 1;
+        push_source_notes(&mut lines, indent, notes.get(&line_no).map(Vec::as_slice));
+        if let Some(removed) = overlay.removed_before.get(&line_no) {
+            pending_removed.extend(removed);
+        }
+
+        if overlay.added_lines.contains(&line_no) {
+            let old = pending_removed
+                .pop_front()
+                .map(|removed| removed_inline_cell(removed));
+            let new = InlineSourceCell {
+                line_no: Some(line_no),
+                marker: '+',
+                source,
+            };
+            lines.push(side_by_side_source_line(
+                path,
+                indent,
+                old.as_ref(),
+                Some(&new),
+                viewport_width,
+            ));
+        } else {
+            flush_removed_source_lines(
+                &mut lines,
+                path,
+                indent,
+                &mut pending_removed,
+                viewport_width,
+            );
+            let old_line = overlay
+                .old_line_for_new
+                .get(&line_no)
+                .copied()
+                .or(Some(line_no));
+            let old = InlineSourceCell {
+                line_no: old_line,
+                marker: '|',
+                source,
+            };
+            let new = InlineSourceCell {
+                line_no: Some(line_no),
+                marker: '|',
+                source,
+            };
+            lines.push(side_by_side_source_line(
+                path,
+                indent,
+                Some(&old),
+                Some(&new),
+                viewport_width,
+            ));
+        }
+    }
+
+    let eof_line = total_lines + 1;
+    if let Some(removed) = overlay.removed_before.get(&eof_line) {
+        pending_removed.extend(removed);
+    }
+    flush_removed_source_lines(
+        &mut lines,
+        path,
+        indent,
+        &mut pending_removed,
+        viewport_width,
+    );
+    for (_, line_notes) in notes.range(eof_line..) {
+        push_source_notes(&mut lines, indent, Some(line_notes.as_slice()));
+    }
+
+    lines
+}
+
+fn flush_removed_source_lines(
+    lines: &mut Vec<Line<'static>>,
+    path: &str,
+    indent: &str,
+    pending_removed: &mut VecDeque<&RemovedSourceLine>,
+    viewport_width: u16,
+) {
+    while let Some(removed) = pending_removed.pop_front() {
+        let old = removed_inline_cell(removed);
+        lines.push(side_by_side_source_line(
+            path,
+            indent,
+            Some(&old),
+            None,
+            viewport_width,
+        ));
+    }
+}
+
+fn removed_inline_cell(removed: &RemovedSourceLine) -> InlineSourceCell<'_> {
+    InlineSourceCell {
+        line_no: removed.old_line,
+        marker: '-',
+        source: &removed.text,
+    }
+}
+
+fn side_by_side_source_line(
+    path: &str,
+    indent: &str,
+    old: Option<&InlineSourceCell<'_>>,
+    new: Option<&InlineSourceCell<'_>>,
+    viewport_width: u16,
+) -> Line<'static> {
+    let mut spans = context_prefix(indent);
+    let prefix_width = context_prefix_width(indent);
+    let width = (viewport_width as usize).saturating_sub(prefix_width);
+    if width == 0 {
+        return Line::from(spans);
+    }
+    let separator_width = SIDE_SEPARATOR.chars().count();
+    let body_width = width.saturating_sub(separator_width);
+    let old_width = body_width / 2;
+    let new_width = body_width.saturating_sub(old_width);
+
+    spans.extend(side_source_cell_spans(path, old, old_width));
+    if width >= separator_width {
+        spans.push(Span::styled(
+            SIDE_SEPARATOR,
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    spans.extend(side_source_cell_spans(path, new, new_width));
+    Line::from(spans)
+}
+
+fn side_source_cell_spans(
+    path: &str,
+    cell: Option<&InlineSourceCell<'_>>,
+    width: usize,
+) -> Vec<Span<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let Some(cell) = cell else {
+        return vec![Span::raw(" ".repeat(width))];
+    };
+
+    let (line_style, marker_style, bg) = source_marker_styles(cell.marker);
+    let base_style = bg.map_or(Style::default(), |bg| Style::default().bg(bg));
+    let mut remaining = width;
+    let mut spans = Vec::new();
+    push_capped_span(
+        &mut spans,
+        &format!(
+            "{:>5}",
+            cell.line_no.map_or(String::new(), |n| n.to_string())
+        ),
+        line_style,
+        &mut remaining,
+    );
+    push_capped_span(&mut spans, " ", line_style, &mut remaining);
+    push_capped_span(
+        &mut spans,
+        &format!("{} ", cell.marker),
+        marker_style,
+        &mut remaining,
+    );
+    if remaining > 0 {
+        let source = truncate_chars(cell.source, remaining);
+        spans.extend(apply_optional_bg(
+            owned_spans(ui::highlight_source_line_for_path(&source, path)),
+            bg,
+        ));
+        remaining = width.saturating_sub(spans_width(&spans).min(width));
+    }
+    if remaining > 0 {
+        spans.push(Span::styled(" ".repeat(remaining), base_style));
+    }
+    spans
+}
+
+fn source_marker_styles(marker: char) -> (Style, Style, Option<Color>) {
+    match marker {
+        '+' => (
+            Style::default().fg(Color::LightGreen).bg(INLINE_ADDED_BG),
+            Style::default()
+                .fg(Color::Green)
+                .bg(INLINE_ADDED_BG)
+                .add_modifier(Modifier::BOLD),
+            Some(INLINE_ADDED_BG),
+        ),
+        '-' => (
+            Style::default().fg(Color::LightRed).bg(INLINE_REMOVED_BG),
+            Style::default()
+                .fg(Color::Red)
+                .bg(INLINE_REMOVED_BG)
+                .add_modifier(Modifier::BOLD),
+            Some(INLINE_REMOVED_BG),
+        ),
+        _ => (
+            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::DarkGray),
+            None,
+        ),
+    }
+}
+
 #[derive(Default)]
 pub(super) struct InlineDiffOverlay {
     pub removed_before: BTreeMap<usize, Vec<RemovedSourceLine>>,
     pub added_lines: BTreeSet<usize>,
+    pub old_line_for_new: BTreeMap<usize, usize>,
 }
 
 pub(super) struct RemovedSourceLine {
@@ -640,6 +910,7 @@ pub(super) fn inline_diff_overlay(body: &[String]) -> InlineDiffOverlay {
             continue;
         }
         if let Some(source) = line.strip_prefix(' ') {
+            overlay.old_line_for_new.insert(new_line.max(1), old_line);
             old_line = old_line.saturating_add(1);
             new_line = new_line.saturating_add(1);
             let _ = source;
@@ -853,6 +1124,59 @@ fn context_prefix(indent: &str) -> Vec<Span<'static>> {
         format!("{indent}  │ "),
         Style::default().fg(Color::DarkGray),
     )]
+}
+
+fn context_prefix_width(indent: &str) -> usize {
+    indent.chars().count() + "  │ ".chars().count()
+}
+
+fn prefixed_side_by_side_diff_lines(
+    body: &[String],
+    syntax_path: Option<&str>,
+    indent: &str,
+    viewport_width: u16,
+) -> Vec<Line<'static>> {
+    let prefix_width = context_prefix_width(indent);
+    let width = (viewport_width as usize)
+        .saturating_sub(prefix_width)
+        .min(u16::MAX as usize) as u16;
+    let text = body.join("\n");
+    let diff_lines = syntax_path
+        .map(|path| ui::highlight_side_by_side_diff_text_for_path(&text, width, path))
+        .unwrap_or_else(|| ui::highlight_side_by_side_diff_text(&text, width));
+    diff_lines
+        .into_iter()
+        .map(|line| {
+            let mut spans = context_prefix(indent);
+            spans.extend(owned_spans(line));
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn push_capped_span(
+    spans: &mut Vec<Span<'static>>,
+    text: &str,
+    style: Style,
+    remaining: &mut usize,
+) {
+    if *remaining == 0 {
+        return;
+    }
+    let text = truncate_chars(text, *remaining);
+    *remaining = (*remaining).saturating_sub(text.chars().count());
+    spans.push(Span::styled(text, style));
+}
+
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans
+        .iter()
+        .map(|span| span.content.as_ref().chars().count())
+        .sum()
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
 }
 
 fn source_context_line(context: &str, syntax_path: Option<&str>, indent: &str) -> Line<'static> {

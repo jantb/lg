@@ -6,7 +6,8 @@ mod log;
 pub use chrome::{bordered, framed, framed_with_activity};
 pub use diff::{
     highlight_diff_line, highlight_diff_line_for_path, highlight_diff_text,
-    highlight_source_line_for_path,
+    highlight_side_by_side_diff_text, highlight_side_by_side_diff_text_for_path,
+    highlight_source_line_for_path, side_by_side_diff_line_count,
 };
 pub use layout::{
     LEFT_PANEL_COUNT, LayoutRects, LeftPanelHeights, centered, clamp_left_column_width,

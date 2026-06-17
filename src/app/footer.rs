@@ -95,6 +95,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                         ("l", "explain"),
                         ("C", "chat"),
                         ("g/G", "top/bot"),
+                        ("v", "view"),
                         ("f", "flag"),
                         ("a", "author"),
                         ("L", "model"),
@@ -108,6 +109,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                     "Diff",
                     &[
                         ("R", "review mode"),
+                        ("v", "view"),
                         ("o", "open IDE"),
                         ("j/k", "scroll"),
                         ("g/G", "top/bot"),
@@ -239,12 +241,16 @@ fn default_spans(state: &AppState) -> Vec<Span<'static>> {
         if *key == "p" && !state.pull_available() {
             continue;
         }
+        if *key == "v" && !diff_view_toggle_available(state) {
+            continue;
+        }
         spans.push(Span::styled(*key, shortcut_style(state, key)));
         spans.push(Span::raw(" "));
         spans.push(Span::raw(*label));
         if pairs.iter().skip(idx + 1).any(|(next_key, _)| {
             (*next_key != "F" || state.branch_actions_available())
                 && (*next_key != "p" || state.pull_available())
+                && (*next_key != "v" || diff_view_toggle_available(state))
         }) {
             spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
         }
@@ -276,6 +282,12 @@ fn review_drill_available(state: &AppState) -> bool {
         candidate.parent.as_deref() == Some(node.id.as_str())
             && (candidate.id.contains(":file:") || candidate.id.contains(":entry:"))
     })
+}
+
+fn diff_view_toggle_available(state: &AppState) -> bool {
+    matches!(state.focus, Pane::Main)
+        && !matches!(state.diff_source, DiffSource::Branch(_))
+        && (!matches!(state.diff_source, DiffSource::Review) || state.review.is_some())
 }
 
 fn modal_spans(

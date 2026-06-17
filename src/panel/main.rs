@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::{
     config::DIFF_PAGE,
-    state::{AppState, DiffSource, Modal, PendingAction},
+    state::{AppState, DiffSource, DiffViewMode, Modal, PendingAction},
     ui,
 };
 
@@ -32,10 +32,14 @@ fn render_main_content(state: &AppState, area: Rect, frame: &mut Frame, focused:
         return;
     }
 
-    let title = match state.diff_source {
-        DiffSource::Review => "Review",
-        DiffSource::Branch(_) => "Log",
-        _ => "Diff",
+    let title = if matches!(state.diff_source, DiffSource::Review) {
+        "Review"
+    } else if matches!(state.diff_source, DiffSource::Branch(_)) {
+        "Log"
+    } else if side_by_side_diff_enabled(state) {
+        "Diff: side-by-side"
+    } else {
+        "Diff"
     };
     let block = ui::framed_with_activity(
         0,
@@ -46,11 +50,14 @@ fn render_main_content(state: &AppState, area: Rect, frame: &mut Frame, focused:
         state.activity_label().is_some(),
     );
 
+    let viewport_width = state.diff_viewport_width.max(area.width.saturating_sub(2));
     let lines: Vec<ratatui::text::Line> = if matches!(state.diff_source, DiffSource::Branch(_)) {
         log_render_lines(&state.diff_text)
             .into_iter()
             .map(ui::highlight_log_line)
             .collect()
+    } else if side_by_side_diff_enabled(state) {
+        ui::highlight_side_by_side_diff_text(&state.diff_text, viewport_width)
     } else {
         ui::highlight_diff_text(&state.diff_text)
     };
@@ -101,6 +108,18 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('G') => {
             state.diff_offset = max_offset;
+        }
+        KeyCode::Char('v') if diff_view_toggle_available(state) => {
+            state.diff_view_mode = match state.diff_view_mode {
+                DiffViewMode::Unified => DiffViewMode::SideBySide,
+                DiffViewMode::SideBySide => DiffViewMode::Unified,
+            };
+            state.diff_offset = state.diff_offset.min(max_scroll_offset(state));
+            let label = match state.diff_view_mode {
+                DiffViewMode::Unified => "unified diff",
+                DiffViewMode::SideBySide => "side-by-side diff",
+            };
+            state.set_status(format!("showing {label}"), false);
         }
         KeyCode::Char('o') => {
             if let Some(path) = selected_diff_open_path(state) {
@@ -153,7 +172,21 @@ pub fn rendered_line_count(state: &AppState) -> usize {
             state.diff_viewport_width,
         );
     }
+    if side_by_side_diff_enabled(state) {
+        return ui::side_by_side_diff_line_count(&state.diff_text, state.diff_viewport_width);
+    }
     state.diff_text.lines().count()
+}
+
+fn side_by_side_diff_enabled(state: &AppState) -> bool {
+    state.diff_view_mode == DiffViewMode::SideBySide && diff_view_toggle_available(state)
+}
+
+fn diff_view_toggle_available(state: &AppState) -> bool {
+    !matches!(
+        state.diff_source,
+        DiffSource::Branch(_) | DiffSource::Review
+    )
 }
 
 fn wrapped_line_count<'a>(lines: impl IntoIterator<Item = &'a str>, viewport_width: u16) -> usize {

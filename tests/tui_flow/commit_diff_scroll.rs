@@ -270,6 +270,93 @@ fn diff_scroll_g_renders_non_blank_bottom_of_content() {
 }
 
 #[test]
+fn diff_view_v_toggles_side_by_side_mode() {
+    let mut state = AppState::new();
+    state.diff_source = lg::state::DiffSource::File("src/main.rs".into());
+
+    assert_eq!(state.diff_view_mode, DiffViewMode::SideBySide);
+
+    panel::main::handle_key(&mut state, key(KeyCode::Char('v'))).unwrap();
+
+    assert_eq!(state.diff_view_mode, DiffViewMode::Unified);
+    assert!(
+        state
+            .status
+            .as_ref()
+            .is_some_and(|status| status.text.contains("unified"))
+    );
+
+    panel::main::handle_key(&mut state, key(KeyCode::Char('v'))).unwrap();
+
+    assert_eq!(state.diff_view_mode, DiffViewMode::SideBySide);
+    assert!(
+        state
+            .status
+            .as_ref()
+            .is_some_and(|status| status.text.contains("side-by-side"))
+    );
+}
+
+#[test]
+fn side_by_side_diff_pairs_replaced_lines() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 20)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::File("src/main.rs".into());
+    app.state.diff_view_mode = DiffViewMode::SideBySide;
+    app.state.diff_text = [
+        "diff --git a/src/main.rs b/src/main.rs",
+        "--- a/src/main.rs",
+        "+++ b/src/main.rs",
+        "@@ -10,3 +20,3 @@",
+        " context()",
+        "-old_value()",
+        "+new_value()",
+        " after()",
+    ]
+    .join("\n");
+
+    app.render().unwrap();
+
+    let buf = app.terminal.backend().buffer().clone();
+    let rows: Vec<String> = (0..buf.area.height)
+        .map(|row| {
+            (0..buf.area.width)
+                .map(|col| buf[(col, row)].symbol())
+                .collect::<String>()
+        })
+        .collect();
+    let change_row = rows
+        .iter()
+        .find(|row| row.contains("old_value()"))
+        .expect("removed line row");
+
+    assert!(change_row.contains("  11 - old_value()"), "{change_row}");
+    assert!(change_row.contains("  21 + new_value()"), "{change_row}");
+    assert!(buffer_text(&app).contains("Diff: side-by-side"));
+}
+
+#[test]
+fn side_by_side_diff_line_count_pairs_replacements() {
+    let mut state = AppState::new();
+    state.diff_source = lg::state::DiffSource::File("src/main.rs".into());
+    state.diff_view_mode = DiffViewMode::SideBySide;
+    state.diff_viewport_width = 80;
+    state.diff_text = [
+        "diff --git a/src/main.rs b/src/main.rs",
+        "--- a/src/main.rs",
+        "+++ b/src/main.rs",
+        "@@ -10,3 +20,3 @@",
+        " context()",
+        "-old_value()",
+        "+new_value()",
+        " after()",
+    ]
+    .join("\n");
+
+    assert_eq!(panel::main::rendered_line_count(&state), 7);
+}
+
+#[test]
 fn branch_log_render_clamps_offset_to_rendered_lines() {
     let mut state = AppState::new();
     state.focus = Pane::Main;

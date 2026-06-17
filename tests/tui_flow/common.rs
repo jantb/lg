@@ -5,7 +5,7 @@ pub use lg::{
     },
     panel,
     state::{
-        AppState, AuthorField, BranchView, FlowAction, Modal, Pane, PendingAction,
+        AppState, AuthorField, BranchView, DiffViewMode, FlowAction, Modal, Pane, PendingAction,
         ReleaseStatusJob, ReviewChatRole, ReviewStyleFinding, ReviewStyleSeverity, TreeKind,
         WorkflowJob, build_tree_rows,
     },

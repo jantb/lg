@@ -11,7 +11,7 @@ use std::collections::HashSet;
 
 use crate::{
     panel::markdown,
-    state::{AppState, PendingAction, ReviewStyleSeverity},
+    state::{AppState, DiffViewMode, PendingAction, ReviewStyleSeverity},
     ui,
 };
 
@@ -33,9 +33,14 @@ const ACTIVE_REVIEW_STYLE_PULSE: [Color; 6] = [
 const SOURCE_CHANGE_CONTEXT_LINES: u16 = 3;
 
 pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
+    let title = if side_by_side_diff_enabled(state) {
+        "Review: side-by-side"
+    } else {
+        "Review"
+    };
     let block = ui::framed_with_activity(
         0,
-        "Review",
+        title,
         focused,
         None,
         state.animation_tick,
@@ -43,7 +48,7 @@ pub(super) fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: b
     )
     .title_bottom(
         Line::from(Span::styled(
-            "j/k move  ↑/↓ source changes  Enter/s source  space expand  d drill  f flag  l llm/pr  y copy  C chat  R refresh",
+            "j/k move  ↑/↓ source changes  Enter/s source  space expand  d drill  v view  f flag  l llm/pr  y copy  C chat  R refresh",
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::DIM),
@@ -124,11 +129,21 @@ fn render_lines(state: &AppState, focused: bool, wrap_width: u16) -> Vec<Line<'s
             let body_prefix = format!("{indent}  │ ");
             if expanded && renders_review_body(node_id) {
                 if let Some(path) = syntax_path {
-                    for body in &node.body {
-                        let mut spans = vec![Span::styled(body_prefix.clone(), body_style)];
-                        let body_line = ui::highlight_diff_line_for_path(body, path);
-                        spans.extend(owned_spans(body_line));
-                        lines.push(Line::from(spans));
+                    if side_by_side_diff_enabled(state) {
+                        lines.extend(prefixed_side_by_side_diff_lines(
+                            &node.body,
+                            path,
+                            &body_prefix,
+                            body_style,
+                            wrap_width,
+                        ));
+                    } else {
+                        for body in &node.body {
+                            let mut spans = vec![Span::styled(body_prefix.clone(), body_style)];
+                            let body_line = ui::highlight_diff_line_for_path(body, path);
+                            spans.extend(owned_spans(body_line));
+                            lines.push(Line::from(spans));
+                        }
                     }
                 } else {
                     lines.extend(markdown::render(
@@ -166,6 +181,28 @@ fn render_lines(state: &AppState, focused: bool, wrap_width: u16) -> Vec<Line<'s
         }
     }
     lines
+}
+
+fn side_by_side_diff_enabled(state: &AppState) -> bool {
+    state.diff_view_mode == DiffViewMode::SideBySide
+}
+
+fn prefixed_side_by_side_diff_lines(
+    body: &[String],
+    path: &str,
+    prefix: &str,
+    prefix_style: Style,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let diff_width = width.saturating_sub(prefix.chars().count().min(u16::MAX as usize) as u16);
+    ui::highlight_side_by_side_diff_text_for_path(&body.join("\n"), diff_width, path)
+        .into_iter()
+        .map(|line| {
+            let mut spans = vec![Span::styled(prefix.to_string(), prefix_style)];
+            spans.extend(owned_spans(line));
+            Line::from(spans)
+        })
+        .collect()
 }
 
 fn review_title_line(
@@ -512,6 +549,18 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 ensure_review_selection_visible(state);
             }
         }
+        KeyCode::Char('v') => {
+            state.diff_view_mode = match state.diff_view_mode {
+                DiffViewMode::Unified => DiffViewMode::SideBySide,
+                DiffViewMode::SideBySide => DiffViewMode::Unified,
+            };
+            state.diff_offset = state.diff_offset.min(super::max_scroll_offset(state));
+            let label = match state.diff_view_mode {
+                DiffViewMode::Unified => "unified diff",
+                DiffViewMode::SideBySide => "side-by-side diff",
+            };
+            state.set_status(format!("showing {label}"), false);
+        }
         KeyCode::Char('l') => {
             if let Some(review) = &state.review
                 && let Some(node) = review.nodes.get(state.review_idx)
@@ -697,7 +746,7 @@ fn jump_to_source_change(state: &mut AppState, previous: bool) -> bool {
 fn line_contains_source_change(line: &Line<'_>) -> bool {
     line.spans
         .iter()
-        .any(|span| matches!(span.content.as_ref(), "+ " | "- "))
+        .any(|span| matches!(span.content.as_ref(), "+" | "-" | "+ " | "- "))
 }
 
 fn source_change_group_lines(lines: &[Line<'_>]) -> Vec<u16> {
@@ -962,7 +1011,11 @@ fn review_body_line_count(state: &AppState, node: &crate::git::ReviewNode) -> us
         )
         .len();
     };
-    node.body.len()
+    if side_by_side_diff_enabled(state) {
+        ui::side_by_side_diff_line_count(&node.body.join("\n"), state.diff_viewport_width)
+    } else {
+        node.body.len()
+    }
 }
 
 fn review_source_context_line_count(state: &AppState, node: &crate::git::ReviewNode) -> usize {

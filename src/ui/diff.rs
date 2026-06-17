@@ -43,8 +43,35 @@ pub fn highlight_diff_text(text: &str) -> Vec<Line<'_>> {
         .collect()
 }
 
+pub fn highlight_side_by_side_diff_text(text: &str, width: u16) -> Vec<Line<'static>> {
+    let mut renderer = SideBySideDiffRenderer::new(width as usize);
+    for line in text.lines() {
+        renderer.push_line(line);
+    }
+    renderer.finish()
+}
+
+pub fn highlight_side_by_side_diff_text_for_path(
+    text: &str,
+    width: u16,
+    path: &str,
+) -> Vec<Line<'static>> {
+    let mut renderer = SideBySideDiffRenderer::new(width as usize);
+    renderer.syntax = path_syntax(path);
+    for line in text.lines() {
+        renderer.push_line(line);
+    }
+    renderer.finish()
+}
+
+pub fn side_by_side_diff_line_count(text: &str, width: u16) -> usize {
+    highlight_side_by_side_diff_text(text, width).len()
+}
+
 const DIFF_ADDED_BG: Color = Color::Rgb(24, 54, 34);
 const DIFF_REMOVED_BG: Color = Color::Rgb(60, 28, 38);
+const SIDE_SEPARATOR: &str = " | ";
+const SIDE_NUMBER_WIDTH: usize = 4;
 
 #[derive(Clone, Copy)]
 enum Syntax {
@@ -62,6 +89,138 @@ enum DiffContentKind {
     Context,
     Added,
     Removed,
+}
+
+struct SideDiffCell {
+    number: u32,
+    text: String,
+    kind: DiffContentKind,
+}
+
+struct SideBySideDiffRenderer {
+    width: usize,
+    syntax: Option<Syntax>,
+    numbers: Option<DiffLineNumbers>,
+    in_hunk: bool,
+    lines: Vec<Line<'static>>,
+    pending_removed: Vec<SideDiffCell>,
+    pending_added: Vec<SideDiffCell>,
+}
+
+impl SideBySideDiffRenderer {
+    fn new(width: usize) -> Self {
+        Self {
+            width,
+            syntax: None,
+            numbers: None,
+            in_hunk: false,
+            lines: Vec::new(),
+            pending_removed: Vec::new(),
+            pending_added: Vec::new(),
+        }
+    }
+
+    fn finish(mut self) -> Vec<Line<'static>> {
+        self.flush_change_run();
+        self.lines
+    }
+
+    fn push_line(&mut self, line: &str) {
+        if let Some(next) = diff_line_syntax(line) {
+            self.syntax = Some(next);
+        }
+
+        if let Some((old_line, new_line)) = parse_hunk_line_numbers(line) {
+            self.flush_change_run();
+            self.numbers = Some(DiffLineNumbers { old_line, new_line });
+            self.in_hunk = true;
+            self.push_full_line(line);
+            return;
+        }
+
+        if line.starts_with("diff --git ") || line.starts_with("---") || line.starts_with("+++") {
+            self.in_hunk = false;
+            self.push_full_line(line);
+            return;
+        }
+
+        if self.in_hunk
+            && let Some(kind) = diff_content_kind(line)
+            && self.numbers.is_some()
+        {
+            match kind {
+                DiffContentKind::Context => {
+                    self.flush_change_run();
+                    let numbers = self.numbers.as_mut().expect("hunk line numbers");
+                    let old = numbers.old_line;
+                    let new = numbers.new_line;
+                    numbers.old_line = numbers.old_line.saturating_add(1);
+                    numbers.new_line = numbers.new_line.saturating_add(1);
+                    let text = line.strip_prefix(' ').unwrap_or(line).to_string();
+                    self.lines.push(render_side_by_side_row(
+                        Some(&SideDiffCell {
+                            number: old,
+                            text: text.clone(),
+                            kind,
+                        }),
+                        Some(&SideDiffCell {
+                            number: new,
+                            text,
+                            kind,
+                        }),
+                        self.width,
+                        self.syntax,
+                    ));
+                }
+                DiffContentKind::Added => {
+                    let numbers = self.numbers.as_mut().expect("hunk line numbers");
+                    let number = numbers.new_line;
+                    numbers.new_line = numbers.new_line.saturating_add(1);
+                    self.pending_added.push(SideDiffCell {
+                        number,
+                        text: line.strip_prefix('+').unwrap_or(line).to_string(),
+                        kind,
+                    });
+                }
+                DiffContentKind::Removed => {
+                    if !self.pending_added.is_empty() {
+                        self.flush_change_run();
+                    }
+                    let numbers = self.numbers.as_mut().expect("hunk line numbers");
+                    let number = numbers.old_line;
+                    numbers.old_line = numbers.old_line.saturating_add(1);
+                    self.pending_removed.push(SideDiffCell {
+                        number,
+                        text: line.strip_prefix('-').unwrap_or(line).to_string(),
+                        kind,
+                    });
+                }
+            }
+            return;
+        }
+
+        self.push_full_line(line);
+    }
+
+    fn push_full_line(&mut self, line: &str) {
+        self.flush_change_run();
+        self.lines
+            .push(render_full_side_by_side_line(line, self.width, self.syntax));
+    }
+
+    fn flush_change_run(&mut self) {
+        let rows = self.pending_removed.len().max(self.pending_added.len());
+        for idx in 0..rows {
+            self.lines.push(render_side_by_side_row(
+                self.pending_removed.get(idx),
+                self.pending_added.get(idx),
+                self.width,
+                self.syntax,
+            ));
+        }
+        self.pending_removed.clear();
+        self.pending_added.clear();
+    }
 }
 
 fn highlight_diff_line_for_syntax(line: &str, syntax: Option<Syntax>) -> Line<'_> {
@@ -210,6 +369,152 @@ fn add_diff_line_numbers<'a>(
     ];
     spans.extend(line.spans);
     Line::from(spans)
+}
+
+fn render_full_side_by_side_line(
+    line: &str,
+    width: usize,
+    syntax: Option<Syntax>,
+) -> Line<'static> {
+    let text = truncate_chars(line, width);
+    static_line(highlight_diff_line_for_syntax(&text, syntax))
+}
+
+fn render_side_by_side_row(
+    old: Option<&SideDiffCell>,
+    new: Option<&SideDiffCell>,
+    width: usize,
+    syntax: Option<Syntax>,
+) -> Line<'static> {
+    if width == 0 {
+        return Line::from("");
+    }
+
+    let separator_width = SIDE_SEPARATOR.chars().count();
+    let body_width = width.saturating_sub(separator_width);
+    let old_width = body_width / 2;
+    let new_width = body_width.saturating_sub(old_width);
+
+    let mut spans = Vec::new();
+    spans.extend(render_side_cell(old, old_width, syntax));
+    if width >= separator_width {
+        spans.push(Span::styled(
+            SIDE_SEPARATOR,
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    spans.extend(render_side_cell(new, new_width, syntax));
+    Line::from(spans)
+}
+
+fn render_side_cell(
+    cell: Option<&SideDiffCell>,
+    width: usize,
+    syntax: Option<Syntax>,
+) -> Vec<Span<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let Some(cell) = cell else {
+        return vec![Span::raw(" ".repeat(width))];
+    };
+
+    let base_style = diff_content_style(cell.kind);
+    let number_style = diff_number_style(cell.kind);
+    let marker_style = diff_marker_style(cell.kind);
+    let marker = match cell.kind {
+        DiffContentKind::Context => " ",
+        DiffContentKind::Added => "+",
+        DiffContentKind::Removed => "-",
+    };
+
+    let mut remaining = width;
+    let mut spans = Vec::new();
+    push_capped_span(
+        &mut spans,
+        &format!("{:>width$}", cell.number, width = SIDE_NUMBER_WIDTH),
+        number_style,
+        &mut remaining,
+    );
+    push_capped_span(&mut spans, " ", base_style, &mut remaining);
+    push_capped_span(&mut spans, marker, marker_style, &mut remaining);
+    push_capped_span(&mut spans, " ", base_style, &mut remaining);
+
+    if remaining > 0 {
+        let text = truncate_chars(&cell.text, remaining);
+        spans.extend(highlight_code(&text, syntax, base_style));
+        let used = spans_width(&spans).min(width);
+        remaining = width.saturating_sub(used);
+    }
+    if remaining > 0 {
+        spans.push(Span::styled(" ".repeat(remaining), base_style));
+    }
+    spans
+}
+
+fn diff_content_style(kind: DiffContentKind) -> Style {
+    match kind {
+        DiffContentKind::Context => Style::default(),
+        DiffContentKind::Added => Style::default().fg(Color::Gray).bg(DIFF_ADDED_BG),
+        DiffContentKind::Removed => Style::default().fg(Color::Gray).bg(DIFF_REMOVED_BG),
+    }
+}
+
+fn diff_number_style(kind: DiffContentKind) -> Style {
+    match kind {
+        DiffContentKind::Context => Style::default().fg(Color::DarkGray),
+        DiffContentKind::Added => Style::default().fg(Color::LightGreen).bg(DIFF_ADDED_BG),
+        DiffContentKind::Removed => Style::default().fg(Color::LightRed).bg(DIFF_REMOVED_BG),
+    }
+}
+
+fn diff_marker_style(kind: DiffContentKind) -> Style {
+    match kind {
+        DiffContentKind::Context => Style::default(),
+        DiffContentKind::Added => Style::default()
+            .fg(Color::Green)
+            .bg(DIFF_ADDED_BG)
+            .add_modifier(Modifier::BOLD),
+        DiffContentKind::Removed => Style::default()
+            .fg(Color::Red)
+            .bg(DIFF_REMOVED_BG)
+            .add_modifier(Modifier::BOLD),
+    }
+}
+
+fn push_capped_span(
+    spans: &mut Vec<Span<'static>>,
+    text: &str,
+    style: Style,
+    remaining: &mut usize,
+) {
+    if *remaining == 0 {
+        return;
+    }
+    let text = truncate_chars(text, *remaining);
+    *remaining = (*remaining).saturating_sub(text.chars().count());
+    spans.push(Span::styled(text, style));
+}
+
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans
+        .iter()
+        .map(|span| span.content.as_ref().chars().count())
+        .sum()
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
+fn static_line(line: Line<'_>) -> Line<'static> {
+    Line::from(
+        line.spans
+            .into_iter()
+            .map(|span| Span::styled(span.content.into_owned(), span.style))
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn diff_line_syntax(line: &str) -> Option<Syntax> {

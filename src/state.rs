@@ -88,6 +88,12 @@ pub enum DiffSource {
     Review,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffViewMode {
+    Unified,
+    SideBySide,
+}
+
 #[derive(Debug, Clone)]
 pub struct StatusMsg {
     pub text: String,
@@ -225,6 +231,7 @@ pub struct AppState {
     pub diff_text: String,
     pub diff_offset: u16,
     pub diff_source: DiffSource,
+    pub diff_view_mode: DiffViewMode,
     pub diff_line_count: u16,
     pub diff_viewport_height: u16,
     pub diff_viewport_width: u16,
@@ -410,6 +417,7 @@ impl AppState {
             diff_text: String::new(),
             diff_offset: 0,
             diff_source: DiffSource::None,
+            diff_view_mode: DiffViewMode::SideBySide,
             diff_line_count: 0,
             diff_viewport_height: 0,
             diff_viewport_width: 0,
