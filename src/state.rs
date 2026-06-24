@@ -337,18 +337,20 @@ pub enum FlowAction {
     ReleaseTest,
     ResetDev,
     ResetTest,
+    DiscardCheckout,
     NewFeature,
     TransferDiff,
     CleanOrphans,
 }
 
 impl FlowAction {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::MergeMain,
         Self::ReleaseDev,
         Self::ReleaseTest,
         Self::ResetDev,
         Self::ResetTest,
+        Self::DiscardCheckout,
         Self::NewFeature,
         Self::TransferDiff,
         Self::CleanOrphans,
@@ -361,6 +363,7 @@ impl FlowAction {
             Self::ReleaseTest => "Release current branch into release/next",
             Self::ResetDev => "Reset develop from origin/main",
             Self::ResetTest => "Reset release/next from origin/main",
+            Self::DiscardCheckout => "Discard current checkout and reload from remote",
             Self::NewFeature => "Start new feature from origin/main",
             Self::TransferDiff => "Transfer selected feature diff to new branch",
             Self::CleanOrphans => "Clean local branches without upstream",

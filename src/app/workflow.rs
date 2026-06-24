@@ -69,6 +69,9 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
                 BRANCH_TEST,
                 &mut progress,
             ),
+            FlowAction::DiscardCheckout => {
+                crate::git::flow_discard_checkout_from_remote_with_progress(&current, &mut progress)
+            }
             FlowAction::NewFeature => {
                 for _ in &thread_steps {
                     progress();
@@ -165,6 +168,7 @@ fn conflict_followup_for_flow(action: FlowAction, current: &str) -> Option<Confl
         }),
         FlowAction::ResetDev
         | FlowAction::ResetTest
+        | FlowAction::DiscardCheckout
         | FlowAction::NewFeature
         | FlowAction::TransferDiff
         | FlowAction::CleanOrphans => None,
@@ -194,6 +198,11 @@ pub(super) fn workflow_steps(
         FlowAction::ReleaseTest => release_steps(current, BRANCH_TEST),
         FlowAction::ResetDev => reset_steps(current, BRANCH_DEV),
         FlowAction::ResetTest => reset_steps(current, BRANCH_TEST),
+        FlowAction::DiscardCheckout => vec![
+            "fetch remote".into(),
+            format!("reset {current} to remote"),
+            "delete untracked files".into(),
+        ],
         FlowAction::NewFeature => vec![
             format!(
                 "create {}",

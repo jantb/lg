@@ -360,6 +360,44 @@ pub fn flow_reset_branch_from_main_with_progress(
     Ok(format!("reset {target_branch} from origin/{BRANCH_MAIN}"))
 }
 
+pub fn flow_discard_checkout_from_remote(current_branch: &str) -> Result<String> {
+    flow_discard_checkout_from_remote_with_progress(current_branch, &mut || {})
+}
+
+pub fn flow_discard_checkout_from_remote_with_progress(
+    current_branch: &str,
+    progress: &mut impl FnMut(),
+) -> Result<String> {
+    if current_branch.trim().is_empty() {
+        anyhow::bail!("checkout a branch first");
+    }
+
+    let actual_branch = head_branch().context("cannot discard checkout while HEAD is detached")?;
+    if actual_branch != current_branch {
+        anyhow::bail!("expected current branch {current_branch}, got {actual_branch}");
+    }
+
+    let upstream = branch_upstream(current_branch)?;
+    let fetch_remote = upstream
+        .as_deref()
+        .and_then(remote_name_from_ref)
+        .unwrap_or(DEFAULT_PUSH_REMOTE);
+
+    progress();
+    run(&["fetch", fetch_remote])?;
+    let remote_ref = remote_ref_for_branch(current_branch, upstream.as_deref())?;
+
+    progress();
+    run(&["reset", "--hard", &remote_ref])?;
+
+    progress();
+    run(&["clean", "-fd"])?;
+
+    Ok(format!(
+        "discarded local checkout of {current_branch}; reset to {remote_ref}"
+    ))
+}
+
 pub fn flow_create_feature_branch(current_branch: &str, new_branch: &str) -> Result<String> {
     if new_branch.trim().is_empty() {
         anyhow::bail!("branch name cannot be empty");
@@ -780,6 +818,47 @@ fn is_valid_branch_name(name: &str) -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+fn remote_ref_for_branch(branch: &str, upstream: Option<&str>) -> Result<String> {
+    if let Some(upstream) = upstream
+        && ref_exists(upstream)
+    {
+        return Ok(upstream.to_string());
+    }
+
+    let remote_ref = format!("{DEFAULT_PUSH_REMOTE}/{branch}");
+    if ref_exists(&remote_ref) {
+        return Ok(remote_ref);
+    }
+
+    anyhow::bail!(
+        "no remote branch found for {branch}; set an upstream or push {DEFAULT_PUSH_REMOTE}/{branch}"
+    );
+}
+
+fn branch_upstream(branch: &str) -> Result<Option<String>> {
+    let upstream_spec = format!("{branch}@{{upstream}}");
+    let out = Command::new("git")
+        .args([
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            &upstream_spec,
+        ])
+        .output()
+        .with_context(|| format!("failed to check upstream for {branch}"))?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+
+    let upstream = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    Ok((!upstream.is_empty()).then_some(upstream))
+}
+
+fn remote_name_from_ref(remote_ref: &str) -> Option<&str> {
+    let (remote, _) = remote_ref.split_once('/')?;
+    (!remote.is_empty()).then_some(remote)
 }
 
 fn has_uncommitted_changes() -> Result<bool> {

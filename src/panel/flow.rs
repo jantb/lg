@@ -31,6 +31,7 @@ pub(crate) fn available_actions(state: &AppState) -> Vec<FlowAction> {
             | FlowAction::ResetDev
             | FlowAction::ResetTest => state.flow_available(),
             FlowAction::TransferDiff => selected_feature_branch(state).is_some(),
+            FlowAction::DiscardCheckout => state.branch.is_some(),
             FlowAction::NewFeature | FlowAction::CleanOrphans => true,
         })
         .collect()
@@ -316,6 +317,10 @@ fn warning_for(action: FlowAction) -> Line<'static> {
     match action {
         FlowAction::ResetDev | FlowAction::ResetTest => Line::from(Span::styled(
             "Hard reset and force push. Unique target history will be lost.",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )),
+        FlowAction::DiscardCheckout => Line::from(Span::styled(
+            "Hard resets current branch to its remote and deletes untracked files.",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )),
         FlowAction::CleanOrphans => Line::from(Span::styled(
