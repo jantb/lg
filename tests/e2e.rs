@@ -153,3 +153,52 @@ fn mm_file_appears_in_both_lists() {
         "both.rs not in unstaged: {unstaged:?}"
     );
 }
+
+// ── Command line argument handling ────────────────────────────────────────────
+
+fn lg_bin(args: &[&str], dir: &Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_lg"))
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("failed to spawn lg")
+}
+
+#[test]
+fn help_flag_prints_usage_and_exits_cleanly() {
+    let dir = init_repo();
+    for flag in ["--help", "-h", "help"] {
+        let out = lg_bin(&[flag], dir.path());
+        assert!(out.status.success(), "{flag} should exit 0");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("Usage:"), "{flag} printed: {stdout}");
+        assert!(stdout.contains("lg review"), "{flag} printed: {stdout}");
+    }
+}
+
+#[test]
+fn version_flag_prints_the_version() {
+    let dir = init_repo();
+    let out = lg_bin(&["--version"], dir.path());
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("lg "),
+        "expected a version line, got: {stdout}"
+    );
+}
+
+#[test]
+fn unknown_argument_is_reported_instead_of_silently_launching() {
+    let dir = init_repo();
+    let out = lg_bin(&["--reveiw"], dir.path());
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a typo must fail rather than look like it worked"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unrecognized argument"), "got: {stderr}");
+    assert!(stderr.contains("Usage:"), "got: {stderr}");
+}

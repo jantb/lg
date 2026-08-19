@@ -100,6 +100,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                         ("a", "author"),
                         ("L", "model"),
                         ("R", "refresh"),
+                        ("Esc", "cancel"),
                         ("?", "help"),
                     ],
                 )
@@ -172,7 +173,11 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
             ],
             Color::Cyan,
         ),
-        Modal::Help => modal_spans("Help ", &[("any key", "close")], Color::Cyan),
+        Modal::Help => modal_spans(
+            "Help ",
+            &[("j/k", "scroll"), ("g/G", "top/bot"), ("q/Esc", "close")],
+            Color::Cyan,
+        ),
         Modal::Flow => {
             let pairs = if state.branch_actions_available() {
                 &[("j/k", "select"), ("Enter", "continue"), ("Esc", "back")][..]
@@ -202,6 +207,11 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
             ],
             Color::Red,
         ),
+        Modal::ConfirmDestructive => modal_spans(
+            "Confirm ",
+            &[("y", "confirm"), ("n/Esc", "cancel")],
+            Color::Red,
+        ),
         Modal::ReviewChat => modal_spans(
             "Review chat ",
             &[("Enter", "send"), ("Esc", "close")],
@@ -210,7 +220,9 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     };
 
     let (right_text, right_color) = status_text(state);
-    let right_width = right_text.chars().count().min(area.width as usize) as u16;
+    // Never let a long status swallow the whole bar; the shortcut hints must stay readable.
+    let status_budget = (area.width as usize).div_ceil(2).max(1);
+    let right_width = right_text.chars().count().min(status_budget) as u16;
     let chunks =
         Layout::horizontal([Constraint::Min(0), Constraint::Length(right_width)]).split(area);
 
@@ -235,27 +247,33 @@ fn default_spans(state: &AppState) -> Vec<Span<'static>> {
             .add_modifier(Modifier::BOLD),
     )];
     for (idx, (key, label)) in pairs.iter().enumerate() {
-        if *key == "F" && !state.branch_actions_available() {
-            continue;
-        }
-        if *key == "p" && !state.pull_available() {
-            continue;
-        }
-        if *key == "v" && !diff_view_toggle_available(state) {
+        if !shortcut_visible(state, key, label) {
             continue;
         }
         spans.push(Span::styled(*key, shortcut_style(state, key)));
         spans.push(Span::raw(" "));
         spans.push(Span::raw(*label));
-        if pairs.iter().skip(idx + 1).any(|(next_key, _)| {
-            (*next_key != "F" || state.branch_actions_available())
-                && (*next_key != "p" || state.pull_available())
-                && (*next_key != "v" || diff_view_toggle_available(state))
-        }) {
+        if pairs
+            .iter()
+            .skip(idx + 1)
+            .any(|(next_key, next_label)| shortcut_visible(state, next_key, next_label))
+        {
             spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
         }
     }
     spans
+}
+
+/// Hide shortcuts that would do nothing if pressed right now.
+fn shortcut_visible(state: &AppState, key: &str, label: &str) -> bool {
+    match (key, label) {
+        ("F", _) => state.branch_actions_available(),
+        ("p", _) => state.pull_available(),
+        ("v", _) => diff_view_toggle_available(state),
+        // Distinguished from the Status pane's Esc, which means "back".
+        ("Esc", "cancel") => state.llm_job_running(),
+        _ => true,
+    }
 }
 
 fn shortcut_style(state: &AppState, key: &str) -> Style {

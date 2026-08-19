@@ -2064,9 +2064,8 @@ fn release_conflict_validate_merges_advanced_remote_target_before_push() {
     git_ok(updater.path(), &["push", "origin", "test"]);
 
     fs::write(dir.path().join("conflict.txt"), "resolved\n").unwrap();
-    let out =
-        lg::git::validate_conflict_resolution_with_followup(Some("test"), Some(feature))
-            .expect("continue release conflict after target advanced");
+    let out = lg::git::validate_conflict_resolution_with_followup(Some("test"), Some(feature))
+        .expect("continue release conflict after target advanced");
 
     assert!(
         out.contains("origin/test advanced"),

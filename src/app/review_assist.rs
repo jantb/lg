@@ -11,6 +11,7 @@ const MAX_REVIEW_ASSIST_OVERVIEW_LINES: usize = 96;
 
 pub(super) fn spawn_assisted_review(state: &mut AppState) {
     if state.review_job.is_some() {
+        state.set_status("review already running \u{2014} Esc cancels it", false);
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
@@ -83,6 +84,7 @@ pub(super) fn spawn_review_assist(state: &mut AppState, node_id: String) {
 
 pub(super) fn spawn_review_pr_text(state: &mut AppState) {
     let Some(context) = review_pr_context(state) else {
+        state.set_status("build review first", true);
         return;
     };
     if let Some(mut job) = state.review_pr_job.take() {

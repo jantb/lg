@@ -145,6 +145,26 @@ fn visible_scroll_offset(state: &AppState, area: Rect) -> usize {
     )
 }
 
+fn confirm_rollback(state: &mut AppState, path: String, is_dir: bool) {
+    let label = if is_dir { "folder" } else { "file" };
+    state.confirm_action(
+        "Roll back",
+        format!("Discard all changes in this {label}?"),
+        path.clone(),
+        PendingAction::RollbackPath { path, is_dir },
+    );
+}
+
+fn confirm_delete(state: &mut AppState, path: String, is_dir: bool) {
+    let label = if is_dir { "folder" } else { "file" };
+    state.confirm_action(
+        "Delete",
+        format!("Delete this {label} from disk?"),
+        path.clone(),
+        PendingAction::DeletePath { path, is_dir },
+    );
+}
+
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     let rows = state.tree_rows();
     let total = rows.len();
@@ -203,16 +223,12 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             if let Some(row) = rows.get(state.files_idx) {
                 match &row.kind {
                     TreeKind::Folder { .. } => {
-                        state.pending_action = Some(PendingAction::RollbackPath {
-                            path: row.path.clone(),
-                            is_dir: true,
-                        });
+                        let path = row.path.clone();
+                        confirm_rollback(state, path, true);
                     }
                     TreeKind::File { entry_idx } => {
-                        state.pending_action = Some(PendingAction::RollbackPath {
-                            path: state.files[*entry_idx].path.clone(),
-                            is_dir: false,
-                        });
+                        let path = state.files[*entry_idx].path.clone();
+                        confirm_rollback(state, path, false);
                     }
                     TreeKind::AllChanges => {
                         state.set_status("select a file or folder to roll back", false);
@@ -245,16 +261,12 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             if let Some(row) = rows.get(state.files_idx) {
                 match &row.kind {
                     TreeKind::Folder { .. } => {
-                        state.pending_action = Some(PendingAction::DeletePath {
-                            path: row.path.clone(),
-                            is_dir: true,
-                        });
+                        let path = row.path.clone();
+                        confirm_delete(state, path, true);
                     }
                     TreeKind::File { entry_idx } => {
-                        state.pending_action = Some(PendingAction::DeletePath {
-                            path: state.files[*entry_idx].path.clone(),
-                            is_dir: false,
-                        });
+                        let path = state.files[*entry_idx].path.clone();
+                        confirm_delete(state, path, false);
                     }
                     TreeKind::AllChanges => {
                         state.set_status("select a file or folder to delete", false);

@@ -4,6 +4,8 @@ mod commit_diff_scroll;
 mod commits_graph;
 #[path = "tui_flow/common.rs"]
 mod common;
+#[path = "tui_flow/confirm_and_help.rs"]
+mod confirm_and_help;
 #[path = "tui_flow/focus_branches_flow.rs"]
 mod focus_branches_flow;
 #[path = "tui_flow/navigation.rs"]

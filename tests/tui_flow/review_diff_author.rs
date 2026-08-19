@@ -75,13 +75,18 @@ fn pressing_esc_in_commit_closes_modal_and_keeps_message() {
 }
 
 #[test]
-fn help_overlay_closes_on_any_key() {
+fn help_overlay_closes_on_any_non_scroll_key() {
     let mut state = make_state_with_files();
     state.focus = Pane::Files;
     state.prev_focus = Pane::Files;
     state.modal = Modal::Help;
 
-    panel::help::handle_key(&mut state, key(KeyCode::Char('?'))).unwrap();
+    panel::help::handle_key(
+        &mut state,
+        key(KeyCode::Char('?')),
+        Rect::new(0, 0, 100, 40),
+    )
+    .unwrap();
 
     assert_eq!(state.modal, Modal::None);
     assert_eq!(state.focus, Pane::Files);

@@ -514,10 +514,8 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.commit_cursor = char_len(&state.commit_message);
             }
         }
-        KeyCode::Char(c) if !ctrl => {
-            if !generating {
-                insert_at_cursor(state, c);
-            }
+        KeyCode::Char(c) if !ctrl && !generating => {
+            insert_at_cursor(state, c);
         }
         _ => {}
     }

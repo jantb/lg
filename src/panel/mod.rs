@@ -2,6 +2,7 @@ pub mod author;
 pub mod branches;
 pub mod commit;
 pub mod commits;
+pub mod confirm;
 pub mod conflict;
 pub mod delete_branch;
 pub mod environments;

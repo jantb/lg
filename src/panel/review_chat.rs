@@ -213,7 +213,12 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     let running = state.review_chat_job.is_some();
     match key.code {
         KeyCode::Esc => {
-            state.modal = Modal::None;
+            // Stop an in-flight answer first; a second Esc closes the chat.
+            if let Some(message) = state.cancel_llm_jobs() {
+                state.set_status(message, false);
+            } else {
+                state.modal = Modal::None;
+            }
         }
         KeyCode::Enter if !running => {
             let prompt = state.review_chat_input.trim().to_string();

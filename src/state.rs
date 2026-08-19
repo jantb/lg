@@ -61,6 +61,7 @@ pub enum Modal {
     Conflict,
     DeleteBranch,
     ReviewChat,
+    ConfirmDestructive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +100,15 @@ pub struct StatusMsg {
     pub text: String,
     pub is_error: bool,
     pub at: DateTime<Utc>,
+}
+
+/// A destructive action parked behind an explicit y/n confirmation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmPrompt {
+    pub title: String,
+    pub question: String,
+    pub detail: String,
+    pub action: PendingAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,6 +206,7 @@ pub struct AppState {
     pub focus: Pane,
     pub modal: Modal,
     pub prev_focus: Pane,
+    pub help_offset: u16,
 
     pub files: Vec<FileEntry>,
     pub branches: Vec<Branch>,
@@ -274,6 +285,7 @@ pub struct AppState {
 
     pub status: Option<StatusMsg>,
     pub pending_action: Option<PendingAction>,
+    pub confirm: Option<ConfirmPrompt>,
     pub push_after_commit: bool,
     pub should_quit: bool,
     pub animation_tick: usize,
@@ -385,6 +397,7 @@ impl AppState {
             focus: Pane::Status,
             modal: Modal::None,
             prev_focus: Pane::Status,
+            help_offset: 0,
 
             files: Vec::new(),
             branches: Vec::new(),
@@ -463,6 +476,7 @@ impl AppState {
 
             status: None,
             pending_action: None,
+            confirm: None,
             push_after_commit: false,
             should_quit: false,
             animation_tick: 0,
@@ -795,6 +809,56 @@ impl AppState {
         std::mem::take(&mut self.deferred_threads)
     }
 
+    /// Cancel any in-flight LLM work and report what was stopped.
+    ///
+    /// Dropping a job drops its receiver; the streaming loop in `llm` bails out
+    /// as soon as a send fails, so this really does stop the work rather than
+    /// just hiding it. The assisted-review builder is not a stream, so it is
+    /// detached and its result discarded.
+    pub fn cancel_llm_jobs(&mut self) -> Option<&'static str> {
+        let mut cancelled = None;
+
+        if let Some(mut job) = self.review_chat_job.take() {
+            self.defer_thread_join(job.handle.take());
+            cancelled = Some("review chat cancelled");
+        }
+        if let Some(mut job) = self.review_flag_job.take() {
+            self.defer_thread_join(job.handle.take());
+            self.review_flag_active_path = None;
+            cancelled = Some("style flag pass cancelled");
+        }
+        if let Some(mut job) = self.review_pr_job.take() {
+            self.defer_thread_join(job.handle.take());
+            cancelled = Some("PR text cancelled");
+        }
+        if let Some(mut job) = self.review_assist_job.take() {
+            self.defer_thread_join(job.handle.take());
+            cancelled = Some("explanation cancelled");
+        }
+        if let Some(mut job) = self.review_job.take() {
+            self.defer_thread_join(job.handle.take());
+            // Otherwise the pane keeps claiming it is still building the review.
+            self.diff_text = "review cancelled".to_string();
+            cancelled = Some("review cancelled");
+        }
+        if self.generation.is_some() {
+            self.cancel_generation();
+            cancelled = Some("generation cancelled");
+        }
+
+        cancelled
+    }
+
+    /// True when [`cancel_llm_jobs`] would stop something.
+    pub fn llm_job_running(&self) -> bool {
+        self.review_job.is_some()
+            || self.review_assist_job.is_some()
+            || self.review_pr_job.is_some()
+            || self.review_flag_job.is_some()
+            || self.review_chat_job.is_some()
+            || self.generation.is_some()
+    }
+
     pub fn cancel_generation(&mut self) {
         if let Some(mut generation) = self.generation.take() {
             self.defer_thread_join(generation.handle.take());
@@ -807,6 +871,23 @@ impl AppState {
             is_error,
             at: Utc::now(),
         });
+    }
+
+    /// Park a destructive action behind a y/n confirmation modal.
+    pub fn confirm_action(
+        &mut self,
+        title: impl Into<String>,
+        question: impl Into<String>,
+        detail: impl Into<String>,
+        action: PendingAction,
+    ) {
+        self.confirm = Some(ConfirmPrompt {
+            title: title.into(),
+            question: question.into(),
+            detail: detail.into(),
+            action,
+        });
+        self.modal = Modal::ConfirmDestructive;
     }
 
     pub fn open_commit_modal(&mut self) {

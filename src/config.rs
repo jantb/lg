@@ -43,6 +43,9 @@ pub const BRANCH_DEV: &str = "develop";
 pub const BRANCH_TEST: &str = "test";
 pub const STATUS_BAR_HEIGHT: u16 = 1;
 pub const STATUS_MSG_LIFETIME_SECS: i64 = 3;
+/// Errors linger far longer than successes so a failure cannot scroll past unseen.
+/// Esc dismisses one early.
+pub const ERROR_MSG_LIFETIME_SECS: i64 = 30;
 pub const BORDER_COLOR: Color = Color::LightBlue;
 pub const TICK_MS: u64 = 250;
 pub const BACKGROUND_FETCH_INTERVAL_SECS: u64 = 300;

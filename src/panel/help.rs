@@ -1,5 +1,5 @@
 use anyhow::Result;
-use ratatui::crossterm::event::KeyEvent;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
@@ -26,6 +26,7 @@ const SECTIONS: &[Section] = &[
         pane: None,
         bindings: &[
             ("?", "Toggle help"),
+            ("Esc", "Dismiss an error, or cancel running LLM work"),
             ("Ctrl-C / q", "Quit"),
             ("1/2/3/4", "Focus Status/Files/Branches/Commits"),
             ("0", "Focus Diff"),
@@ -49,9 +50,9 @@ const SECTIONS: &[Section] = &[
             ("space / y", "Stage selected"),
             ("u", "Unstage selected"),
             ("A / U", "Stage all / unstage all"),
-            ("r", "Roll back selected file or folder"),
+            ("r", "Roll back selected file or folder (confirms first)"),
             ("i", "Add selected file or folder to .gitignore"),
-            ("d", "Delete selected file or folder"),
+            ("d", "Delete selected file or folder (confirms first)"),
             ("o", "Open file or project in IntelliJ/RustRover"),
             ("Enter", "Refresh diff"),
         ],
@@ -79,6 +80,8 @@ const SECTIONS: &[Section] = &[
             ("m", "Pull main or merge origin/main"),
             ("M", "Merge main into all branches and push"),
             ("d", "Delete selected local branch with no upstream"),
+            ("D", "Delete branch with local/remote/force options"),
+            ("F", "Branch action menu"),
         ],
     },
     Section {
@@ -106,6 +109,7 @@ const SECTIONS: &[Section] = &[
             ("g / G", "Top / bottom"),
             ("v", "Toggle unified or side-by-side diff"),
             ("R", "Rebuild assisted review"),
+            ("Esc", "Cancel running LLM work"),
         ],
     },
     Section {
@@ -127,7 +131,7 @@ const SECTIONS: &[Section] = &[
         pane: None,
         bindings: &[
             ("Enter", "Send prompt"),
-            ("Esc", "Close chat"),
+            ("Esc", "Cancel the running answer, then close chat"),
             ("Ctrl+A / Ctrl+E", "Start / end of prompt"),
             ("Up / Down", "Scroll conversation"),
         ],
@@ -137,6 +141,7 @@ const SECTIONS: &[Section] = &[
         pane: None,
         bindings: &[
             ("Ctrl+S", "Commit"),
+            ("Ctrl+P", "Commit and push"),
             ("Enter", "New line"),
             ("Ctrl+R", "Regenerate message"),
             ("Ctrl+U", "Clear message"),
@@ -161,9 +166,18 @@ const SECTIONS: &[Section] = &[
         pane: None,
         bindings: &[
             ("Up / Down", "Pick known model"),
+            ("p", "Cycle provider"),
             ("Enter", "Save selected or typed model"),
             ("Ctrl+U", "Clear saved LLM settings"),
             ("Esc", "Cancel"),
+        ],
+    },
+    Section {
+        title: "Confirm prompts",
+        pane: None,
+        bindings: &[
+            ("y", "Confirm the destructive action"),
+            ("n / Esc", "Cancel"),
         ],
     },
     Section {
@@ -183,20 +197,48 @@ fn pane_name(p: Pane) -> &'static str {
     }
 }
 
-pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
-    // Compute height: 1 heading + bindings count + 1 blank per section (except last)
-    let total_lines: u16 = SECTIONS
+/// Body lines the help text occupies, excluding the modal borders.
+fn content_lines() -> u16 {
+    SECTIONS
         .iter()
         .enumerate()
         .map(|(i, s)| {
             let blank = if i + 1 < SECTIONS.len() { 1u16 } else { 0u16 };
             1 + s.bindings.len() as u16 + blank
         })
-        .sum::<u16>()
-        + 2; // border lines
+        .sum()
+}
 
-    let height = total_lines.min(area.height.saturating_sub(2));
+/// Body height of the help overlay for `area`, i.e. how many lines are visible at once.
+fn viewport_height(area: Rect) -> u16 {
+    let overlay_height = content_lines()
+        .saturating_add(2)
+        .min(area.height.saturating_sub(2))
+        .max(3.min(area.height));
+    overlay_height.saturating_sub(2)
+}
+
+/// Largest scroll offset that still shows content in the last row.
+pub fn max_offset(area: Rect) -> u16 {
+    content_lines().saturating_sub(viewport_height(area))
+}
+
+pub fn scroll(state: &mut AppState, area: Rect, down: bool, amount: u16) {
+    let max = max_offset(area);
+    state.help_offset = if down {
+        state.help_offset.saturating_add(amount).min(max)
+    } else {
+        state.help_offset.saturating_sub(amount)
+    };
+}
+
+pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
+    let height = content_lines()
+        .saturating_add(2)
+        .min(area.height.saturating_sub(2))
+        .max(3.min(area.height));
     let overlay = centered(area, 64, height);
+    let offset = state.help_offset.min(max_offset(area));
 
     frame.render_widget(Clear, overlay);
 
@@ -233,7 +275,14 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         .title(format!("Help \u{2014} {}", pane_name(state.prev_focus)))
         .title_bottom(
             Line::from(Span::styled(
-                "any key to close",
+                if max_offset(area) > 0 {
+                    format!(
+                        "j/k scroll \u{2022} {}%  \u{2022} q/Esc close",
+                        scroll_percent(offset, max_offset(area))
+                    )
+                } else {
+                    "q/Esc close".to_owned()
+                },
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::DIM),
@@ -241,11 +290,37 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             .alignment(Alignment::Right),
         );
 
-    let para = Paragraph::new(lines).block(block);
+    let para = Paragraph::new(lines).block(block).scroll((offset, 0));
     frame.render_widget(para, overlay);
 }
 
-pub fn handle_key(state: &mut AppState, _key: KeyEvent) -> Result<()> {
-    state.modal = Modal::None;
+fn scroll_percent(offset: u16, max: u16) -> u16 {
+    if max == 0 {
+        100
+    } else {
+        (u32::from(offset) * 100 / u32::from(max)) as u16
+    }
+}
+
+pub fn handle_key(state: &mut AppState, key: KeyEvent, area: Rect) -> Result<()> {
+    let page = viewport_height(area).saturating_sub(1).max(1);
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => scroll(state, area, true, 1),
+        KeyCode::Char('k') | KeyCode::Up => scroll(state, area, false, 1),
+        KeyCode::PageDown | KeyCode::Char(' ') => scroll(state, area, true, page),
+        KeyCode::PageUp => scroll(state, area, false, page),
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            scroll(state, area, true, page / 2)
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            scroll(state, area, false, page / 2)
+        }
+        KeyCode::Char('g') => state.help_offset = 0,
+        KeyCode::Char('G') => state.help_offset = max_offset(area),
+        _ => {
+            state.modal = Modal::None;
+            state.help_offset = 0;
+        }
+    }
     Ok(())
 }

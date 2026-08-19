@@ -1226,7 +1226,7 @@ pub fn counts_ahead_behind() -> Result<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::config::{build_ide_open_command, diff_hunk_start_line};
+    use super::config::{build_ide_open_command, build_project_open_command, diff_hunk_start_line};
     use super::{
         FileEntry, label_commit_patch, parse_porcelain, parse_porcelain_xy, parse_upstream_track,
     };
@@ -1285,6 +1285,42 @@ mod tests {
 
         let extensionless = build_ide_open_command("/repo", "Dockerfile", 1);
         assert_eq!(extensionless.program, "idea");
+    }
+
+    #[test]
+    fn project_scan_finds_shallow_sources_but_stays_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // A source file at a normal depth is found.
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+        assert_eq!(
+            build_project_open_command(&root.to_string_lossy()).program,
+            "rustrover"
+        );
+
+        // A heavy vendor directory is skipped outright, however deep it goes.
+        let other = tempfile::tempdir().unwrap();
+        let noisy = other.path().join("node_modules/pkg/deep/deeper");
+        std::fs::create_dir_all(&noisy).unwrap();
+        std::fs::write(noisy.join("mod.rs"), "fn main() {}").unwrap();
+        std::fs::write(other.path().join("App.kt"), "fun main() {}").unwrap();
+        assert_eq!(
+            build_project_open_command(&other.path().to_string_lossy()).program,
+            "idea",
+            "sources inside skipped vendor directories must not decide the IDE"
+        );
+
+        // A source file buried past the depth cap does not stall the scan.
+        let deep = tempfile::tempdir().unwrap();
+        let buried = deep.path().join("a/b/c/d/e/f");
+        std::fs::create_dir_all(&buried).unwrap();
+        std::fs::write(buried.join("main.rs"), "fn main() {}").unwrap();
+        assert_eq!(
+            build_project_open_command(&deep.path().to_string_lossy()).program,
+            "idea"
+        );
     }
 
     #[test]

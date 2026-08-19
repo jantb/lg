@@ -109,7 +109,7 @@ fn open_project_command(command: IdeOpenCommand) -> Result<String> {
     Ok(format!("opened project in {}", command.program))
 }
 
-fn build_project_open_command(root: &str) -> IdeOpenCommand {
+pub(super) fn build_project_open_command(root: &str) -> IdeOpenCommand {
     let program = ide_program_for_project(Path::new(root));
     IdeOpenCommand {
         program: program.to_string(),
@@ -158,20 +158,55 @@ fn ide_program_for_project(root: &Path) -> &'static str {
     "idea"
 }
 
+/// Directories that never help identify the project language and can be enormous.
+const SKIPPED_SCAN_DIRS: &[&str] = &[
+    ".git",
+    "target",
+    "build",
+    ".gradle",
+    "node_modules",
+    "vendor",
+    ".venv",
+    "venv",
+    "dist",
+    "out",
+    ".idea",
+    ".cache",
+    "__pycache__",
+];
+
+/// Depth and breadth caps for [`project_contains_extension`].
+///
+/// This scan runs on the UI thread when opening a project, so it must finish in
+/// bounded time even in a huge worktree. A source file that identifies the
+/// project language is essentially always near the root; walking an entire
+/// monorepo to find one is never worth freezing the TUI for.
+const MAX_SCAN_DEPTH: usize = 3;
+const MAX_SCAN_ENTRIES: usize = 4_000;
+
 fn project_contains_extension(root: &Path, extension: &str) -> bool {
-    let mut dirs = vec![root.to_path_buf()];
-    while let Some(dir) = dirs.pop() {
+    // Breadth-first so shallow (likely) matches are found before deep ones.
+    let mut queue = std::collections::VecDeque::from([(root.to_path_buf(), 0usize)]);
+    let mut examined = 0usize;
+
+    while let Some((dir, depth)) = queue.pop_front() {
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
+            examined += 1;
+            if examined > MAX_SCAN_ENTRIES {
+                return false;
+            }
             let path = entry.path();
             let file_name = path.file_name().and_then(|name| name.to_str());
-            if matches!(file_name, Some(".git" | "target" | "build" | ".gradle")) {
+            if file_name.is_some_and(|name| SKIPPED_SCAN_DIRS.contains(&name)) {
                 continue;
             }
             if path.is_dir() {
-                dirs.push(path);
+                if depth < MAX_SCAN_DEPTH {
+                    queue.push_back((path, depth + 1));
+                }
             } else if path.extension().and_then(|value| value.to_str()) == Some(extension) {
                 return true;
             }

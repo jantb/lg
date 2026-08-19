@@ -79,6 +79,7 @@ where
                 Modal::Flow => panel::flow::render(state, area, frame),
                 Modal::Conflict => panel::conflict::render(state, area, frame),
                 Modal::DeleteBranch => panel::delete_branch::render(state, area, frame),
+                Modal::ConfirmDestructive => panel::confirm::render(state, area, frame),
                 Modal::ReviewChat => {}
             }
         })?;
@@ -160,6 +161,7 @@ impl App {
                 Modal::Flow => panel::flow::render(state, area, frame),
                 Modal::Conflict => panel::conflict::render(state, area, frame),
                 Modal::DeleteBranch => panel::delete_branch::render(state, area, frame),
+                Modal::ConfirmDestructive => panel::confirm::render(state, area, frame),
                 Modal::ReviewChat => {}
             }
         })?;

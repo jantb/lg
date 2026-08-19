@@ -16,6 +16,14 @@ use super::{
     spawn_assisted_review, spawn_pull, spawn_push,
 };
 
+fn flow_unavailable_reason(state: &AppState) -> &'static str {
+    if state.focus != Pane::Branches {
+        "branch actions need the Branches pane"
+    } else {
+        "no branch actions available here"
+    }
+}
+
 fn next_pane(p: Pane) -> Pane {
     match p {
         Pane::Status => Pane::Files,
@@ -39,6 +47,17 @@ fn prev_pane(p: Pane) -> Pane {
 fn handle_modal_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) -> bool {
     match state.modal {
         Modal::None => false,
+        Modal::Help => {
+            state.column_drag_active = false;
+            state.row_drag_active = None;
+            state.review_chat_drag_active = false;
+            match m.kind {
+                MouseEventKind::ScrollDown => panel::help::scroll(state, area, true, 3),
+                MouseEventKind::ScrollUp => panel::help::scroll(state, area, false, 3),
+                _ => {}
+            }
+            true
+        }
         Modal::ReviewChat if review_chat_is_docked(state) => false,
         Modal::Commit => {
             state.column_drag_active = false;
@@ -153,6 +172,16 @@ impl<B: Backend> HeadlessApp<B>
 where
     B::Error: Send + Sync + 'static,
 {
+    pub(super) fn terminal_area(&self) -> Result<Rect> {
+        let size = self.terminal.size()?;
+        Ok(Rect {
+            x: 0,
+            y: 0,
+            width: size.width,
+            height: size.height,
+        })
+    }
+
     pub fn send_key(&mut self, k: KeyEvent) -> Result<()> {
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
             self.state.should_quit = true;
@@ -160,7 +189,8 @@ where
         }
         match self.state.modal {
             Modal::Help => {
-                panel::help::handle_key(&mut self.state, k)?;
+                let area = self.terminal_area()?;
+                panel::help::handle_key(&mut self.state, k, area)?;
                 return self.render();
             }
             Modal::Commit => {
@@ -195,6 +225,10 @@ where
                 panel::delete_branch::handle_key(&mut self.state, k)?;
                 return self.render();
             }
+            Modal::ConfirmDestructive => {
+                panel::confirm::handle_key(&mut self.state, k)?;
+                return self.render();
+            }
             Modal::ReviewChat => {
                 panel::review_chat::handle_key(&mut self.state, k)?;
                 return self.render();
@@ -204,15 +238,27 @@ where
         match k.code {
             KeyCode::Char('?') => {
                 self.state.prev_focus = self.state.focus;
+                self.state.help_offset = 0;
                 self.state.modal = Modal::Help;
             }
             KeyCode::Char('F') => {
                 if self.state.focus == Pane::Branches && self.state.branch_actions_available() {
                     self.state.modal = Modal::Flow;
+                } else {
+                    self.state
+                        .set_status(flow_unavailable_reason(&self.state), false);
                 }
             }
             KeyCode::Char('q') => {
                 self.state.should_quit = true;
+            }
+            KeyCode::Esc if self.state.status.as_ref().is_some_and(|s| s.is_error) => {
+                self.state.status = None;
+            }
+            KeyCode::Esc if self.state.llm_job_running() => {
+                if let Some(message) = self.state.cancel_llm_jobs() {
+                    self.state.set_status(message, false);
+                }
             }
             KeyCode::Esc if self.state.focus == Pane::Status => {
                 panel::environments::handle_key(&mut self.state, k)?;
@@ -418,6 +464,16 @@ where
 }
 
 impl App {
+    pub(super) fn terminal_area(&self) -> Result<Rect> {
+        let size = self.terminal.size()?;
+        Ok(Rect {
+            x: 0,
+            y: 0,
+            width: size.width,
+            height: size.height,
+        })
+    }
+
     pub(super) fn handle_key(&mut self, k: KeyEvent) -> Result<()> {
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
             self.state.should_quit = true;
@@ -426,7 +482,8 @@ impl App {
 
         match self.state.modal {
             Modal::Help => {
-                panel::help::handle_key(&mut self.state, k)?;
+                let area = self.terminal_area()?;
+                panel::help::handle_key(&mut self.state, k, area)?;
                 return Ok(());
             }
             Modal::Commit => {
@@ -461,6 +518,10 @@ impl App {
                 panel::delete_branch::handle_key(&mut self.state, k)?;
                 return Ok(());
             }
+            Modal::ConfirmDestructive => {
+                panel::confirm::handle_key(&mut self.state, k)?;
+                return Ok(());
+            }
             Modal::ReviewChat => {
                 panel::review_chat::handle_key(&mut self.state, k)?;
                 return Ok(());
@@ -471,6 +532,7 @@ impl App {
         match k.code {
             KeyCode::Char('?') => {
                 self.state.prev_focus = self.state.focus;
+                self.state.help_offset = 0;
                 self.state.modal = Modal::Help;
                 return Ok(());
             }
@@ -478,11 +540,24 @@ impl App {
                 if self.state.focus == Pane::Branches && self.state.branch_actions_available() {
                     self.start_refresh(false);
                     self.state.modal = Modal::Flow;
+                } else {
+                    self.state
+                        .set_status(flow_unavailable_reason(&self.state), false);
                 }
                 return Ok(());
             }
             KeyCode::Char('q') => {
                 self.state.should_quit = true;
+                return Ok(());
+            }
+            KeyCode::Esc if self.state.status.as_ref().is_some_and(|s| s.is_error) => {
+                self.state.status = None;
+                return Ok(());
+            }
+            KeyCode::Esc if self.state.llm_job_running() => {
+                if let Some(message) = self.state.cancel_llm_jobs() {
+                    self.state.set_status(message, false);
+                }
                 return Ok(());
             }
             KeyCode::Esc if self.state.focus == Pane::Status => {
@@ -545,7 +620,11 @@ impl App {
                 return Ok(());
             }
             KeyCode::Char('p') => {
-                spawn_pull(&mut self.state);
+                if self.state.pull_available() {
+                    spawn_pull(&mut self.state);
+                } else {
+                    self.state.set_status("nothing to pull", false);
+                }
                 return Ok(());
             }
             KeyCode::Char('f') if focused_review_panel(&self.state) => {

@@ -18,7 +18,9 @@ use std::{
 };
 
 use crate::{
-    config::{BACKGROUND_FETCH_INTERVAL_SECS, STATUS_MSG_LIFETIME_SECS, TICK_MS},
+    config::{
+        BACKGROUND_FETCH_INTERVAL_SECS, ERROR_MSG_LIFETIME_SECS, STATUS_MSG_LIFETIME_SECS, TICK_MS,
+    },
     state::AppState,
 };
 
@@ -215,7 +217,12 @@ impl App {
 
             // Expire stale status messages.
             if let Some(ref s) = self.state.status.clone() {
-                if (Utc::now() - s.at).num_seconds() >= STATUS_MSG_LIFETIME_SECS {
+                let lifetime = if s.is_error {
+                    ERROR_MSG_LIFETIME_SECS
+                } else {
+                    STATUS_MSG_LIFETIME_SECS
+                };
+                if (Utc::now() - s.at).num_seconds() >= lifetime {
                     self.state.status = None;
                 }
             }

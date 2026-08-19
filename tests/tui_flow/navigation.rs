@@ -304,7 +304,7 @@ fn files_panel_i_ignores_selected_file_or_folder() {
 }
 
 #[test]
-fn files_panel_d_deletes_selected_file_or_folder() {
+fn files_panel_d_deletes_selected_file_or_folder_after_confirmation() {
     let mut state = AppState::new();
     state.files = vec![FileEntry {
         path: "src/main.rs".into(),
@@ -324,6 +324,9 @@ fn files_panel_d_deletes_selected_file_or_folder() {
     state.status = None;
     state.files_idx = 1;
     panel::files::handle_key(&mut state, key(KeyCode::Char('d'))).unwrap();
+    assert_eq!(state.modal, Modal::ConfirmDestructive);
+    assert_eq!(state.pending_action, None);
+    panel::confirm::handle_key(&mut state, key(KeyCode::Char('y'))).unwrap();
     assert_eq!(
         state.pending_action,
         Some(PendingAction::DeletePath {
@@ -335,6 +338,9 @@ fn files_panel_d_deletes_selected_file_or_folder() {
     state.pending_action = None;
     state.files_idx = 2;
     panel::files::handle_key(&mut state, key(KeyCode::Char('d'))).unwrap();
+    assert_eq!(state.modal, Modal::ConfirmDestructive);
+    assert_eq!(state.pending_action, None);
+    panel::confirm::handle_key(&mut state, key(KeyCode::Char('y'))).unwrap();
     assert_eq!(
         state.pending_action,
         Some(PendingAction::DeletePath {
@@ -345,7 +351,7 @@ fn files_panel_d_deletes_selected_file_or_folder() {
 }
 
 #[test]
-fn files_panel_r_rolls_back_selected_file_or_folder() {
+fn files_panel_r_rolls_back_selected_file_or_folder_after_confirmation() {
     let mut state = AppState::new();
     state.files = vec![FileEntry {
         path: "src/main.rs".into(),
@@ -365,6 +371,9 @@ fn files_panel_r_rolls_back_selected_file_or_folder() {
     state.status = None;
     state.files_idx = 1;
     panel::files::handle_key(&mut state, key(KeyCode::Char('r'))).unwrap();
+    assert_eq!(state.modal, Modal::ConfirmDestructive);
+    assert_eq!(state.pending_action, None);
+    panel::confirm::handle_key(&mut state, key(KeyCode::Char('y'))).unwrap();
     assert_eq!(
         state.pending_action,
         Some(PendingAction::RollbackPath {
@@ -376,6 +385,9 @@ fn files_panel_r_rolls_back_selected_file_or_folder() {
     state.pending_action = None;
     state.files_idx = 2;
     panel::files::handle_key(&mut state, key(KeyCode::Char('r'))).unwrap();
+    assert_eq!(state.modal, Modal::ConfirmDestructive);
+    assert_eq!(state.pending_action, None);
+    panel::confirm::handle_key(&mut state, key(KeyCode::Char('y'))).unwrap();
     assert_eq!(
         state.pending_action,
         Some(PendingAction::RollbackPath {

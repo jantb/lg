@@ -1064,6 +1064,14 @@ impl App {
             handles.extend(job.handle.take());
         }
 
+        if !handles.is_empty() {
+            // The terminal has already been restored at this point, so tell the user
+            // why the process has not exited yet instead of appearing to hang.
+            eprintln!(
+                "lg: waiting for {} background job(s) to finish\u{2026}",
+                handles.len()
+            );
+        }
         for handle in handles {
             join_worker(Some(handle));
         }

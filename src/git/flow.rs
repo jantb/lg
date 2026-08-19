@@ -1047,7 +1047,7 @@ fn prune_safety_refs(keep: usize) -> Result<usize> {
         .filter(|name| name.starts_with(SAFETY_REF_PREFIX))
         .filter_map(|name| safety_ref_timestamp(name).map(|ts| (name.to_string(), ts)))
         .collect();
-    refs.sort_by(|a, b| b.1.cmp(&a.1));
+    refs.sort_by_key(|(_, ts)| std::cmp::Reverse(*ts));
 
     let mut deleted = 0usize;
     for (name, _) in refs.into_iter().skip(keep) {

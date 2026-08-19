@@ -146,10 +146,7 @@ fn current_branch_panel_renders_environment_history() {
         "missing branch name: {text}"
     );
     assert!(text.contains("develop"), "missing develop badge: {text}");
-    assert!(
-        text.contains("test"),
-        "missing test badge: {text}"
-    );
+    assert!(text.contains("test"), "missing test badge: {text}");
     assert!(
         text.contains("2026-04-29 14:20"),
         "missing release timestamp: {text}"
@@ -511,10 +508,7 @@ fn repository_panel_keeps_deployment_status_visible_in_full_layout() {
         text.contains("2026-04-29 14:25"),
         "missing test deployment timestamp: {text}"
     );
-    assert!(
-        text.contains("+2"),
-        "missing test pending distance: {text}"
-    );
+    assert!(text.contains("+2"), "missing test pending distance: {text}");
 }
 
 #[test]
