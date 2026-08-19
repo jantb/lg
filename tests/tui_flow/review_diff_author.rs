@@ -242,14 +242,16 @@ fn model_modal_picks_and_saves_model() {
     app.state.llm_model_idx = 0;
     app.state.llm_model_input = lg::config::LLM_MODEL_CHOICES[0].into();
 
+    // Down wraps, so with a single configured choice it stays put.
+    let next = lg::config::LLM_MODEL_CHOICES[1 % lg::config::LLM_MODEL_CHOICES.len()];
     panel::model::handle_key(&mut app.state, key(KeyCode::Down)).unwrap();
-    assert_eq!(app.state.llm_model_input, lg::config::LLM_MODEL_CHOICES[1]);
+    assert_eq!(app.state.llm_model_input, next);
 
     panel::model::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
     assert_eq!(
         app.state.pending_action,
         Some(PendingAction::SaveLlmSettings {
-            model: lg::config::LLM_MODEL_CHOICES[1].into(),
+            model: next.into(),
             provider: lg::llm::LlmProvider::Ollama,
         })
     );

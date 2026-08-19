@@ -20,7 +20,7 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
     if requires_release_branches(action) && !state.flow_available() {
         state.modal = Modal::None;
         state.set_status(
-            "branch action unavailable: missing develop or release/next",
+            "branch action unavailable: missing develop or test",
             true,
         );
         return;

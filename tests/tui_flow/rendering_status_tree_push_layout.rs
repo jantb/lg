@@ -147,8 +147,8 @@ fn current_branch_panel_renders_environment_history() {
     );
     assert!(text.contains("develop"), "missing develop badge: {text}");
     assert!(
-        text.contains("release/next"),
-        "missing release/next badge: {text}"
+        text.contains("test"),
+        "missing test badge: {text}"
     );
     assert!(
         text.contains("2026-04-29 14:20"),
@@ -504,16 +504,16 @@ fn repository_panel_keeps_deployment_status_visible_in_full_layout() {
         "missing develop deployment timestamp: {text}"
     );
     assert!(
-        text.contains("release/next"),
-        "missing release/next deployment target: {text}"
+        text.contains("test"),
+        "missing test deployment target: {text}"
     );
     assert!(
         text.contains("2026-04-29 14:25"),
-        "missing release/next deployment timestamp: {text}"
+        "missing test deployment timestamp: {text}"
     );
     assert!(
         text.contains("+2"),
-        "missing release/next pending distance: {text}"
+        "missing test pending distance: {text}"
     );
 }
 
@@ -614,11 +614,11 @@ fn flow_modal_renders_running_workflow_steps() {
         rx,
         handle: None,
         spinner: 1,
-        label: "Release current branch into release/next".into(),
+        label: "Release current branch into test".into(),
         steps: vec![
             "push feature/demo".into(),
             "merge origin/feature/demo".into(),
-            "push release/next".into(),
+            "push test".into(),
         ],
         current_step: Some(1),
     });
@@ -648,7 +648,7 @@ fn flow_modal_renders_running_workflow_steps() {
         "missing active step marker: {text}"
     );
     assert!(
-        text.contains("[ ] push release/next"),
+        text.contains("[ ] push test"),
         "missing pending step: {text}"
     );
 }

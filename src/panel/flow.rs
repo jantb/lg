@@ -331,7 +331,7 @@ fn warning_for(action: FlowAction) -> Line<'static> {
             "Pushes current branch, syncs develop, merges origin/main, merges current, pushes HEAD to develop -> dev, then returns.",
         ),
         FlowAction::ReleaseTest => Line::from(
-            "Pushes current branch, syncs release/next, merges origin/main, merges current, pushes HEAD to release/next -> test, then returns.",
+            "Pushes current branch, syncs test, merges origin/main, merges current, pushes HEAD to test -> test, then returns.",
         ),
         FlowAction::MergeMain => Line::from(
             "Stashes local changes, updates main from origin/main, returns, merges origin/main, pushes current, then restores.",

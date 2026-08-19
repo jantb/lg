@@ -76,7 +76,7 @@ pub fn add_flow_branches(state: &mut AppState) {
             last_commit_unix: None,
         },
         Branch {
-            name: "release/next".into(),
+            name: "test".into(),
             is_current: false,
             upstream: None,
             upstream_gone: false,

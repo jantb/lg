@@ -6,16 +6,16 @@ This is a Rust 2024 crate named `lg`. The executable entry point is `src/main.rs
 
 ## Build, Test, and Development Commands
 
-Use the Makefile for the standard workflow:
+Use the justfile for the standard workflow:
 
-- `make check`: runs `cargo check --all-targets`.
-- `make test`: runs `cargo test --all-targets`.
-- `make clippy`: runs Clippy for all targets with warnings denied.
-- `make fmt`: formats Rust code with `cargo fmt`.
-- `make fmt-check`: verifies formatting without changing files.
-- `make all`: runs check, tests, clippy, and formatting checks.
-- `make harness`: runs the harness binary with `cargo run --bin harness`.
-- `make release` and `make install`: build and install the optimized `lg` binary.
+- `just check`: runs `cargo check --all-targets`.
+- `just test`: runs `cargo test --all-targets`.
+- `just clippy`: runs Clippy for all targets with warnings denied.
+- `just fmt`: formats Rust code with `cargo fmt`.
+- `just fmt-check`: verifies formatting without changing files.
+- `just` (default recipe): runs check, tests, clippy, and formatting checks.
+- `just harness`: runs the harness binary with `cargo run --bin harness`.
+- `just release` and `just install`: build and install the optimized `lg` binary.
 
 ## Coding Style & Naming Conventions
 
@@ -23,7 +23,7 @@ Follow idiomatic Rust and the repository's `rustfmt` defaults. Use four-space in
 
 ## Testing Guidelines
 
-Tests use Rust's built-in test framework plus `tempfile` for hermetic repositories. Add integration coverage under `tests/` for user-visible Git and TUI flows; name tests after the behavior being protected, for example `end_to_end_commit_flow` or `mm_file_appears_in_both_lists`. Run `make test` before submitting behavior changes, and run `make all` before larger changes.
+Tests use Rust's built-in test framework plus `tempfile` for hermetic repositories. Add integration coverage under `tests/` for user-visible Git and TUI flows; name tests after the behavior being protected, for example `end_to_end_commit_flow` or `mm_file_appears_in_both_lists`. Run `just test` before submitting behavior changes, and run `just` before larger changes.
 
 ## Commit & Pull Request Guidelines
 

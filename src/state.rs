@@ -360,9 +360,9 @@ impl FlowAction {
         match self {
             Self::MergeMain => "Merge origin/main into current branch",
             Self::ReleaseDev => "Release current branch into develop",
-            Self::ReleaseTest => "Release current branch into release/next",
+            Self::ReleaseTest => "Release current branch into test",
             Self::ResetDev => "Reset develop from origin/main",
-            Self::ResetTest => "Reset release/next from origin/main",
+            Self::ResetTest => "Reset test from origin/main",
             Self::DiscardCheckout => "Discard current checkout and reload from remote",
             Self::NewFeature => "Start new feature from origin/main",
             Self::TransferDiff => "Transfer selected feature diff to new branch",

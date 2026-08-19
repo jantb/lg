@@ -616,11 +616,11 @@ fn branches_m_shortcut_pulls_main_when_behind_remote() {
 fn branches_m_shortcut_blocks_release_next_when_not_behind_main() {
     let mut state = AppState::new();
     state.focus = Pane::Branches;
-    state.branch = Some("release/next".into());
+    state.branch = Some("test".into());
     state.branches = vec![Branch {
-        name: "release/next".into(),
+        name: "test".into(),
         is_current: true,
-        upstream: Some("origin/release/next".into()),
+        upstream: Some("origin/test".into()),
         upstream_gone: false,
         ahead: 0,
         behind: 0,
@@ -947,11 +947,11 @@ fn flow_modal_shows_merge_main_on_develop_when_behind_main() {
 fn flow_modal_hides_merge_main_on_release_next_when_not_behind_main() {
     let mut state = AppState::new();
     add_flow_branches(&mut state);
-    state.branch = Some("release/next".into());
+    state.branch = Some("test".into());
     if let Some(branch) = state
         .branches
         .iter_mut()
-        .find(|branch| branch.name == "release/next")
+        .find(|branch| branch.name == "test")
     {
         branch.is_current = true;
     }
@@ -961,7 +961,7 @@ fn flow_modal_hides_merge_main_on_release_next_when_not_behind_main() {
 
     assert!(
         !text.contains("Merge origin/main into current branch"),
-        "merge-main should be hidden on up-to-date release/next: {text}"
+        "merge-main should be hidden on up-to-date test: {text}"
     );
 }
 

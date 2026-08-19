@@ -51,7 +51,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         None => (
             state.commit_message.clone(),
             state.commit_cursor,
-            "Commit message  (Ctrl+S=commit  Shift+P=commit&push  Enter=newline  Ctrl+R=regenerate  Ctrl+U=clear  Esc=back)"
+            "Commit message  (Ctrl+S=commit  Ctrl+P=commit&push  Enter=newline  Ctrl+R=regenerate  Ctrl+U=clear  Esc=back)"
                 .to_owned(),
             true,
         ),
@@ -85,7 +85,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         Paragraph::new(Line::from(vec![
             Span::styled("Ctrl+S", Style::default().fg(Color::Green)),
             Span::raw(" commit  "),
-            Span::styled("Shift+P", Style::default().fg(Color::Green)),
+            Span::styled("Ctrl+P", Style::default().fg(Color::Green)),
             Span::raw(" commit&push  "),
             Span::styled("Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" newline  "),
@@ -435,7 +435,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.pending_action = Some(PendingAction::Commit);
             }
         }
-        KeyCode::Char('P') if !ctrl => {
+        KeyCode::Char('p') if ctrl => {
             if !generating && !state.commit_message.trim().is_empty() {
                 state.push_after_commit = true;
                 state.pending_action = Some(PendingAction::Commit);
@@ -534,6 +534,29 @@ mod tests {
 
         assert_eq!(lines[0].text, "complete the saga");
         assert_eq!(lines[1].text, "immediately");
+    }
+
+    #[test]
+    fn ctrl_p_commits_and_pushes_while_plain_p_types() {
+        let mut state = AppState::default();
+        state.commit_message = "feat: add".into();
+        state.commit_cursor = char_len(&state.commit_message);
+
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT),
+        )
+        .unwrap();
+        assert_eq!(state.commit_message, "feat: addP");
+        assert!(state.pending_action.is_none());
+
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+        assert!(state.push_after_commit);
+        assert_eq!(state.pending_action, Some(PendingAction::Commit));
     }
 
     #[test]

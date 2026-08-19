@@ -1743,8 +1743,8 @@ fn release_flow_returns_to_original_branch_after_target_push() {
     git_ok(dir.path(), &["checkout", "-b", "develop"]);
     git_ok(dir.path(), &["push", "origin", "develop"]);
     git_ok(dir.path(), &["checkout", "main"]);
-    git_ok(dir.path(), &["checkout", "-b", "release/next"]);
-    git_ok(dir.path(), &["push", "origin", "release/next"]);
+    git_ok(dir.path(), &["checkout", "-b", "test"]);
+    git_ok(dir.path(), &["push", "origin", "test"]);
 
     let feature = "feature/release-return";
     git_ok(dir.path(), &["checkout", "main"]);
@@ -1772,7 +1772,7 @@ fn release_flow_returns_to_original_branch_after_target_push() {
     lg::git::flow_release_current(feature, "develop").expect("release to develop");
     assert_eq!(head_branch(dir.path()), feature);
 
-    lg::git::flow_release_current(feature, "release/next").expect("release to release/next");
+    lg::git::flow_release_current(feature, "test").expect("release to test");
     assert_eq!(head_branch(dir.path()), feature);
 
     let develop_log = git(bare.path(), &["log", "--oneline", "develop"]);
@@ -1784,34 +1784,34 @@ fn release_flow_returns_to_original_branch_after_target_push() {
         String::from_utf8_lossy(&develop_log.stdout).contains("main update"),
         "develop did not receive origin/main before release"
     );
-    let release_log = git(bare.path(), &["log", "--oneline", "release/next"]);
+    let release_log = git(bare.path(), &["log", "--oneline", "test"]);
     assert!(
         String::from_utf8_lossy(&release_log.stdout).contains("feature commit"),
-        "release/next did not receive feature commit"
+        "test did not receive feature commit"
     );
     assert!(
         String::from_utf8_lossy(&release_log.stdout).contains("main update"),
-        "release/next did not receive origin/main before release"
+        "test did not receive origin/main before release"
     );
-    let local_release = git(dir.path(), &["rev-parse", "release/next"]);
-    let remote_release = git(bare.path(), &["rev-parse", "release/next"]);
+    let local_release = git(dir.path(), &["rev-parse", "test"]);
+    let remote_release = git(bare.path(), &["rev-parse", "test"]);
     assert_eq!(
         String::from_utf8_lossy(&local_release.stdout),
         String::from_utf8_lossy(&remote_release.stdout),
-        "origin/release/next was not pushed to the merged release/next HEAD"
+        "origin/test was not pushed to the merged test HEAD"
     );
     let upstream = git(
         dir.path(),
-        &["rev-parse", "--abbrev-ref", "release/next@{upstream}"],
+        &["rev-parse", "--abbrev-ref", "test@{upstream}"],
     );
     assert!(
         upstream.status.success(),
-        "release/next upstream was not configured: {}",
+        "test upstream was not configured: {}",
         String::from_utf8_lossy(&upstream.stderr)
     );
     assert_eq!(
         String::from_utf8_lossy(&upstream.stdout).trim(),
-        "origin/release/next"
+        "origin/test"
     );
     let branches = git(dir.path(), &["branch", "--format=%(refname:short)"]);
     let branch_text = String::from_utf8_lossy(&branches.stdout);
@@ -1845,11 +1845,11 @@ fn release_flow_stashes_dirty_work_for_target_checkouts() {
     git_ok(dir.path(), &["push", "origin", "develop"]);
 
     git_ok(dir.path(), &["checkout", "main"]);
-    git_ok(dir.path(), &["checkout", "-b", "release/next"]);
+    git_ok(dir.path(), &["checkout", "-b", "test"]);
     fs::write(dir.path().join("target_only.txt"), "release\n").unwrap();
     stage_in(dir.path(), "target_only.txt");
     commit_in(dir.path(), "release target file");
-    git_ok(dir.path(), &["push", "origin", "release/next"]);
+    git_ok(dir.path(), &["push", "origin", "test"]);
 
     let feature = "feature/release-dirty";
     git_ok(dir.path(), &["checkout", "main"]);
@@ -1873,7 +1873,7 @@ fn release_flow_stashes_dirty_work_for_target_checkouts() {
         "untracked local"
     );
 
-    lg::git::flow_release_current(feature, "release/next").expect("release to release/next");
+    lg::git::flow_release_current(feature, "test").expect("release to test");
     assert_eq!(head_branch(dir.path()), feature);
     assert_eq!(
         fs::read_to_string(dir.path().join("init.txt")).unwrap(),
@@ -1889,10 +1889,10 @@ fn release_flow_stashes_dirty_work_for_target_checkouts() {
         String::from_utf8_lossy(&develop_log.stdout).contains("feature commit"),
         "develop did not receive feature commit"
     );
-    let release_log = git(bare.path(), &["log", "--oneline", "release/next"]);
+    let release_log = git(bare.path(), &["log", "--oneline", "test"]);
     assert!(
         String::from_utf8_lossy(&release_log.stdout).contains("feature commit"),
-        "release/next did not receive feature commit"
+        "test did not receive feature commit"
     );
     let stash_list = git(dir.path(), &["stash", "list"]);
     assert!(
@@ -1919,11 +1919,11 @@ fn release_conflict_continue_auto_stages_pushes_target_and_returns_to_feature() 
     git_ok(dir.path(), &["checkout", "-b", "develop"]);
     git_ok(dir.path(), &["push", "origin", "develop"]);
     git_ok(dir.path(), &["checkout", "main"]);
-    git_ok(dir.path(), &["checkout", "-b", "release/next"]);
+    git_ok(dir.path(), &["checkout", "-b", "test"]);
     fs::write(dir.path().join("conflict.txt"), "release\n").unwrap();
     stage_in(dir.path(), "conflict.txt");
     commit_in(dir.path(), "release side");
-    git_ok(dir.path(), &["push", "origin", "release/next"]);
+    git_ok(dir.path(), &["push", "origin", "test"]);
 
     let feature = "feature/release-conflict";
     git_ok(dir.path(), &["checkout", "main"]);
@@ -1934,19 +1934,19 @@ fn release_conflict_continue_auto_stages_pushes_target_and_returns_to_feature() 
     git_ok(dir.path(), &["push", "origin", feature]);
 
     let _cwd = CwdGuard::new(dir.path());
-    lg::git::flow_release_current(feature, "release/next")
+    lg::git::flow_release_current(feature, "test")
         .expect_err("release should stop for manual conflict resolution");
-    assert_eq!(head_branch(dir.path()), "release/next");
+    assert_eq!(head_branch(dir.path()), "test");
 
     fs::write(dir.path().join("conflict.txt"), "resolved\n").unwrap();
-    lg::git::validate_conflict_resolution_with_followup(Some("release/next"), Some(feature))
+    lg::git::validate_conflict_resolution_with_followup(Some("test"), Some(feature))
         .expect("continue release conflict");
 
     assert_eq!(head_branch(dir.path()), feature);
-    let released_file = git(bare.path(), &["show", "release/next:conflict.txt"]);
+    let released_file = git(bare.path(), &["show", "test:conflict.txt"]);
     assert!(
         released_file.status.success(),
-        "release/next file missing: {}",
+        "test file missing: {}",
         String::from_utf8_lossy(&released_file.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&released_file.stdout), "resolved\n");
@@ -1970,11 +1970,11 @@ fn release_conflict_validate_pushes_target_after_user_returns_to_feature() {
     git_ok(dir.path(), &["checkout", "-b", "develop"]);
     git_ok(dir.path(), &["push", "origin", "develop"]);
     git_ok(dir.path(), &["checkout", "main"]);
-    git_ok(dir.path(), &["checkout", "-b", "release/next"]);
+    git_ok(dir.path(), &["checkout", "-b", "test"]);
     fs::write(dir.path().join("conflict.txt"), "release\n").unwrap();
     stage_in(dir.path(), "conflict.txt");
     commit_in(dir.path(), "release side");
-    git_ok(dir.path(), &["push", "origin", "release/next"]);
+    git_ok(dir.path(), &["push", "origin", "test"]);
 
     let feature = "feature/release-conflict-manual";
     git_ok(dir.path(), &["checkout", "main"]);
@@ -1985,23 +1985,23 @@ fn release_conflict_validate_pushes_target_after_user_returns_to_feature() {
     git_ok(dir.path(), &["push", "origin", feature]);
 
     let _cwd = CwdGuard::new(dir.path());
-    lg::git::flow_release_current(feature, "release/next")
+    lg::git::flow_release_current(feature, "test")
         .expect_err("release should stop for manual conflict resolution");
-    assert_eq!(head_branch(dir.path()), "release/next");
+    assert_eq!(head_branch(dir.path()), "test");
 
     fs::write(dir.path().join("conflict.txt"), "manually resolved\n").unwrap();
     stage_in(dir.path(), "conflict.txt");
     git_ok(dir.path(), &["commit", "--no-edit"]);
     git_ok(dir.path(), &["checkout", feature]);
 
-    lg::git::validate_conflict_resolution_with_followup(Some("release/next"), Some(feature))
+    lg::git::validate_conflict_resolution_with_followup(Some("test"), Some(feature))
         .expect("validate manually completed release conflict");
 
     assert_eq!(head_branch(dir.path()), feature);
-    let released_file = git(bare.path(), &["show", "release/next:conflict.txt"]);
+    let released_file = git(bare.path(), &["show", "test:conflict.txt"]);
     assert!(
         released_file.status.success(),
-        "release/next file missing: {}",
+        "test file missing: {}",
         String::from_utf8_lossy(&released_file.stderr)
     );
     assert_eq!(
@@ -2028,11 +2028,11 @@ fn release_conflict_validate_merges_advanced_remote_target_before_push() {
     git_ok(dir.path(), &["checkout", "-b", "develop"]);
     git_ok(dir.path(), &["push", "origin", "develop"]);
     git_ok(dir.path(), &["checkout", "main"]);
-    git_ok(dir.path(), &["checkout", "-b", "release/next"]);
+    git_ok(dir.path(), &["checkout", "-b", "test"]);
     fs::write(dir.path().join("conflict.txt"), "release\n").unwrap();
     stage_in(dir.path(), "conflict.txt");
     commit_in(dir.path(), "release side");
-    git_ok(dir.path(), &["push", "origin", "release/next"]);
+    git_ok(dir.path(), &["push", "origin", "test"]);
 
     let feature = "feature/release-conflict-remote-advanced";
     git_ok(dir.path(), &["checkout", "main"]);
@@ -2043,9 +2043,9 @@ fn release_conflict_validate_merges_advanced_remote_target_before_push() {
     git_ok(dir.path(), &["push", "origin", feature]);
 
     let _cwd = CwdGuard::new(dir.path());
-    lg::git::flow_release_current(feature, "release/next")
+    lg::git::flow_release_current(feature, "test")
         .expect_err("release should stop for manual conflict resolution");
-    assert_eq!(head_branch(dir.path()), "release/next");
+    assert_eq!(head_branch(dir.path()), "test");
 
     let updater = tempfile::tempdir().expect("updater tempdir");
     git_ok(
@@ -2057,36 +2057,36 @@ fn release_conflict_validate_merges_advanced_remote_target_before_push() {
         &["config", "user.email", "test@example.com"],
     );
     git_ok(updater.path(), &["config", "user.name", "Test User"]);
-    git_ok(updater.path(), &["checkout", "release/next"]);
+    git_ok(updater.path(), &["checkout", "test"]);
     fs::write(updater.path().join("remote.txt"), "remote update\n").unwrap();
     stage_in(updater.path(), "remote.txt");
     commit_in(updater.path(), "remote target update");
-    git_ok(updater.path(), &["push", "origin", "release/next"]);
+    git_ok(updater.path(), &["push", "origin", "test"]);
 
     fs::write(dir.path().join("conflict.txt"), "resolved\n").unwrap();
     let out =
-        lg::git::validate_conflict_resolution_with_followup(Some("release/next"), Some(feature))
+        lg::git::validate_conflict_resolution_with_followup(Some("test"), Some(feature))
             .expect("continue release conflict after target advanced");
 
     assert!(
-        out.contains("origin/release/next advanced"),
+        out.contains("origin/test advanced"),
         "validation should explain the remote-target retry: {out}"
     );
     assert_eq!(head_branch(dir.path()), feature);
-    let released_conflict = git(bare.path(), &["show", "release/next:conflict.txt"]);
+    let released_conflict = git(bare.path(), &["show", "test:conflict.txt"]);
     assert!(
         released_conflict.status.success(),
-        "release/next conflict file missing: {}",
+        "test conflict file missing: {}",
         String::from_utf8_lossy(&released_conflict.stderr)
     );
     assert_eq!(
         String::from_utf8_lossy(&released_conflict.stdout),
         "resolved\n"
     );
-    let remote_file = git(bare.path(), &["show", "release/next:remote.txt"]);
+    let remote_file = git(bare.path(), &["show", "test:remote.txt"]);
     assert!(
         remote_file.status.success(),
-        "release/next remote update missing: {}",
+        "test remote update missing: {}",
         String::from_utf8_lossy(&remote_file.stderr)
     );
     assert_eq!(
@@ -2455,7 +2455,7 @@ fn delete_current_feature_branch_checks_out_main_first() {
 
 #[test]
 fn merge_main_flow_allows_release_branches_when_main_is_ahead() {
-    for target in ["develop", "release/next"] {
+    for target in ["develop", "test"] {
         let dir = init_repo();
         fs::write(dir.path().join("init.txt"), "init").unwrap();
         stage_in(dir.path(), "init.txt");
@@ -2742,8 +2742,8 @@ fn branch_release_status_reports_missing_commits_after_release() {
     git_ok(dir.path(), &["checkout", "-b", "develop"]);
     git_ok(dir.path(), &["push", "origin", "develop"]);
     git_ok(dir.path(), &["checkout", "main"]);
-    git_ok(dir.path(), &["checkout", "-b", "release/next"]);
-    git_ok(dir.path(), &["push", "origin", "release/next"]);
+    git_ok(dir.path(), &["checkout", "-b", "test"]);
+    git_ok(dir.path(), &["push", "origin", "test"]);
 
     let feature = "feature/release-status";
     git_ok(dir.path(), &["checkout", "main"]);
@@ -2769,10 +2769,10 @@ fn branch_release_status_reports_missing_commits_after_release() {
     let develop = status.develop.expect("develop release status");
     assert!(!develop.released_at.is_empty(), "missing release timestamp");
     assert_eq!(develop.missing_commits, 1);
-    let test = status.test.expect("release/next release status");
+    let test = status.test.expect("test release status");
     assert!(
         test.released_at.is_empty(),
-        "release/next should not have a release timestamp"
+        "test should not have a release timestamp"
     );
     assert_eq!(test.missing_commits, 2);
 }

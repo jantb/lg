@@ -3,3 +3,5 @@ target/
 .terrarium/output/
 harness_output.txt
 .mcp.json
+/CLAUDE.local.md
+/.claude/settings.local.json

@@ -4,12 +4,8 @@ pub const OLLAMA_CHAT_ENDPOINT: &str = "http://localhost:11434/api/chat";
 pub const LLM_TEMPERATURE: f32 = 0.2;
 pub const LLM_TOP_P: f32 = 0.9;
 pub const LLM_NUM_PREDICT: i32 = 160;
-pub const LLM_MODEL: &str = "qwen3.6:35b-mlx";
-pub const LLM_MODEL_CHOICES: &[&str] = &[
-    "qwen3.6:35b-mlx",
-    "qwen3.6:27b-coding-nvfp4",
-    "qwen3.6:35b-a3b-coding-nvfp4",
-];
+pub const LLM_MODEL: &str = "qwen3.8:27b-nvfp4";
+pub const LLM_MODEL_CHOICES: &[&str] = &["qwen3.8:27b-nvfp4"];
 pub const COMMIT_PROMPT_PREFIX: &str = "\
 Write a concise commit message for these staged changes.
 
@@ -44,7 +40,7 @@ Staged changes:
 pub const DEFAULT_PUSH_REMOTE: &str = "origin";
 pub const BRANCH_MAIN: &str = "main";
 pub const BRANCH_DEV: &str = "develop";
-pub const BRANCH_TEST: &str = "release/next";
+pub const BRANCH_TEST: &str = "test";
 pub const STATUS_BAR_HEIGHT: u16 = 1;
 pub const STATUS_MSG_LIFETIME_SECS: i64 = 3;
 pub const BORDER_COLOR: Color = Color::LightBlue;

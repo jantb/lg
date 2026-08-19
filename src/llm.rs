@@ -90,7 +90,7 @@ struct OllamaChatRequest<'a> {
     messages: Vec<ChatMessage>,
     stream: bool,
     options: OllamaOptions,
-    think: bool,
+    think: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -899,7 +899,7 @@ fn chat_request_body(
             top_p: opts.top_p,
             num_predict: (opts.num_predict > 0).then_some(opts.num_predict),
         },
-        think: false,
+        think: None,
     })?)
 }
 
@@ -1579,7 +1579,7 @@ mod tests {
 
         assert_eq!(body["model"], "qwen-local");
         assert_eq!(body["stream"], true);
-        assert_eq!(body["think"], false);
+        assert!(body["think"].is_null());
         assert_eq!(body["options"]["num_predict"], 42);
         assert_eq!(body["options"]["temperature"], LLM_TEMPERATURE);
         assert_eq!(body["options"]["top_p"], LLM_TOP_P);
