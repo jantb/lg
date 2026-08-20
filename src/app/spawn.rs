@@ -205,7 +205,45 @@ pub(super) fn open_model_modal(state: &mut AppState) {
         .position(|provider| *provider == state.llm_provider)
         .unwrap_or(0);
     state.llm_config_path = crate::llm::config_file_display();
+    state.settings_field = crate::state::SettingsField::Model;
+    state.settings_mode = crate::state::SettingsMode::Browse;
+    load_repo_settings_into_state(state);
+    suggest_repo_settings_if_unset(state);
     state.modal = Modal::Model;
+}
+
+/// A checkout with no settings of its own gets its language and house style read
+/// out of its own commit history, so the modal opens with a real starting point.
+/// Anything already saved is left alone.
+pub(crate) fn suggest_repo_settings_if_unset(state: &mut AppState) {
+    if crate::settings::is_configured() || state.settings_suggest_job.is_some() {
+        return;
+    }
+    let history = match crate::git::recent_commit_messages(30) {
+        Ok(history) if !history.trim().is_empty() => history,
+        _ => return,
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        crate::llm::suggest_repo_conventions(history, tx);
+    });
+    state.settings_suggest_job = Some(crate::state::SettingsSuggestJob {
+        rx,
+        handle: Some(handle),
+        spinner: 0,
+    });
+    state.set_status("reading this checkout's conventions", false);
+}
+
+/// Mirrors the stored per-checkout settings into the editable modal fields.
+pub(crate) fn load_repo_settings_into_state(state: &mut AppState) {
+    let settings = crate::settings::load();
+    state.settings_prompt_is_custom = settings.commit_prompt_is_custom();
+    state.settings_pr_language_input = settings.pr_language;
+    state.settings_comment_style_input = settings.comment_style;
+    state.settings_subject_max_input = settings.commit_subject_max_chars.to_string();
+    state.settings_body_lines_input = settings.commit_body_max_lines.to_string();
+    state.settings_dir = crate::settings::settings_dir_display();
 }
 
 pub(crate) fn checkout_branch_async(state: &mut AppState, branch: String) {

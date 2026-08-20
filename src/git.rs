@@ -977,6 +977,21 @@ fn release_target_status(
     }))
 }
 
+/// Recent commit messages, subject and body, as one blob. Used to derive this
+/// checkout's writing conventions rather than assuming the defaults.
+pub fn recent_commit_messages(limit: usize) -> Result<String> {
+    let n = limit.to_string();
+    let out = run(&["log", "-n", &n, "--no-merges", "--format=%B%x1e"])?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let messages: Vec<String> = text
+        .split('\x1e')
+        .map(|message| message.trim())
+        .filter(|message| !message.is_empty())
+        .map(|message| message.to_string())
+        .collect();
+    Ok(messages.join("\n---\n"))
+}
+
 pub fn list_commits(limit: usize) -> Result<Vec<Commit>> {
     list_commits_for_ref("HEAD", limit)
 }

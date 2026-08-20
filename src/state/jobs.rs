@@ -162,6 +162,24 @@ pub struct ReleaseStatusJob {
     pub branch: String,
 }
 
+/// Conventions derived from a checkout's history, used to seed settings the
+/// user has not chosen yet.
+#[derive(Debug)]
+pub enum SettingsSuggestMsg {
+    Done {
+        language: Option<String>,
+        comment_style: Option<String>,
+    },
+    Error(String),
+}
+
+#[derive(Debug)]
+pub struct SettingsSuggestJob {
+    pub rx: Receiver<SettingsSuggestMsg>,
+    pub handle: Option<JoinHandle<()>>,
+    pub spinner: usize,
+}
+
 #[derive(Debug)]
 pub enum CommitLogMsg {
     Done {

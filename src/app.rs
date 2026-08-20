@@ -173,6 +173,7 @@ impl App {
             self.drain_fetch_job();
             self.drain_refresh_job();
             self.drain_release_status_job();
+            self.drain_settings_suggest_job();
             self.drain_commit_log_job();
             self.drain_diff_job();
             self.drain_review_job();

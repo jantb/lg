@@ -10,7 +10,8 @@ use crate::{
     state::{
         CheckoutMsg, CommitLogJob, CommitLogMsg, DiffJob, DiffMsg, DiffSource, FetchJob, FetchMsg,
         GenMsg, Modal, OperationKind, OperationMsg, Pane, PushMsg, RefreshJob, RefreshMsg,
-        ReleaseStatusJob, ReleaseStatusMsg, ReviewFlagMsg, ReviewMsg, WorkflowMsg,
+        ReleaseStatusJob, ReleaseStatusMsg, ReviewFlagMsg, ReviewMsg, SettingsSuggestMsg,
+        WorkflowMsg,
     },
 };
 
@@ -446,6 +447,61 @@ impl App {
                             .set_status(format!("deployment status failed: {message}"), true);
                     }
                 }
+            }
+        }
+    }
+
+    /// Applies derived conventions only to rows the user has not touched, and
+    /// only while the settings modal is still open — a suggestion must never
+    /// overwrite something typed in the meantime.
+    pub(super) fn drain_settings_suggest_job(&mut self) {
+        let mut finished = None;
+        let mut handle = None;
+        if let Some(job) = self.state.settings_suggest_job.as_mut() {
+            while let Ok(msg) = job.rx.try_recv() {
+                finished = Some(msg);
+                handle = job.handle.take();
+            }
+            job.spinner = job.spinner.wrapping_add(1);
+        }
+        let Some(msg) = finished else { return };
+        self.state.settings_suggest_job = None;
+        join_worker(handle);
+        match msg {
+            SettingsSuggestMsg::Done {
+                language,
+                comment_style,
+            } => {
+                if self.state.modal != Modal::Model || crate::settings::is_configured() {
+                    return;
+                }
+                let mut applied = Vec::new();
+                if let Some(language) = language.filter(|language| !language.trim().is_empty()) {
+                    self.state.settings_pr_language_input = language;
+                    applied.push("language");
+                }
+                if let Some(style) = comment_style.filter(|style| !style.trim().is_empty())
+                    && self.state.settings_comment_style_input.trim().is_empty()
+                {
+                    self.state.settings_comment_style_input = style;
+                    applied.push("message shape");
+                }
+                if applied.is_empty() {
+                    self.state
+                        .set_status("could not derive conventions from history", false);
+                } else {
+                    self.state.set_status(
+                        format!(
+                            "suggested {} from history; Enter to save",
+                            applied.join(" and ")
+                        ),
+                        false,
+                    );
+                }
+            }
+            SettingsSuggestMsg::Error(message) => {
+                self.state
+                    .set_status(format!("convention scan failed: {message}"), false);
             }
         }
     }

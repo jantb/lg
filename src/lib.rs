@@ -4,5 +4,6 @@ pub mod git;
 pub mod graph;
 pub mod llm;
 pub mod panel;
+pub mod settings;
 pub mod state;
 pub mod ui;

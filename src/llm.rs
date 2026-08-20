@@ -6,10 +6,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
-use crate::config::{
-    COMMIT_PROMPT_PREFIX, LLM_MODEL, LLM_NUM_PREDICT, LLM_TEMPERATURE, LLM_TOP_P,
-    OLLAMA_CHAT_ENDPOINT,
-};
+use crate::config::{LLM_MODEL, LLM_NUM_PREDICT, LLM_TEMPERATURE, LLM_TOP_P, OLLAMA_CHAT_ENDPOINT};
+use crate::settings::RepoSettings;
 use crate::state::{GenMsg, ReviewChatMessage, ReviewStyleFinding, ReviewStyleSeverity};
 
 const MAX_DIFF_EXCERPT_LINES: usize = 180;
@@ -341,15 +339,16 @@ fn render_config_entries(entries: &[(String, String)]) -> String {
     out
 }
 
-fn build_commit_prompt(diff: &str) -> String {
+fn build_commit_prompt(diff: &str, settings: &RepoSettings) -> String {
     format!(
-        "{COMMIT_PROMPT_PREFIX}{}\n\nDiff excerpt:\n{}\n",
+        "{}{}\n\nDiff excerpt:\n{}\n",
+        crate::settings::commit_prompt_prefix(settings),
         summarize_diff(diff),
         diff_excerpt(diff)
     )
 }
 
-fn build_review_assist_prompt(context: &str) -> String {
+fn build_review_assist_prompt(context: &str, settings: &RepoSettings) -> String {
     format!(
         "Assess this selected subtree from a full diff against main as a patch review.\n\
          Use the branch overview first: commit subjects/bodies and changed file lists are evidence\n\
@@ -367,11 +366,13 @@ fn build_review_assist_prompt(context: &str) -> String {
          Output 6-12 substantive bullets or short sections. Avoid padding. Do not invent files\n\
          or behavior not shown. Do not use code fences.\n\n\
          {REVIEW_REPO_STYLE_GUIDE}\n\n\
-         Selected review subtree:\n{context}"
+         {}\n\
+         Selected review subtree:\n{context}",
+        crate::settings::language_instruction(settings)
     )
 }
 
-fn build_review_chat_system_prompt(context: &str) -> String {
+fn build_review_chat_system_prompt(context: &str, settings: &RepoSettings) -> String {
     format!(
         "You are a senior code reviewer helping inspect a full branch review against main.\n\
          Use only the supplied review context and the conversation. Treat commit subjects/bodies,\n\
@@ -383,11 +384,13 @@ fn build_review_chat_system_prompt(context: &str) -> String {
          missing instead of guessing. Review answers against the\n\
          established repo style below and call out concrete violations.\n\n\
          {REVIEW_REPO_STYLE_GUIDE}\n\n\
-         Review context:\n{context}"
+         {}\n\
+         Review context:\n{context}",
+        crate::settings::language_instruction(settings)
     )
 }
 
-fn build_review_pr_text_prompt(context: &str) -> String {
+fn build_review_pr_text_prompt(context: &str, settings: &RepoSettings) -> String {
     format!(
         "Write a copy-ready pull request description for this branch review against main.\n\
          Use only the supplied review context. Treat commit subjects/bodies, changed files,\n\
@@ -407,16 +410,18 @@ fn build_review_pr_text_prompt(context: &str) -> String {
          ## Follow-up\n\
          - Include only if the context shows a real follow-up or uncertainty; otherwise omit.\n\n\
          Do not include code fences, preamble, sign-off, or placeholder text.\n\n\
-         Review context:\n{context}"
+         {}\n\
+         Review context:\n{context}",
+        crate::settings::language_instruction(settings)
     )
 }
 
-fn build_review_style_flag_prompt(path: &str, context: &str) -> String {
+fn build_review_style_flag_prompt(path: &str, context: &str, settings: &RepoSettings) -> String {
     let file_role = review_style_file_role(path);
     format!(
         "Review this single changed source file for concrete violations of the established repo style.\n\
          Apply only the style rules that are relevant to this file's language, framework, and role.\n\
-         Return exactly three lines:\n\
+         Return exactly three lines. Keep the three line keys and the severity words in English:\n\
          severity: OK|WARN|FAIL\n\
          line: <new-file line number, or unknown>\n\
          reason: <one concise reason, or \"No style issue found.\">\n\n\
@@ -432,9 +437,11 @@ fn build_review_style_flag_prompt(path: &str, context: &str) -> String {
          non-Service/non-flow violations. Return OK for that concern unless another concrete style rule is violated.\n\n\
          For naming issues, include a concrete rename suggestion in the reason.\n\n\
          {REVIEW_REPO_STYLE_GUIDE}\n\n\
+         {}\n\
          File: {path}\n\
          File role: {file_role}\n\
-         Review context:\n{context}"
+         Review context:\n{context}",
+        crate::settings::language_instruction(settings)
     )
 }
 
@@ -585,12 +592,110 @@ fn truncate_line(line: &str, max_chars: usize) -> String {
 /// content chunks to [`GenMsg::Output`].
 /// Ends with a [`GenMsg::Done`] or [`GenMsg::Error`].
 pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
-    stream_prompt(build_commit_prompt(&diff), Options::default(), finalize, tx);
+    let settings = crate::settings::load();
+    let limits = settings.clone();
+    stream_prompt(
+        build_commit_prompt(&diff, &settings),
+        Options::default(),
+        move |raw| crate::settings::enforce_commit_limits(&finalize(raw), &limits),
+        tx,
+    );
+}
+
+/// Derives this checkout's writing conventions — the language its commit
+/// messages are written in, and their house style — from recent history. Runs
+/// once when a checkout has no settings of its own, so the settings modal opens
+/// with values that match the project instead of bare defaults.
+pub fn suggest_repo_conventions(history: String, tx: Sender<crate::state::SettingsSuggestMsg>) {
+    use crate::state::SettingsSuggestMsg;
+    let (gen_tx, gen_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        stream_prompt(
+            build_conventions_prompt(&history),
+            conventions_options(),
+            |raw| strip_think_tags(raw).trim().to_string(),
+            gen_tx,
+        );
+    });
+
+    let mut output = String::new();
+    let mut error = None;
+    while let Ok(msg) = gen_rx.recv() {
+        match msg {
+            GenMsg::Output(chunk) => output.push_str(&chunk),
+            GenMsg::Done(text) => output = text,
+            GenMsg::Error(message) => error = Some(message),
+            _ => {}
+        }
+    }
+    let _ = tx.send(match error {
+        Some(message) => SettingsSuggestMsg::Error(message),
+        None => {
+            let (language, comment_style) = parse_conventions(&output);
+            SettingsSuggestMsg::Done {
+                language,
+                comment_style,
+            }
+        }
+    });
+}
+
+fn conventions_options() -> Options {
+    let mut opts = Options::default();
+    if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
+        opts.num_predict = 300;
+    }
+    opts
+}
+
+fn build_conventions_prompt(history: &str) -> String {
+    let history: String = history.chars().take(8_000).collect();
+    format!(
+        "Read these recent commit messages from one repository and report the \
+         conventions most of them follow.\n\n\
+         Judge by what the majority of the messages do, not by one outlier.\n\
+         For the shape, describe the format only \u{2014} subject prefix or tag convention \
+         (for example Conventional Commits or a ticket key) or the absence of one, \
+         capitalisation and trailing punctuation of the subject, grammatical mood \
+         (imperative or past tense), and whether a body appears and whether it is \
+         bullets or prose. Do not describe the topics the commits are about.\n\n\
+         Answer with exactly two lines and nothing else:\n\
+         language: <the English name of the natural language the prose is written in>\n\
+         shape: <one sentence, at most 25 words, describing that format>\n\n\
+         Commit messages:\n\n{history}\n"
+    )
+}
+
+/// Pulls the two reported values out of the reply. A missing or malformed line
+/// yields `None` so the caller keeps whatever it already had.
+fn parse_conventions(raw: &str) -> (Option<String>, Option<String>) {
+    let mut language = None;
+    let mut style = None;
+    for line in strip_think_tags(raw).lines() {
+        let line = line.trim().trim_start_matches(['-', '*', ' ']);
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = trim_outer_quotes(value.trim()).trim().to_string();
+        if value.is_empty() {
+            continue;
+        }
+        match key.trim().to_ascii_lowercase().as_str() {
+            "language" if language.is_none() => language = Some(value),
+            "shape" | "message shape" | "style" | "comment_style" | "comment style"
+                if style.is_none() =>
+            {
+                style = Some(value)
+            }
+            _ => {}
+        }
+    }
+    (language, style)
 }
 
 pub fn stream_review_assist(context: String, tx: Sender<GenMsg>) {
     stream_prompt(
-        build_review_assist_prompt(&context),
+        build_review_assist_prompt(&context, &crate::settings::load()),
         review_assist_options(),
         finalize_review_assist,
         tx,
@@ -600,7 +705,7 @@ pub fn stream_review_assist(context: String, tx: Sender<GenMsg>) {
 pub fn stream_review_style_flag(path: String, context: String, tx: Sender<GenMsg>) {
     let finalizer_path = path.clone();
     stream_prompt(
-        build_review_style_flag_prompt(&path, &context),
+        build_review_style_flag_prompt(&path, &context, &crate::settings::load()),
         review_style_flag_options(),
         move |raw| finalize_review_style_flag_for_path(&finalizer_path, raw),
         tx,
@@ -609,7 +714,7 @@ pub fn stream_review_style_flag(path: String, context: String, tx: Sender<GenMsg
 
 pub fn stream_review_pr_text(context: String, tx: Sender<GenMsg>) {
     stream_prompt(
-        build_review_pr_text_prompt(&context),
+        build_review_pr_text_prompt(&context, &crate::settings::load()),
         review_pr_options(),
         finalize_review_pr_text,
         tx,
@@ -624,7 +729,7 @@ pub fn stream_review_chat(
 ) {
     let mut messages = vec![ChatMessage {
         role: "system",
-        content: build_review_chat_system_prompt(&context),
+        content: build_review_chat_system_prompt(&context, &crate::settings::load()),
     }];
     for message in history
         .into_iter()
@@ -1375,6 +1480,22 @@ fn partial_tail_len(s: &str, tag: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn conventions_reply_is_parsed_into_language_and_style() {
+        let (language, style) = parse_conventions(
+            "<think>hm</think>\nlanguage: Norwegian\nstyle: \"terse, imperative, no filler\"\n",
+        );
+        assert_eq!(language.as_deref(), Some("Norwegian"));
+        assert_eq!(style.as_deref(), Some("terse, imperative, no filler"));
+    }
+
+    #[test]
+    fn a_reply_without_the_expected_lines_yields_nothing() {
+        let (language, style) = parse_conventions("I could not tell.");
+        assert!(language.is_none());
+        assert!(style.is_none());
+    }
     use super::*;
     use std::sync::mpsc::channel;
 
@@ -1420,7 +1541,7 @@ mod tests {
 
     #[test]
     fn review_assist_prompt_includes_repo_style() {
-        let prompt = build_review_assist_prompt("src/main/kotlin/App.kt");
+        let prompt = build_review_assist_prompt("src/main/kotlin/App.kt", &RepoSettings::default());
 
         assert!(prompt.contains("Assess this selected subtree"));
         assert!(prompt.contains("commit subjects/bodies"));
@@ -1463,7 +1584,8 @@ mod tests {
 
     #[test]
     fn review_chat_system_prompt_includes_repo_style() {
-        let prompt = build_review_chat_system_prompt("full review context");
+        let prompt =
+            build_review_chat_system_prompt("full review context", &RepoSettings::default());
 
         assert!(prompt.contains("commit subjects/bodies"));
         assert!(prompt.contains("patch intent"));
@@ -1475,7 +1597,7 @@ mod tests {
 
     #[test]
     fn review_pr_text_prompt_is_copy_ready_and_grounded() {
-        let prompt = build_review_pr_text_prompt("full review context");
+        let prompt = build_review_pr_text_prompt("full review context", &RepoSettings::default());
 
         assert!(prompt.contains("copy-ready pull request description"));
         assert!(prompt.contains("commit subjects/bodies"));
@@ -1498,8 +1620,11 @@ mod tests {
 
     #[test]
     fn review_style_flag_prompt_is_single_file() {
-        let prompt =
-            build_review_style_flag_prompt("src/main/kotlin/App.kt", "updates controller logic");
+        let prompt = build_review_style_flag_prompt(
+            "src/main/kotlin/App.kt",
+            "updates controller logic",
+            &RepoSettings::default(),
+        );
 
         assert!(prompt.contains("single changed source file"));
         assert!(prompt.contains("severity: OK|WARN|FAIL"));
@@ -1521,11 +1646,34 @@ mod tests {
         let prompt = build_review_style_flag_prompt(
             "src/main/kotlin/CompletePendingTransactionService.kt",
             "pendingTransactionsRepository.fetchTransaction(...)",
+            &RepoSettings::default(),
         );
 
         assert!(prompt.contains("File role: service-layer"));
         assert!(prompt.contains("Treat the File role below as authoritative"));
         assert!(prompt.contains("business rule orchestration are allowed"));
+    }
+
+    #[test]
+    fn conventions_reply_yields_the_language_and_the_shape() {
+        let (language, shape) = parse_conventions(
+            "language: Norwegian\nshape: lowercase imperative subject, no prefix, bullet body\n",
+        );
+
+        assert_eq!(language.as_deref(), Some("Norwegian"));
+        assert_eq!(
+            shape.as_deref(),
+            Some("lowercase imperative subject, no prefix, bullet body")
+        );
+    }
+
+    #[test]
+    fn conventions_prompt_asks_for_the_format_not_the_topics() {
+        let prompt = build_conventions_prompt("fix: tighten retry window\n");
+
+        assert!(prompt.contains("shape:"));
+        assert!(prompt.contains("language:"));
+        assert!(prompt.contains("Do not describe the topics the commits are about."));
     }
 
     #[test]

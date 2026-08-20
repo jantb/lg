@@ -163,12 +163,12 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
             Color::Cyan,
         ),
         Modal::Model => modal_spans(
-            "Model ",
+            "Settings ",
             &[
-                ("Up/Down", "pick"),
-                ("p", "provider"),
-                ("Enter", "save"),
-                ("Ctrl+U", "clear"),
+                ("Up/Down", "select"),
+                ("Enter", "open/confirm"),
+                ("Ctrl+S", "save"),
+                ("Ctrl+U", "reset"),
                 ("Esc", "cancel"),
             ],
             Color::Cyan,

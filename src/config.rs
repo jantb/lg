@@ -6,6 +6,17 @@ pub const LLM_TOP_P: f32 = 0.9;
 pub const LLM_NUM_PREDICT: i32 = 160;
 pub const LLM_MODEL: &str = "qwen3.8:27b-nvfp4";
 pub const LLM_MODEL_CHOICES: &[&str] = &["qwen3.8:27b-nvfp4"];
+/// Languages offered for generated prose. Free text still works, so this is a
+/// shortcut for the common picks rather than a closed set.
+pub const PR_LANGUAGE_CHOICES: &[&str] = &[
+    "English",
+    "Norwegian",
+    "Swedish",
+    "Danish",
+    "German",
+    "French",
+    "Spanish",
+];
 pub const COMMIT_PROMPT_PREFIX: &str = "\
 Write a concise commit message for these staged changes.
 
@@ -13,7 +24,7 @@ Rules:
 - First line format: `type(scope): summary` — scope is optional.
 - type is one of: feat, fix, refactor, perf, docs, test, chore, build, ci, style.
 - First line uses imperative mood, lowercase summary, and no trailing period.
-- Keep the first line complete; do not omit important detail to fit a fixed character limit.
+- Keep the first line complete; drop detail only where a stated length limit requires it.
 - Describe the behavior change, not the files touched. Be specific.
 - Prefer concrete user-visible outcomes over vague words like update, improve, or change.
 - Use the change summary first; use the diff excerpt only for extra detail.

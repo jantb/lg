@@ -247,17 +247,31 @@ fn model_modal_picks_and_saves_model() {
     app.state.llm_model_idx = 0;
     app.state.llm_model_input = lg::config::LLM_MODEL_CHOICES[0].into();
 
-    // Down wraps, so with a single configured choice it stays put.
+    // Enter opens the model row's list; Down wraps, so with a single configured
+    // choice it stays put. Enter confirms the pick without saving.
     let next = lg::config::LLM_MODEL_CHOICES[1 % lg::config::LLM_MODEL_CHOICES.len()];
+    app.state.settings_field = lg::state::SettingsField::Model;
+    panel::model::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
     panel::model::handle_key(&mut app.state, key(KeyCode::Down)).unwrap();
     assert_eq!(app.state.llm_model_input, next);
+    panel::model::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
+    assert_eq!(app.state.pending_action, None);
 
+    app.state.settings_pr_language_input = "Norwegian".into();
+    app.state.settings_comment_style_input = "terse, imperative".into();
+    app.state.settings_subject_max_input = "50".into();
+    app.state.settings_body_lines_input = "3".into();
+    app.state.settings_field = lg::state::SettingsField::Save;
     panel::model::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
     assert_eq!(
         app.state.pending_action,
-        Some(PendingAction::SaveLlmSettings {
+        Some(PendingAction::SaveSettings {
             model: next.into(),
             provider: lg::llm::LlmProvider::Ollama,
+            pr_language: "Norwegian".into(),
+            comment_style: "terse, imperative".into(),
+            commit_subject_max_chars: "50".into(),
+            commit_body_max_lines: "3".into(),
         })
     );
 }

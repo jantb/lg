@@ -71,6 +71,62 @@ pub enum DeleteBranchField {
     Force,
 }
 
+/// Focused row in the settings modal. Model lives here too so one Tab cycle
+/// walks every editable setting, and `Save` is a row so Enter on it commits the
+/// whole form the same way Enter opens a value list on the rows above.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsField {
+    Model,
+    PrLanguage,
+    CommentStyle,
+    SubjectMax,
+    BodyLines,
+    Save,
+}
+
+impl SettingsField {
+    pub const ALL: [Self; 6] = [
+        Self::Model,
+        Self::PrLanguage,
+        Self::CommentStyle,
+        Self::SubjectMax,
+        Self::BodyLines,
+        Self::Save,
+    ];
+
+    pub fn next(self, forward: bool) -> Self {
+        let idx = Self::ALL
+            .iter()
+            .position(|field| *field == self)
+            .unwrap_or(0);
+        let len = Self::ALL.len();
+        let idx = if forward {
+            (idx + 1) % len
+        } else {
+            (idx + len - 1) % len
+        };
+        Self::ALL[idx]
+    }
+
+    /// Rows whose value is chosen from a list; the rest are typed into.
+    pub fn choices(self) -> &'static [&'static str] {
+        match self {
+            Self::Model => crate::config::LLM_MODEL_CHOICES,
+            Self::PrLanguage => crate::config::PR_LANGUAGE_CHOICES,
+            _ => &[],
+        }
+    }
+}
+
+/// Whether the settings modal is moving between rows or editing one row's
+/// value. Editing is entered with Enter and confirmed with Enter, so arrow keys
+/// mean "next row" in one mode and "next value" in the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsMode {
+    Browse,
+    Edit,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthorField {
     Path,
@@ -142,11 +198,16 @@ pub enum PendingAction {
     ClearSubtreeAuthor {
         path: String,
     },
-    SaveLlmSettings {
+    SaveSettings {
         model: String,
         provider: crate::llm::LlmProvider,
+        pr_language: String,
+        comment_style: String,
+        commit_subject_max_chars: String,
+        commit_body_max_lines: String,
     },
-    ClearLlmSettings,
+    ClearSettings,
+    EditCommitPrompt,
     StageAll,
     UnstageAll,
     StagePath(String),
@@ -276,6 +337,17 @@ pub struct AppState {
     pub llm_provider: crate::llm::LlmProvider,
     pub llm_provider_idx: usize,
     pub llm_config_path: String,
+    pub settings_field: SettingsField,
+    pub settings_mode: SettingsMode,
+    /// Value of the row being edited as it was before editing started, so Esc
+    /// can put it back.
+    pub settings_edit_backup: String,
+    pub settings_pr_language_input: String,
+    pub settings_comment_style_input: String,
+    pub settings_subject_max_input: String,
+    pub settings_body_lines_input: String,
+    pub settings_prompt_is_custom: bool,
+    pub settings_dir: String,
     pub repo_root: Option<String>,
     pub workspace_root: Option<String>,
     pub branch: Option<String>,
@@ -299,6 +371,7 @@ pub struct AppState {
     pub refresh_pending: bool,
     pub refresh_pending_diff: bool,
     pub release_status_job: Option<ReleaseStatusJob>,
+    pub settings_suggest_job: Option<SettingsSuggestJob>,
     pub commit_log_job: Option<CommitLogJob>,
     pub diff_job: Option<DiffJob>,
     pub review_job: Option<ReviewJob>,
@@ -467,6 +540,15 @@ impl AppState {
             llm_provider: crate::llm::current_provider(),
             llm_provider_idx: 0,
             llm_config_path: crate::llm::config_file_display(),
+            settings_field: SettingsField::Model,
+            settings_mode: SettingsMode::Browse,
+            settings_edit_backup: String::new(),
+            settings_pr_language_input: String::new(),
+            settings_comment_style_input: String::new(),
+            settings_subject_max_input: String::new(),
+            settings_body_lines_input: String::new(),
+            settings_prompt_is_custom: false,
+            settings_dir: String::new(),
             repo_root: None,
             workspace_root: None,
             branch: None,
@@ -490,6 +572,7 @@ impl AppState {
             refresh_pending: false,
             refresh_pending_diff: false,
             release_status_job: None,
+            settings_suggest_job: None,
             commit_log_job: None,
             diff_job: None,
             review_job: None,
@@ -584,9 +667,10 @@ impl AppState {
                     | PendingAction::SaveSubtreeAuthor { .. }
                     | PendingAction::ClearSubtreeAuthor { .. },
                 ) => Some("saving author"),
-                Some(PendingAction::SaveLlmSettings { .. } | PendingAction::ClearLlmSettings) => {
-                    Some("saving model")
+                Some(PendingAction::SaveSettings { .. } | PendingAction::ClearSettings) => {
+                    Some("saving settings")
                 }
+                Some(PendingAction::EditCommitPrompt) => Some("opening commit prompt"),
                 Some(PendingAction::StageAll | PendingAction::StagePath(_)) => Some("staging"),
                 Some(PendingAction::UnstageAll | PendingAction::UnstagePath(_)) => {
                     Some("unstaging")

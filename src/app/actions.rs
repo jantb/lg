@@ -12,6 +12,40 @@ use super::{
     spawn_review_pr_text, spawn_review_style_flags,
 };
 
+/// Saves the LLM choice and this checkout's settings together, so the settings
+/// modal's single save either lands fully or reports why it did not.
+fn save_settings(
+    model: &str,
+    provider: crate::llm::LlmProvider,
+    pr_language: &str,
+    comment_style: &str,
+    commit_subject_max_chars: &str,
+    commit_body_max_lines: &str,
+) -> Result<()> {
+    crate::llm::save_llm_settings(model, provider)?;
+    let current = crate::settings::load();
+    crate::settings::save(&crate::settings::RepoSettings {
+        pr_language: pr_language.trim().to_string(),
+        comment_style: comment_style.trim().to_string(),
+        commit_subject_max_chars: parse_limit(
+            commit_subject_max_chars,
+            current.commit_subject_max_chars,
+        ),
+        commit_body_max_lines: parse_limit(commit_body_max_lines, current.commit_body_max_lines),
+        commit_prompt: current.commit_prompt,
+    })
+}
+
+/// An empty limit field means "unlimited"; anything unparsable keeps the value
+/// already stored rather than silently resetting it.
+fn parse_limit(value: &str, fallback: usize) -> usize {
+    let value = value.trim();
+    if value.is_empty() {
+        return 0;
+    }
+    value.parse::<usize>().unwrap_or(fallback)
+}
+
 fn refresh_llm_settings_state(state: &mut AppState) {
     state.llm_model = crate::llm::current_model();
     state.llm_provider = crate::llm::current_provider();
@@ -153,34 +187,72 @@ impl App {
                         .set_status(format!("author clear failed: {err}"), true),
                 }
             }
-            PendingAction::SaveLlmSettings { model, provider } => {
-                match crate::llm::save_llm_settings(&model, provider) {
-                    Ok(()) => {
-                        refresh_llm_settings_state(&mut self.state);
-                        self.state.llm_model_input = self.state.llm_model.clone();
-                        self.state.modal = Modal::None;
-                        if crate::llm::env_model_active() || crate::llm::env_provider_active() {
-                            self.state
-                                .set_status("saved LLM settings; env override is active", false);
-                        } else {
-                            self.state.set_status("saved LLM settings", false);
-                        }
-                    }
-                    Err(err) => self
-                        .state
-                        .set_status(format!("model save failed: {err}"), true),
-                }
-            }
-            PendingAction::ClearLlmSettings => match crate::llm::clear_saved_llm_settings() {
+            PendingAction::SaveSettings {
+                model,
+                provider,
+                pr_language,
+                comment_style,
+                commit_subject_max_chars,
+                commit_body_max_lines,
+            } => match save_settings(
+                &model,
+                provider,
+                &pr_language,
+                &comment_style,
+                &commit_subject_max_chars,
+                &commit_body_max_lines,
+            ) {
                 Ok(()) => {
                     refresh_llm_settings_state(&mut self.state);
+                    super::spawn::load_repo_settings_into_state(&mut self.state);
                     self.state.llm_model_input = self.state.llm_model.clone();
                     self.state.modal = Modal::None;
-                    self.state.set_status("cleared saved LLM settings", false);
+                    if crate::llm::env_model_active() || crate::llm::env_provider_active() {
+                        self.state
+                            .set_status("saved settings; env override is active", false);
+                    } else {
+                        self.state.set_status("saved settings", false);
+                    }
                 }
                 Err(err) => self
                     .state
-                    .set_status(format!("model clear failed: {err}"), true),
+                    .set_status(format!("settings save failed: {err}"), true),
+            },
+            PendingAction::ClearSettings => {
+                match crate::llm::clear_saved_llm_settings().and_then(|()| crate::settings::clear())
+                {
+                    Ok(()) => {
+                        refresh_llm_settings_state(&mut self.state);
+                        super::spawn::load_repo_settings_into_state(&mut self.state);
+                        self.state.llm_model_input = self.state.llm_model.clone();
+                        // The modal stays open so the re-detected conventions land
+                        // in front of the user instead of behind a closed dialog.
+                        super::spawn::suggest_repo_settings_if_unset(&mut self.state);
+                        self.state.set_status("reset settings to defaults", false);
+                    }
+                    Err(err) => self
+                        .state
+                        .set_status(format!("settings reset failed: {err}"), true),
+                }
+            }
+            PendingAction::EditCommitPrompt => match crate::settings::ensure_commit_prompt_file() {
+                Ok(path) => {
+                    let path = path.to_string_lossy().into_owned();
+                    match crate::git::open_file_in_ide(&path) {
+                        Ok(status) => {
+                            // The editor opens beside the modal, which stays up so the
+                            // rest of the settings are still there to save afterwards.
+                            super::spawn::load_repo_settings_into_state(&mut self.state);
+                            self.state.set_status(status, false);
+                        }
+                        Err(err) => self
+                            .state
+                            .set_status(format!("commit prompt open failed: {err}"), true),
+                    }
+                }
+                Err(err) => self
+                    .state
+                    .set_status(format!("commit prompt open failed: {err}"), true),
             },
             PendingAction::StageAll => {
                 spawn_operation(&mut self.state, "staging", OperationKind::Index, || {
