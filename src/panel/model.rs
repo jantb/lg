@@ -10,13 +10,13 @@ use ratatui::{
 
 use crate::{
     config::LLM_MODEL_CHOICES,
-    state::{AppState, Modal, PendingAction, SettingsField, SettingsMode},
+    state::{AppState, Modal, PendingAction, SPINNER_FRAMES, SettingsField, SettingsMode},
     ui,
 };
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let w = 92.min(area.width);
-    let h = 24.min(area.height);
+    let h = 30.min(area.height);
     let modal = ui::centered(area, w, h);
     frame.render_widget(Clear, modal);
     if modal.width < 40 || modal.height < 16 {
@@ -32,6 +32,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     } else {
         "saved/default"
     };
+    let inner = modal.width.saturating_sub(2) as usize;
+    let scanning = state.settings_suggest_job.is_some();
     let mut lines = vec![
         Line::from(vec![
             Span::styled("Mode:  ", Style::default().fg(Color::Yellow)),
@@ -77,31 +79,63 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             ),
         ]),
         Line::from(""),
-        field_line(state, SettingsField::Model, "Model", &state.llm_model_input),
-        field_line(
-            state,
-            SettingsField::PrLanguage,
-            "Language",
-            &state.settings_pr_language_input,
-        ),
-        field_line(
-            state,
-            SettingsField::CommentStyle,
-            "Message shape",
-            &style_display(&state.settings_comment_style_input),
-        ),
-        field_line(
-            state,
-            SettingsField::SubjectMax,
-            "Subject max",
-            &limit_display(&state.settings_subject_max_input),
-        ),
-        field_line(
-            state,
-            SettingsField::BodyLines,
-            "Body lines",
-            &limit_display(&state.settings_body_lines_input),
-        ),
+    ];
+
+    if scanning {
+        let spinner = SPINNER_FRAMES[state
+            .settings_suggest_job
+            .as_ref()
+            .map(|job| job.spinner)
+            .unwrap_or(0)
+            % SPINNER_FRAMES.len()];
+        lines.push(Line::from(vec![Span::styled(
+            format!("  {spinner} reading this checkout's history to derive settings\u{2026}"),
+            Style::default().fg(Color::Cyan),
+        )]));
+        lines.push(Line::from(""));
+    }
+
+    lines.extend(field_lines(
+        state,
+        SettingsField::Model,
+        "Model",
+        &state.llm_model_input,
+        false,
+        inner,
+    ));
+    lines.extend(field_lines(
+        state,
+        SettingsField::PrLanguage,
+        "Language",
+        &state.settings_pr_language_input,
+        state.settings_derived_language,
+        inner,
+    ));
+    lines.extend(field_lines(
+        state,
+        SettingsField::CommentStyle,
+        "Message shape",
+        &style_display(&state.settings_comment_style_input),
+        state.settings_derived_shape,
+        inner,
+    ));
+    lines.extend(field_lines(
+        state,
+        SettingsField::SubjectMax,
+        "Subject max",
+        &limit_display(&state.settings_subject_max_input),
+        false,
+        inner,
+    ));
+    lines.extend(field_lines(
+        state,
+        SettingsField::BodyLines,
+        "Body lines",
+        &limit_display(&state.settings_body_lines_input),
+        false,
+        inner,
+    ));
+    lines.extend([
         Line::from(vec![
             Span::raw("  "),
             Span::styled("Commit prompt ", Style::default().fg(Color::Yellow)),
@@ -116,11 +150,17 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         ]),
         save_line(state),
         Line::from(""),
-    ];
+    ]);
 
     let editing = state.settings_mode == SettingsMode::Edit;
-    let choices = state.settings_field.choices();
+    let choices = field_choices(state);
     if editing && !choices.is_empty() {
+        if state.settings_field == SettingsField::CommentStyle && state.settings_derived_shape {
+            lines.push(Line::from(vec![Span::styled(
+                format!("  {} shapes derived from this history:", choices.len()),
+                Style::default().fg(Color::DarkGray),
+            )]));
+        }
         let selected_idx = choice_index(state);
         for (idx, choice) in choices.iter().enumerate() {
             let selected = Some(idx) == selected_idx;
@@ -132,20 +172,34 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             } else {
                 Style::default().fg(Color::Gray)
             };
-            lines.push(Line::from(vec![
-                Span::styled(format!("{marker} "), style),
-                Span::styled(*choice, style),
-            ]));
+            for (row, chunk) in wrap_words(choice, inner.saturating_sub(4))
+                .into_iter()
+                .enumerate()
+            {
+                let prefix = if row == 0 {
+                    format!("{marker} ")
+                } else {
+                    "    ".to_string()
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, style),
+                    Span::styled(chunk, style),
+                ]));
+            }
         }
     } else {
-        lines.push(Line::from(vec![Span::styled(
-            hint_for(state),
-            Style::default().fg(Color::DarkGray),
-        )]));
+        for chunk in wrap_words(hint_for(state), inner.saturating_sub(2)) {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(chunk, Style::default().fg(Color::DarkGray)),
+            ]));
+        }
     }
     lines.push(Line::from(""));
 
-    let keys: &[(&str, Color, &str)] = if editing {
+    let keys: &[(&str, Color, &str)] = if scanning {
+        &[("Esc", Color::Gray, "cancel")]
+    } else if editing {
         &[
             ("Up/Down", Color::Yellow, "value"),
             ("type", Color::Yellow, "edit"),
@@ -199,7 +253,50 @@ fn key_hint_lines(keys: &[(&str, Color, &str)], width: u16) -> Vec<Line<'static>
     lines
 }
 
-fn field_line(state: &AppState, field: SettingsField, label: &str, value: &str) -> Line<'static> {
+/// Splits `text` into chunks no wider than `width`, breaking on spaces so a long
+/// derived message shape wraps instead of running off the modal's right edge.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(8);
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if current.is_empty() {
+            current.push_str(word);
+        } else if current.chars().count() + 1 + word.chars().count() <= width {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(word);
+        }
+        // A single word longer than the row is cut at the width, not past it.
+        while current.chars().count() > width {
+            let head: String = current.chars().take(width).collect();
+            current = current.chars().skip(width).collect();
+            lines.push(head);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+const LABEL_WIDTH: usize = 14;
+
+/// One settings row, wrapped over as many lines as its value needs. A value the
+/// history scan produced is tagged, so it is clear it was not typed or saved.
+fn field_lines(
+    state: &AppState,
+    field: SettingsField,
+    label: &str,
+    value: &str,
+    derived: bool,
+    inner_width: usize,
+) -> Vec<Line<'static>> {
     let focused = state.settings_field == field;
     let editing = focused && state.settings_mode == SettingsMode::Edit;
     let value_style = if focused {
@@ -209,18 +306,47 @@ fn field_line(state: &AppState, field: SettingsField, label: &str, value: &str) 
     } else {
         Style::default().fg(Color::Gray)
     };
-    Line::from(vec![
-        Span::styled(
-            if focused { "> " } else { "  " },
-            Style::default().fg(Color::Cyan),
-        ),
-        Span::styled(format!("{label:<14}"), Style::default().fg(Color::Yellow)),
-        Span::styled(value.to_string(), value_style),
-        Span::styled(
-            if editing { "_" } else { "" },
-            Style::default().fg(Color::DarkGray),
-        ),
-    ])
+    const TAG: &str = " (from history)";
+    let indent = 2 + LABEL_WIDTH;
+    let value_width = inner_width.saturating_sub(indent);
+    let chunks = wrap_words(value, value_width);
+    let last = chunks.len() - 1;
+    let mut lines = Vec::new();
+    for (row, chunk) in chunks.into_iter().enumerate() {
+        let chunk_width = chunk.chars().count();
+        let mut spans = if row == 0 {
+            vec![
+                Span::styled(
+                    if focused { "> " } else { "  " },
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    format!("{label:<width$}", width = LABEL_WIDTH),
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]
+        } else {
+            vec![Span::raw(" ".repeat(indent))]
+        };
+        spans.push(Span::styled(chunk, value_style));
+        if row == last {
+            if editing {
+                spans.push(Span::styled("_", Style::default().fg(Color::DarkGray)));
+            }
+            if derived && chunk_width + TAG.len() <= value_width {
+                spans.push(Span::styled(TAG, Style::default().fg(Color::DarkGray)));
+            } else if derived {
+                lines.push(Line::from(spans));
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(indent)),
+                    Span::styled(TAG.trim_start(), Style::default().fg(Color::DarkGray)),
+                ]));
+                continue;
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
 }
 
 fn save_line(state: &AppState) -> Line<'static> {
@@ -248,7 +374,8 @@ fn hint_for(state: &AppState) -> &'static str {
             "Language for generated commit messages, PR text, and review prose."
         }
         SettingsField::CommentStyle => {
-            "Format the project's commit messages follow, derived from history. Free text."
+            "Format the project's commit messages follow. Up/Down compares the shapes \
+             derived from history; typing overrides them."
         }
         SettingsField::SubjectMax => "Max characters in the commit subject line. 0 means no limit.",
         SettingsField::BodyLines => "Max body lines after the blank line. 0 means no limit.",
@@ -259,12 +386,24 @@ fn hint_for(state: &AppState) -> &'static str {
 /// Index of the current value within the focused row's choice list, if it is one
 /// of them. A typed value that matches nothing leaves the list unmarked.
 fn choice_index(state: &AppState) -> Option<usize> {
-    let value = current_value(state);
-    state
-        .settings_field
-        .choices()
+    let value = current_value(state).trim().to_string();
+    field_choices(state)
         .iter()
-        .position(|choice| choice.eq_ignore_ascii_case(value.trim()))
+        .position(|choice| choice.eq_ignore_ascii_case(&value))
+}
+
+/// The values Up/Down steps through for the focused row. Model and language come
+/// from fixed lists; the message shapes are whatever this checkout's own history
+/// produced, so they are only there once the scan has answered.
+fn field_choices(state: &AppState) -> Vec<String> {
+    match state.settings_field {
+        SettingsField::CommentStyle => state.settings_comment_style_choices.clone(),
+        field => field
+            .choices()
+            .iter()
+            .map(|choice| (*choice).to_string())
+            .collect(),
+    }
 }
 
 fn current_value(state: &AppState) -> &str {
@@ -309,6 +448,14 @@ fn limit_display(value: &str) -> String {
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    // While the history scan is still running it is about to overwrite these
+    // rows, so nothing but closing the modal is accepted yet.
+    if state.settings_suggest_job.is_some() {
+        if key.code == KeyCode::Esc {
+            state.modal = Modal::None;
+        }
+        return Ok(());
+    }
     match key.code {
         KeyCode::Char('e') if ctrl => {
             state.pending_action = Some(PendingAction::EditCommitPrompt);
@@ -361,6 +508,11 @@ fn edit_key(state: &mut AppState, key: KeyEvent, ctrl: bool) {
         KeyCode::Up => step_value(state, false),
         KeyCode::Down => step_value(state, true),
         KeyCode::Backspace if !ctrl => {
+            match state.settings_field {
+                SettingsField::PrLanguage => state.settings_derived_language = false,
+                SettingsField::CommentStyle => state.settings_derived_shape = false,
+                _ => {}
+            }
             if let Some(value) = value_mut(state) {
                 value.pop();
             }
@@ -371,8 +523,14 @@ fn edit_key(state: &mut AppState, key: KeyEvent, ctrl: bool) {
                 state.llm_model_input.push(c);
                 sync_selection_to_input(state);
             }
-            SettingsField::PrLanguage => state.settings_pr_language_input.push(c),
-            SettingsField::CommentStyle => state.settings_comment_style_input.push(c),
+            SettingsField::PrLanguage => {
+                state.settings_pr_language_input.push(c);
+                state.settings_derived_language = false;
+            }
+            SettingsField::CommentStyle => {
+                state.settings_comment_style_input.push(c);
+                state.settings_derived_shape = false;
+            }
             SettingsField::SubjectMax if c.is_ascii_digit() => {
                 push_limit_digit(&mut state.settings_subject_max_input, c);
             }
@@ -402,20 +560,27 @@ fn save(state: &mut AppState) {
     });
 }
 
-/// Up/Down inside a row walks its choice list, or nudges a numeric limit.
+/// Up/Down inside a row walks its choice list, or nudges a numeric limit. A text
+/// row with no choices is left alone, so arrows never overwrite typed prose.
 fn step_value(state: &mut AppState, next: bool) {
-    let choices = state.settings_field.choices();
+    let choices = field_choices(state);
     if !choices.is_empty() {
         let idx = match choice_index(state) {
             Some(idx) if next => (idx + 1) % choices.len(),
             Some(idx) => (idx + choices.len() - 1) % choices.len(),
             None => 0,
         };
-        let picked = choices[idx].to_string();
+        let picked = choices[idx].clone();
         if let Some(value) = value_mut(state) {
             *value = picked;
         }
         sync_selection_to_input(state);
+        return;
+    }
+    if !matches!(
+        state.settings_field,
+        SettingsField::SubjectMax | SettingsField::BodyLines
+    ) {
         return;
     }
     // Up raises a number and Down lowers it, matching how a spinner reads.
@@ -654,6 +819,42 @@ mod tests {
     }
 
     #[test]
+    fn up_down_walks_the_shapes_derived_from_history() {
+        let mut state = AppState::new();
+        state.settings_comment_style_choices = vec![
+            "lowercase imperative subject, no prefix, bullet body".to_string(),
+            "Conventional Commits subject, no body".to_string(),
+        ];
+        state.settings_field = SettingsField::CommentStyle;
+        state.settings_comment_style_input = state.settings_comment_style_choices[0].clone();
+        state.settings_mode = SettingsMode::Edit;
+
+        step_value(&mut state, true);
+        assert_eq!(
+            state.settings_comment_style_input,
+            "Conventional Commits subject, no body"
+        );
+        step_value(&mut state, true);
+        assert_eq!(
+            state.settings_comment_style_input,
+            "lowercase imperative subject, no prefix, bullet body"
+        );
+    }
+
+    #[test]
+    fn up_down_leaves_a_typed_shape_alone_when_nothing_was_derived() {
+        let mut state = AppState::new();
+        state.settings_field = SettingsField::CommentStyle;
+        state.settings_comment_style_input = "terse, imperative".to_string();
+        state.settings_mode = SettingsMode::Edit;
+
+        step_value(&mut state, true);
+        step_value(&mut state, false);
+
+        assert_eq!(state.settings_comment_style_input, "terse, imperative");
+    }
+
+    #[test]
     fn key_hints_wrap_instead_of_clipping() {
         let keys: &[(&str, Color, &str)] = &[
             ("Up/Down", Color::Yellow, "select"),
@@ -665,6 +866,63 @@ mod tests {
         for line in &lines {
             assert!(line.width() <= 30);
         }
+    }
+
+    #[test]
+    fn long_values_wrap_instead_of_being_cut_off() {
+        let mut state = state_with_fields();
+        state.settings_comment_style_input =
+            "Conventional Commits with type and scope prefixes, imperative mood, and no trailing punctuation"
+                .to_string();
+        let lines = field_lines(
+            &state,
+            SettingsField::CommentStyle,
+            "Message shape",
+            &state.settings_comment_style_input,
+            false,
+            60,
+        );
+        assert!(lines.len() > 1);
+        for line in &lines {
+            assert!(line.width() <= 60, "line too wide: {}", line.width());
+        }
+    }
+
+    #[test]
+    fn a_derived_value_is_tagged_as_coming_from_history() {
+        let mut state = state_with_fields();
+        state.settings_derived_language = true;
+        let lines = field_lines(
+            &state,
+            SettingsField::PrLanguage,
+            "Language",
+            "English",
+            true,
+            60,
+        );
+        let text: String = lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect();
+        assert!(text.contains("from history"));
+    }
+
+    #[test]
+    fn keys_are_ignored_while_the_history_scan_is_running() {
+        let mut state = state_with_fields();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        state.settings_suggest_job = Some(crate::state::SettingsSuggestJob {
+            rx,
+            handle: None,
+            spinner: 0,
+        });
+        focus(&mut state, SettingsField::PrLanguage);
+        handle_key(&mut state, key(KeyCode::Enter, false)).unwrap();
+        assert_eq!(state.settings_mode, SettingsMode::Browse);
+        handle_key(&mut state, key(KeyCode::Tab, false)).unwrap();
+        assert_eq!(state.settings_field, SettingsField::PrLanguage);
+        handle_key(&mut state, key(KeyCode::Char('s'), true)).unwrap();
+        assert!(state.pending_action.is_none());
     }
 
     #[test]

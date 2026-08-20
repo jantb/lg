@@ -168,7 +168,9 @@ pub struct ReleaseStatusJob {
 pub enum SettingsSuggestMsg {
     Done {
         language: Option<String>,
-        comment_style: Option<String>,
+        /// Candidate message shapes, most representative first, so the settings
+        /// row can be stepped through them instead of offering a single guess.
+        shapes: Vec<String>,
     },
     Error(String),
 }

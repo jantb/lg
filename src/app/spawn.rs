@@ -244,6 +244,8 @@ pub(crate) fn load_repo_settings_into_state(state: &mut AppState) {
     state.settings_subject_max_input = settings.commit_subject_max_chars.to_string();
     state.settings_body_lines_input = settings.commit_body_max_lines.to_string();
     state.settings_dir = crate::settings::settings_dir_display();
+    state.settings_derived_language = false;
+    state.settings_derived_shape = false;
 }
 
 pub(crate) fn checkout_branch_async(state: &mut AppState, branch: String) {

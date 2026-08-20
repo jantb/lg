@@ -468,23 +468,29 @@ impl App {
         self.state.settings_suggest_job = None;
         join_worker(handle);
         match msg {
-            SettingsSuggestMsg::Done {
-                language,
-                comment_style,
-            } => {
+            SettingsSuggestMsg::Done { language, shapes } => {
                 if self.state.modal != Modal::Model || crate::settings::is_configured() {
                     return;
                 }
                 let mut applied = Vec::new();
                 if let Some(language) = language.filter(|language| !language.trim().is_empty()) {
                     self.state.settings_pr_language_input = language;
-                    applied.push("language");
+                    self.state.settings_derived_language = true;
+                    applied.push("language".to_string());
                 }
-                if let Some(style) = comment_style.filter(|style| !style.trim().is_empty())
-                    && self.state.settings_comment_style_input.trim().is_empty()
-                {
-                    self.state.settings_comment_style_input = style;
-                    applied.push("message shape");
+                let shapes: Vec<String> = shapes
+                    .into_iter()
+                    .filter(|shape| !shape.trim().is_empty())
+                    .collect();
+                if !shapes.is_empty() {
+                    // The first shape is the model's best reading; the rest stay
+                    // available as the row's choice list to step through.
+                    if self.state.settings_comment_style_input.trim().is_empty() {
+                        self.state.settings_comment_style_input = shapes[0].clone();
+                    }
+                    self.state.settings_comment_style_choices = shapes.clone();
+                    self.state.settings_derived_shape = true;
+                    applied.push(format!("{} message shapes", shapes.len()));
                 }
                 if applied.is_empty() {
                     self.state
@@ -492,7 +498,7 @@ impl App {
                 } else {
                     self.state.set_status(
                         format!(
-                            "suggested {} from history; Enter to save",
+                            "suggested {} from history; Up/Down to compare, Enter to save",
                             applied.join(" and ")
                         ),
                         false,

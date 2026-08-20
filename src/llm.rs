@@ -603,7 +603,8 @@ pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
 }
 
 /// Derives this checkout's writing conventions — the language its commit
-/// messages are written in, and their house style — from recent history. Runs
+/// messages are written in, and candidate shapes for their format — from recent
+/// history. Runs
 /// once when a checkout has no settings of its own, so the settings modal opens
 /// with values that match the project instead of bare defaults.
 pub fn suggest_repo_conventions(history: String, tx: Sender<crate::state::SettingsSuggestMsg>) {
@@ -631,11 +632,8 @@ pub fn suggest_repo_conventions(history: String, tx: Sender<crate::state::Settin
     let _ = tx.send(match error {
         Some(message) => SettingsSuggestMsg::Error(message),
         None => {
-            let (language, comment_style) = parse_conventions(&output);
-            SettingsSuggestMsg::Done {
-                language,
-                comment_style,
-            }
+            let (language, shapes) = parse_conventions(&output);
+            SettingsSuggestMsg::Done { language, shapes }
         }
     });
 }
@@ -659,18 +657,23 @@ fn build_conventions_prompt(history: &str) -> String {
          capitalisation and trailing punctuation of the subject, grammatical mood \
          (imperative or past tense), and whether a body appears and whether it is \
          bullets or prose. Do not describe the topics the commits are about.\n\n\
-         Answer with exactly two lines and nothing else:\n\
+         Answer with exactly four lines and nothing else:\n\
          language: <the English name of the natural language the prose is written in>\n\
-         shape: <one sentence, at most 25 words, describing that format>\n\n\
+         shape: <one sentence, at most 25 words, describing the format most messages use>\n\
+         shape: <the same for the next most common variant, or a stricter reading of the first>\n\
+         shape: <one more plausible reading of the format>\n\n\
+         Order the shape lines from most to least representative. Make them differ from \
+         each other; do not repeat one wording three times.\n\n\
          Commit messages:\n\n{history}\n"
     )
 }
 
-/// Pulls the two reported values out of the reply. A missing or malformed line
-/// yields `None` so the caller keeps whatever it already had.
-fn parse_conventions(raw: &str) -> (Option<String>, Option<String>) {
+/// Pulls the reported language and every reported shape out of the reply, in the
+/// order given. A missing or malformed line is skipped, so the caller keeps
+/// whatever it already had.
+fn parse_conventions(raw: &str) -> (Option<String>, Vec<String>) {
     let mut language = None;
-    let mut style = None;
+    let mut shapes: Vec<String> = Vec::new();
     for line in strip_think_tags(raw).lines() {
         let line = line.trim().trim_start_matches(['-', '*', ' ']);
         let Some((key, value)) = line.split_once(':') else {
@@ -683,14 +686,16 @@ fn parse_conventions(raw: &str) -> (Option<String>, Option<String>) {
         match key.trim().to_ascii_lowercase().as_str() {
             "language" if language.is_none() => language = Some(value),
             "shape" | "message shape" | "style" | "comment_style" | "comment style"
-                if style.is_none() =>
+                if !shapes
+                    .iter()
+                    .any(|shape| shape.eq_ignore_ascii_case(&value)) =>
             {
-                style = Some(value)
+                shapes.push(value);
             }
             _ => {}
         }
     }
-    (language, style)
+    (language, shapes)
 }
 
 pub fn stream_review_assist(context: String, tx: Sender<GenMsg>) {
@@ -1483,18 +1488,18 @@ mod tests {
 
     #[test]
     fn conventions_reply_is_parsed_into_language_and_style() {
-        let (language, style) = parse_conventions(
+        let (language, shapes) = parse_conventions(
             "<think>hm</think>\nlanguage: Norwegian\nstyle: \"terse, imperative, no filler\"\n",
         );
         assert_eq!(language.as_deref(), Some("Norwegian"));
-        assert_eq!(style.as_deref(), Some("terse, imperative, no filler"));
+        assert_eq!(shapes, vec!["terse, imperative, no filler".to_string()]);
     }
 
     #[test]
     fn a_reply_without_the_expected_lines_yields_nothing() {
-        let (language, style) = parse_conventions("I could not tell.");
+        let (language, shapes) = parse_conventions("I could not tell.");
         assert!(language.is_none());
-        assert!(style.is_none());
+        assert!(shapes.is_empty());
     }
     use super::*;
     use std::sync::mpsc::channel;
@@ -1656,14 +1661,20 @@ mod tests {
 
     #[test]
     fn conventions_reply_yields_the_language_and_the_shape() {
-        let (language, shape) = parse_conventions(
-            "language: Norwegian\nshape: lowercase imperative subject, no prefix, bullet body\n",
+        let (language, shapes) = parse_conventions(
+            "language: Norwegian\n\
+             shape: lowercase imperative subject, no prefix, bullet body\n\
+             shape: Conventional Commits subject, no body\n\
+             shape: lowercase imperative subject, no prefix, bullet body\n",
         );
 
         assert_eq!(language.as_deref(), Some("Norwegian"));
         assert_eq!(
-            shape.as_deref(),
-            Some("lowercase imperative subject, no prefix, bullet body")
+            shapes,
+            vec![
+                "lowercase imperative subject, no prefix, bullet body".to_string(),
+                "Conventional Commits subject, no body".to_string(),
+            ]
         );
     }
 

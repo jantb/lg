@@ -242,6 +242,9 @@ fn model_modal_picks_and_saves_model() {
     app.send_key(key(KeyCode::Char('L'))).unwrap();
     assert_eq!(app.state.modal, Modal::Model);
     assert_eq!(app.state.llm_model_input, app.state.llm_model);
+    // Opening the modal may kick off the history scan, which locks the rows
+    // until it answers; this test is about editing them afterwards.
+    app.state.settings_suggest_job = None;
     app.state.llm_provider = lg::llm::LlmProvider::Ollama;
     app.state.llm_provider_idx = 0;
     app.state.llm_model_idx = 0;

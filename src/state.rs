@@ -344,6 +344,13 @@ pub struct AppState {
     pub settings_edit_backup: String,
     pub settings_pr_language_input: String,
     pub settings_comment_style_input: String,
+    /// Message shapes derived from this checkout's history, offered as the
+    /// choice list for the message-shape row.
+    pub settings_comment_style_choices: Vec<String>,
+    /// Rows whose current value came from the history scan rather than from a
+    /// saved setting or the user, so the modal can say where they came from.
+    pub settings_derived_language: bool,
+    pub settings_derived_shape: bool,
     pub settings_subject_max_input: String,
     pub settings_body_lines_input: String,
     pub settings_prompt_is_custom: bool,
@@ -545,6 +552,9 @@ impl AppState {
             settings_edit_backup: String::new(),
             settings_pr_language_input: String::new(),
             settings_comment_style_input: String::new(),
+            settings_comment_style_choices: Vec::new(),
+            settings_derived_language: false,
+            settings_derived_shape: false,
             settings_subject_max_input: String::new(),
             settings_body_lines_input: String::new(),
             settings_prompt_is_custom: false,
