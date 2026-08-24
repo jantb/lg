@@ -76,7 +76,7 @@ const SECTIONS: &[Section] = &[
             ("Enter", "Select repo, worktree, session, or branch"),
             ("n", "New worktree for a branch"),
             ("s", "Start or show a sandboxed session here"),
-            ("S", "Start a claude session without the sandbox"),
+            ("S", "Session without the sandbox, in auto mode"),
             ("D", "Remove worktree, or prune a missing one"),
             ("m", "Merge worktree into main, then clean up"),
             ("b", "Move its branch to the main checkout"),

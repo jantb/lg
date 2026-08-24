@@ -354,8 +354,13 @@ impl Sessions {
     }
 }
 
+/// The permission mode an unsandboxed session runs under.
+const AUTO_PERMISSION_MODE: &str = "auto";
+
 /// How to launch claude in `cwd`. Sandboxed sessions go through terrarium,
-/// which confines the process to that worktree.
+/// which confines the process to that worktree. An unsandboxed one runs in
+/// auto mode: nothing is holding it back anyway, so stopping to ask buys
+/// little.
 pub fn claude_spawn(cwd: &Path, sandboxed: bool) -> Spawn {
     // terrarium resolves the project path before looking up its profile, so the
     // path handed to it has to be resolved too.
@@ -372,7 +377,13 @@ pub fn claude_spawn(cwd: &Path, sandboxed: bool) -> Spawn {
             ],
         )
     } else {
-        ("claude".to_string(), Vec::new())
+        (
+            "claude".to_string(),
+            vec![
+                "--permission-mode".to_string(),
+                AUTO_PERMISSION_MODE.to_string(),
+            ],
+        )
     };
     Spawn {
         program,
@@ -445,10 +456,11 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_session_runs_claude_directly() {
+    fn an_unsandboxed_session_runs_claude_in_auto_mode() {
         let spawn = claude_spawn(Path::new("/dev/lg"), false);
         assert_eq!(spawn.program, "claude");
-        assert!(spawn.args.is_empty());
+        assert_eq!(spawn.args, ["--permission-mode", "auto"]);
+        assert_eq!(spawn.cwd, Path::new("/dev/lg"));
     }
 
     #[test]
