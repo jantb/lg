@@ -239,7 +239,12 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
+        // The terminal comes back first, so a session that is slow to die does
+        // not hold it hostage. Then the sessions are closed here rather than
+        // left to whenever the state happens to be dropped, which is what the
+        // quit prompt promised.
         restore_terminal(self.terminal.backend_mut());
+        self.state.sessions.close_all();
         self.join_background_jobs();
     }
 }

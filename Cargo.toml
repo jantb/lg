@@ -19,5 +19,9 @@ tempfile   = "3"
 # Embedded terminal sessions: a PTY to run claude in, and a VT parser to draw it.
 portable-pty = "0.9"
 vt100      = "0.16"
+# Signalling a session's whole process group, which portable-pty does not do.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 
 [dev-dependencies]

@@ -1166,6 +1166,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "libc",
  "notify",
  "portable-pty",
  "ratatui",

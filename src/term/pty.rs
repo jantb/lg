@@ -38,6 +38,8 @@ pub struct PtyProcess {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    /// The child's pid, which is also its process group id.
+    pid: Option<u32>,
     rx: Receiver<PtyMsg>,
     pump: Option<JoinHandle<()>>,
     size: (u16, u16),
@@ -74,6 +76,9 @@ impl PtyProcess {
         // end of file and the exit is never noticed.
         drop(pair.slave);
 
+        // Kept for signalling the process group later; setsid() in the child
+        // makes its pid the group id too.
+        let pid = child.process_id();
         let killer = child.clone_killer();
         let reader = pair.master.try_clone_reader().context("read pty")?;
         let writer = pair.master.take_writer().context("write pty")?;
@@ -84,6 +89,7 @@ impl PtyProcess {
             master: pair.master,
             writer,
             killer,
+            pid,
             rx,
             pump: Some(pump),
             size: (size.rows, size.cols),
@@ -124,6 +130,15 @@ impl PtyProcess {
 
     /// Stop the process. Its pump thread then sees end of file and finishes.
     pub fn kill(&mut self) {
+        // The pty makes the child a session leader, so its process group is its
+        // own pid and everything it starts shares that group. portable-pty
+        // signals the one process, which for a sandboxed session is terrarium —
+        // that would leave claude running underneath it, holding the checkout
+        // lg is about to remove.
+        #[cfg(unix)]
+        if let Some(pid) = self.pid {
+            unsafe { libc::killpg(pid as i32, libc::SIGHUP) };
+        }
         let _ = self.killer.kill();
     }
 }
@@ -199,6 +214,75 @@ mod tests {
             }
         }
         (String::from_utf8_lossy(&output).into_owned(), None)
+    }
+
+    /// Whether a process still exists. Signal 0 checks without sending
+    /// anything, which is how the test watches a pid it does not own.
+    #[cfg(unix)]
+    fn alive(pid: i32) -> bool {
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    /// A sandboxed session runs claude underneath terrarium. When the process
+    /// the pty started exits, the kernel hangs up its foreground process group
+    /// and takes the grandchild with it — but only if it exits. An intermediate
+    /// that handles SIGHUP itself never does, and signalling it alone would
+    /// leave claude running in a checkout lg is about to remove.
+    ///
+    /// The shell here stands in for such an intermediate: the sleep is started
+    /// first so it keeps the default disposition, then the shell takes to
+    /// ignoring SIGHUP.
+    #[cfg(unix)]
+    #[test]
+    fn killing_a_session_reaches_past_a_child_that_shrugs_off_sighup() {
+        let script = "sleep 30 & printf 'grandchild:%s\\n' \"$!\"; trap '' HUP; wait";
+        let mut process = PtyProcess::start(&sh(script), (24, 80)).expect("start");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut output = Vec::new();
+        let grandchild = loop {
+            if let Ok(PtyMsg::Output(bytes)) = process.try_recv() {
+                output.extend_from_slice(&bytes);
+            }
+            let text = String::from_utf8_lossy(&output).into_owned();
+            if let Some(pid) = text
+                .split("grandchild:")
+                .nth(1)
+                .and_then(|rest| rest.split_whitespace().next())
+                .and_then(|digits| digits.parse::<i32>().ok())
+            {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "no pid reported: {text:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            alive(grandchild),
+            "the stand-in for claude should be running"
+        );
+        let group = unsafe { libc::getpgid(grandchild) };
+
+        process.kill();
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let outlived = loop {
+            if !alive(grandchild) {
+                break false;
+            }
+            if Instant::now() >= deadline {
+                break true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        // The shell ignores SIGHUP by design here, so it needs clearing up
+        // whichever way the assertion goes.
+        if group > 0 {
+            unsafe { libc::killpg(group, libc::SIGKILL) };
+        }
+        assert!(
+            !outlived,
+            "{grandchild} outlived the session it was started from"
+        );
     }
 
     #[test]
