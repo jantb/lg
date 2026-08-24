@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 
@@ -473,6 +474,9 @@ pub struct AppState {
     pub push_after_commit: bool,
     pub should_quit: bool,
     pub animation_tick: usize,
+    /// When `animation_tick` last advanced. Animation runs on this clock, not
+    /// on the frame rate.
+    animation_stepped_at: Instant,
 
     pub generation: Option<Generation>,
     pub push_job: Option<PushJob>,
@@ -703,6 +707,7 @@ impl AppState {
             push_after_commit: false,
             should_quit: false,
             animation_tick: 0,
+            animation_stepped_at: Instant::now(),
 
             generation: None,
             push_job: None,
@@ -758,8 +763,77 @@ impl AppState {
         }
     }
 
+    /// Advance the animation clock if a step's worth of time has passed. Called
+    /// once per frame, so the check is what keeps a spinner at one speed whether
+    /// lg is idle or redrawing a session at `SESSION_TICK_MS`.
     pub fn advance_animation(&mut self) {
-        self.animation_tick = self.animation_tick.wrapping_add(1);
+        let step = Duration::from_millis(crate::config::ANIMATION_STEP_MS);
+        let now = Instant::now();
+        if now.duration_since(self.animation_stepped_at) >= step {
+            self.animation_stepped_at = now;
+            self.animation_tick = self.animation_tick.wrapping_add(1);
+        }
+    }
+
+    /// Replace the main pane's text and keep the line count in step. Scrolling
+    /// is bounded by that count, so the two must not drift apart.
+    pub fn set_diff_text(&mut self, text: String) {
+        self.diff_text = text;
+        self.diff_line_count = self.diff_text.lines().count().min(u16::MAX as usize) as u16;
+    }
+
+    /// Hand over every running job's worker handle so the caller can wait for
+    /// them. Every job field is listed here: one left out is a worker the
+    /// process can exit from under.
+    pub fn take_job_handles(&mut self) -> Vec<JoinHandle<()>> {
+        let mut handles = Vec::new();
+        macro_rules! take {
+            ($($job:ident),+ $(,)?) => { $(
+                if let Some(job) = self.$job.as_mut() {
+                    handles.extend(job.handle_mut().take());
+                }
+            )+ };
+        }
+        take!(
+            generation,
+            push_job,
+            checkout_job,
+            operation_job,
+            fetch_job,
+            refresh_job,
+            release_status_job,
+            settings_suggest_job,
+            commit_log_job,
+            diff_job,
+            review_job,
+            review_assist_job,
+            review_pr_job,
+            review_flag_job,
+            review_chat_job,
+            workflow_job,
+        );
+        handles
+    }
+
+    /// Whether any background job is in flight. The event loop polls faster
+    /// while one is, so its result lands without waiting out a full tick.
+    pub fn any_job_running(&self) -> bool {
+        self.generation.is_some()
+            || self.push_job.is_some()
+            || self.checkout_job.is_some()
+            || self.operation_job.is_some()
+            || self.fetch_job.is_some()
+            || self.refresh_job.is_some()
+            || self.release_status_job.is_some()
+            || self.settings_suggest_job.is_some()
+            || self.commit_log_job.is_some()
+            || self.diff_job.is_some()
+            || self.review_job.is_some()
+            || self.review_assist_job.is_some()
+            || self.review_pr_job.is_some()
+            || self.review_flag_job.is_some()
+            || self.review_chat_job.is_some()
+            || self.workflow_job.is_some()
     }
 
     pub fn activity_label(&self) -> Option<&'static str> {
@@ -1066,6 +1140,21 @@ impl AppState {
         self.session_capture = false;
     }
 
+    /// Give the main pane back to the diff for a newly selected file, branch or
+    /// commit. A session drawn there goes to the background: it keeps running,
+    /// and Ctrl-N returns to it. Returns whether one was backgrounded.
+    pub fn background_session_for_diff(&mut self) -> bool {
+        if self.session_view().is_none() {
+            return false;
+        }
+        self.show_diff();
+        self.set_status(
+            "session in the background \u{2014} Ctrl-N returns to it",
+            false,
+        );
+        true
+    }
+
     /// Whether this repository is checked out in more than one place, which is
     /// what gives the repository tree worktree rows to show.
     pub fn has_linked_worktrees(&self) -> bool {
@@ -1202,7 +1291,7 @@ impl AppState {
         if let Some(mut job) = self.review_job.take() {
             self.defer_thread_join(job.handle.take());
             // Otherwise the pane keeps claiming it is still building the review.
-            self.diff_text = "review cancelled".to_string();
+            self.set_diff_text("review cancelled".to_string());
             cancelled = Some("review cancelled");
         }
         if self.generation.is_some() {
@@ -1370,5 +1459,66 @@ impl AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_animation_clock_ignores_extra_frames() {
+        let mut state = AppState::new();
+        let start = state.animation_tick;
+        // A session on screen redraws at SESSION_TICK_MS; a burst of those
+        // frames is still well inside one animation step.
+        for _ in 0..200 {
+            state.advance_animation();
+        }
+        assert_eq!(
+            state.animation_tick, start,
+            "animation speed must not follow the frame rate"
+        );
+    }
+
+    #[test]
+    fn replacing_the_diff_text_keeps_the_line_count_in_step() {
+        let mut state = AppState::new();
+        state.set_diff_text("one\ntwo\nthree".to_string());
+        assert_eq!(state.diff_line_count, 3);
+
+        state.set_diff_text("just one".to_string());
+        assert_eq!(
+            state.diff_line_count, 1,
+            "a shorter text must not keep the old bound"
+        );
+    }
+
+    #[test]
+    fn cancelling_a_review_resizes_the_pane_to_its_notice() {
+        let mut state = AppState::new();
+        state.set_diff_text("a long review\n".repeat(50));
+        let (_tx, rx) = std::sync::mpsc::channel();
+        state.review_job = Some(ReviewJob {
+            rx,
+            handle: None,
+            spinner: 0,
+        });
+
+        assert_eq!(state.cancel_llm_jobs(), Some("review cancelled"));
+        assert_eq!(
+            state.diff_line_count, 1,
+            "the notice is one line, so scrolling must stop there"
+        );
+    }
+
+    #[test]
+    fn the_animation_clock_advances_once_a_step_has_passed() {
+        let mut state = AppState::new();
+        let start = state.animation_tick;
+        state.animation_stepped_at =
+            Instant::now() - Duration::from_millis(crate::config::ANIMATION_STEP_MS);
+        state.advance_animation();
+        assert_eq!(state.animation_tick, start.wrapping_add(1));
     }
 }

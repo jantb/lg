@@ -33,6 +33,55 @@ pub struct ReviewStyleFinding {
     pub reason: String,
 }
 
+/// A background job: the channel its worker reports on, the worker's handle, and
+/// the spinner frame it is drawn at. Lets the drain loop treat every job the
+/// same way, whatever else the job carries.
+pub trait BackgroundJob {
+    type Msg;
+
+    fn rx(&self) -> &Receiver<Self::Msg>;
+    fn handle_mut(&mut self) -> &mut Option<JoinHandle<()>>;
+    fn spinner_mut(&mut self) -> &mut usize;
+}
+
+macro_rules! impl_background_job {
+    ($($job:ident => $msg:ty),+ $(,)?) => { $(
+        impl BackgroundJob for $job {
+            type Msg = $msg;
+
+            fn rx(&self) -> &Receiver<Self::Msg> {
+                &self.rx
+            }
+
+            fn handle_mut(&mut self) -> &mut Option<JoinHandle<()>> {
+                &mut self.handle
+            }
+
+            fn spinner_mut(&mut self) -> &mut usize {
+                &mut self.spinner
+            }
+        }
+    )+ };
+}
+
+impl_background_job! {
+    Generation => GenMsg,
+    PushJob => PushMsg,
+    CheckoutJob => CheckoutMsg,
+    OperationJob => OperationMsg,
+    FetchJob => FetchMsg,
+    RefreshJob => RefreshMsg,
+    ReleaseStatusJob => ReleaseStatusMsg,
+    SettingsSuggestJob => SettingsSuggestMsg,
+    CommitLogJob => CommitLogMsg,
+    DiffJob => DiffMsg,
+    ReviewJob => ReviewMsg,
+    ReviewAssistJob => GenMsg,
+    ReviewFlagJob => ReviewFlagMsg,
+    ReviewChatJob => GenMsg,
+    WorkflowJob => WorkflowMsg,
+}
+
 #[derive(Debug)]
 pub enum GenMsg {
     Thinking(String),

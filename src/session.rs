@@ -77,9 +77,29 @@ impl Session {
 
     /// Send bytes to the program. Ignored once it has ended.
     pub fn send(&mut self, bytes: &[u8]) {
+        // Typing is about the live screen, so it returns the view there rather
+        // than leaving the reply to happen off-screen.
+        self.parser.screen_mut().set_scrollback(0);
         if let Some(process) = self.process.as_mut() {
             process.write(bytes);
         }
+    }
+
+    /// Move the view `lines` back through scrollback, or the same distance
+    /// toward the live screen. Returns whether the view moved, so a caller can
+    /// let the event fall through when there is nothing left to scroll.
+    pub fn scroll(&mut self, back: bool, lines: usize) -> bool {
+        let current = self.parser.screen().scrollback();
+        let target = if back {
+            current.saturating_add(lines).min(SCROLLBACK)
+        } else {
+            current.saturating_sub(lines)
+        };
+        if target == current {
+            return false;
+        }
+        self.parser.screen_mut().set_scrollback(target);
+        true
     }
 
     /// Match the program's window to the pane it is drawn in. Resizing also

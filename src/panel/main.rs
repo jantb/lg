@@ -233,6 +233,13 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
 }
 
 pub fn scroll(state: &mut AppState, scroll_down: bool, amount: u16) {
+    // A session draws from its own scrollback, not from `diff_offset`.
+    if let Some(id) = state.session_view() {
+        if let Some(session) = state.sessions.get_mut(id) {
+            session.scroll(!scroll_down, amount as usize);
+        }
+        return;
+    }
     let max_offset = max_scroll_offset(state);
     let offset = state.diff_offset.min(max_offset);
     state.diff_offset = if scroll_down {

@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 use crate::{
     config::{BACKGROUND_FETCH_INTERVAL_SECS, COMMIT_LIST_LIMIT, is_protected_branch_name},
     state::{
-        CheckoutMsg, CommitLogJob, CommitLogMsg, DiffJob, DiffMsg, DiffSource, FetchJob, FetchMsg,
-        GenMsg, Modal, OperationKind, OperationMsg, Pane, PushMsg, RefreshJob, RefreshMsg,
-        ReleaseStatusJob, ReleaseStatusMsg, ReviewFlagMsg, ReviewMsg, SettingsSuggestMsg,
-        WorkflowMsg,
+        BackgroundJob, CheckoutMsg, CommitLogJob, CommitLogMsg, DiffJob, DiffMsg, DiffSource,
+        FetchJob, FetchMsg, GenMsg, Modal, OperationKind, OperationMsg, Pane, PushMsg, RefreshJob,
+        RefreshMsg, ReleaseStatusJob, ReleaseStatusMsg, ReviewAssistJob, ReviewFlagMsg, ReviewMsg,
+        SettingsSuggestMsg, WorkflowMsg,
     },
 };
 
@@ -17,6 +17,83 @@ use super::{
     App, build_refresh_snapshot, git_job_running, load_diff_text, selected_commit_ref,
     selected_diff_source, should_refresh_for_fs_event, spawn_push,
 };
+
+/// Take a finished single-shot job out of `slot`, with the last message it sent.
+/// `None` while it is still running, in which case its spinner advances.
+fn take_finished<J: BackgroundJob>(slot: &mut Option<J>) -> Option<(J, J::Msg)> {
+    let job = slot.as_mut()?;
+    let mut finished = None;
+    while let Ok(msg) = job.rx().try_recv() {
+        finished = Some(msg);
+    }
+    match finished {
+        Some(msg) => Some((slot.take()?, msg)),
+        None => {
+            tick_spinner(slot);
+            None
+        }
+    }
+}
+
+/// Everything a streaming job has sent since the last check. The job stays put:
+/// it reports many times before it is done.
+fn drain_messages<J: BackgroundJob>(slot: &Option<J>) -> Vec<J::Msg> {
+    let Some(job) = slot.as_ref() else {
+        return Vec::new();
+    };
+    let mut drained = Vec::new();
+    while let Ok(msg) = job.rx().try_recv() {
+        drained.push(msg);
+    }
+    drained
+}
+
+fn tick_spinner<J: BackgroundJob>(slot: &mut Option<J>) {
+    if let Some(job) = slot.as_mut() {
+        let spinner = job.spinner_mut();
+        *spinner = spinner.wrapping_add(1);
+    }
+}
+
+/// Stream an LLM answer for a review node into the pane. Review explanations and
+/// PR text differ only in what they are called when they finish. Returns the
+/// status to show, if the stream reached an end.
+fn drain_review_stream(
+    slot: &mut Option<ReviewAssistJob>,
+    assists: &mut std::collections::HashMap<String, String>,
+    ready: &'static str,
+) -> Option<(String, bool)> {
+    let mut status = None;
+    let mut handle = None;
+    for msg in drain_messages(slot) {
+        match msg {
+            GenMsg::Thinking(_) => {}
+            GenMsg::Output(output) => {
+                if let Some(job) = slot.as_mut() {
+                    job.output.push_str(&output);
+                    assists.insert(job.node_id.clone(), job.output.clone());
+                }
+            }
+            GenMsg::Done(final_msg) => {
+                if let Some(mut job) = slot.take() {
+                    handle = job.handle.take();
+                    assists.insert(job.node_id, final_msg);
+                }
+                status = Some((ready.to_string(), false));
+            }
+            GenMsg::Error(error) => {
+                if let Some(mut job) = slot.take() {
+                    handle = job.handle.take();
+                    assists.insert(job.node_id, format!("llm error: {error}"));
+                }
+                status = Some((error, true));
+            }
+        }
+    }
+    join_worker(handle);
+    tick_spinner(slot);
+    status
+}
 
 fn join_worker(handle: Option<JoinHandle<()>>) {
     if let Some(handle) = handle {
@@ -65,9 +142,7 @@ impl App {
         };
 
         self.state.repo_root = Some(dir.to_string_lossy().into_owned());
-        self.state.current_branch_releases = Default::default();
-        self.state.current_branch_releases_ref = None;
-        self.defer_release_status_job();
+        self.clear_release_status(None);
         self.state.nested_repo_detail_path = None;
         self.state.nested_repo_branches.clear();
         self.state.nested_repo_remote_branches.clear();
@@ -167,15 +242,14 @@ impl App {
         }
         self.state.diff_source = source.clone();
         self.state.diff_offset = 0;
-        self.state.diff_text = if matches!(source, DiffSource::None) {
-            String::new()
-        } else if matches!(source, DiffSource::Branch(_)) {
-            "loading log...".to_string()
-        } else {
-            "loading diff...".to_string()
-        };
-        self.state.diff_line_count =
-            self.state.diff_text.lines().count().min(u16::MAX as usize) as u16;
+        self.state
+            .set_diff_text(if matches!(source, DiffSource::None) {
+                String::new()
+            } else if matches!(source, DiffSource::Branch(_)) {
+                "loading log...".to_string()
+            } else {
+                "loading diff...".to_string()
+            });
         if matches!(source, DiffSource::None) {
             self.defer_diff_job();
             return;
@@ -265,23 +339,26 @@ impl App {
         });
     }
 
+    /// Drop any deployment status and stop the job that was producing it.
+    /// `checked` is the branch the now-empty status stands for, so a later sync
+    /// can tell "nothing to report for this branch" from "not looked at yet".
+    fn clear_release_status(&mut self, checked: Option<String>) {
+        self.state.current_branch_releases = Default::default();
+        self.state.current_branch_releases_ref = checked;
+        self.defer_release_status_job();
+    }
+
     fn sync_release_status_to_branch(&mut self) {
         let Some(branch) = self.state.branch.clone() else {
-            self.state.current_branch_releases = Default::default();
-            self.state.current_branch_releases_ref = None;
-            self.defer_release_status_job();
+            self.clear_release_status(None);
             return;
         };
         if !self.state.flow_available() {
-            self.state.current_branch_releases = Default::default();
-            self.state.current_branch_releases_ref = None;
-            self.defer_release_status_job();
+            self.clear_release_status(None);
             return;
         }
         if is_protected_branch_name(&branch) {
-            self.state.current_branch_releases = Default::default();
-            self.state.current_branch_releases_ref = Some(branch);
-            self.defer_release_status_job();
+            self.clear_release_status(Some(branch));
             return;
         }
         if self.state.current_branch_releases_ref.as_deref() == Some(branch.as_str()) {
@@ -376,9 +453,7 @@ impl App {
         let branch_before = self.state.branch.clone();
         self.state.branch = snapshot.branch;
         if self.state.branch != branch_before || repo_changed {
-            self.state.current_branch_releases = Default::default();
-            self.state.current_branch_releases_ref = None;
-            self.defer_release_status_job();
+            self.clear_release_status(None);
         }
         let selected_ref = selected_commit_ref(&self.state);
         if let Some(commits) = snapshot.commits {
@@ -403,68 +478,43 @@ impl App {
     }
 
     pub(super) fn drain_refresh_job(&mut self) {
-        let mut finished = None;
-        let mut handle = None;
-        if let Some(job) = self.state.refresh_job.as_mut() {
-            while let Ok(msg) = job.rx.try_recv() {
-                let RefreshMsg::Done(snapshot) = msg;
-                finished = Some((*snapshot, job.refresh_diff));
-                handle = job.handle.take();
-            }
-            job.spinner = job.spinner.wrapping_add(1);
-        }
-        if let Some((snapshot, refresh_diff)) = finished {
-            let pending_refresh = self.state.refresh_pending;
-            let pending_diff = self.state.refresh_pending_diff;
-            self.state.refresh_job = None;
-            join_worker(handle);
-            self.state.refresh_pending = false;
-            self.state.refresh_pending_diff = false;
-            self.apply_refresh_snapshot(snapshot, refresh_diff);
-            if pending_refresh {
-                self.start_refresh(pending_diff);
-            }
+        let Some((mut job, RefreshMsg::Done(snapshot))) =
+            take_finished(&mut self.state.refresh_job)
+        else {
+            return;
+        };
+        let pending_refresh = self.state.refresh_pending;
+        let pending_diff = self.state.refresh_pending_diff;
+        join_worker(job.handle.take());
+        self.state.refresh_pending = false;
+        self.state.refresh_pending_diff = false;
+        self.apply_refresh_snapshot(*snapshot, job.refresh_diff);
+        if pending_refresh {
+            self.start_refresh(pending_diff);
         }
     }
 
     pub(super) fn drain_diff_job(&mut self) {
-        let mut finished = None;
-        let mut handle = None;
-        if let Some(job) = self.state.diff_job.as_mut() {
-            while let Ok(msg) = job.rx.try_recv() {
-                let DiffMsg::Done { source, text } = msg;
-                finished = Some((source, text));
-                handle = job.handle.take();
-            }
-            job.spinner = job.spinner.wrapping_add(1);
-        }
-        if let Some((source, text)) = finished {
-            self.state.diff_job = None;
-            join_worker(handle);
-            if source == self.state.diff_source {
-                self.state.diff_text = text;
-                self.state.diff_line_count =
-                    self.state.diff_text.lines().count().min(u16::MAX as usize) as u16;
-            } else {
-                // Worker finished a stale selection. Kick off the right one.
-                self.start_diff_job(true);
-            }
+        let Some((mut job, DiffMsg::Done { source, text })) =
+            take_finished(&mut self.state.diff_job)
+        else {
+            return;
+        };
+        join_worker(job.handle.take());
+        if source == self.state.diff_source {
+            self.state.set_diff_text(text);
+        } else {
+            // Worker finished a stale selection. Kick off the right one.
+            self.start_diff_job(true);
         }
     }
 
     pub(super) fn drain_release_status_job(&mut self) {
-        let mut finished = None;
-        let mut handle = None;
-        if let Some(job) = self.state.release_status_job.as_mut() {
-            while let Ok(msg) = job.rx.try_recv() {
-                finished = Some(msg);
-                handle = job.handle.take();
-            }
-            job.spinner = job.spinner.wrapping_add(1);
-        }
-        if let Some(msg) = finished {
-            self.state.release_status_job = None;
-            join_worker(handle);
+        let Some((mut job, msg)) = take_finished(&mut self.state.release_status_job) else {
+            return;
+        };
+        join_worker(job.handle.take());
+        {
             match msg {
                 ReleaseStatusMsg::Done { branch, status } => {
                     if self.state.branch.as_deref() == Some(branch.as_str()) {
@@ -488,18 +538,10 @@ impl App {
     /// only while the settings modal is still open — a suggestion must never
     /// overwrite something typed in the meantime.
     pub(super) fn drain_settings_suggest_job(&mut self) {
-        let mut finished = None;
-        let mut handle = None;
-        if let Some(job) = self.state.settings_suggest_job.as_mut() {
-            while let Ok(msg) = job.rx.try_recv() {
-                finished = Some(msg);
-                handle = job.handle.take();
-            }
-            job.spinner = job.spinner.wrapping_add(1);
-        }
-        let Some(msg) = finished else { return };
-        self.state.settings_suggest_job = None;
-        join_worker(handle);
+        let Some((mut job, msg)) = take_finished(&mut self.state.settings_suggest_job) else {
+            return;
+        };
+        join_worker(job.handle.take());
         match msg {
             SettingsSuggestMsg::Done { language, shapes } => {
                 if self.state.modal != Modal::Model || crate::settings::is_configured() {
@@ -546,18 +588,11 @@ impl App {
     }
 
     pub(super) fn drain_commit_log_job(&mut self) {
-        let mut finished = None;
-        let mut handle = None;
-        if let Some(job) = self.state.commit_log_job.as_mut() {
-            while let Ok(msg) = job.rx.try_recv() {
-                finished = Some(msg);
-                handle = job.handle.take();
-            }
-            job.spinner = job.spinner.wrapping_add(1);
-        }
-        if let Some(msg) = finished {
-            self.state.commit_log_job = None;
-            join_worker(handle);
+        let Some((mut job, msg)) = take_finished(&mut self.state.commit_log_job) else {
+            return;
+        };
+        join_worker(job.handle.take());
+        {
             match msg {
                 CommitLogMsg::Done { branch, commits } => {
                     if self.state.commits_ref.as_deref() == Some(branch.as_str()) {
@@ -579,24 +614,13 @@ impl App {
     }
 
     pub(super) fn drain_review_job(&mut self) {
-        let mut finished: Option<std::result::Result<Box<crate::git::AssistedReview>, String>> =
-            None;
-        let mut handle = None;
-        if let Some(job) = self.state.review_job.as_mut() {
-            while let Ok(msg) = job.rx.try_recv() {
-                match msg {
-                    ReviewMsg::Done(review) => finished = Some(Ok(review)),
-                    ReviewMsg::Error(err) => finished = Some(Err(err)),
-                }
-                handle = job.handle.take();
-            }
-            job.spinner = job.spinner.wrapping_add(1);
-        }
-        if let Some(result) = finished {
-            self.state.review_job = None;
-            join_worker(handle);
-            match result {
-                Ok(review) => {
+        let Some((mut job, msg)) = take_finished(&mut self.state.review_job) else {
+            return;
+        };
+        join_worker(job.handle.take());
+        {
+            match msg {
+                ReviewMsg::Done(review) => {
                     let report = review.report.clone();
                     self.state.review = Some(*review);
                     self.state.review_collapsed.clear();
@@ -607,16 +631,13 @@ impl App {
                         self.state.review_idx = initial_review_index(review);
                     }
                     self.state.diff_source = DiffSource::Review;
-                    self.state.diff_text = report;
+                    self.state.set_diff_text(report);
                     self.state.diff_offset = 0;
-                    self.state.diff_line_count =
-                        self.state.diff_text.lines().count().min(u16::MAX as usize) as u16;
                     self.state.set_status("review ready", false);
                 }
-                Err(err) => {
-                    self.state.diff_text = format!("error building assisted review: {err}");
-                    self.state.diff_line_count =
-                        self.state.diff_text.lines().count().min(u16::MAX as usize) as u16;
+                ReviewMsg::Error(err) => {
+                    self.state
+                        .set_diff_text(format!("error building assisted review: {err}"));
                     self.state.set_status(first_status_line(&err), true);
                 }
             }
@@ -624,14 +645,8 @@ impl App {
     }
 
     pub(super) fn drain_review_flag_job(&mut self) {
-        let mut drained: Vec<ReviewFlagMsg> = Vec::new();
         let mut handle = None;
-        if let Some(job) = self.state.review_flag_job.as_ref() {
-            while let Ok(msg) = job.rx.try_recv() {
-                drained.push(msg);
-            }
-        }
-        for msg in drained {
+        for msg in drain_messages(&self.state.review_flag_job) {
             match msg {
                 ReviewFlagMsg::Started { path, index, total } => {
                     if let Some(job) = self.state.review_flag_job.as_mut() {
@@ -707,174 +722,124 @@ impl App {
             }
         }
         join_worker(handle);
-        if let Some(job) = self.state.review_flag_job.as_mut() {
-            job.spinner = job.spinner.wrapping_add(1);
-        }
+        tick_spinner(&mut self.state.review_flag_job);
     }
 
     pub(super) fn drain_fetch_job(&mut self) {
-        let mut finished: Option<std::result::Result<String, String>> = None;
-        let mut handle = None;
-        if let Some(job) = self.state.fetch_job.as_mut() {
-            while let Ok(msg) = job.rx.try_recv() {
-                match msg {
-                    FetchMsg::Done(s) => finished = Some(Ok(s)),
-                    FetchMsg::Error(s) => finished = Some(Err(s)),
-                }
-                handle = job.handle.take();
-            }
-            job.spinner = job.spinner.wrapping_add(1);
+        let Some((mut job, msg)) = take_finished(&mut self.state.fetch_job) else {
+            return;
+        };
+        join_worker(job.handle.take());
+        self.state.current_branch_releases_ref = None;
+        match msg {
+            FetchMsg::Done(s) if s != "no remotes configured" => self.state.set_status(s, false),
+            FetchMsg::Done(_) => {}
+            FetchMsg::Error(e) => self.state.set_status(first_status_line(&e), true),
         }
-        if let Some(res) = finished {
-            self.state.fetch_job = None;
-            join_worker(handle);
-            self.state.current_branch_releases_ref = None;
-            match res {
-                Ok(s) if s != "no remotes configured" => self.state.set_status(s, false),
-                Ok(_) => {}
-                Err(e) => self.state.set_status(first_status_line(&e), true),
-            }
-            self.start_refresh_with_status(false, false);
-        }
+        self.start_refresh_with_status(false, false);
     }
 
     pub(super) fn drain_push_job(&mut self) -> Result<()> {
-        let mut finished: Option<std::result::Result<String, String>> = None;
-        let mut handle = None;
-        if let Some(job) = self.state.push_job.as_mut() {
-            while let Ok(msg) = job.rx.try_recv() {
-                match msg {
-                    PushMsg::Done(s) => finished = Some(Ok(s)),
-                    PushMsg::Error(s) => finished = Some(Err(s)),
-                }
-                handle = job.handle.take();
-            }
-            job.spinner = job.spinner.wrapping_add(1);
+        let Some((mut job, msg)) = take_finished(&mut self.state.push_job) else {
+            return Ok(());
+        };
+        join_worker(job.handle.take());
+        self.state.modal = Modal::None;
+        self.state.current_branch_releases_ref = None;
+        match msg {
+            PushMsg::Done(s) => self.state.set_status(s, false),
+            PushMsg::Error(e) => self.state.set_status(e, true),
         }
-        if let Some(res) = finished {
-            self.state.push_job = None;
-            join_worker(handle);
-            self.state.modal = Modal::None;
-            self.state.current_branch_releases_ref = None;
-            match res {
-                Ok(s) => self.state.set_status(s, false),
-                Err(e) => self.state.set_status(e, true),
-            }
-            crate::panel::environments::reload_nested_repo_detail(&mut self.state);
-            self.start_refresh(true);
-        }
+        crate::panel::environments::reload_nested_repo_detail(&mut self.state);
+        self.start_refresh(true);
         Ok(())
     }
 
     pub(super) fn drain_checkout_job(&mut self) -> Result<()> {
-        let mut finished: Option<std::result::Result<String, String>> = None;
-        let mut handle = None;
-        if let Some(job) = self.state.checkout_job.as_mut() {
-            while let Ok(msg) = job.rx.try_recv() {
-                match msg {
-                    CheckoutMsg::Done(s) => finished = Some(Ok(s)),
-                    CheckoutMsg::Error(s) => finished = Some(Err(s)),
-                }
-                handle = job.handle.take();
-            }
-            job.spinner = job.spinner.wrapping_add(1);
-        }
-        if let Some(res) = finished {
-            self.state.checkout_job = None;
-            join_worker(handle);
-            self.state.current_branch_releases_ref = None;
-            match res {
-                Ok(s) => self.state.set_status(s, false),
-                Err(e) => {
-                    if !open_conflict_modal_if_needed(&mut self.state, e.clone()) {
-                        self.state.set_status(e, true);
-                    }
+        let Some((mut job, msg)) = take_finished(&mut self.state.checkout_job) else {
+            return Ok(());
+        };
+        join_worker(job.handle.take());
+        self.state.current_branch_releases_ref = None;
+        match msg {
+            CheckoutMsg::Done(s) => self.state.set_status(s, false),
+            CheckoutMsg::Error(e) => {
+                if !open_conflict_modal_if_needed(&mut self.state, e.clone()) {
+                    self.state.set_status(e, true);
                 }
             }
-            self.start_refresh(true);
         }
+        self.start_refresh(true);
         Ok(())
     }
 
     pub(super) fn drain_operation_job(&mut self) -> Result<()> {
-        let mut finished: Option<std::result::Result<String, String>> = None;
-        let mut handle = None;
-        if let Some(job) = self.state.operation_job.as_mut() {
-            while let Ok(msg) = job.rx.try_recv() {
-                match msg {
-                    OperationMsg::Done(s) => finished = Some(Ok(s)),
-                    OperationMsg::Error(s) => finished = Some(Err(s)),
-                }
-                handle = job.handle.take();
-            }
-            job.spinner = job.spinner.wrapping_add(1);
-        }
-        if let Some(res) = finished {
-            let kind = self
-                .state
-                .operation_job
-                .as_ref()
-                .map(|job| job.kind)
-                .unwrap_or(OperationKind::WorkingTree);
-            self.state.operation_job = None;
-            join_worker(handle);
-            self.state.current_branch_releases_ref = None;
-            match res {
-                Ok(s) => {
-                    self.state.set_status(s, false);
-                    if kind == OperationKind::Commit {
-                        self.state.modal = Modal::None;
-                        self.state.commit_message.clear();
-                        self.state.commit_cursor = 0;
-                        if self.state.push_after_commit {
-                            self.state.push_after_commit = false;
-                            spawn_push(&mut self.state);
-                        }
-                    } else if kind == OperationKind::StageAllAndCommit {
-                        self.state.open_commit_modal();
-                    } else if kind == OperationKind::MergeUpstream {
-                        self.state.modal = Modal::None;
-                    }
-                }
-                Err(e) => {
-                    if matches!(
-                        kind,
-                        OperationKind::Commit | OperationKind::StageAllAndCommit
-                    ) {
+        let Some((mut job, msg)) = take_finished(&mut self.state.operation_job) else {
+            return Ok(());
+        };
+        let kind = job.kind;
+        join_worker(job.handle.take());
+        self.state.current_branch_releases_ref = None;
+        match msg {
+            OperationMsg::Done(s) => {
+                self.state.set_status(s, false);
+                if kind == OperationKind::Commit {
+                    self.state.modal = Modal::None;
+                    self.state.commit_message.clear();
+                    self.state.commit_cursor = 0;
+                    if self.state.push_after_commit {
                         self.state.push_after_commit = false;
+                        spawn_push(&mut self.state);
                     }
-                    if !open_conflict_modal_if_needed(&mut self.state, e.clone()) {
-                        self.state.set_status(e, true);
-                    }
+                } else if kind == OperationKind::StageAllAndCommit {
+                    self.state.open_commit_modal();
+                } else if kind == OperationKind::MergeUpstream {
+                    self.state.modal = Modal::None;
                 }
             }
-            self.start_refresh(true);
+            OperationMsg::Error(e) => {
+                if matches!(
+                    kind,
+                    OperationKind::Commit | OperationKind::StageAllAndCommit
+                ) {
+                    self.state.push_after_commit = false;
+                }
+                if !open_conflict_modal_if_needed(&mut self.state, e.clone()) {
+                    self.state.set_status(e, true);
+                }
+            }
         }
+        self.start_refresh(true);
         Ok(())
     }
 
     pub(super) fn drain_workflow_job(&mut self) -> Result<()> {
-        let mut finished: Option<WorkflowMsg> = None;
-        let mut finished_label: Option<String> = None;
-        let mut handle = None;
-        if let Some(job) = self.state.workflow_job.as_mut() {
-            while let Ok(msg) = job.rx.try_recv() {
-                match msg {
-                    WorkflowMsg::Progress(step) => job.current_step = Some(step),
-                    WorkflowMsg::Done(_) | WorkflowMsg::Error(_) => {
-                        finished_label = Some(job.label.clone());
-                        finished = Some(msg)
+        // Progress reports arrive before the one message that ends the job, so
+        // this drains rather than taking the last message.
+        let mut finished = None;
+        for msg in drain_messages(&self.state.workflow_job) {
+            match msg {
+                WorkflowMsg::Progress(step) => {
+                    if let Some(job) = self.state.workflow_job.as_mut() {
+                        job.current_step = Some(step);
                     }
                 }
-                if finished.is_some() {
-                    handle = job.handle.take();
-                }
+                done_or_error => finished = Some(done_or_error),
             }
-            job.spinner = job.spinner.wrapping_add(1);
         }
-        if let Some(res) = finished {
-            self.state.workflow_job = None;
-            join_worker(handle);
+        let Some(res) = finished else {
+            tick_spinner(&mut self.state.workflow_job);
+            return Ok(());
+        };
+        let finished_label = self
+            .state
+            .workflow_job
+            .as_ref()
+            .map(|job| job.label.clone());
+        if let Some(mut job) = self.state.workflow_job.take() {
+            join_worker(job.handle.take());
+        }
+        {
             self.state.current_branch_releases_ref = None;
             match res {
                 WorkflowMsg::Progress(_) => {}
@@ -923,14 +888,8 @@ impl App {
     }
 
     pub(super) fn drain_generation(&mut self) {
-        let mut drained: Vec<GenMsg> = Vec::new();
         let mut handle = None;
-        if let Some(g) = self.state.generation.as_ref() {
-            while let Ok(msg) = g.rx.try_recv() {
-                drained.push(msg);
-            }
-        }
-        for msg in drained {
+        for msg in drain_messages(&self.state.generation) {
             match msg {
                 GenMsg::Thinking(_) => {}
                 GenMsg::Output(o) => {
@@ -939,132 +898,50 @@ impl App {
                     }
                 }
                 GenMsg::Done(final_msg) => {
-                    if let Some(g) = self.state.generation.as_mut() {
+                    if let Some(mut g) = self.state.generation.take() {
                         handle = g.handle.take();
                     }
                     self.state.commit_message = final_msg;
                     self.state.commit_cursor = self.state.commit_message.chars().count();
-                    self.state.generation = None;
                     self.state.set_status("message generated", false);
                 }
                 GenMsg::Error(e) => {
-                    if let Some(g) = self.state.generation.as_mut() {
+                    if let Some(mut g) = self.state.generation.take() {
                         handle = g.handle.take();
                     }
-                    self.state.generation = None;
                     self.state.set_status(e, true);
                 }
             }
         }
         join_worker(handle);
-        if let Some(g) = self.state.generation.as_mut() {
-            g.spinner = g.spinner.wrapping_add(1);
-        }
+        tick_spinner(&mut self.state.generation);
     }
 
     pub(super) fn drain_review_assist(&mut self) {
-        let mut drained: Vec<GenMsg> = Vec::new();
-        let mut handle = None;
-        if let Some(job) = self.state.review_assist_job.as_ref() {
-            while let Ok(msg) = job.rx.try_recv() {
-                drained.push(msg);
-            }
-        }
-        for msg in drained {
-            match msg {
-                GenMsg::Thinking(_) => {}
-                GenMsg::Output(output) => {
-                    if let Some(job) = self.state.review_assist_job.as_mut() {
-                        job.output.push_str(&output);
-                        self.state
-                            .review_assists
-                            .insert(job.node_id.clone(), job.output.clone());
-                    }
-                }
-                GenMsg::Done(final_msg) => {
-                    if let Some(job) = self.state.review_assist_job.as_mut() {
-                        handle = job.handle.take();
-                    }
-                    if let Some(job) = self.state.review_assist_job.take() {
-                        self.state.review_assists.insert(job.node_id, final_msg);
-                    }
-                    self.state.set_status("review explanation ready", false);
-                }
-                GenMsg::Error(error) => {
-                    if let Some(job) = self.state.review_assist_job.as_mut() {
-                        handle = job.handle.take();
-                    }
-                    if let Some(job) = self.state.review_assist_job.take() {
-                        self.state
-                            .review_assists
-                            .insert(job.node_id, format!("llm error: {error}"));
-                    }
-                    self.state.set_status(error, true);
-                }
-            }
-        }
-        join_worker(handle);
-        if let Some(job) = self.state.review_assist_job.as_mut() {
-            job.spinner = job.spinner.wrapping_add(1);
+        let status = drain_review_stream(
+            &mut self.state.review_assist_job,
+            &mut self.state.review_assists,
+            "review explanation ready",
+        );
+        if let Some((text, is_error)) = status {
+            self.state.set_status(text, is_error);
         }
     }
 
     pub(super) fn drain_review_pr_text(&mut self) {
-        let mut drained: Vec<GenMsg> = Vec::new();
-        let mut handle = None;
-        if let Some(job) = self.state.review_pr_job.as_ref() {
-            while let Ok(msg) = job.rx.try_recv() {
-                drained.push(msg);
-            }
-        }
-        for msg in drained {
-            match msg {
-                GenMsg::Thinking(_) => {}
-                GenMsg::Output(output) => {
-                    if let Some(job) = self.state.review_pr_job.as_mut() {
-                        job.output.push_str(&output);
-                        self.state
-                            .review_assists
-                            .insert(job.node_id.clone(), job.output.clone());
-                    }
-                }
-                GenMsg::Done(final_msg) => {
-                    if let Some(job) = self.state.review_pr_job.as_mut() {
-                        handle = job.handle.take();
-                    }
-                    if let Some(job) = self.state.review_pr_job.take() {
-                        self.state.review_assists.insert(job.node_id, final_msg);
-                    }
-                    self.state.set_status("PR text ready", false);
-                }
-                GenMsg::Error(error) => {
-                    if let Some(job) = self.state.review_pr_job.as_mut() {
-                        handle = job.handle.take();
-                    }
-                    if let Some(job) = self.state.review_pr_job.take() {
-                        self.state
-                            .review_assists
-                            .insert(job.node_id, format!("llm error: {error}"));
-                    }
-                    self.state.set_status(error, true);
-                }
-            }
-        }
-        join_worker(handle);
-        if let Some(job) = self.state.review_pr_job.as_mut() {
-            job.spinner = job.spinner.wrapping_add(1);
+        let status = drain_review_stream(
+            &mut self.state.review_pr_job,
+            &mut self.state.review_assists,
+            "PR text ready",
+        );
+        if let Some((text, is_error)) = status {
+            self.state.set_status(text, is_error);
         }
     }
 
     pub(super) fn drain_review_chat(&mut self) {
-        let mut drained: Vec<GenMsg> = Vec::new();
         let mut handle = None;
-        if let Some(job) = self.state.review_chat_job.as_ref() {
-            while let Ok(msg) = job.rx.try_recv() {
-                drained.push(msg);
-            }
-        }
-        for msg in drained {
+        for msg in drain_messages(&self.state.review_chat_job) {
             match msg {
                 GenMsg::Thinking(_) => {}
                 GenMsg::Output(output) => {
@@ -1103,8 +980,8 @@ impl App {
             }
         }
         join_worker(handle);
-        if let Some(job) = self.state.review_chat_job.as_mut() {
-            job.spinner = job.spinner.wrapping_add(1);
+        if self.state.review_chat_job.is_some() {
+            tick_spinner(&mut self.state.review_chat_job);
             self.state.review_chat_scroll = u16::MAX;
         }
     }
@@ -1112,52 +989,7 @@ impl App {
     pub(super) fn join_background_jobs(&mut self) {
         let mut handles = Vec::new();
         handles.extend(self.state.take_deferred_threads());
-
-        if let Some(job) = self.state.generation.as_mut() {
-            handles.extend(job.handle.take());
-        }
-        if let Some(job) = self.state.push_job.as_mut() {
-            handles.extend(job.handle.take());
-        }
-        if let Some(job) = self.state.checkout_job.as_mut() {
-            handles.extend(job.handle.take());
-        }
-        if let Some(job) = self.state.operation_job.as_mut() {
-            handles.extend(job.handle.take());
-        }
-        if let Some(job) = self.state.fetch_job.as_mut() {
-            handles.extend(job.handle.take());
-        }
-        if let Some(job) = self.state.refresh_job.as_mut() {
-            handles.extend(job.handle.take());
-        }
-        if let Some(job) = self.state.release_status_job.as_mut() {
-            handles.extend(job.handle.take());
-        }
-        if let Some(job) = self.state.commit_log_job.as_mut() {
-            handles.extend(job.handle.take());
-        }
-        if let Some(job) = self.state.diff_job.as_mut() {
-            handles.extend(job.handle.take());
-        }
-        if let Some(job) = self.state.review_job.as_mut() {
-            handles.extend(job.handle.take());
-        }
-        if let Some(job) = self.state.review_assist_job.as_mut() {
-            handles.extend(job.handle.take());
-        }
-        if let Some(job) = self.state.review_pr_job.as_mut() {
-            handles.extend(job.handle.take());
-        }
-        if let Some(job) = self.state.review_flag_job.as_mut() {
-            handles.extend(job.handle.take());
-        }
-        if let Some(job) = self.state.review_chat_job.as_mut() {
-            handles.extend(job.handle.take());
-        }
-        if let Some(job) = self.state.workflow_job.as_mut() {
-            handles.extend(job.handle.take());
-        }
+        handles.extend(self.state.take_job_handles());
 
         if !handles.is_empty() {
             // The terminal has already been restored at this point, so tell the user

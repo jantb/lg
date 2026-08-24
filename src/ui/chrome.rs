@@ -58,12 +58,12 @@ pub fn framed_with_activity<'a>(
     };
 
     let title_text = if focused {
+        // Focus is already carried by the border colour, so the marker only
+        // animates while there is work to report.
         let pulse = if active {
             SPINNER_FRAMES[tick % SPINNER_FRAMES.len()]
-        } else if tick % 2 == 0 {
-            "\u{25cf}"
         } else {
-            "\u{25cb}"
+            "\u{25cf}"
         };
         format!("{pulse} [{n}] {title}")
     } else {
@@ -88,5 +88,57 @@ pub fn framed_with_activity<'a>(
         )
     } else {
         block
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
+
+    /// The block's top border, which is where the title and its marker sit.
+    fn title_row(tick: usize, active: bool) -> String {
+        let area = Rect::new(0, 0, 24, 3);
+        let mut buf = Buffer::empty(area);
+        framed_with_activity(1, "Status", true, None, tick, active).render(area, &mut buf);
+        (0..area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn the_focus_marker_holds_still_while_nothing_is_running() {
+        let first = title_row(0, false);
+        assert!(first.contains("[1] Status"), "{first}");
+        for tick in 1..8 {
+            assert_eq!(
+                first,
+                title_row(tick, false),
+                "an idle panel must not blink"
+            );
+        }
+    }
+
+    #[test]
+    fn the_marker_animates_only_while_work_is_running() {
+        assert_ne!(
+            title_row(0, true),
+            title_row(1, true),
+            "a running job still shows progress"
+        );
+    }
+
+    #[test]
+    fn an_unfocused_panel_has_no_marker() {
+        let area = Rect::new(0, 0, 24, 3);
+        let mut buf = Buffer::empty(area);
+        framed_with_activity(1, "Status", false, None, 0, false).render(area, &mut buf);
+        let row: String = (0..area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(row.contains("[1] Status"), "{row}");
+        assert!(!row.contains('\u{25cf}'), "{row}");
     }
 }

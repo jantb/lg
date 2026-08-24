@@ -93,6 +93,15 @@ pub const TICK_MS: u64 = 250;
 /// Poll interval while a session is on screen: its output is the echo of what
 /// is being typed into it, so it has to keep up with typing.
 pub const SESSION_TICK_MS: u64 = 16;
+
+/// How long one animation step lasts. Spinners advance on this clock rather
+/// than once per frame, because the poll interval ranges from `SESSION_TICK_MS`
+/// to `TICK_MS` and a per-frame animation runs at whatever rate that happens to
+/// be.
+pub const ANIMATION_STEP_MS: u64 = 120;
+/// Poll interval while a background job is in flight, so its result lands
+/// without waiting out a full `TICK_MS`.
+pub const JOB_TICK_MS: u64 = 80;
 pub const BACKGROUND_FETCH_INTERVAL_SECS: u64 = 300;
 pub const COMMIT_LIST_LIMIT: usize = 200;
 pub const LEFT_COLUMN_WIDTH: u16 = 64;

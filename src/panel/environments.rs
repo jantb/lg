@@ -27,7 +27,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     // even for a lone checkout, which is where a session gets started from.
     if !state.git_panes_visible()
         || !state.nested_repositories.is_empty()
-        || !active_repo_is_workspace(state)
+        || !root_repo_selected(state)
         || state.has_linked_worktrees()
     {
         render_nested_repositories(state, area, frame, focused);
@@ -766,19 +766,13 @@ fn tree_idx_for_repo_path(state: &AppState, path: &str) -> Option<usize> {
         .position(|row| matches!(row, NestedRepoTreeRow::Repo { repo_idx } if state.nested_repositories.get(*repo_idx).is_some_and(|repo| repo.path == path)))
 }
 
+/// Whether the checkout lg is pointed at is the workspace root itself, rather
+/// than one of the repositories inside it. True when there is no workspace to
+/// distinguish it from.
 fn root_repo_selected(state: &AppState) -> bool {
     match (state.workspace_root.as_deref(), state.repo_root.as_deref()) {
         (Some(workspace), Some(repo)) => {
-            std::path::Path::new(workspace) == std::path::Path::new(repo)
-        }
-        _ => true,
-    }
-}
-
-fn active_repo_is_workspace(state: &AppState) -> bool {
-    match (state.workspace_root.as_deref(), state.repo_root.as_deref()) {
-        (Some(workspace), Some(repo)) => {
-            std::path::Path::new(workspace) == std::path::Path::new(repo)
+            same_dir(std::path::Path::new(workspace), std::path::Path::new(repo))
         }
         _ => true,
     }
@@ -790,10 +784,12 @@ fn nested_repo_selected(state: &AppState, repo_path: &str) -> bool {
     else {
         return false;
     };
-    let Ok(relative_path) = std::path::Path::new(repo_root).strip_prefix(workspace) else {
-        return false;
-    };
-    relative_path == std::path::Path::new(repo_path)
+    // Resolved through symlinks: a workspace of symlinked repositories reports a
+    // repo_root outside the workspace, which no prefix of it matches.
+    same_dir(
+        &std::path::Path::new(workspace).join(repo_path),
+        std::path::Path::new(repo_root),
+    )
 }
 
 fn repository_list_item(line: Line<'static>, selected: bool) -> ListItem<'static> {
@@ -1148,4 +1144,63 @@ fn release_status_loading(state: &AppState) -> bool {
         .release_status_job
         .as_ref()
         .is_some_and(|job| Some(job.branch.as_str()) == state.branch.as_deref())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// A workspace directory holding a symlink to a repository that really
+    /// lives elsewhere, which is how these workspaces are normally laid out.
+    fn workspace_with_symlinked_repo() -> (tempfile::TempDir, String, String) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let real = tmp.path().join("elsewhere").join("lg");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::create_dir_all(&real).expect("repo");
+        std::os::unix::fs::symlink(&real, workspace.join("lg")).expect("symlink");
+        (
+            tmp,
+            workspace.to_string_lossy().into_owned(),
+            real.to_string_lossy().into_owned(),
+        )
+    }
+
+    #[test]
+    fn a_symlinked_repository_counts_as_the_active_one() {
+        let (_tmp, workspace, real) = workspace_with_symlinked_repo();
+        let mut state = AppState::new();
+        state.workspace_root = Some(workspace);
+        // git reports the resolved path, which sits outside the workspace.
+        state.repo_root = Some(real);
+
+        assert!(
+            nested_repo_selected(&state, "lg"),
+            "the row for the checked-out repository must show as active"
+        );
+        assert!(
+            !root_repo_selected(&state),
+            "the workspace root is not what is checked out"
+        );
+    }
+
+    #[test]
+    fn another_repository_in_the_same_workspace_is_not_active() {
+        let (_tmp, workspace, real) = workspace_with_symlinked_repo();
+        let mut state = AppState::new();
+        state.workspace_root = Some(workspace);
+        state.repo_root = Some(real);
+
+        assert!(!nested_repo_selected(&state, "melt"));
+    }
+
+    #[test]
+    fn the_workspace_root_itself_is_reported_as_the_root_row() {
+        let (_tmp, workspace, _real) = workspace_with_symlinked_repo();
+        let mut state = AppState::new();
+        state.workspace_root = Some(workspace.clone());
+        state.repo_root = Some(workspace);
+
+        assert!(root_repo_selected(&state));
+    }
 }

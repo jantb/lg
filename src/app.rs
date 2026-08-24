@@ -19,7 +19,7 @@ use std::{
 
 use crate::{
     config::{
-        BACKGROUND_FETCH_INTERVAL_SECS, ERROR_MSG_LIFETIME_SECS, SESSION_TICK_MS,
+        BACKGROUND_FETCH_INTERVAL_SECS, ERROR_MSG_LIFETIME_SECS, JOB_TICK_MS, SESSION_TICK_MS,
         STATUS_MSG_LIFETIME_SECS, TICK_MS,
     },
     state::AppState,
@@ -199,23 +199,8 @@ impl App {
 
             let poll_ms = if self.state.session_view().is_some() {
                 SESSION_TICK_MS
-            } else if self.state.generation.is_some()
-                || self.state.push_job.is_some()
-                || self.state.checkout_job.is_some()
-                || self.state.operation_job.is_some()
-                || self.state.fetch_job.is_some()
-                || self.state.refresh_job.is_some()
-                || self.state.release_status_job.is_some()
-                || self.state.commit_log_job.is_some()
-                || self.state.diff_job.is_some()
-                || self.state.review_job.is_some()
-                || self.state.review_assist_job.is_some()
-                || self.state.review_pr_job.is_some()
-                || self.state.review_flag_job.is_some()
-                || self.state.review_chat_job.is_some()
-                || self.state.workflow_job.is_some()
-            {
-                80
+            } else if self.state.any_job_running() {
+                JOB_TICK_MS
             } else {
                 TICK_MS
             };

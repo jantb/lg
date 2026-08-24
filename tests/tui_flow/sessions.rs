@@ -28,6 +28,16 @@ fn shell_session(app: &mut lg::app::HeadlessApp<TestBackend>, script: &str, dir:
     id.to_string().parse().expect("session id")
 }
 
+/// What the shown session's own screen says, free of lg's chrome — the view a
+/// scroll moves, as opposed to the surrounding panes.
+fn session_contents(app: &lg::app::HeadlessApp<TestBackend>) -> String {
+    app.state
+        .sessions
+        .focused_session()
+        .map(|session| session.screen().contents())
+        .unwrap_or_default()
+}
+
 /// Pump until the session's screen contains `needle`, or give up.
 fn wait_for(app: &mut lg::app::HeadlessApp<TestBackend>, needle: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -479,5 +489,137 @@ fn leaving_workspace_mode_leaves_the_sessions_running() {
     assert!(
         app.state.sessions.focused_session().unwrap().is_running(),
         "switching views must not stop anything"
+    );
+}
+
+#[test]
+fn selecting_a_file_puts_the_session_in_the_background() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 30)).unwrap();
+    app.state.repo_root = Some("/workspace".into());
+    app.state.files = vec![
+        FileEntry {
+            path: "src/a.rs".into(),
+            x: ' ',
+            y: 'M',
+        },
+        FileEntry {
+            path: "src/b.rs".into(),
+            x: ' ',
+            y: 'M',
+        },
+    ];
+    shell_session(
+        &mut app,
+        "printf 'claude is working'; sleep 30",
+        "/workspace",
+    );
+    wait_for(&mut app, "claude is working");
+
+    app.render().unwrap();
+    assert!(
+        buffer_text(&app).contains("claude is working"),
+        "the session starts on screen"
+    );
+
+    // Focusing the file pane and moving the selection is a request for a diff.
+    app.send_key(key(KeyCode::Char('2'))).unwrap();
+
+    assert_eq!(app.state.main_view, MainView::Diff);
+    assert!(
+        !app.state.session_capture,
+        "the keyboard comes back to lg with the diff"
+    );
+    let screen = buffer_text(&app);
+    assert!(
+        !screen.contains("claude is working"),
+        "the session is no longer drawn: {screen}"
+    );
+    assert!(
+        app.state.sessions.focused_session().unwrap().is_running(),
+        "backgrounding must not stop it"
+    );
+}
+
+#[test]
+fn focusing_the_repository_pane_leaves_the_session_on_screen() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 30)).unwrap();
+    app.state.repo_root = Some("/workspace".into());
+    shell_session(&mut app, "printf 'still here'; sleep 30", "/workspace");
+    wait_for(&mut app, "still here");
+
+    // The repository pane is where sessions are picked, so reaching it must not
+    // hide the one that is running.
+    app.send_key(key(KeyCode::Char('1'))).unwrap();
+
+    assert_eq!(app.state.focus, Pane::Status);
+    assert!(matches!(app.state.main_view, MainView::Session(_)));
+    assert!(buffer_text(&app).contains("still here"));
+}
+
+#[test]
+fn the_wheel_scrolls_a_session_rather_than_the_diff() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 12)).unwrap();
+    // More lines than the pane is tall, so there is scrollback to reach.
+    shell_session(
+        &mut app,
+        "for i in $(seq 1 60); do printf 'line %s\\n' \"$i\"; done; sleep 30",
+        "/workspace",
+    );
+    wait_for(&mut app, "line 60");
+    app.render().unwrap();
+
+    let live = session_contents(&app);
+    assert!(!live.trim().is_empty(), "the session drew something");
+
+    panel::main::scroll(&mut app.state, false, 5);
+    app.render().unwrap();
+
+    assert_ne!(
+        live,
+        session_contents(&app),
+        "the wheel moved the session view into scrollback"
+    );
+    assert_eq!(
+        app.state.diff_offset, 0,
+        "a session must not move the diff offset"
+    );
+
+    panel::main::scroll(&mut app.state, true, 5);
+    app.render().unwrap();
+    assert_eq!(
+        session_contents(&app),
+        live,
+        "scrolling back down returns to the live screen"
+    );
+}
+
+#[test]
+fn typing_into_a_session_returns_it_to_the_live_screen() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 12)).unwrap();
+    shell_session(
+        &mut app,
+        "for i in $(seq 1 60); do printf 'line %s\\n' \"$i\"; done; sleep 30",
+        "/workspace",
+    );
+    wait_for(&mut app, "line 60");
+    app.render().unwrap();
+    let live = session_contents(&app);
+
+    panel::main::scroll(&mut app.state, false, 5);
+    app.render().unwrap();
+    assert_ne!(
+        live,
+        session_contents(&app),
+        "scrolled away from the live screen"
+    );
+
+    app.state.session_capture = true;
+    app.state.focus = Pane::Main;
+    app.send_key(key(KeyCode::Char('x'))).unwrap();
+
+    assert_eq!(
+        session_contents(&app),
+        live,
+        "typing brings the live screen back so the reply is visible"
     );
 }

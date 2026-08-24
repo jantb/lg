@@ -1,13 +1,11 @@
 //! The repository every git command runs against.
 //!
-//! lg used to change the process working directory when the user selected a
-//! different checkout, which raced with the background jobs already running
-//! against the old one — and it meant starting lg in a subdirectory pointed
-//! every command at the wrong place. Instead each command resolves its
-//! directory here: the calling thread's pin if it has one, otherwise the
-//! process-wide selection, and the process working directory when neither is
-//! set. Jobs snapshot the selection when they are spawned (`spawn_pinned`), so
-//! switching repositories mid-job cannot retarget the job already in flight.
+//! Each command resolves its own directory here rather than relying on the
+//! process working directory, which is never changed: the calling thread's pin
+//! if it has one, otherwise the process-wide selection, and the process working
+//! directory when neither is set. Jobs snapshot the selection when they are
+//! spawned (`spawn_pinned`), so switching repositories mid-job cannot retarget
+//! a job already in flight.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
