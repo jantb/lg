@@ -262,6 +262,7 @@ pub fn handle_key(
         KeyCode::Char('s') => start_session_for_selection(state, true),
         KeyCode::Char('S') => start_session_for_selection(state, false),
         KeyCode::Char('D') => remove_selected_worktree(state),
+        KeyCode::Char('x') => close_selected_session(state),
         KeyCode::Char('m') => land_selected_worktree(state),
         KeyCode::Char('b') => bring_selected_worktree_home(state),
         KeyCode::Char('r') if state.nested_repo_detail_path.is_some() => {
@@ -437,6 +438,47 @@ fn remove_selected_worktree(state: &mut AppState) {
         format!("Remove the worktree for {label}?"),
         detail,
         crate::state::PendingAction::RemoveWorktree { path, force: dirty },
+    );
+}
+
+/// The session the repository tree has selected, if the selection is one.
+pub(crate) fn selected_session(state: &AppState) -> Option<crate::session::SessionId> {
+    match selected_tree_row(state)? {
+        NestedRepoTreeRow::Session { id } => Some(id),
+        _ => None,
+    }
+}
+
+/// Close the selected session and forget it. A session that has ended keeps
+/// its last screen so the reason can be read, which leaves a row behind; this
+/// is how that row is cleared from where it is actually seen, rather than only
+/// from inside the session pane.
+fn close_selected_session(state: &mut AppState) {
+    let Some(NestedRepoTreeRow::Session { id }) = selected_tree_row(state) else {
+        state.set_status("select a session row to close it", false);
+        return;
+    };
+    let label = state
+        .sessions
+        .get(id)
+        .map(|session| session.label.clone())
+        .unwrap_or_default();
+    let ended = state
+        .sessions
+        .get(id)
+        .is_some_and(|session| !session.is_running());
+    state.sessions.close(id);
+    if state.session_view().is_none() {
+        state.show_diff();
+    }
+    state.clamp();
+    state.set_status(
+        if ended {
+            format!("cleared the finished session in {label}")
+        } else {
+            format!("closed the session in {label}")
+        },
+        false,
     );
 }
 

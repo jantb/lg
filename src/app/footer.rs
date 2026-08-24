@@ -221,6 +221,8 @@ fn shortcut_visible(state: &AppState, key: &str, label: &str) -> bool {
         ("m", "land worktree") | ("b", "branch home") => {
             crate::panel::environments::selected_linked_worktree(state).is_some()
         }
+        // Only a session row has a session to close.
+        ("x", "close session") => crate::panel::environments::selected_session(state).is_some(),
         // Distinguished from the Status pane's Esc, which means "back".
         ("Esc", "cancel") => state.llm_job_running(),
         _ => true,

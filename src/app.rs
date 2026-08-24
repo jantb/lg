@@ -19,8 +19,8 @@ use std::{
 
 use crate::{
     config::{
-        BACKGROUND_FETCH_INTERVAL_SECS, ERROR_MSG_LIFETIME_SECS, JOB_TICK_MS, SESSION_TICK_MS,
-        STATUS_MSG_LIFETIME_SECS, TICK_MS,
+        BACKGROUND_FETCH_INTERVAL_SECS, ERROR_MSG_LIFETIME_SECS, JOB_TICK_MS, MAX_EVENTS_PER_FRAME,
+        SESSION_TICK_MS, STATUS_MSG_LIFETIME_SECS, TICK_MS,
     },
     state::AppState,
 };
@@ -205,14 +205,25 @@ impl App {
                 TICK_MS
             };
             if event::poll(Duration::from_millis(poll_ms))? {
-                match event::read()? {
-                    Event::Key(k) => self.handle_key(k)?,
-                    Event::Mouse(m) => self.handle_mouse(m)?,
-                    Event::Paste(text) => {
-                        session::forward_paste(&mut self.state, &text);
+                // Take everything already queued rather than one event per
+                // frame. Each frame is a redraw and a pass over every job, so
+                // spreading a wheel burst across frames made scrolling crawl
+                // along behind the trackpad.
+                let mut handled = 0usize;
+                loop {
+                    match event::read()? {
+                        Event::Key(k) => self.handle_key(k)?,
+                        Event::Mouse(m) => self.handle_mouse(m)?,
+                        Event::Paste(text) => {
+                            session::forward_paste(&mut self.state, &text);
+                        }
+                        Event::Resize(_, _) => {}
+                        _ => {}
                     }
-                    Event::Resize(_, _) => {}
-                    _ => {}
+                    handled += 1;
+                    if !keep_reading_events(&self.state, handled) || !event::poll(Duration::ZERO)? {
+                        break;
+                    }
                 }
             }
 
@@ -237,6 +248,13 @@ impl App {
     }
 }
 
+/// Whether another queued event may be taken before drawing again. A pending
+/// action has to run first, because a second event would replace it before it
+/// ever executed, and quitting stops the batch there and then.
+fn keep_reading_events(state: &AppState, handled: usize) -> bool {
+    state.pending_action.is_none() && !state.should_quit && handled < MAX_EVENTS_PER_FRAME
+}
+
 impl Drop for App {
     fn drop(&mut self) {
         // The terminal comes back first, so a session that is slow to die does
@@ -246,5 +264,44 @@ impl Drop for App {
         restore_terminal(self.terminal.backend_mut());
         self.state.sessions.close_all();
         self.join_background_jobs();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::PendingAction;
+
+    #[test]
+    fn a_burst_of_events_is_taken_in_one_batch() {
+        let state = AppState::new();
+        assert!(keep_reading_events(&state, 0));
+        assert!(keep_reading_events(&state, MAX_EVENTS_PER_FRAME - 1));
+    }
+
+    #[test]
+    fn the_batch_stops_so_a_pending_action_can_run() {
+        let mut state = AppState::new();
+        state.pending_action = Some(PendingAction::Quit);
+        assert!(
+            !keep_reading_events(&state, 1),
+            "a second event would replace the action before it ever ran"
+        );
+    }
+
+    #[test]
+    fn the_batch_stops_on_quit() {
+        let mut state = AppState::new();
+        state.should_quit = true;
+        assert!(!keep_reading_events(&state, 1));
+    }
+
+    #[test]
+    fn a_flood_still_yields_to_the_redraw() {
+        let state = AppState::new();
+        assert!(
+            !keep_reading_events(&state, MAX_EVENTS_PER_FRAME),
+            "scrolling is only visible if the frame is drawn"
+        );
     }
 }

@@ -102,6 +102,11 @@ pub const ANIMATION_STEP_MS: u64 = 120;
 /// Poll interval while a background job is in flight, so its result lands
 /// without waiting out a full `TICK_MS`.
 pub const JOB_TICK_MS: u64 = 80;
+/// How many queued input events one frame may take before drawing again. A
+/// trackpad sends wheel events far faster than lg redraws, so they are handled
+/// in a batch rather than one per frame — but a flood must not starve the
+/// redraw that makes the scrolling visible.
+pub const MAX_EVENTS_PER_FRAME: usize = 64;
 pub const BACKGROUND_FETCH_INTERVAL_SECS: u64 = 300;
 pub const COMMIT_LIST_LIMIT: usize = 200;
 pub const LEFT_COLUMN_WIDTH: u16 = 64;

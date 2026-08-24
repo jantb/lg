@@ -230,6 +230,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: None,
             },
             Binding {
+                key: "x",
+                help: "Close the selected session, running or ended",
+                footer: Some(("x", "close session")),
+            },
+            Binding {
                 key: "m",
                 help: "Merge worktree into main, then clean up",
                 footer: Some(("m", "land worktree")),
@@ -263,6 +268,7 @@ pub const SECTIONS: &[Section] = &[
             "m",
             "b",
             "s",
+            "x",
             "o",
             "r",
             "Esc",
@@ -767,6 +773,9 @@ mod tests {
                     ("m", "land worktree"),
                     ("b", "branch home"),
                     ("s", "claude session"),
+                    // Added after the merge: a session row had no way to be
+                    // cleared from the tree it is shown in.
+                    ("x", "close session"),
                     ("o", "open IDE"),
                     ("r", "remotes"),
                     ("Esc", "back"),

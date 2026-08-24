@@ -711,3 +711,72 @@ fn closing_the_session_frees_the_worktree_to_be_landed() {
         }
     );
 }
+
+#[test]
+fn a_finished_session_can_be_cleared_from_the_row_it_is_shown_on() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state.workspace_root = Some("/workspace".into());
+    app.state.repo_root = Some("/workspace".into());
+    app.state.worktrees = vec![Worktree {
+        is_main: true,
+        ..worktree("/workspace", "main")
+    }];
+    shell_session(&mut app, "exit 0", "/workspace");
+
+    // Let it finish; the last screen is kept, so the row stays behind.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app
+        .state
+        .sessions
+        .focused_session()
+        .is_some_and(|session| session.is_running())
+    {
+        app.state.sessions.pump();
+        assert!(Instant::now() < deadline, "the session never ended");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    app.render().unwrap();
+    assert!(
+        buffer_text(&app).contains("claude"),
+        "the finished session still has a row"
+    );
+
+    // Row 0 is the root, row 1 its session.
+    app.state.show_diff();
+    app.state.focus = Pane::Status;
+    app.state.nested_repo_tree_idx = 1;
+    app.send_key(key(KeyCode::Char('x'))).unwrap();
+
+    assert!(
+        app.state.sessions.focused_session().is_none(),
+        "x on the row should forget it"
+    );
+    app.render().unwrap();
+    let screen = buffer_text(&app);
+    assert!(
+        !screen.contains("claude"),
+        "the row is gone from the tree: {screen}"
+    );
+}
+
+#[test]
+fn x_on_a_row_that_is_not_a_session_says_so() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state.workspace_root = Some("/workspace".into());
+    app.state.repo_root = Some("/workspace".into());
+    app.state.worktrees = vec![Worktree {
+        is_main: true,
+        ..worktree("/workspace", "main")
+    }];
+    app.state.focus = Pane::Status;
+    app.state.nested_repo_tree_idx = 0;
+
+    app.send_key(key(KeyCode::Char('x'))).unwrap();
+
+    let status = app.state.status.as_ref().expect("status");
+    assert!(
+        status.text.contains("select a session row"),
+        "it says what to select: {}",
+        status.text
+    );
+}
