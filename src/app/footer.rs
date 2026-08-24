@@ -258,7 +258,10 @@ fn session_spans(state: &AppState) -> Vec<Span<'static>> {
         (
             "input \u{2192} claude ",
             Color::Green,
-            &[("Ctrl-]", "keyboard back to lg, then Ctrl-n/p switches")],
+            &[(
+                "Ctrl-]",
+                "keyboard back to lg \u{2014} then x closes it, Ctrl-n/p switches",
+            )],
         )
     } else {
         (

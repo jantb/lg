@@ -423,6 +423,10 @@ fn remove_selected_worktree(state: &mut AppState) {
     let label = worktree.label();
     let path = worktree.path.clone();
     let dirty = worktree.has_changes;
+    if let Some(reason) = session_in_the_way(state, &path, &label) {
+        state.set_status(reason, true);
+        return;
+    }
     let detail = if dirty {
         format!("{path} has uncommitted changes, which will be discarded.")
     } else {
@@ -484,37 +488,54 @@ pub(crate) fn selected_linked_worktree(state: &AppState) -> Option<&Worktree> {
 /// The worktree and branch a handover would move, once the reasons it cannot
 /// happen are out of the way. `verb` names the action in those refusals.
 fn handover_candidate(state: &mut AppState, verb: &str) -> Option<(String, String)> {
-    if selected_linked_worktree(state).is_none() {
+    let Some(worktree) = selected_linked_worktree(state) else {
         state.set_status(format!("select a worktree row to {verb} it"), false);
         return None;
+    };
+    let label = worktree.label();
+    let path = worktree.path.clone();
+    let branch = worktree.branch.clone();
+    let (missing, locked, dirty) = (
+        worktree.is_missing(),
+        worktree.locked.is_some(),
+        worktree.has_changes,
+    );
+
+    if missing {
+        state.set_status(format!("{label} is missing on disk; prune it"), true);
+        return None;
     }
-    let worktree = selected_linked_worktree(state)?;
-    if worktree.is_missing() {
+    if locked {
+        state.set_status(format!("{label} is locked"), true);
+        return None;
+    }
+    if dirty {
         state.set_status(
-            format!("{} is missing on disk; prune it", worktree.label()),
+            format!("commit or discard the changes in {label} first"),
             true,
         );
         return None;
     }
-    if worktree.locked.is_some() {
-        state.set_status(format!("{} is locked", worktree.label()), true);
+    if let Some(reason) = session_in_the_way(state, &path, &label) {
+        state.set_status(reason, true);
         return None;
     }
-    if worktree.has_changes {
-        state.set_status(
-            format!(
-                "commit or discard the changes in {} first",
-                worktree.label()
-            ),
-            true,
-        );
-        return None;
-    }
-    let Some(branch) = worktree.branch.clone() else {
+    let Some(branch) = branch else {
         state.set_status("a detached worktree has no branch to hand over", true);
         return None;
     };
-    Some((worktree.path.clone(), branch))
+    Some((path, branch))
+}
+
+/// A live claude session keeps its checkout in use: removing the directory
+/// would pull it out from under a running process. The refusal names the keys,
+/// because a session holding the keyboard is exactly when they are hardest to
+/// go looking for.
+fn session_in_the_way(state: &AppState, path: &str, label: &str) -> Option<String> {
+    state
+        .sessions
+        .for_dir(std::path::Path::new(path))
+        .map(|_| format!("close the claude session in {label} first \u{2014} Ctrl-] then x"))
 }
 
 /// Switch to the selected worktree. A worktree git still knows about but whose

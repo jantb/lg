@@ -623,3 +623,83 @@ fn typing_into_a_session_returns_it_to_the_live_screen() {
         "typing brings the live screen back so the reply is visible"
     );
 }
+
+#[test]
+fn a_worktree_running_a_session_is_not_removed_from_under_it() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state.workspace_root = Some("/workspace".into());
+    app.state.repo_root = Some("/workspace".into());
+    app.state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        worktree("/workspace.worktrees/feat-x", "feat/x"),
+    ];
+    shell_session(&mut app, "sleep 30", "/workspace.worktrees/feat-x");
+
+    // Row 0 root, row 1 the worktree, row 2 its session.
+    app.state.show_diff();
+    app.state.focus = Pane::Status;
+    app.state.nested_repo_tree_idx = 1;
+
+    // Landing, bringing home and removing all end in `git worktree remove`.
+    for code in [KeyCode::Char('m'), KeyCode::Char('b'), KeyCode::Char('D')] {
+        app.state.status = None;
+        app.send_key(key(code)).unwrap();
+
+        assert!(
+            app.state.confirm.is_none(),
+            "{code:?} must not even offer to remove a checkout in use"
+        );
+        assert_eq!(app.state.pending_action, None, "{code:?} ran something");
+        let status = app.state.status.as_ref().expect("status");
+        assert!(
+            status.is_error,
+            "expected an error for {code:?}: {status:?}"
+        );
+        assert!(
+            status.text.contains("close the claude session"),
+            "the status names the blocker for {code:?}: {}",
+            status.text
+        );
+        assert!(
+            status.text.contains("Ctrl-]") && status.text.contains(" x"),
+            "and the keys that do it for {code:?}: {}",
+            status.text
+        );
+    }
+}
+
+#[test]
+fn closing_the_session_frees_the_worktree_to_be_landed() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state.workspace_root = Some("/workspace".into());
+    app.state.repo_root = Some("/workspace".into());
+    app.state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        worktree("/workspace.worktrees/feat-x", "feat/x"),
+    ];
+    shell_session(&mut app, "sleep 30", "/workspace.worktrees/feat-x");
+
+    // x closes the shown session, the way the footer and help say it does.
+    app.state.session_capture = false;
+    app.send_key(key(KeyCode::Char('x'))).unwrap();
+
+    app.state.show_diff();
+    app.state.focus = Pane::Status;
+    app.state.nested_repo_tree_idx = 1;
+    app.send_key(key(KeyCode::Char('m'))).unwrap();
+
+    let confirm = app.state.confirm.as_ref().expect("confirm prompt");
+    assert_eq!(
+        confirm.action,
+        PendingAction::LandWorktree {
+            path: "/workspace.worktrees/feat-x".into(),
+            branch: "feat/x".into(),
+        }
+    );
+}

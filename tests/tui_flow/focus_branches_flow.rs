@@ -537,7 +537,7 @@ fn branches_shortcuts_show_remote_toggle() {
         "help should show sync-all shortcut: {help}"
     );
     assert!(
-        help.contains("Delete selected local branch with no upstream"),
+        help.contains("Delete local branch with no upstream"),
         "help should show local-only delete shortcut: {help}"
     );
 }

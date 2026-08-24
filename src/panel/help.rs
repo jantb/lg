@@ -14,6 +14,16 @@ use crate::{
     ui::centered,
 };
 
+/// The overlay is a fixed width and never wraps, so anything wider than it is
+/// silently cut off mid-word.
+const OVERLAY_WIDTH: u16 = 64;
+/// Key column, wide enough for the longest binding plus a separating space.
+const KEY_COLUMN: usize = 16;
+/// What a description has left: the overlay minus its borders and the indented
+/// key column in front of it. Only the table check needs it spelled out.
+#[cfg(test)]
+const DESC_WIDTH: usize = OVERLAY_WIDTH as usize - 2 - 2 - KEY_COLUMN;
+
 struct Section {
     title: &'static str,
     pane: Option<Pane>,
@@ -38,10 +48,7 @@ const SECTIONS: &[Section] = &[
             ("p", "Pull current branch when behind"),
             ("P", "Push current branch"),
             ("R", "Enter review mode against main"),
-            (
-                "Ctrl-n / Ctrl-p",
-                "Next or previous session (Ctrl-] first if one has the keyboard)",
-            ),
+            ("Ctrl-n / Ctrl-p", "Next or previous session (Ctrl-] first)"),
             ("click pane", "Focus pane"),
             ("drag divider", "Resize columns or rows"),
         ],
@@ -54,9 +61,9 @@ const SECTIONS: &[Section] = &[
             ("space / y", "Stage selected"),
             ("u", "Unstage selected"),
             ("A / U", "Stage all / unstage all"),
-            ("r", "Roll back selected file or folder (confirms first)"),
+            ("r", "Roll back file or folder (confirms)"),
             ("i", "Add selected file or folder to .gitignore"),
-            ("d", "Delete selected file or folder (confirms first)"),
+            ("d", "Delete file or folder (confirms first)"),
             ("o", "Open file or project in IntelliJ/RustRover"),
             ("Enter", "Refresh diff"),
         ],
@@ -66,16 +73,13 @@ const SECTIONS: &[Section] = &[
         pane: Some(Pane::Status),
         bindings: &[
             ("j/k", "Move up/down"),
-            (
-                "Enter",
-                "Select repository, worktree or session, or checkout branch",
-            ),
+            ("Enter", "Select repo, worktree, session, or branch"),
             ("n", "New worktree for a branch"),
-            ("s", "Start or show a sandboxed claude session here"),
+            ("s", "Start or show a sandboxed session here"),
             ("S", "Start a claude session without the sandbox"),
-            ("D", "Remove selected worktree, or prune a missing one"),
-            ("m", "Merge selected worktree into main, then clean both up"),
-            ("b", "Move selected worktree's branch to the main checkout"),
+            ("D", "Remove worktree, or prune a missing one"),
+            ("m", "Merge worktree into main, then clean up"),
+            ("b", "Move its branch to the main checkout"),
             ("o", "Open selected repository in editor"),
             ("r", "Toggle local/remote branches"),
             ("Esc/Backspace", "Collapse expanded repository"),
@@ -92,8 +96,8 @@ const SECTIONS: &[Section] = &[
             ("r", "Toggle local and remote branch views"),
             ("m", "Pull main or merge origin/main"),
             ("M", "Merge main into all branches and push"),
-            ("d", "Delete selected local branch with no upstream"),
-            ("D", "Delete branch with local/remote/force options"),
+            ("d", "Delete local branch with no upstream"),
+            ("D", "Delete branch: local/remote/force options"),
             ("F", "Branch action menu"),
         ],
     },
@@ -110,9 +114,9 @@ const SECTIONS: &[Section] = &[
         pane: None,
         bindings: &[
             ("i / Enter", "Give the keyboard to the session"),
-            ("Ctrl-]", "Take the keyboard back"),
-            ("x", "Close the session"),
-            ("Backspace", "Back to the diff"),
+            ("Ctrl-]", "Take the keyboard back; claude runs on"),
+            ("x", "Close the session \u{2014} Ctrl-] first"),
+            ("Backspace", "Back to the diff; session keeps running"),
         ],
     },
     Section {
@@ -261,7 +265,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         .saturating_add(2)
         .min(area.height.saturating_sub(2))
         .max(3.min(area.height));
-    let overlay = centered(area, 64, height);
+    let overlay = centered(area, OVERLAY_WIDTH, height);
     let offset = state.help_offset.min(max_offset(area));
 
     frame.render_widget(Clear, overlay);
@@ -283,7 +287,10 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         )));
         for (key, desc) in section.bindings {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {:<14}", key), Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    format!("  {key:<KEY_COLUMN$}"),
+                    Style::default().fg(Color::Yellow),
+                ),
                 Span::raw(*desc),
             ]));
         }
@@ -347,4 +354,28 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent, area: Rect) -> Result<()>
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The overlay does not wrap. A binding that outgrows it is not shortened,
+    /// it is cut off — so the table is checked rather than trusted.
+    #[test]
+    fn every_binding_fits_the_overlay() {
+        for section in SECTIONS {
+            for (key, desc) in section.bindings {
+                assert!(
+                    key.chars().count() < KEY_COLUMN,
+                    "{key:?} leaves no gap before its description"
+                );
+                assert!(
+                    desc.chars().count() <= DESC_WIDTH,
+                    "{key:?} description is {} columns, {DESC_WIDTH} fit: {desc:?}",
+                    desc.chars().count()
+                );
+            }
+        }
+    }
 }
