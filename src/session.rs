@@ -102,6 +102,28 @@ impl Session {
         true
     }
 
+    /// Hand one wheel notch to the program at a cell of its own screen, for
+    /// programs that asked to be told about the mouse. Returns whether it was
+    /// sent; when it was not, the wheel is lg's to act on.
+    ///
+    /// Every full-screen program is in this position: the alternate screen has
+    /// no scrollback for lg to move on its behalf, so scrolling one any other
+    /// way is not scrolling at all.
+    pub fn send_wheel(&mut self, up: bool, column: u16, row: u16) -> bool {
+        let screen = self.parser.screen();
+        let Some(bytes) = crate::term::encode_wheel(
+            up,
+            column,
+            row,
+            screen.mouse_protocol_mode(),
+            screen.mouse_protocol_encoding(),
+        ) else {
+            return false;
+        };
+        self.send(&bytes);
+        true
+    }
+
     /// Match the program's window to the pane it is drawn in. Resizing also
     /// makes it repaint, which is how a backgrounded session comes back clean.
     pub fn resize(&mut self, rows: u16, cols: u16) {

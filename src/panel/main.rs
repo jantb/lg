@@ -232,6 +232,28 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
+/// One wheel notch over the main pane, at a cell of it. A session whose
+/// program asked about the mouse handles its own scrolling — a full-screen one
+/// has to, since the alternate screen keeps no scrollback for lg to move.
+/// Anything else falls back to [`scroll`].
+pub fn wheel_at(state: &mut AppState, scroll_down: bool, amount: u16, column: u16, row: u16) {
+    if let Some(id) = state.session_view()
+        && let Some(session) = state.sessions.get_mut(id)
+    {
+        let mut sent = false;
+        for _ in 0..amount.max(1) {
+            sent = session.send_wheel(!scroll_down, column, row);
+            if !sent {
+                break;
+            }
+        }
+        if sent {
+            return;
+        }
+    }
+    scroll(state, scroll_down, amount);
+}
+
 pub fn scroll(state: &mut AppState, scroll_down: bool, amount: u16) {
     // A session draws from its own scrollback, not from `diff_offset`.
     if let Some(id) = state.session_view() {

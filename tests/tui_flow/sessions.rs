@@ -780,3 +780,90 @@ fn x_on_a_row_that_is_not_a_session_says_so() {
         status.text
     );
 }
+
+/// A full-screen program draws on the alternate screen, which vt100 gives no
+/// scrollback at all — so moving lg's scrollback for it moves nothing. It asks
+/// about the mouse instead, and the notch has to reach it.
+#[test]
+fn the_wheel_reaches_a_full_screen_program_that_asked_for_it() {
+    // Enter the alternate screen, ask for SGR mouse reporting, then echo back
+    // what arrives so the test can read what the program was told.
+    const STAND_IN: &str =
+        r"printf '\033[?1049h\033[?1000h\033[?1006h'; stty raw -echo; printf 'ready\r\n'; cat -v";
+
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 20)).unwrap();
+    shell_session(&mut app, STAND_IN, "/workspace");
+    let ready = wait_for(&mut app, "ready");
+    assert!(
+        ready.contains("ready"),
+        "the stand-in never started: {ready:?}"
+    );
+    app.render().unwrap();
+
+    assert!(
+        app.state
+            .sessions
+            .focused_session()
+            .expect("session")
+            .screen()
+            .alternate_screen(),
+        "the stand-in should be full-screen, like claude"
+    );
+
+    let rects = lg::ui::split_layout_with_sizes(
+        Rect::new(0, 0, 100, 20),
+        app.state.environments_visible(),
+        app.state.left_column_width,
+        app.state.left_panel_heights,
+    );
+    app.send_mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: rects.main.x + 4,
+        row: rects.main.y + 2,
+        modifiers: KeyModifiers::NONE,
+    })
+    .unwrap();
+
+    // cat -v shows the escape as ^[, so the report reads back as ^[[<64;c;rM.
+    let echoed = wait_for(&mut app, "[<64;");
+    assert!(
+        echoed.contains("[<64;"),
+        "the program should be told about wheel up: {echoed:?}"
+    );
+}
+
+/// With no mouse reporting asked for, the wheel stays lg's to act on and moves
+/// the session's own scrollback.
+#[test]
+fn the_wheel_moves_the_scrollback_of_a_program_that_did_not_ask() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 20)).unwrap();
+    shell_session(
+        &mut app,
+        "for i in $(seq 1 60); do printf 'line %s\\n' \"$i\"; done; sleep 30",
+        "/workspace",
+    );
+    wait_for(&mut app, "line 60");
+    app.render().unwrap();
+    let live = session_contents(&app);
+
+    let rects = lg::ui::split_layout_with_sizes(
+        Rect::new(0, 0, 100, 20),
+        app.state.environments_visible(),
+        app.state.left_column_width,
+        app.state.left_panel_heights,
+    );
+    let wheel = |kind| MouseEvent {
+        kind,
+        column: rects.main.x + 4,
+        row: rects.main.y + 2,
+        modifiers: KeyModifiers::NONE,
+    };
+
+    app.send_mouse(wheel(MouseEventKind::ScrollUp)).unwrap();
+    app.render().unwrap();
+    assert_ne!(live, session_contents(&app), "wheel up reached scrollback");
+
+    app.send_mouse(wheel(MouseEventKind::ScrollDown)).unwrap();
+    app.render().unwrap();
+    assert_eq!(live, session_contents(&app), "and back down again");
+}

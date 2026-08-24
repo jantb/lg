@@ -669,12 +669,16 @@ fn dispatch_mouse<H: AppHost>(host: &mut H, m: MouseEvent) -> Result<()> {
     if !in_main {
         return Ok(());
     }
+    // Cells inside the pane's border, 1-based, which is how a program counts
+    // its own screen.
+    let column = m.column.saturating_sub(rects.main.x);
+    let row = m.row.saturating_sub(rects.main.y);
     match m.kind {
         MouseEventKind::ScrollDown => {
-            panel::main::scroll(host.state_mut(), true, 3);
+            panel::main::wheel_at(host.state_mut(), true, 3, column, row);
         }
         MouseEventKind::ScrollUp => {
-            panel::main::scroll(host.state_mut(), false, 3);
+            panel::main::wheel_at(host.state_mut(), false, 3, column, row);
         }
         _ => {}
     }
