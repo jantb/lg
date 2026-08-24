@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{BRANCH_MAIN, DEFAULT_PUSH_REMOTE};
 
-use super::{run, run_combined, run_in_dir};
+use super::{run, run_combined, run_combined_in_dir, run_in_dir};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worktree {
@@ -139,6 +139,162 @@ pub fn worktree_remove(path: &Path, force: bool) -> Result<String> {
     })
 }
 
+/// Merge a worktree's branch into `main` and clean up after it: push `main`,
+/// remove the worktree, and delete the branch here and on the remote.
+///
+/// The merge runs in whichever checkout already holds `main` — git never lets
+/// two worktrees share a branch, so that is never the worktree being landed.
+/// Every checkout involved has to be clean before anything moves, and a
+/// conflicting merge is aborted rather than left half-done, so a failure never
+/// strands work. Running it again after fixing what failed carries on from
+/// where it stopped.
+pub fn worktree_land(path: &Path, branch: &str) -> Result<String> {
+    let worktrees = worktrees()?;
+    let branch = movable_branch(&worktrees, path, branch)?;
+    let host = main_branch_host(&worktrees)?;
+    let mut steps = Vec::new();
+
+    // Being offline is no reason to refuse a local merge, so a failed fetch
+    // only means `main` is compared against what the last fetch left behind.
+    let _ = run_in_dir(&host, &["fetch", DEFAULT_PUSH_REMOTE, "--prune"]);
+    let remote_main = format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
+    if ref_exists_in(&host, &remote_main) && behind_count(&host, &remote_main)? > 0 {
+        run_in_dir(&host, &["merge", "--ff-only", &remote_main]).with_context(|| {
+            format!("{BRANCH_MAIN} has diverged from {remote_main}; reconcile those first")
+        })?;
+        steps.push(format!("updated {BRANCH_MAIN} from {remote_main}"));
+    }
+
+    match run_combined_in_dir(&host, &["merge", "--no-edit", &branch]) {
+        Ok(out) => steps.push(last_line(&out, &format!("merged {branch}"))),
+        Err(err) => {
+            // A conflicted `main` sitting in a checkout nobody is looking at is
+            // worse than not having merged at all.
+            let _ = run_in_dir(&host, &["merge", "--abort"]);
+            anyhow::bail!(
+                "{err}\nmerge {branch} into {BRANCH_MAIN} by hand in {}",
+                host.display()
+            );
+        }
+    }
+
+    if ref_exists_in(&host, &format!("{BRANCH_MAIN}@{{u}}")) {
+        run_combined_in_dir(&host, &["push", DEFAULT_PUSH_REMOTE, BRANCH_MAIN])
+            .context("merged, but the push failed; push it and run this again to clean up")?;
+        steps.push(format!("pushed {BRANCH_MAIN}"));
+    }
+
+    // The worktree has to let go of the branch before git will delete it.
+    worktree_remove(path, false)?;
+    steps.push(format!("removed {}", path.display()));
+    run_in_dir(&host, &["branch", "-d", &branch])?;
+    steps.push(format!("deleted {branch}"));
+
+    if ref_exists_in(
+        &host,
+        &format!("refs/remotes/{DEFAULT_PUSH_REMOTE}/{branch}"),
+    ) {
+        // The branch is merged and pushed by this point, so a remote that
+        // refuses the delete is worth a note rather than failing the whole run.
+        match run_combined_in_dir(&host, &["push", DEFAULT_PUSH_REMOTE, "--delete", &branch]) {
+            Ok(_) => steps.push(format!("deleted {DEFAULT_PUSH_REMOTE}/{branch}")),
+            Err(err) => steps.push(format!("kept {DEFAULT_PUSH_REMOTE}/{branch}: {err}")),
+        }
+    }
+
+    Ok(steps.join("; "))
+}
+
+/// Move a worktree's branch back to the main checkout: remove the worktree and
+/// check the branch out where the repository was cloned. Nothing is merged and
+/// the branch keeps living — this is for carrying on with the work in one
+/// place, not for finishing it.
+pub fn worktree_bring_home(path: &Path, branch: &str) -> Result<String> {
+    let worktrees = worktrees()?;
+    let branch = movable_branch(&worktrees, path, branch)?;
+    let main = worktrees
+        .iter()
+        .find(|worktree| worktree.is_main)
+        .context("no main worktree reported")?;
+    if main.has_changes {
+        anyhow::bail!("commit or stash the changes in {} first", main.path);
+    }
+    let home = PathBuf::from(&main.path);
+
+    // Git refuses to check out a branch another worktree still claims, so the
+    // worktree goes first. It is clean, so a checkout that then fails costs
+    // nothing beyond leaving the branch where it already was.
+    worktree_remove(path, false)?;
+    run_in_dir(&home, &["checkout", &branch]).with_context(|| {
+        format!(
+            "removed the worktree, but checking {branch} out in {} failed",
+            main.path
+        )
+    })?;
+    Ok(format!(
+        "removed {}; checked out {branch} in {}",
+        path.display(),
+        main.path
+    ))
+}
+
+/// The branch a worktree can hand over: it has to be a linked checkout, still
+/// on the `expected` branch, unlocked, and holding nothing uncommitted. The
+/// branch is checked because it is what the user was asked to confirm, and a
+/// worktree can be switched to another one in between.
+fn movable_branch(worktrees: &[Worktree], path: &Path, expected: &str) -> Result<String> {
+    let source = worktrees
+        .iter()
+        .find(|worktree| same_dir(Path::new(&worktree.path), path))
+        .with_context(|| format!("{} is not a worktree of this repository", path.display()))?;
+    if source.is_main {
+        anyhow::bail!("the main checkout has no branch to hand over");
+    }
+    if source.locked.is_some() {
+        anyhow::bail!("{} is locked", source.label());
+    }
+    let branch = source
+        .branch
+        .clone()
+        .context("a detached worktree has no branch to hand over")?;
+    if branch == BRANCH_MAIN {
+        anyhow::bail!("{BRANCH_MAIN} is not a branch to move off a worktree");
+    }
+    if branch != expected {
+        anyhow::bail!("{} is on {branch} now, not {expected}", source.dir_name());
+    }
+    if source.has_changes {
+        anyhow::bail!("commit or discard the changes in {branch} first");
+    }
+    Ok(branch)
+}
+
+/// The checkout a merge into `main` runs in: whichever worktree already holds
+/// it, or the main worktree with `main` checked out into it when none does.
+fn main_branch_host(worktrees: &[Worktree]) -> Result<PathBuf> {
+    if let Some(host) = worktrees
+        .iter()
+        .find(|worktree| worktree.branch.as_deref() == Some(BRANCH_MAIN))
+    {
+        if host.has_changes {
+            anyhow::bail!("commit or stash the changes in {} first", host.path);
+        }
+        return Ok(PathBuf::from(&host.path));
+    }
+
+    let main = worktrees
+        .iter()
+        .find(|worktree| worktree.is_main)
+        .context("no main worktree reported")?;
+    if main.has_changes {
+        anyhow::bail!("commit or stash the changes in {} first", main.path);
+    }
+    let dir = PathBuf::from(&main.path);
+    run_in_dir(&dir, &["checkout", BRANCH_MAIN])
+        .with_context(|| format!("no checkout holds {BRANCH_MAIN}"))?;
+    Ok(dir)
+}
+
 /// Forget worktrees whose directories are gone.
 pub fn worktree_prune() -> Result<String> {
     let out = run_combined(&["worktree", "prune", "-v"])?;
@@ -194,6 +350,42 @@ pub fn preferred_base_ref() -> String {
     } else {
         BRANCH_MAIN.to_string()
     }
+}
+
+/// Compare two directories, allowing for one side being reached through a
+/// symlink — a workspace of symlinked repositories is the normal case.
+pub fn same_dir(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn ref_exists_in(dir: &Path, name: &str) -> bool {
+    run_in_dir(dir, &["rev-parse", "--verify", "--quiet", name]).is_ok()
+}
+
+/// How many commits `ahead_of` carries that this checkout's HEAD does not.
+fn behind_count(dir: &Path, ahead_of: &str) -> Result<u32> {
+    let out = run_in_dir(dir, &["rev-list", "--count", ahead_of, "--not", "HEAD"])?;
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .context("parsing how far behind its remote main is")
+}
+
+/// Git's own last word on what it did, for a status line with room for one
+/// short phrase per step.
+fn last_line(output: &str, fallback: &str) -> String {
+    output
+        .lines()
+        .rfind(|line| !line.trim().is_empty())
+        .unwrap_or(fallback)
+        .trim()
+        .to_string()
 }
 
 fn local_branch_exists(branch: &str) -> bool {

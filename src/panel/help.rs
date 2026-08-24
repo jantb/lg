@@ -74,6 +74,8 @@ const SECTIONS: &[Section] = &[
             ("s", "Start or show a sandboxed claude session here"),
             ("S", "Start a claude session without the sandbox"),
             ("D", "Remove selected worktree, or prune a missing one"),
+            ("m", "Merge selected worktree into main, then clean both up"),
+            ("b", "Move selected worktree's branch to the main checkout"),
             ("o", "Open selected repository in editor"),
             ("r", "Toggle local/remote branches"),
             ("Esc/Backspace", "Collapse expanded repository"),

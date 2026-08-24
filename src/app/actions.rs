@@ -399,6 +399,24 @@ impl App {
                     },
                 );
             }
+            PendingAction::LandWorktree { path, branch } => {
+                self.leave_checkout_before_removal(&path);
+                spawn_operation(
+                    &mut self.state,
+                    "landing worktree",
+                    OperationKind::WorkingTree,
+                    move || crate::git::worktree_land(Path::new(&path), &branch),
+                );
+            }
+            PendingAction::BringWorktreeHome { path, branch } => {
+                self.leave_checkout_before_removal(&path);
+                spawn_operation(
+                    &mut self.state,
+                    "moving branch home",
+                    OperationKind::WorkingTree,
+                    move || crate::git::worktree_bring_home(Path::new(&path), &branch),
+                );
+            }
             PendingAction::PruneWorktrees => {
                 spawn_operation(
                     &mut self.state,
@@ -478,6 +496,36 @@ impl App {
                 self.switch_to_repository(&dir, &target.label());
             }
         }
+    }
+}
+
+impl App {
+    /// Move lg off a checkout that is about to be removed, so the panels are
+    /// not left pointing at a directory that no longer exists. The main
+    /// worktree is where every repository has one.
+    fn leave_checkout_before_removal(&mut self, path: &str) {
+        let showing_it = self
+            .state
+            .repo_root
+            .as_deref()
+            .is_some_and(|root| crate::git::same_dir(Path::new(root), Path::new(path)));
+        if !showing_it {
+            return;
+        }
+        let Some(main) = self
+            .state
+            .worktrees
+            .iter()
+            .find(|worktree| worktree.is_main)
+            .map(|worktree| PathBuf::from(&worktree.path))
+        else {
+            return;
+        };
+        let label = main
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| main.to_string_lossy().into_owned());
+        self.switch_to_repository(&main, &label);
     }
 }
 

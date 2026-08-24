@@ -1499,3 +1499,119 @@ fn hidden_environment_layout_merges_saved_environment_height_into_files() {
     assert_eq!(resized.environments.height, 0);
     assert_eq!(resized.files.height, 11);
 }
+
+/// A workspace whose only linked worktree is on `feat/x`, with the tree
+/// selection already moved onto it.
+fn state_on_a_worktree_row() -> AppState {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        worktree("/workspace.worktrees/feat-x", "feat/x"),
+    ];
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    state
+}
+
+#[test]
+fn m_on_a_worktree_row_parks_the_land_behind_a_confirmation() {
+    let mut state = state_on_a_worktree_row();
+
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('m'))).unwrap();
+
+    assert_eq!(state.pending_action, None, "nothing runs before the y/n");
+    assert_eq!(state.modal, Modal::ConfirmDestructive);
+    let confirm = state.confirm.as_ref().expect("confirm prompt");
+    assert_eq!(
+        confirm.action,
+        PendingAction::LandWorktree {
+            path: "/workspace.worktrees/feat-x".into(),
+            branch: "feat/x".into(),
+        }
+    );
+    assert!(
+        confirm.detail.contains("origin/feat/x"),
+        "the prompt says the remote branch goes too: {}",
+        confirm.detail
+    );
+}
+
+#[test]
+fn b_on_a_worktree_row_offers_to_move_the_branch_home() {
+    let mut state = state_on_a_worktree_row();
+
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('b'))).unwrap();
+
+    let confirm = state.confirm.as_ref().expect("confirm prompt");
+    assert_eq!(
+        confirm.action,
+        PendingAction::BringWorktreeHome {
+            path: "/workspace.worktrees/feat-x".into(),
+            branch: "feat/x".into(),
+        }
+    );
+    assert!(
+        confirm.detail.contains("Nothing is merged"),
+        "the prompt separates this from landing: {}",
+        confirm.detail
+    );
+}
+
+#[test]
+fn a_handover_is_refused_before_the_confirmation_when_the_worktree_is_dirty() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        Worktree {
+            has_changes: true,
+            ..worktree("/workspace.worktrees/feat-x", "feat/x")
+        },
+    ];
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('m'))).unwrap();
+
+    assert!(state.confirm.is_none(), "no prompt for a dirty worktree");
+    assert_eq!(state.pending_action, None);
+    let status = state.status.as_ref().expect("status");
+    assert!(status.is_error, "expected an error status: {status:?}");
+    assert!(
+        status.text.contains("commit or discard"),
+        "the status names the way out: {}",
+        status.text
+    );
+}
+
+#[test]
+fn the_handover_keys_do_nothing_on_the_root_row() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        worktree("/workspace.worktrees/feat-x", "feat/x"),
+    ];
+
+    for code in [KeyCode::Char('m'), KeyCode::Char('b')] {
+        panel::environments::handle_key(&mut state, key(code)).unwrap();
+        assert!(state.confirm.is_none(), "{code:?} needs a worktree row");
+        let status = state.status.as_ref().expect("status");
+        assert!(
+            status.text.contains("select a worktree row"),
+            "the status says what to select: {}",
+            status.text
+        );
+    }
+}

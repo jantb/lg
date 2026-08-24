@@ -51,7 +51,8 @@ pub use status::{
 };
 pub use worktree::{
     Worktree, common_git_dir, default_worktree_path, main_worktree, parse_worktree_list,
-    preferred_base_ref, worktree_add, worktree_prune, worktree_remove, worktree_slug, worktrees,
+    preferred_base_ref, same_dir, worktree_add, worktree_bring_home, worktree_land, worktree_prune,
+    worktree_remove, worktree_slug, worktrees,
 };
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -117,6 +118,27 @@ fn run_combined(args: &[&str]) -> Result<String> {
         Ok(text)
     } else {
         Err(anyhow::anyhow!("git {} failed:\n{text}", args.join(" ")))
+    }
+}
+
+fn run_combined_in_dir(dir: &Path, args: &[&str]) -> Result<String> {
+    let out = git_command_in_dir(dir, args).output().with_context(|| {
+        format!(
+            "failed to spawn git -C {} {}",
+            dir.display(),
+            args.join(" ")
+        )
+    })?;
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    if out.status.success() {
+        Ok(text)
+    } else {
+        Err(anyhow::anyhow!(
+            "git -C {} {} failed:\n{text}",
+            dir.display(),
+            args.join(" ")
+        ))
     }
 }
 

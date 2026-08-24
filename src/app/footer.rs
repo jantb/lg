@@ -17,6 +17,8 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                 ("j/k", "repo tree"),
                 ("Enter", "expand/checkout"),
                 ("n", "new worktree"),
+                ("m", "land worktree"),
+                ("b", "branch home"),
                 ("s", "claude session"),
                 ("o", "open IDE"),
                 ("r", "remotes"),
@@ -307,6 +309,10 @@ fn shortcut_visible(state: &AppState, key: &str, label: &str) -> bool {
         ("F", _) => state.branch_actions_available(),
         ("p", _) => state.pull_available(),
         ("v", _) => diff_view_toggle_available(state),
+        // Handing a branch over needs a worktree to hand it over from.
+        ("m", "land worktree") | ("b", "branch home") => {
+            crate::panel::environments::selected_linked_worktree(state).is_some()
+        }
         // Distinguished from the Status pane's Esc, which means "back".
         ("Esc", "cancel") => state.llm_job_running(),
         _ => true,

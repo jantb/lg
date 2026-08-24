@@ -3172,3 +3172,208 @@ fn parse_porcelain_modified_untracked_renamed_and_both() {
     );
     assert!(!unstaged.contains(&"renamed_new.rs".to_string()));
 }
+
+/// Repository with one commit, a bare `origin` it tracks, and a linked
+/// worktree on `feat/x` carrying one commit of its own — the shape both
+/// handover flows start from.
+fn repo_with_landable_worktree() -> (TempDir, TempDir, TempDir, std::path::PathBuf) {
+    let repo = init_repo();
+    fs::write(repo.path().join("init.txt"), "init\n").unwrap();
+    stage_in(repo.path(), "init.txt");
+    commit_in(repo.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        repo.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(repo.path(), &["push", "-u", "origin", "main"]);
+
+    let elsewhere = tempfile::tempdir().expect("worktree tempdir");
+    let path = elsewhere.path().join("feat-x");
+    lg::git::with_repo(repo.path(), || {
+        lg::git::worktree_add(&path, "feat/x", "main")
+    })
+    .expect("add worktree");
+    fs::write(path.join("feature.txt"), "work\n").unwrap();
+    stage_in(&path, "feature.txt");
+    commit_in(&path, "add feature");
+
+    (repo, bare, elsewhere, path)
+}
+
+#[test]
+fn landing_a_worktree_merges_it_into_main_and_clears_the_branch_away() {
+    let (repo, bare, _elsewhere, path) = repo_with_landable_worktree();
+    git_ok(&path, &["push", "-u", "origin", "feat/x"]);
+
+    let report = lg::git::with_repo(repo.path(), || lg::git::worktree_land(&path, "feat/x"))
+        .expect("land worktree");
+
+    assert!(
+        repo.path().join("feature.txt").is_file(),
+        "main carries the work: {report}"
+    );
+    assert_eq!(head_branch(repo.path()), "main", "main stayed checked out");
+    assert!(!path.exists(), "the worktree directory is gone: {report}");
+    assert!(
+        !branch_list(repo.path()).contains("feat/x"),
+        "the local branch is gone: {report}"
+    );
+
+    let pushed = git(bare.path(), &["rev-parse", "refs/heads/main"]);
+    let local = git(repo.path(), &["rev-parse", "refs/heads/main"]);
+    assert_eq!(
+        String::from_utf8_lossy(&pushed.stdout).trim(),
+        String::from_utf8_lossy(&local.stdout).trim(),
+        "main was pushed: {report}"
+    );
+    assert!(
+        !git(bare.path(), &["rev-parse", "--verify", "refs/heads/feat/x"])
+            .status
+            .success(),
+        "the remote branch is gone: {report}"
+    );
+}
+
+#[test]
+fn landing_a_worktree_without_a_remote_still_merges_and_cleans_up() {
+    let repo = init_repo();
+    fs::write(repo.path().join("init.txt"), "init\n").unwrap();
+    stage_in(repo.path(), "init.txt");
+    commit_in(repo.path(), "initial commit");
+
+    let elsewhere = tempfile::tempdir().expect("worktree tempdir");
+    let path = elsewhere.path().join("feat-x");
+    lg::git::with_repo(repo.path(), || {
+        lg::git::worktree_add(&path, "feat/x", "main")
+    })
+    .expect("add worktree");
+    fs::write(path.join("feature.txt"), "work\n").unwrap();
+    stage_in(&path, "feature.txt");
+    commit_in(&path, "add feature");
+
+    let report = lg::git::with_repo(repo.path(), || lg::git::worktree_land(&path, "feat/x"))
+        .expect("land worktree");
+
+    assert!(repo.path().join("feature.txt").is_file(), "{report}");
+    assert!(!path.exists(), "{report}");
+    assert!(!branch_list(repo.path()).contains("feat/x"), "{report}");
+}
+
+#[test]
+fn a_conflicting_land_is_aborted_and_leaves_main_where_it_was() {
+    let (repo, _bare, _elsewhere, path) = repo_with_landable_worktree();
+    fs::write(path.join("shared.txt"), "from the branch\n").unwrap();
+    stage_in(&path, "shared.txt");
+    commit_in(&path, "branch writes shared");
+    fs::write(repo.path().join("shared.txt"), "from main\n").unwrap();
+    stage_in(repo.path(), "shared.txt");
+    commit_in(repo.path(), "main writes shared");
+    let before = git(repo.path(), &["rev-parse", "HEAD"]);
+
+    let err = lg::git::with_repo(repo.path(), || lg::git::worktree_land(&path, "feat/x"))
+        .expect_err("the merge conflicts");
+
+    assert!(
+        err.to_string().contains("by hand"),
+        "the error says what to do next: {err}"
+    );
+    let after = git(repo.path(), &["rev-parse", "HEAD"]);
+    assert_eq!(
+        String::from_utf8_lossy(&before.stdout).trim(),
+        String::from_utf8_lossy(&after.stdout).trim(),
+        "main is back where it started"
+    );
+    assert!(
+        !repo.path().join(".git/MERGE_HEAD").exists(),
+        "the merge was aborted, not left open"
+    );
+    assert!(path.exists(), "the worktree is untouched");
+    assert!(branch_list(repo.path()).contains("feat/x"));
+}
+
+#[test]
+fn a_handover_refuses_while_the_worktree_has_uncommitted_work() {
+    let (repo, _bare, _elsewhere, path) = repo_with_landable_worktree();
+    fs::write(path.join("scratch.txt"), "unsaved\n").unwrap();
+
+    for outcome in [
+        lg::git::with_repo(repo.path(), || lg::git::worktree_land(&path, "feat/x")),
+        lg::git::with_repo(repo.path(), || {
+            lg::git::worktree_bring_home(&path, "feat/x")
+        }),
+    ] {
+        let err = outcome.expect_err("uncommitted work stops the handover");
+        assert!(
+            err.to_string().contains("commit or discard"),
+            "the error names the way out: {err}"
+        );
+    }
+    assert!(path.exists(), "the worktree is untouched");
+    assert!(!repo.path().join("feature.txt").is_file(), "nothing merged");
+}
+
+#[test]
+fn a_handover_refuses_a_branch_the_worktree_has_since_left() {
+    let (repo, _bare, _elsewhere, path) = repo_with_landable_worktree();
+    git_ok(&path, &["checkout", "-b", "feat/y"]);
+
+    let err = lg::git::with_repo(repo.path(), || lg::git::worktree_land(&path, "feat/x"))
+        .expect_err("the confirmed branch is no longer there");
+
+    assert!(
+        err.to_string().contains("on feat/y now, not feat/x"),
+        "the error names both branches: {err}"
+    );
+    assert!(path.exists(), "the worktree is untouched");
+}
+
+#[test]
+fn bringing_a_branch_home_checks_it_out_in_the_main_worktree() {
+    let (repo, _bare, _elsewhere, path) = repo_with_landable_worktree();
+
+    let report = lg::git::with_repo(repo.path(), || {
+        lg::git::worktree_bring_home(&path, "feat/x")
+    })
+    .expect("bring the branch home");
+
+    assert!(!path.exists(), "the worktree directory is gone: {report}");
+    assert_eq!(
+        head_branch(repo.path()),
+        "feat/x",
+        "the branch moved to the main checkout: {report}"
+    );
+    assert!(
+        repo.path().join("feature.txt").is_file(),
+        "its work came along: {report}"
+    );
+    assert!(
+        branch_list(repo.path()).contains("feat/x"),
+        "the branch is kept, not merged away: {report}"
+    );
+    let listed = lg::git::with_repo(repo.path(), lg::git::worktrees).expect("worktrees");
+    assert_eq!(
+        listed.len(),
+        1,
+        "only the main checkout is left: {listed:#?}"
+    );
+}
+
+#[test]
+fn bringing_a_branch_home_refuses_while_the_main_checkout_is_dirty() {
+    let (repo, _bare, _elsewhere, path) = repo_with_landable_worktree();
+    fs::write(repo.path().join("init.txt"), "edited\n").unwrap();
+
+    let err = lg::git::with_repo(repo.path(), || {
+        lg::git::worktree_bring_home(&path, "feat/x")
+    })
+    .expect_err("a dirty main checkout has nowhere to put the branch");
+
+    assert!(
+        err.to_string().contains("commit or stash"),
+        "the error names the way out: {err}"
+    );
+    assert!(path.exists(), "the worktree is untouched");
+}

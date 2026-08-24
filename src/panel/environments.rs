@@ -9,7 +9,7 @@ use ratatui::{
 use crate::{
     app,
     config::BRANCH_MAIN,
-    git::{Branch, NestedRepo, ReleaseEnv, ReleaseTargetStatus, RemoteBranch, Worktree},
+    git::{Branch, NestedRepo, ReleaseEnv, ReleaseTargetStatus, RemoteBranch, Worktree, same_dir},
     state::{AppState, BranchView, SPINNER_FRAMES, clamp_index},
     ui,
 };
@@ -262,6 +262,8 @@ pub fn handle_key(
         KeyCode::Char('s') => start_session_for_selection(state, true),
         KeyCode::Char('S') => start_session_for_selection(state, false),
         KeyCode::Char('D') => remove_selected_worktree(state),
+        KeyCode::Char('m') => land_selected_worktree(state),
+        KeyCode::Char('b') => bring_selected_worktree_home(state),
         KeyCode::Char('r') if state.nested_repo_detail_path.is_some() => {
             state.nested_repo_branch_view = match state.nested_repo_branch_view {
                 BranchView::Local => BranchView::Remote,
@@ -432,6 +434,87 @@ fn remove_selected_worktree(state: &mut AppState) {
         detail,
         crate::state::PendingAction::RemoveWorktree { path, force: dirty },
     );
+}
+
+/// Merge the selected worktree's branch into main and clean up after it. The
+/// merge itself runs in whichever checkout holds main, so it works from here
+/// no matter which checkout lg is currently showing.
+fn land_selected_worktree(state: &mut AppState) {
+    let Some((path, branch)) = handover_candidate(state, "land") else {
+        return;
+    };
+    let remote = format!("{}/{branch}", crate::config::DEFAULT_PUSH_REMOTE);
+    state.confirm_action(
+        "Land Worktree",
+        format!("Merge {branch} into main and clean up?"),
+        format!(
+            "Merges {branch} into main, pushes main, removes {path}, \
+             then deletes {branch} and {remote}."
+        ),
+        crate::state::PendingAction::LandWorktree { path, branch },
+    );
+}
+
+/// Move the selected worktree's branch back to the main checkout, so the work
+/// carries on there. Nothing is merged and the branch stays as it is.
+fn bring_selected_worktree_home(state: &mut AppState) {
+    let Some((path, branch)) = handover_candidate(state, "bring home") else {
+        return;
+    };
+    state.confirm_action(
+        "Bring Branch Home",
+        format!("Move {branch} to the main checkout?"),
+        format!("Removes {path} and checks {branch} out in the main checkout. Nothing is merged."),
+        crate::state::PendingAction::BringWorktreeHome { path, branch },
+    );
+}
+
+/// The linked worktree the repository tree has selected, if the selection is
+/// one at all. The footer offers the handover keys only where they apply.
+pub(crate) fn selected_linked_worktree(state: &AppState) -> Option<&Worktree> {
+    let NestedRepoTreeRow::Worktree { wt_idx } = selected_tree_row(state)? else {
+        return None;
+    };
+    state
+        .worktrees
+        .get(wt_idx)
+        .filter(|worktree| !worktree.is_main)
+}
+
+/// The worktree and branch a handover would move, once the reasons it cannot
+/// happen are out of the way. `verb` names the action in those refusals.
+fn handover_candidate(state: &mut AppState, verb: &str) -> Option<(String, String)> {
+    if selected_linked_worktree(state).is_none() {
+        state.set_status(format!("select a worktree row to {verb} it"), false);
+        return None;
+    }
+    let worktree = selected_linked_worktree(state)?;
+    if worktree.is_missing() {
+        state.set_status(
+            format!("{} is missing on disk; prune it", worktree.label()),
+            true,
+        );
+        return None;
+    }
+    if worktree.locked.is_some() {
+        state.set_status(format!("{} is locked", worktree.label()), true);
+        return None;
+    }
+    if worktree.has_changes {
+        state.set_status(
+            format!(
+                "commit or discard the changes in {} first",
+                worktree.label()
+            ),
+            true,
+        );
+        return None;
+    }
+    let Some(branch) = worktree.branch.clone() else {
+        state.set_status("a detached worktree has no branch to hand over", true);
+        return None;
+    };
+    Some((worktree.path.clone(), branch))
 }
 
 /// Switch to the selected worktree. A worktree git still knows about but whose
@@ -740,18 +823,6 @@ fn worktree_anchor(state: &AppState) -> Option<usize> {
         .nested_repositories
         .iter()
         .position(|repo| same_dir(&root.join(&repo.path), std::path::Path::new(&main.path)))
-}
-
-/// Compare two directories, allowing for one side being reached through a
-/// symlink — a workspace of symlinked repositories is the normal case.
-fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
-    if a == b {
-        return true;
-    }
-    match (a.canonicalize(), b.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
 }
 
 fn selected_tree_row(state: &AppState) -> Option<NestedRepoTreeRow> {
