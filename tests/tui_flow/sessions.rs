@@ -128,10 +128,18 @@ fn the_release_key_hands_the_keyboard_back_to_lg() {
     shell_session(&mut app, "sleep 30", "/tmp/d");
     app.state.session_capture = true;
 
-    app.send_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL))
+    // Ctrl-] reaches crossterm as byte 0x1D, which it reports as Ctrl-5 unless
+    // a keyboard enhancement is negotiated. Both are the same keypress.
+    app.send_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::CONTROL))
         .unwrap();
     assert!(!app.state.session_capture);
     assert!(!app.state.session_input_active());
+
+    app.send_key(key(KeyCode::Char('i'))).unwrap();
+    assert!(app.state.session_capture);
+    app.send_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL))
+        .unwrap();
+    assert!(!app.state.session_capture);
 
     // With the keyboard back, `i` gives it to the session again.
     app.send_key(key(KeyCode::Char('i'))).unwrap();

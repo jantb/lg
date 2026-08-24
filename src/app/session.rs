@@ -12,8 +12,15 @@ use super::App;
 
 /// The key that hands the keyboard back to lg. Esc has to reach the program
 /// being run, so it cannot double as the way out.
+///
+/// A terminal sends Ctrl-] as the single byte 0x1D, and with no keyboard
+/// enhancement negotiated crossterm decodes 0x1C..=0x1F as Ctrl and a digit —
+/// so that byte arrives as Ctrl-5, not Ctrl-]. They are one keypress the
+/// terminal cannot tell apart, so both have to release; matching only on ']'
+/// left the keyboard stuck inside the session with no way out but the mouse.
 pub(super) fn is_release_key(key: &KeyEvent) -> bool {
-    key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char(']')
+    key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char(']') | KeyCode::Char('5'))
 }
 
 /// Send a key to the focused session. Returns whether it was consumed —
@@ -115,6 +122,33 @@ impl App {
             self.set_session_capture(false);
             self.state
                 .set_status("session ended \u{2014} x closes it", false);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_release_key_is_recognised_the_way_a_terminal_sends_it() {
+        // 0x1D - 0x1C + b'4' == b'5': what crossterm makes of Ctrl-]'s byte.
+        assert_eq!((0x1Du8 - 0x1C + b'4') as char, '5');
+        for code in [KeyCode::Char(']'), KeyCode::Char('5')] {
+            assert!(
+                is_release_key(&KeyEvent::new(code, KeyModifiers::CONTROL)),
+                "{code:?} is Ctrl-] as some terminal spells it"
+            );
+        }
+    }
+
+    #[test]
+    fn the_release_key_needs_control_held() {
+        for code in [KeyCode::Char(']'), KeyCode::Char('5')] {
+            assert!(
+                !is_release_key(&KeyEvent::new(code, KeyModifiers::NONE)),
+                "{code:?} on its own belongs to the program"
+            );
         }
     }
 }
