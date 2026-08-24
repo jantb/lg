@@ -1555,7 +1555,7 @@ fn b_on_a_worktree_row_offers_to_move_the_branch_home() {
         }
     );
     assert!(
-        confirm.detail.contains("Nothing is merged"),
+        confirm.detail.contains("nothing is merged"),
         "the prompt separates this from landing: {}",
         confirm.detail
     );

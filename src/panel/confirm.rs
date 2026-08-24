@@ -19,34 +19,46 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     };
 
     let w = area.width.clamp(48, 72).min(area.width);
-    let h = area.height.clamp(9, 11).min(area.height);
+    let inner = w.saturating_sub(2) as usize;
+
+    let mut text: Vec<Line> = Vec::new();
+    for line in super::wrap_words(&prompt.question, inner) {
+        text.push(Line::from(Span::styled(
+            line,
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )));
+    }
+    text.push(Line::from(""));
+    // The detail is what the action will actually do, and for a multi-step one
+    // the last step is usually the one worth reading. It wraps, and keeps the
+    // line breaks it was written with, rather than being cut off mid-path.
+    for paragraph in prompt.detail.lines() {
+        for line in super::wrap_words(paragraph, inner) {
+            text.push(Line::from(Span::styled(
+                line,
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+    }
+    text.push(Line::from(""));
+    text.push(Line::from(Span::styled(
+        "This cannot be undone.",
+        Style::default().fg(Color::DarkGray),
+    )));
+    text.push(Line::from(""));
+    text.push(Line::from(vec![
+        Span::styled("y", Style::default().fg(Color::Red)),
+        Span::raw(" confirm  "),
+        Span::styled("n/Esc", Style::default().fg(Color::Gray)),
+        Span::raw(" cancel"),
+    ]));
+
+    // Grown to fit the wrapped text, so a long detail is read rather than
+    // guessed at.
+    let h = (text.len() as u16 + 2).max(9).min(area.height);
     let modal = ui::centered(area, w, h);
 
     frame.render_widget(Clear, modal);
-    let text = vec![
-        Line::from(Span::styled(
-            prompt.question.clone(),
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            prompt.detail.clone(),
-            Style::default().fg(Color::Yellow),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "This cannot be undone.",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("y", Style::default().fg(Color::Red)),
-            Span::raw(" confirm  "),
-            Span::styled("n/Esc", Style::default().fg(Color::Gray)),
-            Span::raw(" cancel"),
-        ]),
-    ];
-
     frame.render_widget(
         Paragraph::new(text).block(ui::bordered(&prompt.title)),
         modal,

@@ -172,7 +172,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             } else {
                 Style::default().fg(Color::Gray)
             };
-            for (row, chunk) in wrap_words(choice, inner.saturating_sub(4))
+            for (row, chunk) in super::wrap_words(choice, inner.saturating_sub(4))
                 .into_iter()
                 .enumerate()
             {
@@ -188,7 +188,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             }
         }
     } else {
-        for chunk in wrap_words(hint_for(state), inner.saturating_sub(2)) {
+        for chunk in super::wrap_words(hint_for(state), inner.saturating_sub(2)) {
             lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(chunk, Style::default().fg(Color::DarkGray)),
@@ -253,38 +253,6 @@ fn key_hint_lines(keys: &[(&str, Color, &str)], width: u16) -> Vec<Line<'static>
     lines
 }
 
-/// Splits `text` into chunks no wider than `width`, breaking on spaces so a long
-/// derived message shape wraps instead of running off the modal's right edge.
-fn wrap_words(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(8);
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    for word in text.split_whitespace() {
-        if current.is_empty() {
-            current.push_str(word);
-        } else if current.chars().count() + 1 + word.chars().count() <= width {
-            current.push(' ');
-            current.push_str(word);
-        } else {
-            lines.push(std::mem::take(&mut current));
-            current.push_str(word);
-        }
-        // A single word longer than the row is cut at the width, not past it.
-        while current.chars().count() > width {
-            let head: String = current.chars().take(width).collect();
-            current = current.chars().skip(width).collect();
-            lines.push(head);
-        }
-    }
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    lines
-}
-
 const LABEL_WIDTH: usize = 14;
 
 /// One settings row, wrapped over as many lines as its value needs. A value the
@@ -309,7 +277,7 @@ fn field_lines(
     const TAG: &str = " (from history)";
     let indent = 2 + LABEL_WIDTH;
     let value_width = inner_width.saturating_sub(indent);
-    let chunks = wrap_words(value, value_width);
+    let chunks = super::wrap_words(value, value_width);
     let last = chunks.len() - 1;
     let mut lines = Vec::new();
     for (row, chunk) in chunks.into_iter().enumerate() {

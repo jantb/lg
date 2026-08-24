@@ -346,3 +346,43 @@ fn esc_in_review_chat_cancels_the_answer_before_closing() {
     panel::review_chat::handle_key(&mut state, key(KeyCode::Esc)).unwrap();
     assert_eq!(state.modal, Modal::None, "second Esc closes the chat");
 }
+
+/// The prompt is the last thing standing between a keypress and a deleted
+/// branch, so every step it names has to survive rendering — the modal does not
+/// scroll, and a step cut off is a step nobody agreed to.
+#[test]
+fn a_multi_step_confirm_shows_every_step_it_names() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 40)).unwrap();
+    app.state.workspace_root = Some("/workspace".into());
+    app.state.repo_root = Some("/workspace".into());
+    app.state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        worktree(
+            "/Users/someone/dev/very/deep/workspace.worktrees/feat-x",
+            "feat/x",
+        ),
+    ];
+    app.state.focus = Pane::Status;
+    app.state.nested_repo_tree_idx = 1;
+    app.send_key(key(KeyCode::Char('m'))).unwrap();
+
+    app.render().unwrap();
+    let screen = buffer_text(&app);
+
+    for step in [
+        "Merge feat/x into main and clean up?",
+        "merge feat/x into main",
+        "push main",
+        "remove /Users/someone/dev/very/deep/workspace.worktrees/feat-x",
+        "delete feat/x and origin/feat/x",
+    ] {
+        assert!(screen.contains(step), "the prompt hides {step:?}: {screen}");
+    }
+    assert!(
+        screen.contains("y confirm"),
+        "the keys are still reachable below the steps: {screen}"
+    );
+}

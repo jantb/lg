@@ -451,10 +451,13 @@ fn land_selected_worktree(state: &mut AppState) {
     state.confirm_action(
         "Land Worktree",
         format!("Merge {branch} into main and clean up?"),
-        format!(
-            "Merges {branch} into main, pushes main, removes {path}, \
-             then deletes {branch} and {remote}."
-        ),
+        [
+            format!("merge {branch} into main"),
+            "push main".to_string(),
+            format!("remove {path}"),
+            format!("delete {branch} and {remote}"),
+        ]
+        .join("\n"),
         crate::state::PendingAction::LandWorktree { path, branch },
     );
 }
@@ -468,7 +471,12 @@ fn bring_selected_worktree_home(state: &mut AppState) {
     state.confirm_action(
         "Bring Branch Home",
         format!("Move {branch} to the main checkout?"),
-        format!("Removes {path} and checks {branch} out in the main checkout. Nothing is merged."),
+        [
+            format!("remove {path}"),
+            format!("check {branch} out in the main checkout"),
+            "nothing is merged; the branch keeps living".to_string(),
+        ]
+        .join("\n"),
         crate::state::PendingAction::BringWorktreeHome { path, branch },
     );
 }
