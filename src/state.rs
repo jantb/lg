@@ -208,6 +208,10 @@ pub struct ConfirmPrompt {
     pub question: String,
     pub detail: String,
     pub action: PendingAction,
+    /// Whether the action can be walked back afterwards. A prompt that warns
+    /// about everything gets skimmed, and then the warning is missing from the
+    /// one that needed it.
+    pub reversible: bool,
 }
 
 /// Which checkout to point lg at. A worktree can live outside the workspace, so
@@ -846,6 +850,13 @@ impl AppState {
             || self.workflow_job.is_some()
     }
 
+    /// What the running operation is doing right now, for the ones that report
+    /// their steps. The label alone says a land is running; this says whether
+    /// it is still fetching or already deleting.
+    pub fn activity_detail(&self) -> Option<&str> {
+        self.operation_job.as_ref()?.step.as_deref()
+    }
+
     pub fn activity_label(&self) -> Option<&'static str> {
         if self.generation.is_some() {
             Some("generating")
@@ -1351,8 +1362,24 @@ impl AppState {
             question: question.into(),
             detail: detail.into(),
             action,
+            reversible: false,
         });
         self.modal = Modal::ConfirmDestructive;
+    }
+
+    /// Park an action behind the same y/n prompt, without the warning: this one
+    /// can be undone by hand afterwards.
+    pub fn confirm_reversible_action(
+        &mut self,
+        title: impl Into<String>,
+        question: impl Into<String>,
+        detail: impl Into<String>,
+        action: PendingAction,
+    ) {
+        self.confirm_action(title, question, detail, action);
+        if let Some(prompt) = self.confirm.as_mut() {
+            prompt.reversible = true;
+        }
     }
 
     /// Open the new-worktree form for the active repository. The path follows

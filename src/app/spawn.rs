@@ -409,17 +409,37 @@ pub(super) fn spawn_operation<F>(
 ) where
     F: FnOnce() -> Result<String> + Send + 'static,
 {
+    spawn_operation_with_progress(state, label, kind, move |_| work());
+}
+
+/// Same, for work that takes long enough to be worth narrating. The closure is
+/// handed a reporter to call as it moves between steps; a spinner that never
+/// says more than "landing worktree" for half a minute reads as a hang.
+pub(super) fn spawn_operation_with_progress<F>(
+    state: &mut AppState,
+    label: &'static str,
+    kind: OperationKind,
+    work: F,
+) where
+    F: FnOnce(&mut dyn FnMut(&str)) -> Result<String> + Send + 'static,
+{
     if let Some(reason) = operation_block_reason(state, kind) {
         state.set_status(blocked_operation_status(label, reason), true);
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
-    let handle = crate::git::spawn_pinned(move || match work() {
-        Ok(s) => {
-            let _ = tx.send(OperationMsg::Done(s));
-        }
-        Err(e) => {
-            let _ = tx.send(OperationMsg::Error(e.to_string()));
+    let handle = crate::git::spawn_pinned(move || {
+        let reports = tx.clone();
+        let mut progress = |step: &str| {
+            let _ = reports.send(OperationMsg::Progress(step.to_string()));
+        };
+        match work(&mut progress) {
+            Ok(s) => {
+                let _ = tx.send(OperationMsg::Done(s));
+            }
+            Err(e) => {
+                let _ = tx.send(OperationMsg::Error(e.to_string()));
+            }
         }
     });
     state.operation_job = Some(OperationJob {
@@ -428,6 +448,7 @@ pub(super) fn spawn_operation<F>(
         spinner: 0,
         label,
         kind,
+        step: None,
     });
     state.set_status(format!("{label}\u{2026}"), false);
 }

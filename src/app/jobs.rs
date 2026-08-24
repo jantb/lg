@@ -780,7 +780,24 @@ impl App {
     }
 
     pub(super) fn drain_operation_job(&mut self) -> Result<()> {
-        let Some((mut job, msg)) = take_finished(&mut self.state.operation_job) else {
+        // Progress reports arrive before the one message that ends the job, so
+        // this drains rather than taking whichever arrived last.
+        let mut finished = None;
+        for msg in drain_messages(&self.state.operation_job) {
+            match msg {
+                OperationMsg::Progress(step) => {
+                    if let Some(job) = self.state.operation_job.as_mut() {
+                        job.step = Some(step);
+                    }
+                }
+                ended => finished = Some(ended),
+            }
+        }
+        let Some(msg) = finished else {
+            tick_spinner(&mut self.state.operation_job);
+            return Ok(());
+        };
+        let Some(mut job) = self.state.operation_job.take() else {
             return Ok(());
         };
         let kind = job.kind;
@@ -814,6 +831,8 @@ impl App {
                     self.state.set_status(e, true);
                 }
             }
+            // Filtered out above; only Done and Error reach here.
+            OperationMsg::Progress(_) => {}
         }
         self.start_refresh(true);
         Ok(())

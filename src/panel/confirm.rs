@@ -40,11 +40,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             )));
         }
     }
-    text.push(Line::from(""));
-    text.push(Line::from(Span::styled(
-        "This cannot be undone.",
-        Style::default().fg(Color::DarkGray),
-    )));
+    if !prompt.reversible {
+        text.push(Line::from(""));
+        text.push(Line::from(Span::styled(
+            "This cannot be undone.",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
     text.push(Line::from(""));
     text.push(Line::from(vec![
         Span::styled("y", Style::default().fg(Color::Red)),

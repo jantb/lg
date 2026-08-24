@@ -28,6 +28,10 @@ pub struct Worktree {
     /// checkout whose directory is gone.
     pub prunable: Option<String>,
     pub has_changes: bool,
+    /// Commits on this worktree's branch that `main` does not have — what
+    /// landing it would move. `None` when the question does not apply: the main
+    /// branch itself, a detached head, or a repository without a main.
+    pub unmerged: Option<u32>,
 }
 
 impl Worktree {
@@ -61,8 +65,10 @@ impl Worktree {
 pub fn worktrees() -> Result<Vec<Worktree>> {
     let out = run(&["worktree", "list", "--porcelain"])?;
     let mut worktrees = parse_worktree_list(&String::from_utf8_lossy(&out.stdout));
+    let has_main = ref_exists(&format!("refs/heads/{BRANCH_MAIN}"));
     for worktree in &mut worktrees {
         worktree.has_changes = worktree_has_changes(Path::new(&worktree.path)).unwrap_or(false);
+        worktree.unmerged = has_main.then(|| unmerged_commits(worktree)).flatten();
     }
     Ok(worktrees)
 }
@@ -86,6 +92,24 @@ pub fn main_worktree() -> Result<PathBuf> {
         .find(|worktree| worktree.is_main)
         .map(|worktree| PathBuf::from(worktree.path))
         .context("no main worktree reported")
+}
+
+/// How far a worktree's branch has run ahead of `main`. Refs are shared by
+/// every checkout, so this is answered from whichever one git is pointed at.
+fn unmerged_commits(worktree: &Worktree) -> Option<u32> {
+    let branch = worktree.branch.as_deref()?;
+    if branch == BRANCH_MAIN {
+        return None;
+    }
+    let out = run(&[
+        "rev-list",
+        "--count",
+        &format!("refs/heads/{branch}"),
+        "--not",
+        &format!("refs/heads/{BRANCH_MAIN}"),
+    ])
+    .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
 fn worktree_has_changes(dir: &Path) -> Result<bool> {
@@ -149,6 +173,17 @@ pub fn worktree_remove(path: &Path, force: bool) -> Result<String> {
 /// strands work. Running it again after fixing what failed carries on from
 /// where it stopped.
 pub fn worktree_land(path: &Path, branch: &str) -> Result<String> {
+    worktree_land_with_progress(path, branch, &mut |_| {})
+}
+
+/// Same, reporting each step as it starts. A land fetches, merges, pushes and
+/// then deletes twice, which against a slow remote is long enough that a
+/// spinner saying only "landing worktree" reads as a hang.
+pub fn worktree_land_with_progress(
+    path: &Path,
+    branch: &str,
+    progress: &mut dyn FnMut(&str),
+) -> Result<String> {
     let worktrees = worktrees()?;
     let branch = movable_branch(&worktrees, path, branch)?;
     let host = main_branch_host(&worktrees)?;
@@ -156,6 +191,7 @@ pub fn worktree_land(path: &Path, branch: &str) -> Result<String> {
 
     // Being offline is no reason to refuse a local merge, so a failed fetch
     // only means `main` is compared against what the last fetch left behind.
+    progress("fetching");
     let _ = run_in_dir(&host, &["fetch", DEFAULT_PUSH_REMOTE, "--prune"]);
     let remote_main = format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
     if ref_exists_in(&host, &remote_main) && behind_count(&host, &remote_main)? > 0 {
@@ -165,6 +201,7 @@ pub fn worktree_land(path: &Path, branch: &str) -> Result<String> {
         steps.push(format!("updated {BRANCH_MAIN} from {remote_main}"));
     }
 
+    progress(&format!("merging {branch} into {BRANCH_MAIN}"));
     match run_combined_in_dir(&host, &["merge", "--no-edit", &branch]) {
         Ok(out) => steps.push(last_line(&out, &format!("merged {branch}"))),
         Err(err) => {
@@ -179,12 +216,14 @@ pub fn worktree_land(path: &Path, branch: &str) -> Result<String> {
     }
 
     if ref_exists_in(&host, &format!("{BRANCH_MAIN}@{{u}}")) {
+        progress(&format!("pushing {BRANCH_MAIN}"));
         run_combined_in_dir(&host, &["push", DEFAULT_PUSH_REMOTE, BRANCH_MAIN])
             .context("merged, but the push failed; push it and run this again to clean up")?;
         steps.push(format!("pushed {BRANCH_MAIN}"));
     }
 
     // The worktree has to let go of the branch before git will delete it.
+    progress("removing the worktree");
     worktree_remove(path, false)?;
     steps.push(format!("removed {}", path.display()));
     run_in_dir(&host, &["branch", "-d", &branch])?;
@@ -194,6 +233,7 @@ pub fn worktree_land(path: &Path, branch: &str) -> Result<String> {
         &host,
         &format!("refs/remotes/{DEFAULT_PUSH_REMOTE}/{branch}"),
     ) {
+        progress(&format!("deleting {DEFAULT_PUSH_REMOTE}/{branch}"));
         // The branch is merged and pushed by this point, so a remote that
         // refuses the delete is worth a note rather than failing the whole run.
         match run_combined_in_dir(&host, &["push", DEFAULT_PUSH_REMOTE, "--delete", &branch]) {
@@ -424,6 +464,7 @@ pub fn parse_worktree_list(porcelain: &str) -> Vec<Worktree> {
                     locked: None,
                     prunable: None,
                     has_changes: false,
+                    unmerged: None,
                 });
             }
             "HEAD" => {
@@ -608,6 +649,7 @@ prunable gitdir file points to non-existent location
             locked: None,
             prunable: None,
             has_changes: false,
+            unmerged: None,
         };
         assert!(!present.is_missing());
 

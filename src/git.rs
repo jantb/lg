@@ -51,8 +51,8 @@ pub use status::{
 };
 pub use worktree::{
     Worktree, common_git_dir, default_worktree_path, main_worktree, parse_worktree_list,
-    preferred_base_ref, same_dir, worktree_add, worktree_bring_home, worktree_land, worktree_prune,
-    worktree_remove, worktree_slug, worktrees,
+    preferred_base_ref, same_dir, worktree_add, worktree_bring_home, worktree_land,
+    worktree_land_with_progress, worktree_prune, worktree_remove, worktree_slug, worktrees,
 };
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]

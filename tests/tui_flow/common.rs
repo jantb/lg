@@ -47,6 +47,7 @@ pub fn worktree(path: &str, branch: &str) -> Worktree {
         locked: None,
         prunable: None,
         has_changes: false,
+        unmerged: Some(0),
     }
 }
 

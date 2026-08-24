@@ -3377,3 +3377,30 @@ fn bringing_a_branch_home_refuses_while_the_main_checkout_is_dirty() {
     );
     assert!(path.exists(), "the worktree is untouched");
 }
+
+#[test]
+fn a_worktree_reports_how_far_its_branch_has_run_ahead_of_main() {
+    let (repo, _bare, _elsewhere, path) = repo_with_landable_worktree();
+    fs::write(path.join("second.txt"), "more\n").unwrap();
+    stage_in(&path, "second.txt");
+    commit_in(&path, "second commit");
+
+    let listed = lg::git::with_repo(repo.path(), lg::git::worktrees).expect("worktrees");
+    let main = listed.iter().find(|w| w.is_main).expect("main worktree");
+    let feature = listed
+        .iter()
+        .find(|w| w.branch.as_deref() == Some("feat/x"))
+        .expect("feature worktree");
+
+    assert_eq!(feature.unmerged, Some(2), "two commits main does not have");
+    assert_eq!(main.unmerged, None, "main is not ahead of itself");
+
+    // Landing empties it, and the row should say so before the cleanup runs.
+    git_ok(repo.path(), &["merge", "--no-edit", "feat/x"]);
+    let listed = lg::git::with_repo(repo.path(), lg::git::worktrees).expect("worktrees");
+    let feature = listed
+        .iter()
+        .find(|w| w.branch.as_deref() == Some("feat/x"))
+        .expect("feature worktree");
+    assert_eq!(feature.unmerged, Some(0), "merged, so only cleanup is left");
+}

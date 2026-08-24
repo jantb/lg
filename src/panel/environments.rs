@@ -468,7 +468,7 @@ fn bring_selected_worktree_home(state: &mut AppState) {
     let Some((path, branch)) = handover_candidate(state, "bring home") else {
         return;
     };
-    state.confirm_action(
+    state.confirm_reversible_action(
         "Bring Branch Home",
         format!("Move {branch} to the main checkout?"),
         [
@@ -1056,7 +1056,12 @@ fn worktree_line(worktree: &Worktree, row_width: usize, active: bool) -> Line<'s
     }
 
     let note = worktree_note(worktree);
-    let used = 4 + if worktree.has_changes { 2 } else { 0 };
+    let landing = landing_marker(worktree);
+    let used = 4
+        + if worktree.has_changes { 2 } else { 0 }
+        + landing
+            .as_ref()
+            .map_or(0, |(text, _)| text.chars().count() + 1);
     let note_width = note.as_ref().map_or(0, |note| note.chars().count() + 1);
     let label = worktree.label();
     let label_width = row_width
@@ -1074,6 +1079,10 @@ fn worktree_line(worktree: &Worktree, row_width: usize, active: bool) -> Line<'s
             })
             .add_modifier(Modifier::BOLD),
     ));
+    if let Some((text, color)) = landing {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(text, Style::default().fg(color)));
+    }
     spans.push(Span::raw(" "));
     spans.push(Span::styled(
         truncate_chars(&worktree.dir_name(), row_width.saturating_sub(used + 1)),
@@ -1084,6 +1093,16 @@ fn worktree_line(worktree: &Worktree, row_width: usize, active: bool) -> Line<'s
         spans.push(Span::styled(note, Style::default().fg(Color::Red)));
     }
     Line::from(spans)
+}
+
+/// What landing this worktree would move, so `m` is legible before it is
+/// pressed: how many commits main is missing, or that it is already merged and
+/// only the cleanup is left.
+fn landing_marker(worktree: &Worktree) -> Option<(String, Color)> {
+    match worktree.unmerged? {
+        0 => Some(("merged".to_string(), Color::DarkGray)),
+        n => Some((format!("\u{2191}{n}"), Color::Cyan)),
+    }
 }
 
 /// Why a worktree cannot simply be entered, when that is the case.

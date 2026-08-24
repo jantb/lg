@@ -8,8 +8,8 @@ use std::{
 use crate::state::{AppState, Modal, OperationKind, PendingAction};
 
 use super::{
-    App, spawn_operation, spawn_pull, spawn_push, spawn_review_assist, spawn_review_chat,
-    spawn_review_pr_text, spawn_review_style_flags,
+    App, spawn_operation, spawn_operation_with_progress, spawn_pull, spawn_push,
+    spawn_review_assist, spawn_review_chat, spawn_review_pr_text, spawn_review_style_flags,
 };
 
 /// Saves the LLM choice and this checkout's settings together, so the settings
@@ -401,11 +401,13 @@ impl App {
             }
             PendingAction::LandWorktree { path, branch } => {
                 self.leave_checkout_before_removal(&path);
-                spawn_operation(
+                spawn_operation_with_progress(
                     &mut self.state,
                     "landing worktree",
                     OperationKind::WorkingTree,
-                    move || crate::git::worktree_land(Path::new(&path), &branch),
+                    move |progress| {
+                        crate::git::worktree_land_with_progress(Path::new(&path), &branch, progress)
+                    },
                 );
             }
             PendingAction::BringWorktreeHome { path, branch } => {

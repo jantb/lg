@@ -1615,3 +1615,130 @@ fn the_handover_keys_do_nothing_on_the_root_row() {
         );
     }
 }
+
+#[test]
+fn a_worktree_row_says_how_much_landing_it_would_move() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        Worktree {
+            unmerged: Some(3),
+            ..worktree("/workspace.worktrees/feat-x", "feat/x")
+        },
+        Worktree {
+            unmerged: Some(0),
+            ..worktree("/workspace.worktrees/done", "feat/done")
+        },
+        Worktree {
+            unmerged: None,
+            ..worktree("/workspace.worktrees/loose", "feat/loose")
+        },
+    ];
+
+    let backend = TestBackend::new(80, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| panel::environments::render(&state, frame.area(), frame, true))
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+        text.push('\n');
+    }
+
+    assert!(
+        text.contains("\u{2191}3"),
+        "three commits to land should show as a count: {text}"
+    );
+    assert!(
+        text.contains("merged"),
+        "a branch main already has should say so: {text}"
+    );
+    let loose = text
+        .lines()
+        .find(|line| line.contains("feat/loose"))
+        .expect("the row with no answer is still drawn");
+    assert!(
+        !loose.contains('\u{2191}') && !loose.contains("merged"),
+        "an unanswerable row claims nothing: {loose}"
+    );
+}
+
+#[test]
+fn only_the_irreversible_prompt_warns_that_it_cannot_be_undone() {
+    let screen_after = |code| {
+        let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+        app.state.workspace_root = Some("/workspace".into());
+        app.state.repo_root = Some("/workspace".into());
+        app.state.worktrees = vec![
+            Worktree {
+                is_main: true,
+                ..worktree("/workspace", "main")
+            },
+            worktree("/workspace.worktrees/feat-x", "feat/x"),
+        ];
+        app.state.focus = Pane::Status;
+        app.state.nested_repo_tree_idx = 1;
+        app.send_key(key(code)).unwrap();
+        app.render().unwrap();
+        buffer_text(&app)
+    };
+
+    let landing = screen_after(KeyCode::Char('m'));
+    assert!(
+        landing.contains("This cannot be undone."),
+        "landing deletes a branch off the remote: {landing}"
+    );
+
+    let coming_home = screen_after(KeyCode::Char('b'));
+    assert!(
+        !coming_home.contains("cannot be undone"),
+        "moving a branch between checkouts is not a one-way door: {coming_home}"
+    );
+    assert!(
+        coming_home.contains("y confirm"),
+        "it is still confirmed, just not warned about: {coming_home}"
+    );
+}
+
+#[test]
+fn a_running_operation_says_which_step_it_is_on() {
+    let mut state = AppState::new();
+    let (tx, rx) = mpsc::channel();
+    state.operation_job = Some(lg::state::OperationJob {
+        rx,
+        handle: None,
+        spinner: 0,
+        label: "landing worktree",
+        kind: lg::state::OperationKind::WorkingTree,
+        step: Some("pushing main".into()),
+    });
+    state.set_status("landing worktree\u{2026}", false);
+    drop(tx);
+
+    let backend = TestBackend::new(60, 6);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| panel::status::render(&state, frame.area(), frame, false))
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(
+        text.contains("landing worktree: pushing main"),
+        "the spinner should say what it is doing: {text}"
+    );
+}

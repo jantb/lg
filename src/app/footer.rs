@@ -6,129 +6,26 @@ use ratatui::{
     widgets::Paragraph,
 };
 
+use crate::panel::keys::{self, Section};
 use crate::state::{AppState, DiffSource, Modal, Pane};
 
-fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, &'static str)]) {
-    match state.focus {
-        Pane::Status => (
-            1,
-            "Status",
-            &[
-                ("j/k", "repo tree"),
-                ("Enter", "expand/checkout"),
-                ("n", "new worktree"),
-                ("m", "land worktree"),
-                ("b", "branch home"),
-                ("s", "claude session"),
-                ("o", "open IDE"),
-                ("r", "remotes"),
-                ("Esc", "back"),
-                ("f", "fetch"),
-                ("a", "author"),
-                ("L", "model"),
-                ("p", "pull"),
-                ("F2", "workspace"),
-                ("?", "help"),
-                ("q", "quit"),
-            ],
-        ),
-        Pane::Files => (
-            2,
-            "Files",
-            &[
-                ("space", "stage"),
-                ("u", "unstage"),
-                ("A/U", "all"),
-                ("r", "rollback"),
-                ("i", "ignore"),
-                ("d", "delete"),
-                ("o", "open IDE"),
-                ("c", "commit"),
-                ("a", "author"),
-                ("L", "model"),
-                ("p", "pull"),
-                ("P", "push"),
-                ("f", "fetch"),
-                ("?", "help"),
-            ],
-        ),
-        Pane::Branches => (
-            3,
-            "Branches",
-            &[
-                ("Enter", "checkout"),
-                ("r", "remotes"),
-                ("m", "pull/merge main"),
-                ("M", "sync all"),
-                ("d", "drop local"),
-                ("D", "delete"),
-                ("o", "open IDE"),
-                ("u", "set upstream"),
-                ("p", "pull"),
-                ("a", "author"),
-                ("L", "model"),
-                ("f", "fetch"),
-                ("F", "actions"),
-                ("?", "help"),
-            ],
-        ),
-        Pane::Commits => (
-            4,
-            "Commits",
-            &[
-                ("j/k", "navigate"),
-                ("Enter", "focus diff"),
-                ("p", "pull"),
-                ("a", "author"),
-                ("L", "model"),
-                ("f", "fetch"),
-                ("?", "help"),
-            ],
-        ),
+/// The section this pane's footer is built from. Review mode and the diff share
+/// a pane, so which of them is showing decides between their two sections.
+fn footer_section(state: &AppState) -> Option<&'static Section> {
+    let title = match state.focus {
+        Pane::Status => "Repositories",
+        Pane::Files => "Files",
+        Pane::Branches => "Branches",
+        Pane::Commits => "Commits",
         Pane::Main => {
             if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
-                (
-                    0,
-                    "Review",
-                    &[
-                        ("j/k", "move"),
-                        ("Enter/s", "source"),
-                        ("space", "expand"),
-                        ("d", "drill"),
-                        ("n/N", "notes"),
-                        ("o", "open IDE"),
-                        ("l", "explain"),
-                        ("C", "chat"),
-                        ("g/G", "top/bot"),
-                        ("v", "view"),
-                        ("f", "flag"),
-                        ("a", "author"),
-                        ("L", "model"),
-                        ("R", "refresh"),
-                        ("Esc", "cancel"),
-                        ("?", "help"),
-                    ],
-                )
+                "Review mode"
             } else {
-                (
-                    0,
-                    "Diff",
-                    &[
-                        ("R", "review mode"),
-                        ("v", "view"),
-                        ("o", "open IDE"),
-                        ("j/k", "scroll"),
-                        ("g/G", "top/bot"),
-                        ("p", "pull"),
-                        ("a", "author"),
-                        ("L", "model"),
-                        ("f", "fetch"),
-                        ("?", "help"),
-                    ],
-                )
+                "Diff pane"
             }
         }
-    }
+    };
+    keys::section(title)
 }
 
 pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -281,7 +178,15 @@ fn session_spans(state: &AppState) -> Vec<Span<'static>> {
 }
 
 fn default_spans(state: &AppState) -> Vec<Span<'static>> {
-    let (n, name, pairs) = footer_spec(state);
+    let Some(section) = footer_section(state) else {
+        return Vec::new();
+    };
+    let (n, name) = section.footer_meta.unwrap_or((0, section.title));
+    let pairs: Vec<(&'static str, &'static str)> = section
+        .footer_order
+        .iter()
+        .filter_map(|key| keys::footer_entry(section, key))
+        .collect();
     let mut spans = vec![Span::styled(
         format!("[{n}] {name} "),
         Style::default()
@@ -379,10 +284,10 @@ fn status_text(state: &AppState) -> (String, Color) {
         (Some(status), Some(label)) if !status.is_error => {
             let spinner = crate::state::SPINNER_FRAMES
                 [state.animation_tick % crate::state::SPINNER_FRAMES.len()];
-            let text = if status.text.starts_with(label) {
-                format!("{spinner} {}", status.text)
-            } else {
-                format!("{spinner} {label}: {}", status.text)
+            let text = match state.activity_detail() {
+                Some(step) => format!("{spinner} {label}: {step}"),
+                None if status.text.starts_with(label) => format!("{spinner} {}", status.text),
+                None => format!("{spinner} {label}: {}", status.text),
             };
             (text, Color::Cyan)
         }

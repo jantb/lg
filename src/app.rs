@@ -56,7 +56,7 @@ use review_assist::{
 };
 use spawn::{
     git_job_running, load_diff_text, open_author_modal, open_model_modal, selected_commit_ref,
-    selected_diff_source, spawn_operation, spawn_pull, spawn_push,
+    selected_diff_source, spawn_operation, spawn_operation_with_progress, spawn_pull, spawn_push,
 };
 
 pub struct App {

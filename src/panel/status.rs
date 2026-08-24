@@ -37,7 +37,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
-            Span::styled(label, Style::default().fg(Color::Cyan)),
+            Span::styled(
+                match state.activity_detail() {
+                    Some(step) => format!("{label}: {step}"),
+                    None => label.to_string(),
+                },
+                Style::default().fg(Color::Cyan),
+            ),
         ])
     } else {
         match state.ahead_behind {

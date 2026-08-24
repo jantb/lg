@@ -138,6 +138,9 @@ pub struct CheckoutJob {
 
 #[derive(Debug)]
 pub enum OperationMsg {
+    /// What the operation is doing now. A multi-step one reports several of
+    /// these before the message that ends it.
+    Progress(String),
     Done(String),
     Error(String),
 }
@@ -162,6 +165,8 @@ pub struct OperationJob {
     pub spinner: usize,
     pub label: &'static str,
     pub kind: OperationKind,
+    /// The step last reported, for operations that say more than their label.
+    pub step: Option<String>,
 }
 
 #[derive(Debug)]

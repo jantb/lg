@@ -10,6 +10,7 @@ use ratatui::{
 
 use crate::{
     config::BORDER_COLOR,
+    panel::keys::SECTIONS,
     state::{AppState, Modal, Pane},
     ui::centered,
 };
@@ -23,197 +24,6 @@ const KEY_COLUMN: usize = 16;
 /// key column in front of it. Only the table check needs it spelled out.
 #[cfg(test)]
 const DESC_WIDTH: usize = OVERLAY_WIDTH as usize - 2 - 2 - KEY_COLUMN;
-
-struct Section {
-    title: &'static str,
-    pane: Option<Pane>,
-    bindings: &'static [(&'static str, &'static str)],
-}
-
-const SECTIONS: &[Section] = &[
-    Section {
-        title: "Global",
-        pane: None,
-        bindings: &[
-            ("?", "Toggle help"),
-            ("Esc", "Dismiss an error, or cancel running LLM work"),
-            ("Ctrl-C / q", "Quit"),
-            ("1/2/3/4", "Focus Status/Files/Branches/Commits"),
-            ("0", "Focus Diff"),
-            ("Tab/Shift-Tab", "Cycle focus"),
-            ("a", "Edit author settings"),
-            ("c", "Open commit modal"),
-            ("f", "Fetch remote updates"),
-            ("L", "Model and per-checkout settings"),
-            ("p", "Pull current branch when behind"),
-            ("P", "Push current branch"),
-            ("R", "Enter review mode against main"),
-            ("Ctrl-n / Ctrl-p", "Next or previous session (Ctrl-] first)"),
-            ("click pane", "Focus pane"),
-            ("drag divider", "Resize columns or rows"),
-        ],
-    },
-    Section {
-        title: "Files",
-        pane: Some(Pane::Files),
-        bindings: &[
-            ("j/k", "Move up/down"),
-            ("space / y", "Stage selected"),
-            ("u", "Unstage selected"),
-            ("A / U", "Stage all / unstage all"),
-            ("r", "Roll back file or folder (confirms)"),
-            ("i", "Add selected file or folder to .gitignore"),
-            ("d", "Delete file or folder (confirms first)"),
-            ("o", "Open file or project in IntelliJ/RustRover"),
-            ("Enter", "Refresh diff"),
-        ],
-    },
-    Section {
-        title: "Repositories",
-        pane: Some(Pane::Status),
-        bindings: &[
-            ("j/k", "Move up/down"),
-            ("Enter", "Select repo, worktree, session, or branch"),
-            ("n", "New worktree for a branch"),
-            ("s", "Start or show a sandboxed session here"),
-            ("S", "Session without the sandbox, in auto mode"),
-            ("D", "Remove worktree, or prune a missing one"),
-            ("m", "Merge worktree into main, then clean up"),
-            ("b", "Move its branch to the main checkout"),
-            ("o", "Open selected repository in editor"),
-            ("r", "Toggle local/remote branches"),
-            ("Esc/Backspace", "Collapse expanded repository"),
-        ],
-    },
-    Section {
-        title: "Branches",
-        pane: Some(Pane::Branches),
-        bindings: &[
-            ("j/k", "Move up/down"),
-            ("Enter", "Checkout branch or remote tracking branch"),
-            ("o", "Open repository in editor"),
-            ("u", "Set upstream to matching remote branch"),
-            ("r", "Toggle local and remote branch views"),
-            ("m", "Pull main or merge origin/main"),
-            ("M", "Merge main into all branches and push"),
-            ("d", "Delete local branch with no upstream"),
-            ("D", "Delete branch: local/remote/force options"),
-            ("F", "Branch action menu"),
-        ],
-    },
-    Section {
-        title: "Commits",
-        pane: Some(Pane::Commits),
-        bindings: &[
-            ("j/k", "Move up/down (auto-diff)"),
-            ("Enter", "Focus diff pane"),
-        ],
-    },
-    Section {
-        title: "Session",
-        pane: None,
-        bindings: &[
-            ("i / Enter", "Give the keyboard to the session"),
-            ("Ctrl-]", "Take the keyboard back; claude runs on"),
-            ("x", "Close the session \u{2014} Ctrl-] first"),
-            ("Backspace", "Back to the diff; session keeps running"),
-        ],
-    },
-    Section {
-        title: "Review mode",
-        pane: Some(Pane::Main),
-        bindings: &[
-            ("j/k", "Move selected review item"),
-            ("Enter / s", "Toggle source for selected item"),
-            ("space", "Expand or collapse selected item"),
-            ("d", "Drill into first child item"),
-            ("n / N", "Jump next or previous inline review note"),
-            ("o", "Open selected source file in IDE"),
-            ("f", "Run style flag pass"),
-            ("l", "Explain or generate PR text"),
-            ("y", "Copy LLM/PR text"),
-            ("C", "Chat with LLM about the full review"),
-            ("g / G", "Top / bottom"),
-            ("v", "Toggle unified or side-by-side diff"),
-            ("R", "Rebuild assisted review"),
-            ("Esc", "Cancel running LLM work"),
-        ],
-    },
-    Section {
-        title: "Diff pane",
-        pane: Some(Pane::Main),
-        bindings: &[
-            ("j/k", "Scroll line"),
-            ("Ctrl-d/Ctrl-u", "Scroll half page"),
-            ("g / G", "Top / bottom"),
-            ("R", "Enter review mode against main"),
-            ("v", "Toggle unified or side-by-side diff"),
-            ("o", "Open current source file in IDE"),
-            ("wheel", "Scroll 3 lines (mouse)"),
-            ("Shift+drag", "Select text (terminal native)"),
-        ],
-    },
-    Section {
-        title: "Review chat",
-        pane: None,
-        bindings: &[
-            ("Enter", "Send prompt"),
-            ("Esc", "Cancel the running answer, then close chat"),
-            ("Ctrl+A / Ctrl+E", "Start / end of prompt"),
-            ("Up / Down", "Scroll conversation"),
-        ],
-    },
-    Section {
-        title: "Commit modal",
-        pane: None,
-        bindings: &[
-            ("Ctrl+S", "Commit"),
-            ("Ctrl+P", "Commit and push"),
-            ("Enter", "New line"),
-            ("Ctrl+R", "Regenerate message"),
-            ("Ctrl+U", "Clear message"),
-            ("Backspace", "Delete char"),
-            ("Esc", "Cancel"),
-        ],
-    },
-    Section {
-        title: "Author settings",
-        pane: None,
-        bindings: &[
-            ("Tab / arrows", "Switch field"),
-            ("Enter", "Save subtree rule"),
-            ("Ctrl+L", "Save repo-local author"),
-            ("Ctrl+U", "Clear subtree rule"),
-            ("Ctrl+X", "Clear repo-local author"),
-            ("Esc", "Cancel"),
-        ],
-    },
-    Section {
-        title: "Settings",
-        pane: None,
-        bindings: &[
-            ("Tab", "Next field"),
-            ("Up / Down", "Pick known model or move field"),
-            ("Enter", "Save model and per-checkout settings"),
-            ("Ctrl+E", "Edit the commit-message prompt"),
-            ("Ctrl+U", "Reset saved settings to defaults"),
-            ("Esc", "Cancel"),
-        ],
-    },
-    Section {
-        title: "Confirm prompts",
-        pane: None,
-        bindings: &[
-            ("y", "Confirm the destructive action"),
-            ("n / Esc", "Cancel"),
-        ],
-    },
-    Section {
-        title: "Push modal",
-        pane: None,
-        bindings: &[("Enter", "Push to origin"), ("Esc", "Cancel")],
-    },
-];
 
 fn pane_name(p: Pane) -> &'static str {
     match p {
@@ -285,13 +95,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             format!("{prefix}{}", section.title),
             heading_style,
         )));
-        for (key, desc) in section.bindings {
+        for binding in section.bindings {
             lines.push(Line::from(vec![
                 Span::styled(
-                    format!("  {key:<KEY_COLUMN$}"),
+                    format!("  {:<KEY_COLUMN$}", binding.key),
                     Style::default().fg(Color::Yellow),
                 ),
-                Span::raw(*desc),
+                Span::raw(binding.help),
             ]));
         }
         if i + 1 < SECTIONS.len() {
@@ -365,7 +175,8 @@ mod tests {
     #[test]
     fn every_binding_fits_the_overlay() {
         for section in SECTIONS {
-            for (key, desc) in section.bindings {
+            for binding in section.bindings {
+                let (key, desc) = (binding.key, binding.help);
                 assert!(
                     key.chars().count() < KEY_COLUMN,
                     "{key:?} leaves no gap before its description"
