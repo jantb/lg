@@ -1,13 +1,13 @@
 pub use lg::{
     git::{
         AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry, NestedRepo,
-        ReleaseBranches, ReleaseTargetStatus, RemoteBranch, ReviewNode,
+        ReleaseBranches, ReleaseTargetStatus, RemoteBranch, ReviewNode, Worktree,
     },
     panel,
     state::{
         AppState, AuthorField, BranchView, DiffViewMode, FlowAction, Modal, Pane, PendingAction,
-        ReleaseStatusJob, ReviewChatRole, ReviewStyleFinding, ReviewStyleSeverity, TreeKind,
-        WorkflowJob, build_tree_rows,
+        ReleaseStatusJob, RepoTarget, ReviewChatRole, ReviewStyleFinding, ReviewStyleSeverity,
+        TreeKind, WorkflowJob, build_tree_rows,
     },
 };
 pub use ratatui::{
@@ -18,6 +18,37 @@ pub use ratatui::{
     style::{Color, Modifier},
 };
 pub use std::{collections::HashSet, sync::mpsc};
+
+/// The whole help overlay as text, scrolled from top to bottom, so asserting
+/// that a binding is documented does not depend on where it happens to sit.
+pub fn help_text(app: &mut lg::app::HeadlessApp<TestBackend>, area: Rect) -> String {
+    app.state.help_offset = 0;
+    let mut text = String::new();
+    loop {
+        app.render().expect("render help");
+        text.push_str(&buffer_text(app));
+        let before = app.state.help_offset;
+        panel::help::scroll(&mut app.state, area, true, 1);
+        if app.state.help_offset == before {
+            return text;
+        }
+    }
+}
+
+/// A linked worktree with nothing unusual about it. Callers override the odd
+/// field they care about: `Worktree { is_main: true, ..worktree(path, branch) }`.
+pub fn worktree(path: &str, branch: &str) -> Worktree {
+    Worktree {
+        path: path.into(),
+        branch: Some(branch.into()),
+        head: "0123456789abcdef0123456789abcdef01234567".into(),
+        is_main: false,
+        bare: false,
+        locked: None,
+        prunable: None,
+        has_changes: false,
+    }
+}
 
 pub fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)

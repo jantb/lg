@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use super::{file_diff, repo_root, run};
+use super::{file_diff, git_command, repo_root, run};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorConfig {
@@ -265,8 +265,7 @@ pub fn set_subtree_author(path: &str, name: &str, email: &str) -> Result<()> {
 pub fn clear_subtree_author(path: &str) -> Result<()> {
     let path = normalize_author_path(path)?;
     let key = subtree_include_key(&path);
-    Command::new("git")
-        .args(["config", "--global", "--unset-all", &key])
+    git_command(&["config", "--global", "--unset-all", &key])
         .output()
         .with_context(|| format!("failed to spawn git config --global --unset-all {key}"))?;
     if let Ok(config_path) = subtree_author_config_path(&path) {
@@ -357,16 +356,14 @@ fn set_optional_local_config(key: &str, value: &str) -> Result<()> {
 }
 
 fn unset_optional_local_config(key: &str) -> Result<()> {
-    Command::new("git")
-        .args(["config", "--local", "--unset-all", key])
+    git_command(&["config", "--local", "--unset-all", key])
         .output()
         .with_context(|| format!("failed to spawn git config --local --unset-all {key}"))?;
     Ok(())
 }
 
 fn config_value(args: &[&str]) -> Result<Option<String>> {
-    let out = Command::new("git")
-        .args(args)
+    let out = git_command(args)
         .output()
         .with_context(|| format!("failed to spawn git {}", args.join(" ")))?;
     if !out.status.success() {

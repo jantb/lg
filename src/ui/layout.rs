@@ -120,6 +120,38 @@ pub fn split_layout_with_sizes(
     }
 }
 
+/// Workspace mode: one tall list of checkouts and sessions on the left, the
+/// focused session on the right. The unused rects collapse to nothing so code
+/// that walks every pane keeps working.
+pub fn split_workspace_layout(area: Rect, requested_left_width: Option<u16>) -> LayoutRects {
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(3),
+        Constraint::Length(1),
+    ])
+    .split(area);
+    let left_width = left_column_width(rows[1].width, requested_left_width);
+    let cols =
+        Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).split(rows[1]);
+    let empty = Rect {
+        x: cols[0].x,
+        y: cols[0].y,
+        width: 0,
+        height: 0,
+    };
+
+    LayoutRects {
+        header: rows[0],
+        status: empty,
+        environments: cols[0],
+        files: empty,
+        branches: empty,
+        commits: empty,
+        main: cols[1],
+        footer: rows[2],
+    }
+}
+
 pub fn clamp_left_column_width(total_width: u16, requested_width: u16) -> u16 {
     let min_main_width = 40.min(total_width / 2);
     requested_width

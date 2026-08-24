@@ -1,11 +1,10 @@
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::process::Command;
 
 use crate::config::{BRANCH_MAIN, DEFAULT_PUSH_REMOTE};
 
-use super::{head_branch, preferred_commit_ref, run};
+use super::{git_command, head_branch, preferred_commit_ref, run};
 
 mod source;
 
@@ -257,7 +256,7 @@ fn untracked_file_diff(path: &str) -> Result<String> {
 }
 
 fn untracked_no_index_diff(path: &str, args: &[&str]) -> Result<String> {
-    let out = Command::new("git").args(args).output()?;
+    let out = git_command(args).output()?;
     if out.status.success() || out.status.code() == Some(1) {
         let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
         normalize_no_index_path(&mut text, path);

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use notify::RecommendedWatcher;
-use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use ratatui::crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::{
     event::{self, Event},
     execute,
@@ -19,7 +19,8 @@ use std::{
 
 use crate::{
     config::{
-        BACKGROUND_FETCH_INTERVAL_SECS, ERROR_MSG_LIFETIME_SECS, STATUS_MSG_LIFETIME_SECS, TICK_MS,
+        BACKGROUND_FETCH_INTERVAL_SECS, ERROR_MSG_LIFETIME_SECS, SESSION_TICK_MS,
+        STATUS_MSG_LIFETIME_SECS, TICK_MS,
     },
     state::AppState,
 };
@@ -33,6 +34,7 @@ mod mouse;
 mod refresh;
 mod render;
 mod review_assist;
+mod session;
 mod spawn;
 mod workflow;
 
@@ -46,7 +48,7 @@ pub(crate) use workflow::{
 
 use refresh::{
     build_refresh_snapshot, prime_branches, prime_files, should_refresh_for_fs_event,
-    watch_current_dir,
+    startup_repo_root, watch_repo,
 };
 use review_assist::{
     spawn_assisted_review, spawn_review_assist, spawn_review_chat, spawn_review_pr_text,
@@ -61,8 +63,12 @@ pub struct App {
     pub state: AppState,
     pub terminal: Terminal<CrosstermBackend<Stdout>>,
     file_events: Receiver<notify::Result<notify::Event>>,
-    _file_watcher: RecommendedWatcher,
+    /// Held so the watcher keeps running; replaced when lg switches checkout.
+    file_watcher: RecommendedWatcher,
     last_fetch_started: Instant,
+    /// Whether the terminal is currently reporting pastes as pastes, which lg
+    /// only wants while a session holds the keyboard.
+    bracketed_paste: bool,
 }
 
 pub struct HeadlessApp<B: Backend> {
@@ -92,7 +98,7 @@ fn drain_pending_terminal_events() {
 }
 
 fn restore_terminal<W: Write>(output: &mut W) {
-    let _ = execute!(output, DisableMouseCapture);
+    let _ = execute!(output, DisableMouseCapture, DisableBracketedPaste);
     let _ = output.flush();
     drain_pending_terminal_events();
     let _ = execute!(output, LeaveAlternateScreen);
@@ -123,7 +129,13 @@ impl App {
             anyhow::bail!("not a git repository (or any parent up to mount point)");
         }
 
-        let (_file_watcher, file_events) = watch_current_dir()?;
+        // Pin git to the repository root up front: every command then runs
+        // against a directory lg chose, not whichever one the process happens
+        // to sit in, which is what lets checkouts be switched underneath.
+        let repo_root = startup_repo_root()?;
+        crate::git::set_active_repo(&repo_root);
+
+        let (file_watcher, file_events) = watch_repo(&repo_root)?;
 
         let prev_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
@@ -143,9 +155,10 @@ impl App {
             state: AppState::new(),
             terminal,
             file_events,
-            _file_watcher,
+            file_watcher,
             last_fetch_started: Instant::now()
                 - Duration::from_secs(BACKGROUND_FETCH_INTERVAL_SECS),
+            bracketed_paste: false,
         };
         prime_branches(&mut app.state);
         prime_files(&mut app.state);
@@ -160,6 +173,7 @@ impl App {
                 break;
             }
 
+            self.sync_bracketed_paste();
             self.render()?;
 
             self.drain_generation();
@@ -178,11 +192,14 @@ impl App {
             self.drain_diff_job();
             self.drain_review_job();
             self.drain_workflow_job()?;
+            self.drain_sessions();
             self.state.reap_deferred_threads();
             self.drain_file_events()?;
             self.maybe_start_periodic_fetch();
 
-            let poll_ms = if self.state.generation.is_some()
+            let poll_ms = if self.state.session_view().is_some() {
+                SESSION_TICK_MS
+            } else if self.state.generation.is_some()
                 || self.state.push_job.is_some()
                 || self.state.checkout_job.is_some()
                 || self.state.operation_job.is_some()
@@ -206,6 +223,9 @@ impl App {
                 match event::read()? {
                     Event::Key(k) => self.handle_key(k)?,
                     Event::Mouse(m) => self.handle_mouse(m)?,
+                    Event::Paste(text) => {
+                        session::forward_paste(&mut self.state, &text);
+                    }
                     Event::Resize(_, _) => {}
                     _ => {}
                 }

@@ -485,6 +485,360 @@ fn repository_panel_tree_shows_nested_branch_lists() {
 }
 
 #[test]
+fn repository_panel_lists_worktrees_without_repeating_the_active_checkout() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        Worktree {
+            has_changes: true,
+            ..worktree("/workspace.worktrees/feat-x", "feat/x")
+        },
+    ];
+
+    let backend = TestBackend::new(80, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::environments::render(&state, frame.area(), frame, true);
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(text.contains("feat/x"), "missing worktree branch: {text}");
+    assert!(
+        text.contains("feat-x"),
+        "missing worktree directory: {text}"
+    );
+    assert_eq!(
+        text.matches('\u{2387}').count(),
+        1,
+        "the active checkout already has the root row; it must not repeat as a worktree: {text}"
+    );
+}
+
+#[test]
+fn enter_on_a_worktree_row_switches_to_that_checkout() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        worktree("/workspace.worktrees/feat-x", "feat/x"),
+    ];
+
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    panel::environments::handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::SwitchRepository {
+            target: RepoTarget::Path("/workspace.worktrees/feat-x".into())
+        })
+    );
+}
+
+#[test]
+fn a_worktree_git_lost_track_of_cannot_be_entered() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        Worktree {
+            prunable: Some("gitdir file points to non-existent location".into()),
+            ..worktree("/workspace.worktrees/gone", "gone")
+        },
+    ];
+
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    panel::environments::handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+
+    assert_eq!(state.pending_action, None);
+    let status = state.status.as_ref().expect("status");
+    assert!(status.is_error, "expected an error status: {status:?}");
+    assert!(
+        status.text.contains("missing"),
+        "expected the status to explain why: {}",
+        status.text
+    );
+}
+
+#[test]
+fn worktrees_hang_under_the_repository_they_belong_to() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.nested_repositories = vec![NestedRepo {
+        path: "services/api".into(),
+        branch: Some("main".into()),
+        detached_at: None,
+        has_changes: false,
+    }];
+    state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace/services/api", "main")
+        },
+        worktree("/workspace/services/api.worktrees/feat-x", "feat/x"),
+    ];
+
+    // Root, then the nested repository, then its worktree.
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    panel::environments::handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::SwitchRepository {
+            target: RepoTarget::Path("/workspace/services/api.worktrees/feat-x".into())
+        })
+    );
+}
+
+#[test]
+fn the_worktree_form_derives_a_path_from_the_branch_until_it_is_edited() {
+    let mut state = AppState::new();
+    state.repo_root = Some("/workspace".into());
+    state.worktrees = vec![Worktree {
+        is_main: true,
+        ..worktree("/dev/lg", "main")
+    }];
+    state.open_worktree_modal("origin/main".into());
+
+    assert_eq!(state.modal, Modal::Worktree);
+    for c in "feat/parser".chars() {
+        panel::worktree::handle_key(&mut state, key(KeyCode::Char(c))).unwrap();
+    }
+    assert_eq!(state.worktree_path_input, "/dev/lg.worktrees/feat-parser");
+
+    // Editing the path takes it over; the branch no longer drives it.
+    panel::worktree::handle_key(&mut state, key(KeyCode::Tab)).unwrap();
+    panel::worktree::handle_key(&mut state, key(KeyCode::Tab)).unwrap();
+    panel::worktree::handle_key(&mut state, key(KeyCode::Char('2'))).unwrap();
+    panel::worktree::handle_key(&mut state, key(KeyCode::Char('x'))).unwrap();
+    assert_eq!(state.worktree_path_input, "/dev/lg.worktrees/feat-parser2x");
+
+    panel::worktree::handle_key(&mut state, key(KeyCode::BackTab)).unwrap();
+    panel::worktree::handle_key(&mut state, key(KeyCode::BackTab)).unwrap();
+    panel::worktree::handle_key(&mut state, key(KeyCode::Backspace)).unwrap();
+    assert_eq!(state.worktree_branch_input, "feat/parse");
+    assert_eq!(
+        state.worktree_path_input, "/dev/lg.worktrees/feat-parser2x",
+        "an edited path must not snap back to the branch name"
+    );
+}
+
+#[test]
+fn the_worktree_form_creates_the_worktree_on_enter() {
+    let mut state = AppState::new();
+    state.repo_root = Some("/dev/lg".into());
+    state.worktrees = vec![Worktree {
+        is_main: true,
+        ..worktree("/dev/lg", "main")
+    }];
+    state.open_worktree_modal("origin/main".into());
+    for c in "feat/x".chars() {
+        panel::worktree::handle_key(&mut state, key(KeyCode::Char(c))).unwrap();
+    }
+    panel::worktree::handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+
+    assert_eq!(state.modal, Modal::None);
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::CreateWorktree {
+            path: "/dev/lg.worktrees/feat-x".into(),
+            branch: "feat/x".into(),
+            base: "origin/main".into(),
+        })
+    );
+}
+
+#[test]
+fn the_worktree_form_refuses_to_create_without_a_branch() {
+    let mut state = AppState::new();
+    state.repo_root = Some("/dev/lg".into());
+    state.open_worktree_modal("origin/main".into());
+    panel::worktree::handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+
+    assert_eq!(state.modal, Modal::Worktree, "the form stays open");
+    assert_eq!(state.pending_action, None);
+    assert!(state.status.as_ref().expect("status").is_error);
+}
+
+#[test]
+fn removing_a_dirty_worktree_confirms_and_forces() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        Worktree {
+            has_changes: true,
+            ..worktree("/workspace.worktrees/feat-x", "feat/x")
+        },
+    ];
+
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('D'))).unwrap();
+
+    assert_eq!(state.modal, Modal::ConfirmDestructive);
+    let prompt = state.confirm.as_ref().expect("confirm prompt");
+    assert!(
+        prompt.detail.contains("uncommitted"),
+        "the prompt must say what is lost: {}",
+        prompt.detail
+    );
+    assert_eq!(
+        prompt.action,
+        PendingAction::RemoveWorktree {
+            path: "/workspace.worktrees/feat-x".into(),
+            force: true,
+        }
+    );
+}
+
+#[test]
+fn the_active_and_main_checkouts_are_not_removable() {
+    // lg is showing a worktree whose main checkout sits outside the workspace,
+    // so the main checkout gets a row of its own rather than being the root.
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/elsewhere/repo.worktrees/feat-x".into());
+    state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/elsewhere/repo", "main")
+        },
+        worktree("/elsewhere/repo.worktrees/feat-x", "feat/x"),
+    ];
+
+    // Row 1 is the main worktree, which git will not remove.
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('D'))).unwrap();
+    assert_eq!(state.modal, Modal::None);
+    assert!(
+        state
+            .status
+            .as_ref()
+            .expect("status")
+            .text
+            .contains("main checkout")
+    );
+
+    // Row 2 is the checkout lg is showing, which cannot go either.
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('D'))).unwrap();
+    assert_eq!(state.modal, Modal::None);
+    assert!(
+        state
+            .status
+            .as_ref()
+            .expect("status")
+            .text
+            .contains("switch to another checkout")
+    );
+}
+
+#[test]
+fn removing_a_missing_worktree_prunes_instead() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        Worktree {
+            prunable: Some("gitdir file points to non-existent location".into()),
+            ..worktree("/workspace.worktrees/gone", "gone")
+        },
+    ];
+
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('D'))).unwrap();
+
+    assert_eq!(state.pending_action, Some(PendingAction::PruneWorktrees));
+}
+
+#[test]
+fn s_asks_for_a_sandboxed_session_in_the_selected_worktree() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        worktree("/workspace.worktrees/feat-x", "feat/x"),
+    ];
+
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('s'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::StartSession {
+            path: "/workspace.worktrees/feat-x".into(),
+            label: "feat/x".into(),
+            sandboxed: true,
+        })
+    );
+
+    // Shift asks for the same session without the sandbox.
+    state.pending_action = None;
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('S'))).unwrap();
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::StartSession {
+            path: "/workspace.worktrees/feat-x".into(),
+            label: "feat/x".into(),
+            sandboxed: false,
+        })
+    );
+}
+
+#[test]
+fn a_session_on_the_root_row_uses_the_checked_out_branch_as_its_name() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.branch = Some("main".into());
+
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('s'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::StartSession {
+            path: "/workspace".into(),
+            label: "main".into(),
+            sandboxed: true,
+        })
+    );
+}
+
+#[test]
 fn clicking_repository_row_switches_repository() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.workspace_root = Some("/workspace".into());
@@ -512,7 +866,7 @@ fn clicking_repository_row_switches_repository() {
     assert_eq!(
         app.state.pending_action,
         Some(PendingAction::SwitchRepository {
-            path: Some("services/api".into())
+            target: RepoTarget::Nested("services/api".into())
         })
     );
 }

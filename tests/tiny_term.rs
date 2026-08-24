@@ -24,6 +24,7 @@ fn renders_every_modal_at_small_sizes() {
         Modal::Flow,
         Modal::Conflict,
         Modal::DeleteBranch,
+        Modal::Worktree,
         Modal::ConfirmDestructive,
     ];
     for (w, h) in [(4u16, 3u16), (20, 6), (40, 10)] {
@@ -33,5 +34,17 @@ fn renders_every_modal_at_small_sizes() {
             app.render()
                 .unwrap_or_else(|e| panic!("{w}x{h} {modal:?}: render failed: {e}"));
         }
+    }
+}
+
+#[test]
+fn renders_workspace_mode_at_small_sizes() {
+    use lg::state::AppMode;
+    for (w, h) in [(1u16, 1u16), (4, 3), (20, 6), (40, 10), (80, 3)] {
+        let mut app = HeadlessApp::new(TestBackend::new(w, h))
+            .unwrap_or_else(|e| panic!("{w}x{h}: construct failed: {e}"));
+        app.state.mode = AppMode::Workspace;
+        app.render()
+            .unwrap_or_else(|e| panic!("{w}x{h}: workspace render failed: {e}"));
     }
 }

@@ -9,7 +9,7 @@ use crate::{
     config::{BRANCH_MAIN, BRANCH_TEST, DEV_BRANCH_NAMES, is_deploy_branch_name},
     git::{
         AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry, NestedRepo,
-        ReleaseBranches, ReleaseEnv, RemoteBranch,
+        ReleaseBranches, ReleaseEnv, RemoteBranch, Worktree,
     },
 };
 
@@ -40,6 +40,15 @@ pub struct SafetyRefCleanup {
     pub branch: String,
 }
 
+/// Which shape lg is in. Git mode is the full git view; workspace mode trades
+/// the git panes for one tall list of checkouts and their sessions, with the
+/// focused session filling the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppMode {
+    Git,
+    Workspace,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Status,
@@ -61,8 +70,32 @@ pub enum Modal {
     Flow,
     Conflict,
     DeleteBranch,
+    Worktree,
     ReviewChat,
     ConfirmDestructive,
+}
+
+/// Rows of the new-worktree form. The path derives from the branch until the
+/// user edits it, so it is a field rather than a preview line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorktreeField {
+    Branch,
+    Base,
+    Path,
+}
+
+impl WorktreeField {
+    pub const ALL: [Self; 3] = [Self::Branch, Self::Base, Self::Path];
+
+    pub fn next(self, forward: bool) -> Self {
+        let idx = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        let len = Self::ALL.len();
+        Self::ALL[if forward {
+            (idx + 1) % len
+        } else {
+            (idx + len - 1) % len
+        }]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +179,14 @@ pub enum DiffSource {
     Review,
 }
 
+/// What the main pane is showing. The diff sources say *what* is diffed; this
+/// says whether a diff is what is on screen at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MainView {
+    Diff,
+    Session(crate::session::SessionId),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffViewMode {
     Unified,
@@ -166,6 +207,43 @@ pub struct ConfirmPrompt {
     pub question: String,
     pub detail: String,
     pub action: PendingAction,
+}
+
+/// Which checkout to point lg at. A worktree can live outside the workspace, so
+/// it carries an absolute path rather than a workspace-relative one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepoTarget {
+    /// The checkout lg was started in.
+    Workspace,
+    /// A repository found inside the workspace, by workspace-relative path.
+    Nested(String),
+    /// Any checkout, by absolute path.
+    Path(std::path::PathBuf),
+}
+
+impl RepoTarget {
+    /// Resolve to a directory. `workspace_root` is where relative targets are
+    /// anchored; it is the workspace root, or the current repository when lg
+    /// has not established one yet.
+    pub fn resolve(&self, workspace_root: &Path) -> std::path::PathBuf {
+        match self {
+            Self::Workspace => workspace_root.to_path_buf(),
+            Self::Nested(path) => workspace_root.join(path),
+            Self::Path(path) => path.clone(),
+        }
+    }
+
+    /// How to name this target in a status message.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Workspace => "workspace".to_string(),
+            Self::Nested(path) => path.clone(),
+            Self::Path(path) => path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string_lossy().into_owned()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,8 +317,24 @@ pub enum PendingAction {
         upstream: String,
     },
     SwitchRepository {
-        path: Option<String>,
+        target: RepoTarget,
     },
+    CreateWorktree {
+        path: String,
+        branch: String,
+        base: String,
+    },
+    RemoveWorktree {
+        path: String,
+        force: bool,
+    },
+    PruneWorktrees,
+    StartSession {
+        path: String,
+        label: String,
+        sandboxed: bool,
+    },
+    Quit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,6 +359,7 @@ pub struct ReviewChatMessage {
 }
 
 pub struct AppState {
+    pub mode: AppMode,
     pub focus: Pane,
     pub modal: Modal,
     pub prev_focus: Pane,
@@ -274,6 +369,9 @@ pub struct AppState {
     pub branches: Vec<Branch>,
     pub remote_branches: Vec<RemoteBranch>,
     pub nested_repositories: Vec<NestedRepo>,
+    /// Every checkout of the active repository, main worktree first. Empty
+    /// until the first refresh finishes.
+    pub worktrees: Vec<Worktree>,
     pub nested_repo_branches: Vec<Branch>,
     pub nested_repo_remote_branches: Vec<RemoteBranch>,
     pub commits: Vec<Commit>,
@@ -300,6 +398,12 @@ pub struct AppState {
     pub commits_scroll_offset: usize,
 
     pub collapsed_dirs: HashSet<String>,
+
+    /// Terminal sessions lg is keeping alive, one per checkout.
+    pub sessions: crate::session::Sessions,
+    pub main_view: MainView,
+    /// Keys go to the focused session instead of to lg.
+    pub session_capture: bool,
 
     pub diff_text: String,
     pub diff_offset: u16,
@@ -413,6 +517,16 @@ pub struct AppState {
     pub delete_branch_remote_available: bool,
     pub delete_branch_force: bool,
     pub delete_branch_field: DeleteBranchField,
+    pub worktree_branch_input: String,
+    pub worktree_base_input: String,
+    pub worktree_path_input: String,
+    pub worktree_field: WorktreeField,
+    /// Stops the path following the branch name once the user has typed a path
+    /// of their own.
+    pub worktree_path_edited: bool,
+    /// Main worktree the new one will be created next to, captured when the
+    /// form opens so the path preview does not have to re-derive it.
+    pub worktree_repo_dir: String,
     pub branch_view: BranchView,
     pub nested_repo_branch_view: BranchView,
 }
@@ -485,6 +599,7 @@ impl FlowAction {
 impl AppState {
     pub fn new() -> Self {
         Self {
+            mode: AppMode::Git,
             focus: Pane::Status,
             modal: Modal::None,
             prev_focus: Pane::Status,
@@ -494,6 +609,7 @@ impl AppState {
             branches: Vec::new(),
             remote_branches: Vec::new(),
             nested_repositories: Vec::new(),
+            worktrees: Vec::new(),
             nested_repo_branches: Vec::new(),
             nested_repo_remote_branches: Vec::new(),
             commits: Vec::new(),
@@ -520,6 +636,10 @@ impl AppState {
             commits_scroll_offset: 0,
 
             collapsed_dirs: HashSet::new(),
+
+            sessions: crate::session::Sessions::new(),
+            main_view: MainView::Diff,
+            session_capture: false,
 
             diff_text: String::new(),
             diff_offset: 0,
@@ -627,6 +747,12 @@ impl AppState {
             delete_branch_remote_available: false,
             delete_branch_force: false,
             delete_branch_field: DeleteBranchField::Local,
+            worktree_branch_input: String::new(),
+            worktree_base_input: String::new(),
+            worktree_path_input: String::new(),
+            worktree_field: WorktreeField::Branch,
+            worktree_path_edited: false,
+            worktree_repo_dir: String::new(),
             branch_view: BranchView::Local,
             nested_repo_branch_view: BranchView::Local,
         }
@@ -706,6 +832,11 @@ impl AppState {
                 Some(PendingAction::DeleteBranch { .. }) => Some("deleting branch"),
                 Some(PendingAction::SetBranchUpstream { .. }) => Some("setting upstream"),
                 Some(PendingAction::SwitchRepository { .. }) => Some("switching repo"),
+                Some(PendingAction::CreateWorktree { .. }) => Some("adding worktree"),
+                Some(PendingAction::RemoveWorktree { .. }) => Some("removing worktree"),
+                Some(PendingAction::PruneWorktrees) => Some("pruning worktrees"),
+                Some(PendingAction::StartSession { .. }) => Some("starting session"),
+                Some(PendingAction::Quit) => Some("quitting"),
                 None => None,
             }
         }
@@ -755,13 +886,6 @@ impl AppState {
                 .visible_remote_branches()
                 .nth(self.remote_branches_idx)
                 .map(|branch| branch.name.as_str()),
-        }
-    }
-
-    pub fn nested_repo_branch_list_len(&self) -> usize {
-        match self.nested_repo_branch_view {
-            BranchView::Local => self.nested_repo_branches.len(),
-            BranchView::Remote => self.visible_nested_repo_remote_branches().count(),
         }
     }
 
@@ -853,9 +977,105 @@ impl AppState {
         }
     }
 
+    /// The session the main pane is showing, if it is showing one and that
+    /// session still exists.
+    pub fn session_view(&self) -> Option<crate::session::SessionId> {
+        match self.main_view {
+            MainView::Session(id) if self.sessions.get(id).is_some() => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Whether keys typed right now belong to a session rather than to lg.
+    pub fn session_input_active(&self) -> bool {
+        self.modal == Modal::None
+            && self.focus == Pane::Main
+            && self.session_capture
+            && self.session_view().is_some()
+    }
+
+    /// Quit, or ask first: leaving stops every running session, and that is not
+    /// something to discover afterwards.
+    pub fn request_quit(&mut self) {
+        let running: Vec<&str> = self
+            .sessions
+            .iter()
+            .filter(|session| session.is_running())
+            .map(|session| session.label.as_str())
+            .collect();
+        if running.is_empty() {
+            self.should_quit = true;
+            return;
+        }
+        let count = running.len();
+        let plural = if count == 1 { "session" } else { "sessions" };
+        let detail = running.join(", ");
+        self.confirm_action(
+            "Quit lg",
+            format!("Quit and stop {count} running {plural}?"),
+            detail,
+            PendingAction::Quit,
+        );
+    }
+
+    /// Swap between the git view and the session view. Workspace mode starts on
+    /// the tree so the checkouts are there to pick from, and going back to git
+    /// mode leaves the sessions running.
+    pub fn toggle_mode(&mut self) {
+        self.mode = match self.mode {
+            AppMode::Git => AppMode::Workspace,
+            AppMode::Workspace => AppMode::Git,
+        };
+        if self.mode == AppMode::Workspace {
+            // A session already on screen keeps the focus; otherwise the tree
+            // is the only thing worth pointing at.
+            if self.session_view().is_none() {
+                self.focus = Pane::Status;
+            }
+        } else if self.focus != Pane::Main {
+            self.focus = Pane::Status;
+        }
+    }
+
+    /// Point the focus at a pane, unless that pane is not on screen in this
+    /// mode — the numbered focus keys then do nothing rather than focusing
+    /// something invisible.
+    pub fn focus_pane(&mut self, pane: Pane) -> bool {
+        if !self.git_panes_visible() && !matches!(pane, Pane::Status | Pane::Main) {
+            return false;
+        }
+        self.focus = pane;
+        true
+    }
+
+    /// Whether the git panes are on screen at all.
+    pub fn git_panes_visible(&self) -> bool {
+        self.mode == AppMode::Git
+    }
+
+    /// Show a session in the main pane, and hand it the keyboard.
+    pub fn show_session(&mut self, id: crate::session::SessionId) {
+        self.sessions.focus(id);
+        self.main_view = MainView::Session(id);
+        self.focus = Pane::Main;
+    }
+
+    /// Go back to the diff, releasing the keyboard.
+    pub fn show_diff(&mut self) {
+        self.main_view = MainView::Diff;
+        self.session_capture = false;
+    }
+
+    /// Whether this repository is checked out in more than one place, which is
+    /// what gives the repository tree worktree rows to show.
+    pub fn has_linked_worktrees(&self) -> bool {
+        self.worktrees.len() > 1
+    }
+
     pub fn environments_visible(&self) -> bool {
         self.flow_available()
             || !self.nested_repositories.is_empty()
+            || self.has_linked_worktrees()
             || match (self.workspace_root.as_deref(), self.repo_root.as_deref()) {
                 (Some(workspace), Some(repo)) => Path::new(workspace) != Path::new(repo),
                 _ => false,
@@ -1034,6 +1254,40 @@ impl AppState {
         self.modal = Modal::ConfirmDestructive;
     }
 
+    /// Open the new-worktree form for the active repository. The path follows
+    /// the branch name until the user edits it.
+    pub fn open_worktree_modal(&mut self, base_ref: String) {
+        self.worktree_repo_dir = self
+            .worktrees
+            .iter()
+            .find(|worktree| worktree.is_main)
+            .map(|worktree| worktree.path.clone())
+            .or_else(|| self.repo_root.clone())
+            .unwrap_or_default();
+        self.worktree_branch_input.clear();
+        self.worktree_base_input = base_ref;
+        self.worktree_path_edited = false;
+        self.worktree_field = WorktreeField::Branch;
+        self.sync_worktree_path();
+        self.modal = Modal::Worktree;
+    }
+
+    /// Re-derive the path from the branch name, unless the user took it over.
+    pub fn sync_worktree_path(&mut self) {
+        if self.worktree_path_edited {
+            return;
+        }
+        let repo_dir = Path::new(&self.worktree_repo_dir);
+        let branch = self.worktree_branch_input.trim();
+        self.worktree_path_input = if branch.is_empty() {
+            String::new()
+        } else {
+            crate::git::default_worktree_path(repo_dir, branch)
+                .to_string_lossy()
+                .into_owned()
+        };
+    }
+
     pub fn open_commit_modal(&mut self) {
         self.modal = Modal::Commit;
         self.commit_cursor = self.commit_message.chars().count();
@@ -1084,17 +1338,11 @@ impl AppState {
             &mut self.nested_repositories_idx,
             self.nested_repositories.len(),
         );
-        let expanded_rows = if self.nested_repo_detail_path.is_some() {
-            self.nested_repo_branch_list_len()
-        } else {
-            0
-        };
-        clamp_idx(
-            &mut self.nested_repo_tree_idx,
-            1usize
-                .saturating_add(self.nested_repositories.len())
-                .saturating_add(expanded_rows),
-        );
+        // The repository tree is built by the panel, and now carries worktree
+        // rows as well as repositories and their branches; ask it for the count
+        // rather than keeping a second copy of the arithmetic here.
+        let tree_len = crate::panel::environments::nested_repo_tree_len(self);
+        clamp_idx(&mut self.nested_repo_tree_idx, tree_len);
         clamp_idx(
             &mut self.nested_repo_branches_idx,
             self.nested_repo_branches.len(),

@@ -523,8 +523,7 @@ fn branches_shortcuts_show_remote_toggle() {
 
     app.state.prev_focus = Pane::Branches;
     app.state.modal = Modal::Help;
-    app.render().unwrap();
-    let help = buffer_text(&app);
+    let help = help_text(&mut app, Rect::new(0, 0, 160, 48));
     assert!(
         help.contains("Toggle local and remote branch views"),
         "help should show remote toggle: {help}"

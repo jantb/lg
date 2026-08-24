@@ -48,7 +48,7 @@ fn project_line(state: &AppState) -> Line<'static> {
         ));
     };
     let name = project_name(root);
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             name,
             Style::default()
@@ -57,7 +57,35 @@ fn project_line(state: &AppState) -> Line<'static> {
         ),
         Span::styled("  ", Style::default().fg(Color::DarkGray)),
         Span::styled(root.to_string(), Style::default().fg(Color::DarkGray)),
-    ])
+    ];
+    if let Some(badge) = session_badge(state) {
+        spans.push(Span::styled("  ", Style::default()));
+        spans.push(badge);
+    }
+    Line::from(spans)
+}
+
+/// Sessions running elsewhere are easy to forget about, so the header says how
+/// many there are and how many have said something unread.
+fn session_badge(state: &AppState) -> Option<Span<'static>> {
+    let count = state.sessions.len();
+    if count == 0 {
+        return None;
+    }
+    let plural = if count == 1 { "session" } else { "sessions" };
+    let waiting = state.sessions.attention_count();
+    let (text, color) = if waiting > 0 {
+        (
+            format!("{count} {plural} \u{b7} {waiting} waiting"),
+            Color::Yellow,
+        )
+    } else {
+        (format!("{count} {plural}"), Color::Green)
+    };
+    Some(Span::styled(
+        text,
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    ))
 }
 
 fn branch_text(state: &AppState) -> String {

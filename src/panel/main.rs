@@ -16,6 +16,16 @@ mod review;
 mod source;
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
+    if let Some(id) = state.session_view() {
+        render_session(state, id, area, frame, focused);
+        return;
+    }
+
+    if !state.git_panes_visible() {
+        render_no_session(state, area, frame, focused);
+        return;
+    }
+
     if state.modal == Modal::ReviewChat {
         let chunks = review_chat_layout(state, area);
         render_main_content(state, chunks[0], frame, false);
@@ -24,6 +34,59 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     }
 
     render_main_content(state, area, frame, focused);
+}
+
+/// Workspace mode with nothing running yet: say how to start something rather
+/// than showing an empty frame.
+fn render_no_session(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
+    let block = ui::framed_with_activity(0, "Session", focused, None, state.animation_tick, false);
+    let lines = vec![
+        ratatui::text::Line::from(""),
+        ratatui::text::Line::from("  No session yet."),
+        ratatui::text::Line::from(""),
+        ratatui::text::Line::from("  Pick a checkout on the left and press s to start claude"),
+        ratatui::text::Line::from("  in it, or n to make a worktree first."),
+        ratatui::text::Line::from(""),
+        ratatui::text::Line::from("  F2 goes back to the git view; sessions keep running."),
+    ];
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Draw a running session: the program's own screen, framed like any pane, with
+/// the real cursor placed on it while it holds the keyboard.
+fn render_session(
+    state: &AppState,
+    id: crate::session::SessionId,
+    area: Rect,
+    frame: &mut Frame,
+    focused: bool,
+) {
+    let Some(session) = state.sessions.get(id) else {
+        return;
+    };
+    let title = session.title();
+    let block = ui::framed_with_activity(
+        0,
+        &title,
+        focused,
+        None,
+        state.animation_tick,
+        session.attention,
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    crate::term::render_screen(session.screen(), inner, frame.buffer_mut());
+
+    if focused && state.session_capture {
+        if let Some((row, col)) = session.cursor_position() {
+            if row < inner.height && col < inner.width {
+                frame.set_cursor_position((inner.x + col, inner.y + row));
+            }
+        }
+    }
 }
 
 fn render_main_content(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
@@ -73,6 +136,38 @@ fn render_main_content(state: &AppState, area: Rect, frame: &mut Frame, focused:
     frame.render_widget(para, area);
 }
 
+/// Keys for a session that is on screen but not holding the keyboard. The set
+/// is deliberately tiny: take the keyboard back, close the session, or leave.
+fn session_handle_key(
+    state: &mut AppState,
+    id: crate::session::SessionId,
+    key: KeyEvent,
+) -> Result<()> {
+    match key.code {
+        KeyCode::Char('i') | KeyCode::Enter => {
+            if state
+                .sessions
+                .get(id)
+                .is_some_and(|session| session.is_running())
+            {
+                state.session_capture = true;
+            } else {
+                state.set_status("this session has ended", true);
+            }
+        }
+        KeyCode::Char('x') => {
+            state.sessions.close(id);
+            match state.sessions.focused() {
+                Some(next) => state.show_session(next),
+                None => state.show_diff(),
+            }
+        }
+        KeyCode::Backspace => state.show_diff(),
+        _ => {}
+    }
+    Ok(())
+}
+
 pub fn review_chat_layout(state: &AppState, area: Rect) -> std::rc::Rc<[Rect]> {
     let min_review_height = 6.min(area.height);
     let desired_chat_height = state
@@ -85,6 +180,10 @@ pub fn review_chat_layout(state: &AppState, area: Rect) -> std::rc::Rc<[Rect]> {
         .split(area)
 }
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
+    if let Some(id) = state.session_view() {
+        return session_handle_key(state, id, key);
+    }
+
     if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
         return review::handle_key(state, key);
     }

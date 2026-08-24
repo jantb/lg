@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::{
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -134,7 +134,7 @@ impl App {
                 spawn_operation(
                     &mut self.state,
                     "syncing branches",
-                    OperationKind::Worktree,
+                    OperationKind::WorkingTree,
                     crate::git::flow_merge_main_into_all_local_branches,
                 );
             }
@@ -346,7 +346,7 @@ impl App {
                 spawn_operation(
                     &mut self.state,
                     "deleting branch",
-                    OperationKind::Worktree,
+                    OperationKind::WorkingTree,
                     move || {
                         let mut report = Vec::new();
                         if delete_local {
@@ -365,11 +365,100 @@ impl App {
                 spawn_operation(
                     &mut self.state,
                     "setting upstream",
-                    OperationKind::Worktree,
+                    OperationKind::WorkingTree,
                     move || crate::git::set_branch_upstream(&branch, &upstream),
                 );
             }
-            PendingAction::SwitchRepository { path } => {
+            PendingAction::CreateWorktree { path, branch, base } => {
+                spawn_operation(
+                    &mut self.state,
+                    "adding worktree",
+                    OperationKind::WorkingTree,
+                    move || {
+                        let out = crate::git::worktree_add(Path::new(&path), &branch, &base)?;
+                        Ok(out
+                            .lines()
+                            .rfind(|line| !line.trim().is_empty())
+                            .unwrap_or("worktree added")
+                            .to_owned())
+                    },
+                );
+            }
+            PendingAction::RemoveWorktree { path, force } => {
+                spawn_operation(
+                    &mut self.state,
+                    "removing worktree",
+                    OperationKind::WorkingTree,
+                    move || {
+                        let out = crate::git::worktree_remove(Path::new(&path), force)?;
+                        Ok(out
+                            .lines()
+                            .rfind(|line| !line.trim().is_empty())
+                            .unwrap_or("worktree removed")
+                            .to_owned())
+                    },
+                );
+            }
+            PendingAction::PruneWorktrees => {
+                spawn_operation(
+                    &mut self.state,
+                    "pruning worktrees",
+                    OperationKind::WorkingTree,
+                    || {
+                        let out = crate::git::worktree_prune()?;
+                        Ok(out
+                            .lines()
+                            .rfind(|line| !line.trim().is_empty())
+                            .unwrap_or("pruned")
+                            .to_owned())
+                    },
+                );
+            }
+            PendingAction::Quit => self.state.should_quit = true,
+            PendingAction::StartSession {
+                path,
+                label,
+                sandboxed,
+            } => {
+                let cwd = PathBuf::from(&path);
+                if sandboxed {
+                    match prepare_sandbox(&cwd) {
+                        Ok(Some(note)) => self.state.set_status(note, false),
+                        Ok(None) => {}
+                        Err(err) => {
+                            // Running unsandboxed instead would quietly hand the
+                            // session the whole filesystem, which is the
+                            // opposite of what was asked for.
+                            self.state
+                                .set_status(format!("sandbox setup failed: {err:#}"), true);
+                            return;
+                        }
+                    }
+                }
+                let spec = crate::session::SessionSpec {
+                    label,
+                    cwd,
+                    sandboxed,
+                };
+                let size = crate::session::default_size();
+                match self.state.sessions.start(spec, size) {
+                    Ok(id) => {
+                        self.state.show_session(id);
+                        self.set_session_capture(true);
+                        let label = self
+                            .state
+                            .sessions
+                            .get(id)
+                            .map(|session| session.label.clone())
+                            .unwrap_or_default();
+                        self.state.set_status(format!("session for {label}"), false);
+                    }
+                    Err(err) => self
+                        .state
+                        .set_status(format!("start session failed: {err}"), true),
+                }
+            }
+            PendingAction::SwitchRepository { target } => {
                 let root = self
                     .state
                     .workspace_root
@@ -380,30 +469,26 @@ impl App {
                     self.state.set_status("workspace root is unknown", true);
                     return;
                 }
-                let target = match path.as_deref() {
-                    Some(path) => PathBuf::from(&root).join(path),
-                    None => PathBuf::from(&root),
-                };
-                match std::env::set_current_dir(&target) {
-                    Ok(()) => {
-                        let label = path.unwrap_or_else(|| "workspace".to_string());
-                        self.state.repo_root = Some(target.to_string_lossy().into_owned());
-                        self.state.current_branch_releases = Default::default();
-                        self.state.current_branch_releases_ref = None;
-                        self.defer_release_status_job();
-                        self.state.nested_repo_detail_path = None;
-                        self.state.nested_repo_branches.clear();
-                        self.state.nested_repo_remote_branches.clear();
-                        self.state.set_status(format!("selected {label}"), false);
-                        self.start_refresh(true);
-                    }
-                    Err(err) => self
-                        .state
-                        .set_status(format!("select repo failed: {err}"), true),
+                let dir = target.resolve(Path::new(&root));
+                if !dir.is_dir() {
+                    self.state
+                        .set_status(format!("{} is not a directory", dir.display()), true);
+                    return;
                 }
+                self.switch_to_repository(&dir, &target.label());
             }
         }
     }
+}
+
+/// Give `cwd` a terrarium profile confined to it, deriving one from the
+/// repository's own profile when the checkout is a worktree. Returns a note
+/// worth showing when something was written.
+fn prepare_sandbox(cwd: &Path) -> Result<Option<String>> {
+    let (main_worktree, git_dir) = crate::git::with_repo(cwd, || {
+        Ok::<_, anyhow::Error>((crate::git::main_worktree()?, crate::git::common_git_dir()?))
+    })?;
+    crate::terrarium::ensure_profile(cwd, &main_worktree, &git_dir)
 }
 
 fn copy_to_clipboard(text: &str) -> Result<()> {

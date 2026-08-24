@@ -16,7 +16,7 @@ pub(super) fn spawn_assisted_review(state: &mut AppState) {
     }
     let (tx, rx) = std::sync::mpsc::channel();
     let handle =
-        std::thread::spawn(
+        crate::git::spawn_pinned(
             move || match crate::git::build_assisted_review_against_main() {
                 Ok(review) => {
                     let _ = tx.send(ReviewMsg::Done(Box::new(review)));

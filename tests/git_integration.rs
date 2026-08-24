@@ -515,6 +515,276 @@ fn head_branch_returns_current_branch() {
 }
 
 #[test]
+fn worktrees_are_listed_from_any_checkout_with_their_dirty_state() {
+    let repo = init_repo();
+    fs::write(repo.path().join("init.txt"), "init").unwrap();
+    stage_in(repo.path(), "init.txt");
+    commit_in(repo.path(), "initial commit");
+
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let linked = elsewhere.path().join("feat-x");
+    git_ok(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feat/x",
+            linked.to_str().expect("worktree path"),
+        ],
+    );
+    fs::write(linked.join("work.txt"), "in progress").unwrap();
+
+    let from_main = lg::git::with_repo(repo.path(), lg::git::worktrees).expect("worktrees");
+    assert_eq!(from_main.len(), 2, "{from_main:#?}");
+    assert!(from_main[0].is_main);
+    assert_eq!(from_main[0].branch.as_deref(), Some("main"));
+    assert!(!from_main[0].has_changes, "main worktree should be clean");
+    assert_eq!(from_main[1].branch.as_deref(), Some("feat/x"));
+    assert!(
+        from_main[1].has_changes,
+        "the linked worktree has an untracked file"
+    );
+
+    // Asking a linked worktree returns the same set, main worktree first.
+    let from_linked = lg::git::with_repo(&linked, lg::git::worktrees).expect("worktrees");
+    let branches: Vec<_> = from_linked
+        .iter()
+        .map(|worktree| worktree.branch.as_deref())
+        .collect();
+    assert_eq!(branches, [Some("main"), Some("feat/x")]);
+    assert!(from_linked[0].is_main);
+}
+
+#[test]
+fn a_worktree_can_be_added_for_a_new_branch_and_removed_again() {
+    let repo = init_repo();
+    fs::write(repo.path().join("init.txt"), "init").unwrap();
+    stage_in(repo.path(), "init.txt");
+    commit_in(repo.path(), "initial commit");
+
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let path = elsewhere.path().join("nested").join("feat-x");
+
+    lg::git::with_repo(repo.path(), || {
+        lg::git::worktree_add(&path, "feat/x", "main")
+    })
+    .expect("add worktree");
+
+    assert!(path.join("init.txt").is_file(), "worktree was checked out");
+    assert_eq!(head_branch(&path), "feat/x", "on the new branch");
+
+    let listed = lg::git::with_repo(repo.path(), lg::git::worktrees).expect("worktrees");
+    assert_eq!(listed.len(), 2, "{listed:#?}");
+
+    lg::git::with_repo(repo.path(), || lg::git::worktree_remove(&path, false))
+        .expect("remove worktree");
+    assert!(!path.exists(), "the directory is gone");
+    let listed = lg::git::with_repo(repo.path(), lg::git::worktrees).expect("worktrees");
+    assert_eq!(listed.len(), 1, "{listed:#?}");
+}
+
+#[test]
+fn adding_a_worktree_checks_out_a_branch_that_already_exists() {
+    let repo = init_repo();
+    fs::write(repo.path().join("init.txt"), "init").unwrap();
+    stage_in(repo.path(), "init.txt");
+    commit_in(repo.path(), "initial commit");
+    git_ok(repo.path(), &["branch", "existing"]);
+
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let path = elsewhere.path().join("existing");
+
+    // The base is ignored for a branch that already exists, so a nonsense one
+    // must not stop it being checked out.
+    lg::git::with_repo(repo.path(), || {
+        lg::git::worktree_add(&path, "existing", "no/such/ref")
+    })
+    .expect("add worktree");
+
+    assert_eq!(head_branch(&path), "existing");
+}
+
+#[test]
+fn adding_a_worktree_reports_bad_input_instead_of_running_git() {
+    let repo = init_repo();
+    fs::write(repo.path().join("init.txt"), "init").unwrap();
+    stage_in(repo.path(), "init.txt");
+    commit_in(repo.path(), "initial commit");
+
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let path = elsewhere.path().join("x");
+
+    let empty = lg::git::with_repo(repo.path(), || lg::git::worktree_add(&path, "  ", "main"));
+    assert!(
+        empty.unwrap_err().to_string().contains("cannot be empty"),
+        "an empty branch name is caught before git runs"
+    );
+
+    let invalid = lg::git::with_repo(repo.path(), || {
+        lg::git::worktree_add(&path, "bad..name", "main")
+    });
+    assert!(
+        invalid.unwrap_err().to_string().contains("invalid branch"),
+        "an invalid branch name is caught before git runs"
+    );
+
+    let unknown_base = lg::git::with_repo(repo.path(), || {
+        lg::git::worktree_add(&path, "fresh", "no/such/ref")
+    });
+    assert!(
+        unknown_base
+            .unwrap_err()
+            .to_string()
+            .contains("unknown base ref"),
+        "an unknown base is named as such"
+    );
+    assert!(!path.exists(), "nothing was created");
+}
+
+#[test]
+fn removing_a_dirty_worktree_needs_force() {
+    let repo = init_repo();
+    fs::write(repo.path().join("init.txt"), "init").unwrap();
+    stage_in(repo.path(), "init.txt");
+    commit_in(repo.path(), "initial commit");
+
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let path = elsewhere.path().join("dirty");
+    lg::git::with_repo(repo.path(), || {
+        lg::git::worktree_add(&path, "dirty", "main")
+    })
+    .expect("add worktree");
+    fs::write(path.join("scratch.txt"), "work in progress").unwrap();
+
+    let refused = lg::git::with_repo(repo.path(), || lg::git::worktree_remove(&path, false));
+    assert!(refused.is_err(), "git should refuse to discard the work");
+    assert!(path.exists(), "the worktree survives a refusal");
+
+    lg::git::with_repo(repo.path(), || lg::git::worktree_remove(&path, true))
+        .expect("force removal");
+    assert!(!path.exists());
+}
+
+#[test]
+fn pruning_forgets_a_worktree_whose_directory_is_gone() {
+    let repo = init_repo();
+    fs::write(repo.path().join("init.txt"), "init").unwrap();
+    stage_in(repo.path(), "init.txt");
+    commit_in(repo.path(), "initial commit");
+
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let path = elsewhere.path().join("gone");
+    lg::git::with_repo(repo.path(), || lg::git::worktree_add(&path, "gone", "main"))
+        .expect("add worktree");
+    fs::remove_dir_all(&path).expect("remove worktree directory");
+
+    lg::git::with_repo(repo.path(), lg::git::worktree_prune).expect("prune");
+    let listed = lg::git::with_repo(repo.path(), lg::git::worktrees).expect("worktrees");
+    assert_eq!(
+        listed.len(),
+        1,
+        "only the main worktree is left: {listed:#?}"
+    );
+}
+
+#[test]
+fn a_removed_worktree_directory_is_reported_as_prunable() {
+    let repo = init_repo();
+    fs::write(repo.path().join("init.txt"), "init").unwrap();
+    stage_in(repo.path(), "init.txt");
+    commit_in(repo.path(), "initial commit");
+
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let linked = elsewhere.path().join("gone");
+    git_ok(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "gone",
+            linked.to_str().expect("worktree path"),
+        ],
+    );
+    fs::remove_dir_all(&linked).expect("remove worktree directory");
+
+    let worktrees = lg::git::with_repo(repo.path(), lg::git::worktrees).expect("worktrees");
+    let missing = worktrees
+        .iter()
+        .find(|worktree| worktree.branch.as_deref() == Some("gone"))
+        .expect("the removed worktree is still registered");
+    assert!(
+        missing.prunable.is_some(),
+        "git should call it prunable: {missing:#?}"
+    );
+    assert!(missing.is_missing());
+}
+
+#[test]
+fn with_repo_points_git_at_a_checkout_without_moving_the_process() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+    git_ok(dir.path(), &["checkout", "-b", "pinned-branch"]);
+
+    let before = std::env::current_dir().expect("current dir");
+    let branch = lg::git::with_repo(dir.path(), lg::git::head_branch).expect("head branch");
+
+    assert_eq!(branch, "pinned-branch");
+    assert_eq!(
+        std::env::current_dir().expect("current dir"),
+        before,
+        "pinning a checkout must not move the process"
+    );
+}
+
+#[test]
+fn a_pin_outranks_the_working_directory_and_is_released_after() {
+    let outer = init_repo();
+    fs::write(outer.path().join("init.txt"), "init").unwrap();
+    stage_in(outer.path(), "init.txt");
+    commit_in(outer.path(), "initial commit");
+
+    let inner = init_repo();
+    fs::write(inner.path().join("init.txt"), "init").unwrap();
+    stage_in(inner.path(), "init.txt");
+    commit_in(inner.path(), "initial commit");
+    git_ok(inner.path(), &["checkout", "-b", "inner-branch"]);
+
+    let _cwd = CwdGuard::new(outer.path());
+    assert_eq!(lg::git::head_branch().unwrap(), "main");
+    assert_eq!(
+        lg::git::with_repo(inner.path(), lg::git::head_branch).unwrap(),
+        "inner-branch"
+    );
+    assert_eq!(
+        lg::git::head_branch().unwrap(),
+        "main",
+        "the pin must not outlive its scope"
+    );
+}
+
+#[test]
+fn a_spawned_job_runs_against_the_checkout_it_was_started_from() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+    git_ok(dir.path(), &["checkout", "-b", "job-branch"]);
+
+    let branch = lg::git::with_repo(dir.path(), || {
+        lg::git::spawn_pinned(lg::git::head_branch)
+            .join()
+            .expect("join pinned job")
+    })
+    .expect("head branch");
+
+    assert_eq!(branch, "job-branch");
+}
+
+#[test]
 fn head_branch_returns_unborn_branch_before_first_commit() {
     let dir = init_repo();
     let _cwd = CwdGuard::new(dir.path());

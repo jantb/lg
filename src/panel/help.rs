@@ -38,6 +38,10 @@ const SECTIONS: &[Section] = &[
             ("p", "Pull current branch when behind"),
             ("P", "Push current branch"),
             ("R", "Enter review mode against main"),
+            (
+                "Ctrl-n / Ctrl-p",
+                "Next or previous session (Ctrl-] first if one has the keyboard)",
+            ),
             ("click pane", "Focus pane"),
             ("drag divider", "Resize columns or rows"),
         ],
@@ -58,11 +62,18 @@ const SECTIONS: &[Section] = &[
         ],
     },
     Section {
-        title: "Nested Repos",
+        title: "Repositories",
         pane: Some(Pane::Status),
         bindings: &[
             ("j/k", "Move up/down"),
-            ("Enter", "Expand repo, collapse repo, or checkout branch"),
+            (
+                "Enter",
+                "Select repository, worktree or session, or checkout branch",
+            ),
+            ("n", "New worktree for a branch"),
+            ("s", "Start or show a sandboxed claude session here"),
+            ("S", "Start a claude session without the sandbox"),
+            ("D", "Remove selected worktree, or prune a missing one"),
             ("o", "Open selected repository in editor"),
             ("r", "Toggle local/remote branches"),
             ("Esc/Backspace", "Collapse expanded repository"),
@@ -90,6 +101,16 @@ const SECTIONS: &[Section] = &[
         bindings: &[
             ("j/k", "Move up/down (auto-diff)"),
             ("Enter", "Focus diff pane"),
+        ],
+    },
+    Section {
+        title: "Session",
+        pane: None,
+        bindings: &[
+            ("i / Enter", "Give the keyboard to the session"),
+            ("Ctrl-]", "Take the keyboard back"),
+            ("x", "Close the session"),
+            ("Backspace", "Back to the diff"),
         ],
     },
     Section {

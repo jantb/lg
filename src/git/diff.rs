@@ -1,8 +1,7 @@
 use anyhow::Result;
 use std::path::Path;
-use std::process::Command;
 
-use super::{run, run_combined};
+use super::{git_command, run, run_combined};
 
 pub fn staged_diff() -> Result<String> {
     let out = run(&["diff", "--cached"])?;
@@ -155,9 +154,7 @@ fn untracked_paths(pathspec: &str) -> Result<Vec<String>> {
 }
 
 fn untracked_file_diff(path: &str) -> Result<String> {
-    let out = Command::new("git")
-        .args(["diff", "--no-index", "--", "/dev/null", path])
-        .output()?;
+    let out = git_command(&["diff", "--no-index", "--", "/dev/null", path]).output()?;
     if out.status.success() || out.status.code() == Some(1) {
         let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
         normalize_no_index_path(&mut text, path);

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::{
@@ -9,15 +9,16 @@ use crate::config::{
     is_deploy_branch_name, is_protected_branch_name, protected_branch_list,
 };
 
-use super::{counts_ahead_behind, head_branch, list_branches, run, run_combined, stage};
+use super::{
+    counts_ahead_behind, git_command, head_branch, list_branches, run, run_combined, stage,
+};
 
 const SAFETY_REF_PREFIX: &str = "lg/backup/";
 const SAFETY_REF_KEEP: usize = 20;
 
 pub fn checkout_branch(name: &str) -> Result<String> {
     let stashed = stash_before_branch_change(name, "lg: auto-stash before checkout")?;
-    let out = Command::new("git")
-        .args(["checkout", name])
+    let out = git_command(&["checkout", name])
         .output()
         .with_context(|| format!("failed to spawn git checkout {name}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -34,8 +35,7 @@ pub fn checkout_branch(name: &str) -> Result<String> {
 
 pub fn checkout_remote_branch(remote_ref: &str) -> Result<String> {
     let stashed = stash_uncommitted_changes("lg: auto-stash before remote checkout")?;
-    let out = Command::new("git")
-        .args(["switch", "--track", remote_ref])
+    let out = git_command(&["switch", "--track", remote_ref])
         .output()
         .with_context(|| format!("failed to spawn git switch --track {remote_ref}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -807,24 +807,21 @@ fn upstream_push_target(upstream: &str) -> Option<(&str, &str)> {
 }
 
 fn ref_exists(name: &str) -> bool {
-    Command::new("git")
-        .args(["rev-parse", "--verify", "--quiet", name])
+    git_command(&["rev-parse", "--verify", "--quiet", name])
         .output()
         .map(|out| out.status.success())
         .unwrap_or(false)
 }
 
 fn remote_exists(name: &str) -> bool {
-    Command::new("git")
-        .args(["remote", "get-url", name])
+    git_command(&["remote", "get-url", name])
         .output()
         .map(|out| out.status.success())
         .unwrap_or(false)
 }
 
 fn is_valid_branch_name(name: &str) -> bool {
-    Command::new("git")
-        .args(["check-ref-format", "--branch", name])
+    git_command(&["check-ref-format", "--branch", name])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -849,15 +846,14 @@ fn remote_ref_for_branch(branch: &str, upstream: Option<&str>) -> Result<String>
 
 fn branch_upstream(branch: &str) -> Result<Option<String>> {
     let upstream_spec = format!("{branch}@{{upstream}}");
-    let out = Command::new("git")
-        .args([
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            &upstream_spec,
-        ])
-        .output()
-        .with_context(|| format!("failed to check upstream for {branch}"))?;
+    let out = git_command(&[
+        "rev-parse",
+        "--abbrev-ref",
+        "--symbolic-full-name",
+        &upstream_spec,
+    ])
+    .output()
+    .with_context(|| format!("failed to check upstream for {branch}"))?;
     if !out.status.success() {
         return Ok(None);
     }
@@ -878,8 +874,7 @@ fn has_uncommitted_changes() -> Result<bool> {
 
 fn diff_against_base(base_ref: &str, branch: &str) -> Result<String> {
     let revspec = format!("{base_ref}...{branch}");
-    let out = Command::new("git")
-        .args(["diff", "--binary", "--full-index", &revspec])
+    let out = git_command(&["diff", "--binary", "--full-index", &revspec])
         .output()
         .with_context(|| format!("failed to spawn git diff {revspec}"))?;
     if out.status.success() {
@@ -894,8 +889,7 @@ fn diff_against_base(base_ref: &str, branch: &str) -> Result<String> {
 }
 
 fn apply_patch_to_index(patch: &str) -> Result<()> {
-    let mut child = Command::new("git")
-        .args(["apply", "--index", "--3way", "--binary"])
+    let mut child = git_command(&["apply", "--index", "--3way", "--binary"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -971,8 +965,7 @@ fn orphan_branches() -> Result<Vec<String>> {
         if is_protected_branch_name(branch) {
             continue;
         }
-        let upstream = Command::new("git")
-            .args(["rev-parse", "--abbrev-ref", &format!("{branch}@{{u}}")])
+        let upstream = git_command(&["rev-parse", "--abbrev-ref", &format!("{branch}@{{u}}")])
             .output()
             .with_context(|| format!("failed to check upstream for {branch}"))?;
         if !upstream.status.success() {

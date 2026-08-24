@@ -56,7 +56,7 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
         conflict_followup_for_flow(action, &action_branch, release_target.as_deref());
     let target = release_target.unwrap_or_default();
     let (tx, rx) = std::sync::mpsc::channel();
-    let handle = std::thread::spawn(move || {
+    let handle = crate::git::spawn_pinned(move || {
         let mut step_idx = 0usize;
         let mut progress = || {
             let _ = tx.send(WorkflowMsg::Progress(step_idx));
@@ -256,23 +256,24 @@ pub(crate) fn validate_conflict_resolution(state: &mut AppState) {
     }
     let followup = state.conflict_followup.clone();
     let (tx, rx) = std::sync::mpsc::channel();
-    let handle = std::thread::spawn(move || {
-        match crate::git::validate_conflict_resolution_with_cleanup(
-            followup.as_ref().and_then(|f| f.push_branch.as_deref()),
-            followup.as_ref().and_then(|f| f.return_branch.as_deref()),
-            followup
-                .as_ref()
-                .and_then(|f| f.safety_ref_cleanup.as_ref())
-                .map(|cleanup| (cleanup.label.as_str(), cleanup.branch.as_str())),
-        ) {
-            Ok(s) => {
-                let _ = tx.send(WorkflowMsg::Done(s));
-            }
-            Err(e) => {
-                let _ = tx.send(WorkflowMsg::Error(e.to_string()));
-            }
-        }
-    });
+    let handle =
+        crate::git::spawn_pinned(
+            move || match crate::git::validate_conflict_resolution_with_cleanup(
+                followup.as_ref().and_then(|f| f.push_branch.as_deref()),
+                followup.as_ref().and_then(|f| f.return_branch.as_deref()),
+                followup
+                    .as_ref()
+                    .and_then(|f| f.safety_ref_cleanup.as_ref())
+                    .map(|cleanup| (cleanup.label.as_str(), cleanup.branch.as_str())),
+            ) {
+                Ok(s) => {
+                    let _ = tx.send(WorkflowMsg::Done(s));
+                }
+                Err(e) => {
+                    let _ = tx.send(WorkflowMsg::Error(e.to_string()));
+                }
+            },
+        );
     state.workflow_job = Some(WorkflowJob {
         rx,
         handle: Some(handle),
@@ -302,21 +303,22 @@ pub(crate) fn abort_conflict_operation(state: &mut AppState) {
         .as_ref()
         .and_then(|f| f.safety_ref_cleanup.clone());
     let (tx, rx) = std::sync::mpsc::channel();
-    let handle = std::thread::spawn(move || {
-        match crate::git::abort_in_progress_operation_with_cleanup(
-            return_branch.as_deref(),
-            safety_cleanup
-                .as_ref()
-                .map(|cleanup| (cleanup.label.as_str(), cleanup.branch.as_str())),
-        ) {
-            Ok(s) => {
-                let _ = tx.send(WorkflowMsg::Done(s));
-            }
-            Err(e) => {
-                let _ = tx.send(WorkflowMsg::Error(e.to_string()));
-            }
-        }
-    });
+    let handle =
+        crate::git::spawn_pinned(
+            move || match crate::git::abort_in_progress_operation_with_cleanup(
+                return_branch.as_deref(),
+                safety_cleanup
+                    .as_ref()
+                    .map(|cleanup| (cleanup.label.as_str(), cleanup.branch.as_str())),
+            ) {
+                Ok(s) => {
+                    let _ = tx.send(WorkflowMsg::Done(s));
+                }
+                Err(e) => {
+                    let _ = tx.send(WorkflowMsg::Error(e.to_string()));
+                }
+            },
+        );
     state.workflow_job = Some(WorkflowJob {
         rx,
         handle: Some(handle),

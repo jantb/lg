@@ -47,6 +47,39 @@ fn open_conflict_modal_if_needed(state: &mut crate::state::AppState, log: String
 }
 
 impl App {
+    /// Point lg at `dir`: git commands, the file watcher and every per-checkout
+    /// piece of state follow it. Used for nested repositories and worktrees
+    /// alike, so switching between them is one code path.
+    pub(super) fn switch_to_repository(&mut self, dir: &std::path::Path, label: &str) {
+        crate::git::set_active_repo(dir);
+
+        // A failed watcher only costs automatic refreshes, so the switch still
+        // goes through — but say so, because staleness is otherwise silent.
+        let watch_error = match super::refresh::watch_repo(dir) {
+            Ok((watcher, events)) => {
+                self.file_watcher = watcher;
+                self.file_events = events;
+                None
+            }
+            Err(err) => Some(err.to_string()),
+        };
+
+        self.state.repo_root = Some(dir.to_string_lossy().into_owned());
+        self.state.current_branch_releases = Default::default();
+        self.state.current_branch_releases_ref = None;
+        self.defer_release_status_job();
+        self.state.nested_repo_detail_path = None;
+        self.state.nested_repo_branches.clear();
+        self.state.nested_repo_remote_branches.clear();
+        match watch_error {
+            Some(err) => self
+                .state
+                .set_status(format!("selected {label}; file watch failed: {err}"), true),
+            None => self.state.set_status(format!("selected {label}"), false),
+        }
+        self.start_refresh(true);
+    }
+
     pub(super) fn start_refresh(&mut self, refresh_diff: bool) {
         self.start_refresh_with_status(refresh_diff, true);
     }
@@ -60,7 +93,7 @@ impl App {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let workspace_root = self.state.workspace_root.clone();
-        let handle = std::thread::spawn(move || {
+        let handle = crate::git::spawn_pinned(move || {
             let _ = tx.send(RefreshMsg::Done(Box::new(build_refresh_snapshot(
                 workspace_root,
             ))));
@@ -82,7 +115,7 @@ impl App {
         }
         self.last_fetch_started = Instant::now();
         let (tx, rx) = std::sync::mpsc::channel();
-        let handle = std::thread::spawn(move || match crate::git::fetch_updates() {
+        let handle = crate::git::spawn_pinned(move || match crate::git::fetch_updates() {
             Ok(s) => {
                 let _ = tx.send(FetchMsg::Done(s));
             }
@@ -204,7 +237,7 @@ impl App {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let thread_branch = branch.clone();
-        let handle = std::thread::spawn(move || {
+        let handle = crate::git::spawn_pinned(move || {
             match crate::git::list_commits_for_ref(&thread_branch, COMMIT_LIST_LIMIT) {
                 Ok(commits) => {
                     let _ = tx.send(CommitLogMsg::Done {
@@ -267,23 +300,22 @@ impl App {
         self.state.current_branch_releases_ref = None;
         let (tx, rx) = std::sync::mpsc::channel();
         let thread_branch = branch.clone();
-        let handle =
-            std::thread::spawn(
-                move || match crate::git::branch_release_status(&thread_branch) {
-                    Ok(status) => {
-                        let _ = tx.send(ReleaseStatusMsg::Done {
-                            branch: thread_branch,
-                            status,
-                        });
-                    }
-                    Err(e) => {
-                        let _ = tx.send(ReleaseStatusMsg::Error {
-                            branch: thread_branch,
-                            message: e.to_string(),
-                        });
-                    }
-                },
-            );
+        let handle = crate::git::spawn_pinned(move || {
+            match crate::git::branch_release_status(&thread_branch) {
+                Ok(status) => {
+                    let _ = tx.send(ReleaseStatusMsg::Done {
+                        branch: thread_branch,
+                        status,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(ReleaseStatusMsg::Error {
+                        branch: thread_branch,
+                        message: e.to_string(),
+                    });
+                }
+            }
+        });
         self.state.release_status_job = Some(ReleaseStatusJob {
             rx,
             handle: Some(handle),
@@ -333,6 +365,9 @@ impl App {
         }
         if let Some(repositories) = snapshot.nested_repositories {
             self.state.nested_repositories = repositories;
+        }
+        if let Some(worktrees) = snapshot.worktrees {
+            self.state.worktrees = worktrees;
         }
         self.state.release_branches = snapshot.release_branches;
         if let Some(shas) = snapshot.unpushed_shas {
@@ -780,7 +815,7 @@ impl App {
                 .operation_job
                 .as_ref()
                 .map(|job| job.kind)
-                .unwrap_or(OperationKind::Worktree);
+                .unwrap_or(OperationKind::WorkingTree);
             self.state.operation_job = None;
             join_worker(handle);
             self.state.current_branch_releases_ref = None;

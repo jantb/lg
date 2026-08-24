@@ -117,7 +117,7 @@ pub(super) fn spawn_push(state: &mut AppState) {
     let (tx, rx) = std::sync::mpsc::channel();
     let tbranch = branch.clone();
     let tremote = remote.clone();
-    let handle = std::thread::spawn(move || match crate::git::push(&tremote, &tbranch) {
+    let handle = crate::git::spawn_pinned(move || match crate::git::push(&tremote, &tbranch) {
         Ok(out) => {
             let line = out
                 .lines()
@@ -149,7 +149,7 @@ pub(super) fn spawn_pull(state: &mut AppState) {
         return;
     }
     let branch = state.branch.clone().unwrap_or_default();
-    spawn_operation(state, "pulling", OperationKind::Worktree, move || {
+    spawn_operation(state, "pulling", OperationKind::WorkingTree, move || {
         let out = crate::git::pull(DEFAULT_PUSH_REMOTE, &branch)?;
         Ok(out
             .lines()
@@ -254,7 +254,7 @@ pub(crate) fn checkout_branch_async(state: &mut AppState, branch: String) {
     }
     let (tx, rx) = std::sync::mpsc::channel();
     let target = branch.clone();
-    let handle = std::thread::spawn(move || match crate::git::checkout_branch(&target) {
+    let handle = crate::git::spawn_pinned(move || match crate::git::checkout_branch(&target) {
         Ok(out) => {
             let line = out
                 .lines()
@@ -282,19 +282,20 @@ pub(crate) fn checkout_remote_branch_async(state: &mut AppState, remote_ref: Str
     }
     let (tx, rx) = std::sync::mpsc::channel();
     let target = remote_ref.clone();
-    let handle = std::thread::spawn(move || match crate::git::checkout_remote_branch(&target) {
-        Ok(out) => {
-            let line = out
-                .lines()
-                .rfind(|l| !l.trim().is_empty())
-                .unwrap_or("checked out")
-                .to_owned();
-            let _ = tx.send(CheckoutMsg::Done(line));
-        }
-        Err(e) => {
-            let _ = tx.send(CheckoutMsg::Error(e.to_string()));
-        }
-    });
+    let handle =
+        crate::git::spawn_pinned(move || match crate::git::checkout_remote_branch(&target) {
+            Ok(out) => {
+                let line = out
+                    .lines()
+                    .rfind(|l| !l.trim().is_empty())
+                    .unwrap_or("checked out")
+                    .to_owned();
+                let _ = tx.send(CheckoutMsg::Done(line));
+            }
+            Err(e) => {
+                let _ = tx.send(CheckoutMsg::Error(e.to_string()));
+            }
+        });
     state.checkout_job = Some(CheckoutJob {
         rx,
         handle: Some(handle),
@@ -316,7 +317,7 @@ pub(crate) fn checkout_nested_branch_async(
     let target_repo = repo_path.clone();
     let target_branch = branch.clone();
     let workspace_root = state.workspace_root.clone();
-    let handle = std::thread::spawn(move || {
+    let handle = crate::git::spawn_pinned(move || {
         let result = if let Some(root) = workspace_root {
             crate::git::checkout_nested_branch_at(
                 std::path::Path::new(&root),
@@ -364,7 +365,7 @@ pub(crate) fn checkout_nested_remote_branch_async(
     let target_repo = repo_path.clone();
     let target_ref = remote_ref.clone();
     let workspace_root = state.workspace_root.clone();
-    let handle = std::thread::spawn(move || {
+    let handle = crate::git::spawn_pinned(move || {
         let result = if let Some(root) = workspace_root {
             crate::git::checkout_nested_remote_branch_at(
                 std::path::Path::new(&root),
@@ -413,7 +414,7 @@ pub(super) fn spawn_operation<F>(
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
-    let handle = std::thread::spawn(move || match work() {
+    let handle = crate::git::spawn_pinned(move || match work() {
         Ok(s) => {
             let _ = tx.send(OperationMsg::Done(s));
         }
@@ -449,7 +450,7 @@ mod tests {
         assert!(operation_block_reason(&state, OperationKind::Index).is_none());
         assert!(operation_block_reason(&state, OperationKind::StageAllAndCommit).is_none());
         assert!(operation_block_reason(&state, OperationKind::FileSystem).is_none());
-        assert!(operation_block_reason(&state, OperationKind::Worktree).is_some());
+        assert!(operation_block_reason(&state, OperationKind::WorkingTree).is_some());
         assert!(operation_block_reason(&state, OperationKind::Commit).is_some());
     }
 

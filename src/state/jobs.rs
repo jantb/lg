@@ -4,7 +4,7 @@ use std::thread::JoinHandle;
 
 use crate::git::{
     AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry, NestedRepo, ReleaseBranches,
-    RemoteBranch,
+    RemoteBranch, Worktree,
 };
 
 use super::DiffSource;
@@ -96,7 +96,10 @@ pub enum OperationKind {
     MergeUpstream,
     Index,
     FileSystem,
-    Worktree,
+    /// Moves what is checked out: pull, checkout, upstream changes. Named for
+    /// the working tree it rewrites, so `worktree` stays free for git's own
+    /// linked worktrees.
+    WorkingTree,
 }
 
 #[derive(Debug)]
@@ -134,6 +137,7 @@ pub struct RefreshSnapshot {
     pub branches: Option<Vec<Branch>>,
     pub remote_branches: Option<Vec<RemoteBranch>>,
     pub nested_repositories: Option<Vec<NestedRepo>>,
+    pub worktrees: Option<Vec<Worktree>>,
     pub release_branches: ReleaseBranches,
     pub commits: Option<Vec<Commit>>,
     pub unpushed_shas: Option<HashSet<String>>,

@@ -44,6 +44,13 @@ pub(super) fn build_refresh_snapshot(workspace_root: Option<String>) -> RefreshS
             None
         }
     };
+    let worktrees = match crate::git::worktrees() {
+        Ok(worktrees) => Some(worktrees),
+        Err(e) => {
+            errors.push(format!("worktree list failed: {e}"));
+            None
+        }
+    };
     let unpushed_shas = match crate::git::unpushed_shas() {
         Ok(shas) => Some(shas),
         Err(e) => {
@@ -73,6 +80,7 @@ pub(super) fn build_refresh_snapshot(workspace_root: Option<String>) -> RefreshS
         branches,
         remote_branches,
         nested_repositories,
+        worktrees,
         release_branches: crate::git::release_branches(),
         commits,
         unpushed_shas,
@@ -175,26 +183,26 @@ pub(super) fn should_refresh_for_fs_event(event: &notify::Event) -> bool {
     event.paths.iter().any(|path| path_should_refresh(path))
 }
 
-pub(super) fn watch_current_dir()
--> Result<(RecommendedWatcher, Receiver<notify::Result<notify::Event>>)> {
+/// Watch `dir` and the git metadata it uses. A linked worktree keeps its git
+/// directory inside the main repository, which `--git-common-dir` reports, so
+/// worktrees get the same ref and index notifications as a plain checkout.
+pub(super) fn watch_repo(
+    dir: &Path,
+) -> Result<(RecommendedWatcher, Receiver<notify::Result<notify::Event>>)> {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |event| {
         let _ = tx.send(event);
     })
     .context("start file watcher")?;
 
-    let cwd = std::env::current_dir().context("resolve current directory")?;
-    let repo_root = crate::git::repo_root()
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| cwd.clone());
     watcher
-        .watch(&repo_root, RecursiveMode::Recursive)
-        .with_context(|| format!("watch {}", repo_root.display()))?;
+        .watch(dir, RecursiveMode::Recursive)
+        .with_context(|| format!("watch {}", dir.display()))?;
 
-    let repo_root_canonical = canonical_path(&repo_root);
-    for git_dir in git_metadata_dirs(&cwd) {
+    let dir_canonical = canonical_path(dir);
+    for git_dir in git_metadata_dirs(dir) {
         let git_dir_canonical = canonical_path(&git_dir);
-        if git_dir_canonical.starts_with(&repo_root_canonical) {
+        if git_dir_canonical.starts_with(&dir_canonical) {
             continue;
         }
         watcher
@@ -203,6 +211,14 @@ pub(super) fn watch_current_dir()
     }
 
     Ok((watcher, rx))
+}
+
+/// The checkout lg starts in: the repository around the working directory.
+pub(super) fn startup_repo_root() -> Result<PathBuf> {
+    let cwd = std::env::current_dir().context("resolve current directory")?;
+    Ok(crate::git::repo_root()
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| cwd))
 }
 
 fn git_metadata_dirs(cwd: &Path) -> Vec<PathBuf> {

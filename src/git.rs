@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 use std::sync::{Mutex, OnceLock};
 
 use crate::config::{
@@ -9,10 +9,12 @@ use crate::config::{
 };
 
 mod config;
+mod context;
 mod diff;
 mod flow;
 mod review;
 mod status;
+mod worktree;
 
 pub use config::{
     AuthorConfig, IdeOpenCommand, add_to_gitignore, author_config, clear_local_author,
@@ -20,6 +22,8 @@ pub use config::{
     open_project_path_in_ide, project_open_command, set_local_author, set_subtree_author,
     subtree_author_rule_exists,
 };
+pub use context::{active_repo, set_active_repo, spawn_pinned, with_repo};
+use context::{git_command, git_command_in_dir};
 #[cfg(test)]
 use diff::label_commit_patch;
 pub use diff::{
@@ -45,6 +49,10 @@ pub use review::{
 pub use status::{
     FileEntry, parse_porcelain, parse_porcelain_xy, status_entries, status_porcelain,
 };
+pub use worktree::{
+    Worktree, common_git_dir, default_worktree_path, main_worktree, parse_worktree_list,
+    preferred_base_ref, worktree_add, worktree_prune, worktree_remove, worktree_slug, worktrees,
+};
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct ReleaseStatusCacheKey {
@@ -63,8 +71,7 @@ fn release_status_cache() -> &'static Mutex<HashMap<ReleaseStatusCacheKey, Branc
 }
 
 fn run(args: &[&str]) -> Result<Output> {
-    let out = Command::new("git")
-        .args(args)
+    let out = git_command(args)
         .output()
         .with_context(|| format!("failed to spawn git {}", args.join(" ")))?;
     if out.status.success() {
@@ -80,18 +87,13 @@ fn run(args: &[&str]) -> Result<Output> {
 }
 
 fn run_in_dir(dir: &Path, args: &[&str]) -> Result<Output> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .with_context(|| {
-            format!(
-                "failed to spawn git -C {} {}",
-                dir.display(),
-                args.join(" ")
-            )
-        })?;
+    let out = git_command_in_dir(dir, args).output().with_context(|| {
+        format!(
+            "failed to spawn git -C {} {}",
+            dir.display(),
+            args.join(" ")
+        )
+    })?;
     if out.status.success() {
         Ok(out)
     } else {
@@ -106,8 +108,7 @@ fn run_in_dir(dir: &Path, args: &[&str]) -> Result<Output> {
 }
 
 fn run_combined(args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
-        .args(args)
+    let out = git_command(args)
         .output()
         .with_context(|| format!("failed to spawn git {}", args.join(" ")))?;
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -120,8 +121,7 @@ fn run_combined(args: &[&str]) -> Result<String> {
 }
 
 pub fn is_repo() -> bool {
-    Command::new("git")
-        .args(["rev-parse", "--git-dir"])
+    git_command(&["rev-parse", "--git-dir"])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -268,8 +268,7 @@ pub fn push(remote: &str, branch: &str) -> Result<String> {
     }
 
     // Capture both stdout and stderr for the status display.
-    let out = Command::new("git")
-        .args(["push", remote, branch])
+    let out = git_command(&["push", remote, branch])
         .output()
         .context("failed to spawn git push")?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -823,10 +822,7 @@ fn checkout_branch_in_dir(dir: &Path, branch: &str) -> Result<String> {
     } else {
         stash_uncommitted_changes_in_dir(dir, "lg: auto-stash before checkout")?
     };
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["checkout", branch])
+    let out = git_command_in_dir(dir, &["checkout", branch])
         .output()
         .with_context(|| format!("failed to spawn git -C {} checkout {branch}", dir.display()))?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -843,10 +839,7 @@ fn checkout_branch_in_dir(dir: &Path, branch: &str) -> Result<String> {
 
 fn checkout_remote_branch_in_dir(dir: &Path, remote_ref: &str) -> Result<String> {
     let stashed = stash_uncommitted_changes_in_dir(dir, "lg: auto-stash before remote checkout")?;
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["switch", "--track", remote_ref])
+    let out = git_command_in_dir(dir, &["switch", "--track", remote_ref])
         .output()
         .with_context(|| {
             format!(

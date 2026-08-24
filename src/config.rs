@@ -89,6 +89,10 @@ pub const STATUS_MSG_LIFETIME_SECS: i64 = 3;
 pub const ERROR_MSG_LIFETIME_SECS: i64 = 30;
 pub const BORDER_COLOR: Color = Color::LightBlue;
 pub const TICK_MS: u64 = 250;
+
+/// Poll interval while a session is on screen: its output is the echo of what
+/// is being typed into it, so it has to keep up with typing.
+pub const SESSION_TICK_MS: u64 = 16;
 pub const BACKGROUND_FETCH_INTERVAL_SECS: u64 = 300;
 pub const COMMIT_LIST_LIMIT: usize = 200;
 pub const LEFT_COLUMN_WIDTH: u16 = 64;

@@ -44,6 +44,22 @@ fn prev_pane(p: Pane) -> Pane {
     }
 }
 
+/// Tab and its shortcuts only visit panes that are on screen, so in workspace
+/// mode focus moves between the tree and the session and nowhere else.
+fn cycle_pane(state: &AppState, forward: bool) -> Pane {
+    if state.git_panes_visible() {
+        return if forward {
+            next_pane(state.focus)
+        } else {
+            prev_pane(state.focus)
+        };
+    }
+    match state.focus {
+        Pane::Main => Pane::Status,
+        _ => Pane::Main,
+    }
+}
+
 fn handle_modal_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) -> bool {
     match state.modal {
         Modal::None => false,
@@ -183,8 +199,16 @@ where
     }
 
     pub fn send_key(&mut self, k: KeyEvent) -> Result<()> {
+        if self.state.session_input_active() {
+            if super::session::is_release_key(&k) {
+                self.state.session_capture = false;
+                return self.render();
+            }
+            super::session::forward_key(&mut self.state, k);
+            return self.render();
+        }
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
-            self.state.should_quit = true;
+            self.state.request_quit();
             return self.render();
         }
         match self.state.modal {
@@ -225,6 +249,10 @@ where
                 panel::delete_branch::handle_key(&mut self.state, k)?;
                 return self.render();
             }
+            Modal::Worktree => {
+                panel::worktree::handle_key(&mut self.state, k)?;
+                return self.render();
+            }
             Modal::ConfirmDestructive => {
                 panel::confirm::handle_key(&mut self.state, k)?;
                 return self.render();
@@ -236,6 +264,15 @@ where
             Modal::None => {}
         }
         match k.code {
+            KeyCode::F(2) => {
+                self.state.toggle_mode();
+            }
+            KeyCode::Char('n') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                super::session::cycle(&mut self.state, true);
+            }
+            KeyCode::Char('p') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                super::session::cycle(&mut self.state, false);
+            }
             KeyCode::Char('?') => {
                 self.state.prev_focus = self.state.focus;
                 self.state.help_offset = 0;
@@ -250,7 +287,7 @@ where
                 }
             }
             KeyCode::Char('q') => {
-                self.state.should_quit = true;
+                self.state.request_quit();
             }
             KeyCode::Esc if self.state.status.as_ref().is_some_and(|s| s.is_error) => {
                 self.state.status = None;
@@ -265,25 +302,25 @@ where
             }
             KeyCode::Esc => {}
             KeyCode::Char('1') => {
-                self.state.focus = Pane::Status;
+                self.state.focus_pane(Pane::Status);
             }
             KeyCode::Char('2') => {
-                self.state.focus = Pane::Files;
+                self.state.focus_pane(Pane::Files);
             }
             KeyCode::Char('3') => {
-                self.state.focus = Pane::Branches;
+                self.state.focus_pane(Pane::Branches);
             }
             KeyCode::Char('4') => {
-                self.state.focus = Pane::Commits;
+                self.state.focus_pane(Pane::Commits);
             }
             KeyCode::Char('0') => {
-                self.state.focus = Pane::Main;
+                self.state.focus_pane(Pane::Main);
             }
             KeyCode::Tab => {
-                self.state.focus = next_pane(self.state.focus);
+                self.state.focus = cycle_pane(&self.state, true);
             }
             KeyCode::BackTab => {
-                self.state.focus = prev_pane(self.state.focus);
+                self.state.focus = cycle_pane(&self.state, false);
             }
             KeyCode::Char('c') => {
                 self.state.open_commit_or_stage_all_prompt();
@@ -341,12 +378,7 @@ where
             return self.render();
         }
 
-        let rects = ui::split_layout_with_sizes(
-            area,
-            self.state.environments_visible(),
-            self.state.left_column_width,
-            self.state.left_panel_heights,
-        );
+        let rects = super::render::layout_for(&self.state, area);
         if handle_docked_review_chat_mouse(&mut self.state, &rects, &m) {
             return self.render();
         }
@@ -475,8 +507,21 @@ impl App {
     }
 
     pub(super) fn handle_key(&mut self, k: KeyEvent) -> Result<()> {
+        // A session holding the keyboard sees everything, Ctrl-C included —
+        // interrupting the program inside it matters more than quitting lg,
+        // which Ctrl-] then q still does.
+        if self.state.session_input_active() {
+            if super::session::is_release_key(&k) {
+                self.set_session_capture(false);
+                self.state
+                    .set_status("keyboard back in lg \u{2014} i returns it", false);
+                return Ok(());
+            }
+            super::session::forward_key(&mut self.state, k);
+            return Ok(());
+        }
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
-            self.state.should_quit = true;
+            self.state.request_quit();
             return Ok(());
         }
 
@@ -518,6 +563,10 @@ impl App {
                 panel::delete_branch::handle_key(&mut self.state, k)?;
                 return Ok(());
             }
+            Modal::Worktree => {
+                panel::worktree::handle_key(&mut self.state, k)?;
+                return Ok(());
+            }
             Modal::ConfirmDestructive => {
                 panel::confirm::handle_key(&mut self.state, k)?;
                 return Ok(());
@@ -530,6 +579,18 @@ impl App {
         }
 
         match k.code {
+            KeyCode::F(2) => {
+                self.state.toggle_mode();
+                return Ok(());
+            }
+            KeyCode::Char('n') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cycle_session(true);
+                return Ok(());
+            }
+            KeyCode::Char('p') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cycle_session(false);
+                return Ok(());
+            }
             KeyCode::Char('?') => {
                 self.state.prev_focus = self.state.focus;
                 self.state.help_offset = 0;
@@ -547,7 +608,7 @@ impl App {
                 return Ok(());
             }
             KeyCode::Char('q') => {
-                self.state.should_quit = true;
+                self.state.request_quit();
                 return Ok(());
             }
             KeyCode::Esc if self.state.status.as_ref().is_some_and(|s| s.is_error) => {
@@ -568,41 +629,41 @@ impl App {
                 return Ok(());
             }
             KeyCode::Char('1') => {
-                self.state.focus = Pane::Status;
+                self.state.focus_pane(Pane::Status);
                 self.start_diff_job(false);
                 self.sync_commit_log_to_selection();
                 return Ok(());
             }
             KeyCode::Char('2') => {
-                self.state.focus = Pane::Files;
+                self.state.focus_pane(Pane::Files);
                 self.start_diff_job(false);
                 self.sync_commit_log_to_selection();
                 return Ok(());
             }
             KeyCode::Char('3') => {
-                self.state.focus = Pane::Branches;
+                self.state.focus_pane(Pane::Branches);
                 self.start_diff_job(false);
                 self.sync_commit_log_to_selection();
                 return Ok(());
             }
             KeyCode::Char('4') => {
-                self.state.focus = Pane::Commits;
+                self.state.focus_pane(Pane::Commits);
                 self.start_diff_job(false);
                 self.sync_commit_log_to_selection();
                 return Ok(());
             }
             KeyCode::Char('0') => {
-                self.state.focus = Pane::Main;
+                self.state.focus_pane(Pane::Main);
                 return Ok(());
             }
             KeyCode::Tab => {
-                self.state.focus = next_pane(self.state.focus);
+                self.state.focus = cycle_pane(&self.state, true);
                 self.start_diff_job(false);
                 self.sync_commit_log_to_selection();
                 return Ok(());
             }
             KeyCode::BackTab => {
-                self.state.focus = prev_pane(self.state.focus);
+                self.state.focus = cycle_pane(&self.state, false);
                 self.start_diff_job(false);
                 self.sync_commit_log_to_selection();
                 return Ok(());
@@ -688,12 +749,7 @@ impl App {
             return Ok(());
         }
 
-        let rects = ui::split_layout_with_sizes(
-            area,
-            self.state.environments_visible(),
-            self.state.left_column_width,
-            self.state.left_panel_heights,
-        );
+        let rects = super::render::layout_for(&self.state, area);
         if handle_docked_review_chat_mouse(&mut self.state, &rects, &m) {
             return Ok(());
         }

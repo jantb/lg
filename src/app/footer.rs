@@ -16,6 +16,8 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
             &[
                 ("j/k", "repo tree"),
                 ("Enter", "expand/checkout"),
+                ("n", "new worktree"),
+                ("s", "claude session"),
                 ("o", "open IDE"),
                 ("r", "remotes"),
                 ("Esc", "back"),
@@ -23,6 +25,7 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
                 ("a", "author"),
                 ("L", "model"),
                 ("p", "pull"),
+                ("F2", "workspace"),
                 ("?", "help"),
                 ("q", "quit"),
             ],
@@ -128,6 +131,9 @@ fn footer_spec(state: &AppState) -> (u8, &'static str, &'static [(&'static str, 
 
 pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     let left_spans = match state.modal {
+        Modal::None if state.session_view().is_some() && state.focus == Pane::Main => {
+            session_spans(state)
+        }
         Modal::None => default_spans(state),
         Modal::Commit => modal_spans(
             "Commit modal ",
@@ -148,6 +154,11 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
         Modal::Push => modal_spans(
             "Push modal ",
             &[("Enter", "push"), ("Esc", "cancel")],
+            Color::Cyan,
+        ),
+        Modal::Worktree => modal_spans(
+            "New worktree ",
+            &[("Tab", "field"), ("Enter", "create"), ("Esc", "cancel")],
             Color::Cyan,
         ),
         Modal::Author => modal_spans(
@@ -236,6 +247,32 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
             .alignment(Alignment::Right),
         chunks[1],
     );
+}
+
+/// Footer for the session pane. Which way the keyboard is pointing is the one
+/// thing that must never be in doubt.
+fn session_spans(state: &AppState) -> Vec<Span<'static>> {
+    let (title, color, pairs): (_, _, &[(&str, &str)]) = if state.session_capture {
+        (
+            "input \u{2192} claude ",
+            Color::Green,
+            &[("Ctrl-]", "keyboard back to lg, then Ctrl-n/p switches")],
+        )
+    } else {
+        (
+            "Session ",
+            Color::Cyan,
+            &[
+                ("i", "type into it"),
+                ("x", "close"),
+                ("Backspace", "back to diff"),
+                ("F2", "git view"),
+                ("?", "help"),
+                ("q", "quit"),
+            ],
+        )
+    };
+    modal_spans(title, pairs, color)
 }
 
 fn default_spans(state: &AppState) -> Vec<Span<'static>> {

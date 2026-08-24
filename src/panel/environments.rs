@@ -9,7 +9,7 @@ use ratatui::{
 use crate::{
     app,
     config::BRANCH_MAIN,
-    git::{Branch, NestedRepo, ReleaseEnv, ReleaseTargetStatus, RemoteBranch},
+    git::{Branch, NestedRepo, ReleaseEnv, ReleaseTargetStatus, RemoteBranch, Worktree},
     state::{AppState, BranchView, SPINNER_FRAMES, clamp_index},
     ui,
 };
@@ -23,7 +23,13 @@ const MIN_REPOSITORY_TREE_WITH_DEPLOYMENT: u16 = 6;
 const ACTIVE_REPOSITORY_BG: Color = Color::Rgb(24, 54, 34);
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
-    if !state.nested_repositories.is_empty() || !active_repo_is_workspace(state) {
+    // Workspace mode is built around this tree, so it is always drawn there —
+    // even for a lone checkout, which is where a session gets started from.
+    if !state.git_panes_visible()
+        || !state.nested_repositories.is_empty()
+        || !active_repo_is_workspace(state)
+        || state.has_linked_worktrees()
+    {
         render_nested_repositories(state, area, frame, focused);
         return;
     }
@@ -126,6 +132,18 @@ fn render_nested_repositories(state: &AppState, area: Rect, frame: &mut Frame, f
             NestedRepoTreeRow::Root => {
                 repository_list_item(root_repo_line(state, row_width), root_repo_selected(state))
             }
+            NestedRepoTreeRow::Session { id } => match state.sessions.get(*id) {
+                Some(session) => {
+                    let shown = state.session_view() == Some(*id);
+                    repository_list_item(session_line(session, row_width, shown), shown)
+                }
+                None => ListItem::new(Line::from("")),
+            },
+            NestedRepoTreeRow::Worktree { wt_idx } => {
+                let worktree = &state.worktrees[*wt_idx];
+                let active = worktree_selected(state, worktree);
+                repository_list_item(worktree_line(worktree, row_width, active), active)
+            }
             NestedRepoTreeRow::Repo { repo_idx } => {
                 let repo = &state.nested_repositories[*repo_idx];
                 let expanded = state
@@ -196,7 +214,12 @@ pub fn handle_key(
         KeyCode::Char('j') | KeyCode::Down => move_selection(state, true, 1),
         KeyCode::Char('k') | KeyCode::Up => move_selection(state, false, 1),
         KeyCode::Enter => match selected_tree_row(state) {
-            Some(NestedRepoTreeRow::Root | NestedRepoTreeRow::Repo { .. }) => {
+            Some(NestedRepoTreeRow::Session { id }) => show_session_row(state, id),
+            Some(
+                NestedRepoTreeRow::Root
+                | NestedRepoTreeRow::Repo { .. }
+                | NestedRepoTreeRow::Worktree { .. },
+            ) => {
                 activate_selected_repository_row(state);
             }
             Some(NestedRepoTreeRow::Branch {
@@ -235,6 +258,10 @@ pub fn handle_key(
                 state.pending_action = Some(crate::state::PendingAction::OpenProjectAt(path));
             }
         }
+        KeyCode::Char('n') => open_new_worktree_form(state),
+        KeyCode::Char('s') => start_session_for_selection(state, true),
+        KeyCode::Char('S') => start_session_for_selection(state, false),
+        KeyCode::Char('D') => remove_selected_worktree(state),
         KeyCode::Char('r') if state.nested_repo_detail_path.is_some() => {
             state.nested_repo_branch_view = match state.nested_repo_branch_view {
                 BranchView::Local => BranchView::Remote,
@@ -255,9 +282,11 @@ pub fn handle_key(
 
 pub(crate) fn activate_selected_repository_row(state: &mut AppState) -> bool {
     match selected_tree_row(state) {
+        Some(NestedRepoTreeRow::Worktree { wt_idx }) => activate_worktree_row(state, wt_idx),
         Some(NestedRepoTreeRow::Root) => {
-            state.pending_action =
-                Some(crate::state::PendingAction::SwitchRepository { path: None });
+            state.pending_action = Some(crate::state::PendingAction::SwitchRepository {
+                target: crate::state::RepoTarget::Workspace,
+            });
             true
         }
         Some(NestedRepoTreeRow::Repo { repo_idx }) => {
@@ -269,7 +298,7 @@ pub(crate) fn activate_selected_repository_row(state: &mut AppState) -> bool {
                 return false;
             };
             state.pending_action = Some(crate::state::PendingAction::SwitchRepository {
-                path: Some(path.clone()),
+                target: crate::state::RepoTarget::Nested(path.clone()),
             });
             if state.nested_repo_detail_path.as_deref() == Some(path.as_str()) {
                 state.nested_repo_tree_idx = tree_idx_for_repo_path(state, &path).unwrap_or(0);
@@ -282,10 +311,168 @@ pub(crate) fn activate_selected_repository_row(state: &mut AppState) -> bool {
     }
 }
 
+/// Start a claude session in the selected checkout, or show the one already
+/// running there. One session per checkout, so this is also how you get back to
+/// a session you left.
+fn start_session_for_selection(state: &mut AppState, sandboxed: bool) {
+    let Some((path, label)) = selected_checkout(state) else {
+        state.set_status("select a repository or worktree first", false);
+        return;
+    };
+    if let Some(id) = state.sessions.for_dir(std::path::Path::new(&path)) {
+        state.show_session(id);
+        state.session_capture = true;
+        return;
+    }
+    state.pending_action = Some(crate::state::PendingAction::StartSession {
+        path,
+        label,
+        sandboxed,
+    });
+}
+
+/// The checkout a row stands for: where it is, and what to call it.
+fn selected_checkout(state: &AppState) -> Option<(String, String)> {
+    match selected_tree_row(state)? {
+        NestedRepoTreeRow::Session { id } => {
+            let session = state.sessions.get(id)?;
+            Some((
+                session.cwd.to_string_lossy().into_owned(),
+                session.label.clone(),
+            ))
+        }
+        NestedRepoTreeRow::Worktree { wt_idx } => {
+            let worktree = state.worktrees.get(wt_idx)?;
+            Some((worktree.path.clone(), worktree.label()))
+        }
+        NestedRepoTreeRow::Root => {
+            let path = state
+                .workspace_root
+                .clone()
+                .or_else(|| state.repo_root.clone())?;
+            let label = state
+                .branch
+                .clone()
+                .unwrap_or_else(|| dir_name(&path).to_string());
+            Some((path, label))
+        }
+        NestedRepoTreeRow::Repo { repo_idx }
+        | NestedRepoTreeRow::Branch { repo_idx, .. }
+        | NestedRepoTreeRow::Remote { repo_idx, .. } => {
+            let root = state.workspace_root.as_ref().or(state.repo_root.as_ref())?;
+            let repo = state.nested_repositories.get(repo_idx)?;
+            let path = std::path::Path::new(root)
+                .join(&repo.path)
+                .to_string_lossy()
+                .into_owned();
+            let label = repo
+                .branch
+                .clone()
+                .unwrap_or_else(|| dir_name(&repo.path).to_string());
+            Some((path, label))
+        }
+    }
+}
+
+fn dir_name(path: &str) -> &str {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path)
+}
+
+/// Open the new-worktree form for the active repository.
+fn open_new_worktree_form(state: &mut AppState) {
+    if state.repo_root.is_none() && state.worktrees.is_empty() {
+        state.set_status("no repository to add a worktree to", true);
+        return;
+    }
+    state.open_worktree_modal(crate::git::preferred_base_ref());
+}
+
+/// Remove the selected worktree, or forget one whose directory is already
+/// gone. The checkout lg is showing cannot be removed from under itself, and
+/// neither can the main worktree — git refuses that too.
+fn remove_selected_worktree(state: &mut AppState) {
+    let Some(NestedRepoTreeRow::Worktree { wt_idx }) = selected_tree_row(state) else {
+        state.set_status("select a worktree row to remove it", false);
+        return;
+    };
+    let Some(worktree) = state.worktrees.get(wt_idx) else {
+        return;
+    };
+    if worktree.is_missing() {
+        state.pending_action = Some(crate::state::PendingAction::PruneWorktrees);
+        return;
+    }
+    if worktree.is_main {
+        state.set_status("the main checkout cannot be removed", true);
+        return;
+    }
+    if worktree_selected(state, worktree) {
+        state.set_status("switch to another checkout first", true);
+        return;
+    }
+    if worktree.locked.is_some() {
+        state.set_status(format!("{} is locked", worktree.label()), true);
+        return;
+    }
+
+    let label = worktree.label();
+    let path = worktree.path.clone();
+    let dirty = worktree.has_changes;
+    let detail = if dirty {
+        format!("{path} has uncommitted changes, which will be discarded.")
+    } else {
+        path.clone()
+    };
+    state.confirm_action(
+        "Remove Worktree",
+        format!("Remove the worktree for {label}?"),
+        detail,
+        crate::state::PendingAction::RemoveWorktree { path, force: dirty },
+    );
+}
+
+/// Switch to the selected worktree. A worktree git still knows about but whose
+/// directory is gone cannot be entered, so say that instead of failing later.
+fn activate_worktree_row(state: &mut AppState, wt_idx: usize) -> bool {
+    let Some(worktree) = state.worktrees.get(wt_idx) else {
+        return false;
+    };
+    if worktree.is_missing() {
+        let label = worktree.label();
+        state.set_status(format!("{label} is missing on disk; prune it"), true);
+        return false;
+    }
+    state.pending_action = Some(crate::state::PendingAction::SwitchRepository {
+        target: crate::state::RepoTarget::Path(std::path::PathBuf::from(&worktree.path)),
+    });
+    true
+}
+
+/// Whether this worktree is the checkout every other panel is showing.
+fn worktree_selected(state: &AppState, worktree: &Worktree) -> bool {
+    state.repo_root.as_deref().is_some_and(|root| {
+        same_dir(
+            std::path::Path::new(root),
+            std::path::Path::new(&worktree.path),
+        )
+    })
+}
+
 fn selected_repository_project_path(state: &AppState) -> Option<String> {
     let root = state.workspace_root.as_ref().or(state.repo_root.as_ref())?;
     match selected_tree_row(state)? {
         NestedRepoTreeRow::Root => Some(root.clone()),
+        NestedRepoTreeRow::Session { id } => state
+            .sessions
+            .get(id)
+            .map(|session| session.cwd.to_string_lossy().into_owned()),
+        NestedRepoTreeRow::Worktree { wt_idx } => state
+            .worktrees
+            .get(wt_idx)
+            .map(|worktree| worktree.path.clone()),
         NestedRepoTreeRow::Repo { repo_idx }
         | NestedRepoTreeRow::Branch { repo_idx, .. }
         | NestedRepoTreeRow::Remote { repo_idx, .. } => state
@@ -368,7 +555,12 @@ pub(crate) fn select_nested_repo_tree_row(state: &mut AppState, idx: usize) {
             | NestedRepoTreeRow::Branch { repo_idx, .. }
             | NestedRepoTreeRow::Remote { repo_idx, .. },
         ) => state.nested_repositories_idx = repo_idx,
-        Some(NestedRepoTreeRow::Root) | None => {}
+        Some(
+            NestedRepoTreeRow::Root
+            | NestedRepoTreeRow::Worktree { .. }
+            | NestedRepoTreeRow::Session { .. },
+        )
+        | None => {}
     }
 }
 
@@ -381,7 +573,12 @@ fn move_selection(state: &mut AppState, down: bool, amount: usize) {
             | NestedRepoTreeRow::Branch { repo_idx, .. }
             | NestedRepoTreeRow::Remote { repo_idx, .. },
         ) => state.nested_repositories_idx = repo_idx,
-        Some(NestedRepoTreeRow::Root) | None => {}
+        Some(
+            NestedRepoTreeRow::Root
+            | NestedRepoTreeRow::Worktree { .. }
+            | NestedRepoTreeRow::Session { .. },
+        )
+        | None => {}
     }
 }
 
@@ -398,16 +595,49 @@ fn move_index(idx: &mut usize, len: usize, down: bool, amount: usize) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NestedRepoTreeRow {
     Root,
-    Repo { repo_idx: usize },
-    Branch { repo_idx: usize, branch_idx: usize },
-    Remote { repo_idx: usize, branch_idx: usize },
+    /// A running (or finished) session, listed under the checkout it runs in.
+    Session {
+        id: crate::session::SessionId,
+    },
+    /// A checkout of the active repository, listed under the row that stands
+    /// for that repository.
+    Worktree {
+        wt_idx: usize,
+    },
+    Repo {
+        repo_idx: usize,
+    },
+    Branch {
+        repo_idx: usize,
+        branch_idx: usize,
+    },
+    Remote {
+        repo_idx: usize,
+        branch_idx: usize,
+    },
 }
 
 fn nested_repo_tree_rows(state: &AppState) -> Vec<NestedRepoTreeRow> {
+    let worktrees = worktree_rows(state);
+    let anchor = worktree_anchor(state);
+    let worktree_rows_for = |repo_idx: Option<usize>| {
+        let mine = anchor == repo_idx;
+        worktrees
+            .iter()
+            .filter(move |_| mine)
+            .map(|wt_idx| NestedRepoTreeRow::Worktree { wt_idx: *wt_idx })
+    };
+
     let mut rows = Vec::new();
-    rows.push(NestedRepoTreeRow::Root);
+    push_checkout(&mut rows, state, NestedRepoTreeRow::Root);
+    for row in worktree_rows_for(None) {
+        push_checkout(&mut rows, state, row);
+    }
     for (repo_idx, repo) in state.nested_repositories.iter().enumerate() {
-        rows.push(NestedRepoTreeRow::Repo { repo_idx });
+        push_checkout(&mut rows, state, NestedRepoTreeRow::Repo { repo_idx });
+        for row in worktree_rows_for(Some(repo_idx)) {
+            push_checkout(&mut rows, state, row);
+        }
         if state.nested_repo_detail_path.as_deref() == Some(repo.path.as_str()) {
             match state.nested_repo_branch_view {
                 BranchView::Local => {
@@ -430,6 +660,98 @@ fn nested_repo_tree_rows(state: &AppState) -> Vec<NestedRepoTreeRow> {
         }
     }
     rows
+}
+
+/// Add a checkout row, followed by the session running in it, if any.
+fn push_checkout(rows: &mut Vec<NestedRepoTreeRow>, state: &AppState, row: NestedRepoTreeRow) {
+    rows.push(row);
+    if let Some(dir) = row_checkout_dir(state, row)
+        && let Some(id) = state.sessions.for_dir(std::path::Path::new(&dir))
+    {
+        rows.push(NestedRepoTreeRow::Session { id });
+    }
+}
+
+/// Where a row's checkout lives, for rows that stand for one.
+fn row_checkout_dir(state: &AppState, row: NestedRepoTreeRow) -> Option<String> {
+    match row {
+        NestedRepoTreeRow::Root => state
+            .workspace_root
+            .clone()
+            .or_else(|| state.repo_root.clone()),
+        NestedRepoTreeRow::Worktree { wt_idx } => state
+            .worktrees
+            .get(wt_idx)
+            .map(|worktree| worktree.path.clone()),
+        NestedRepoTreeRow::Repo { repo_idx } => {
+            let root = state.workspace_root.as_ref().or(state.repo_root.as_ref())?;
+            let repo = state.nested_repositories.get(repo_idx)?;
+            Some(
+                std::path::Path::new(root)
+                    .join(&repo.path)
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        }
+        NestedRepoTreeRow::Session { .. }
+        | NestedRepoTreeRow::Branch { .. }
+        | NestedRepoTreeRow::Remote { .. } => None,
+    }
+}
+
+/// Worktrees that need a row of their own. The tree already shows the
+/// workspace checkout and every nested repository, so a worktree sitting at one
+/// of those paths is left out rather than listed twice.
+fn worktree_rows(state: &AppState) -> Vec<usize> {
+    if state.worktrees.len() < 2 {
+        return Vec::new();
+    }
+    state
+        .worktrees
+        .iter()
+        .enumerate()
+        .filter(|(_, worktree)| !worktree_has_another_row(state, worktree))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+fn worktree_has_another_row(state: &AppState, worktree: &Worktree) -> bool {
+    let path = std::path::Path::new(&worktree.path);
+    let Some(root) = state.workspace_root.as_deref() else {
+        return false;
+    };
+    let root = std::path::Path::new(root);
+    if same_dir(root, path) {
+        return true;
+    }
+    state
+        .nested_repositories
+        .iter()
+        .any(|repo| same_dir(&root.join(&repo.path), path))
+}
+
+/// The row the worktrees hang under: the nested repository they belong to, or
+/// `None` for the workspace checkout itself. The main worktree is what ties a
+/// set of worktrees to a repository.
+fn worktree_anchor(state: &AppState) -> Option<usize> {
+    let main = state.worktrees.iter().find(|worktree| worktree.is_main)?;
+    let root = std::path::Path::new(state.workspace_root.as_deref()?);
+    state
+        .nested_repositories
+        .iter()
+        .position(|repo| same_dir(&root.join(&repo.path), std::path::Path::new(&main.path)))
+}
+
+/// Compare two directories, allowing for one side being reached through a
+/// symlink — a workspace of symlinked repositories is the normal case.
+fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 fn selected_tree_row(state: &AppState) -> Option<NestedRepoTreeRow> {
@@ -486,9 +808,14 @@ fn repository_list_item(line: Line<'static>, selected: bool) -> ListItem<'static
 /// Names the checkout every other panel is showing, so the active repository
 /// is readable from the panel frame and not only from the highlighted row.
 fn repositories_title(state: &AppState) -> String {
+    let kind = if state.git_panes_visible() {
+        "Repositories"
+    } else {
+        "Checkouts"
+    };
     match active_repo_name(state) {
-        Some(name) => format!("Repositories \u{2022} {name}"),
-        None => "Repositories".to_string(),
+        Some(name) => format!("{kind} \u{2022} {name}"),
+        None => kind.to_string(),
     }
 }
 
@@ -562,6 +889,116 @@ fn nested_repo_line(
             .add_modifier(Modifier::BOLD),
     ));
     Line::from(spans)
+}
+
+/// Show a session in the main pane and give it the keyboard.
+fn show_session_row(state: &mut AppState, id: crate::session::SessionId) {
+    if state.sessions.get(id).is_none() {
+        return;
+    }
+    state.show_session(id);
+    state.session_capture = true;
+}
+
+/// A session under its checkout: whether it is running, and whether it has said
+/// something since it was last looked at.
+fn session_line(session: &crate::session::Session, row_width: usize, shown: bool) -> Line<'static> {
+    let (glyph, glyph_color) = match (&session.status, session.attention) {
+        (crate::session::SessionStatus::Ended(_), _) => ("\u{25cb} ", Color::DarkGray),
+        (_, true) => ("\u{25cf} ", Color::Yellow),
+        _ => ("\u{25cf} ", Color::Green),
+    };
+    let state_text = match &session.status {
+        crate::session::SessionStatus::Running if session.attention => {
+            "claude \u{25b4}".to_string()
+        }
+        crate::session::SessionStatus::Running => "claude".to_string(),
+        crate::session::SessionStatus::Ended(notice) => format!("claude {notice}"),
+    };
+    let mut spans = vec![
+        Span::styled("    ", Style::default()),
+        Span::styled(glyph, Style::default().fg(glyph_color)),
+    ];
+    spans.push(Span::styled(
+        truncate_chars(&state_text, row_width.saturating_sub(6)),
+        if shown {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        },
+    ));
+    if session.sandboxed && row_width > state_text.chars().count() + 16 {
+        spans.push(Span::styled(
+            " sandboxed",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// One checkout of the active repository: what is checked out there, which
+/// directory it is, and whether it can be entered at all.
+fn worktree_line(worktree: &Worktree, row_width: usize, active: bool) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled("  \u{2387} ", Style::default().fg(Color::LightMagenta)),
+        Span::styled(
+            if active { "* " } else { "  " },
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if worktree.has_changes {
+        spans.push(Span::styled(
+            "! ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    let note = worktree_note(worktree);
+    let used = 4 + if worktree.has_changes { 2 } else { 0 };
+    let note_width = note.as_ref().map_or(0, |note| note.chars().count() + 1);
+    let label = worktree.label();
+    let label_width = row_width
+        .saturating_sub(used)
+        .saturating_sub(note_width)
+        .saturating_sub(worktree.dir_name().chars().count() + 1);
+
+    spans.push(Span::styled(
+        truncate_chars(&label, label_width.max(4)),
+        Style::default()
+            .fg(if worktree.branch.is_some() {
+                Color::Green
+            } else {
+                Color::LightMagenta
+            })
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(
+        truncate_chars(&worktree.dir_name(), row_width.saturating_sub(used + 1)),
+        Style::default().fg(Color::DarkGray),
+    ));
+    if let Some(note) = note {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(note, Style::default().fg(Color::Red)));
+    }
+    Line::from(spans)
+}
+
+/// Why a worktree cannot simply be entered, when that is the case.
+fn worktree_note(worktree: &Worktree) -> Option<String> {
+    if worktree.is_missing() {
+        return Some("missing".to_string());
+    }
+    if worktree.locked.is_some() {
+        return Some("locked".to_string());
+    }
+    None
 }
 
 fn root_repo_line(state: &AppState, row_width: usize) -> Line<'static> {
