@@ -323,6 +323,8 @@ fn review_style_flag_file(
             crate::state::GenMsg::Error(message) => error = Some(message),
             crate::state::GenMsg::Thinking(chunk) => thinking.push_str(&chunk),
             crate::state::GenMsg::Output(_) => {}
+            // Only Done is read here, so a reclassified draft costs nothing.
+            crate::state::GenMsg::Reset => thinking.clear(),
         }
     }
     if let Some(error) = error {

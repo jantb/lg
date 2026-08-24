@@ -74,6 +74,12 @@ fn drain_review_stream(
                     assists.insert(job.node_id.clone(), job.output.clone());
                 }
             }
+            GenMsg::Reset => {
+                if let Some(job) = slot.as_mut() {
+                    job.output.clear();
+                    assists.insert(job.node_id.clone(), String::new());
+                }
+            }
             GenMsg::Done(final_msg) => {
                 if let Some(mut job) = slot.take() {
                     handle = job.handle.take();
@@ -897,6 +903,11 @@ impl App {
                         g.output.push_str(&o);
                     }
                 }
+                GenMsg::Reset => {
+                    if let Some(g) = self.state.generation.as_mut() {
+                        g.output.clear();
+                    }
+                }
                 GenMsg::Done(final_msg) => {
                     if let Some(mut g) = self.state.generation.take() {
                         handle = g.handle.take();
@@ -947,6 +958,11 @@ impl App {
                 GenMsg::Output(output) => {
                     if let Some(job) = self.state.review_chat_job.as_mut() {
                         job.output.push_str(&output);
+                    }
+                }
+                GenMsg::Reset => {
+                    if let Some(job) = self.state.review_chat_job.as_mut() {
+                        job.output.clear();
                     }
                 }
                 GenMsg::Done(final_msg) => {

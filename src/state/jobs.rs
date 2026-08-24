@@ -86,6 +86,10 @@ impl_background_job! {
 pub enum GenMsg {
     Thinking(String),
     Output(String),
+    /// What has been sent as output turned out to be reasoning after all — a
+    /// closing think tag arrived with no opening one. Consumers drop whatever
+    /// they have accumulated and start over.
+    Reset,
     Done(String),
     Error(String),
 }
