@@ -2776,6 +2776,76 @@ fn branch_release_status_reports_missing_commits_after_release() {
     assert_eq!(test.missing_commits, 2);
 }
 
+#[test]
+fn release_branches_detects_each_deploy_branch_on_its_own() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let _cwd = CwdGuard::new(dir.path());
+    let targets = lg::git::release_branches();
+    assert_eq!(targets.branch(lg::git::ReleaseEnv::Dev), None);
+    assert_eq!(targets.branch(lg::git::ReleaseEnv::Test), None);
+    assert!(!targets.any(), "a repo with only main deploys nothing");
+
+    // alv.no shape: a test branch and no develop branch at all.
+    git_ok(dir.path(), &["branch", "test"]);
+    let targets = lg::git::release_branches();
+    assert_eq!(targets.branch(lg::git::ReleaseEnv::Dev), None);
+    assert_eq!(targets.branch(lg::git::ReleaseEnv::Test), Some("test"));
+    assert!(targets.any(), "a test branch alone is a deploy target");
+
+    // Either spelling of the dev branch counts.
+    git_ok(dir.path(), &["branch", "dev"]);
+    let targets = lg::git::release_branches();
+    assert_eq!(targets.branch(lg::git::ReleaseEnv::Dev), Some("dev"));
+
+    // develop wins when a checkout has both spellings.
+    git_ok(dir.path(), &["branch", "develop"]);
+    let targets = lg::git::release_branches();
+    assert_eq!(targets.branch(lg::git::ReleaseEnv::Dev), Some("develop"));
+}
+
+#[test]
+fn release_status_reports_test_only_repository() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "origin", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", "test"]);
+    git_ok(dir.path(), &["push", "origin", "test"]);
+
+    let feature = "feature/test-only";
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("feature.txt"), "released").unwrap();
+    stage_in(dir.path(), "feature.txt");
+    commit_in(dir.path(), "released feature commit");
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::flow_release_current(feature, "test").expect("release to test");
+
+    let status = lg::git::branch_release_status(feature).expect("branch release status");
+    assert!(
+        status.develop.is_none(),
+        "a repo without a develop branch has no develop status"
+    );
+    let test = status.test.expect("test release status");
+    assert_eq!(test.missing_commits, 0);
+    assert!(!test.released_at.is_empty(), "missing release timestamp");
+    let main = status.main.expect("main release status");
+    assert_eq!(main.missing_commits, 1);
+}
+
 // ── parse_porcelain unit tests (comprehensive) ─────────────────────────────
 
 #[test]

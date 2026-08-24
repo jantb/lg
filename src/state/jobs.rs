@@ -3,7 +3,8 @@ use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
 use crate::git::{
-    AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry, NestedRepo, RemoteBranch,
+    AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry, NestedRepo, ReleaseBranches,
+    RemoteBranch,
 };
 
 use super::DiffSource;
@@ -133,7 +134,7 @@ pub struct RefreshSnapshot {
     pub branches: Option<Vec<Branch>>,
     pub remote_branches: Option<Vec<RemoteBranch>>,
     pub nested_repositories: Option<Vec<NestedRepo>>,
-    pub flow_branches_available: bool,
+    pub release_branches: ReleaseBranches,
     pub commits: Option<Vec<Commit>>,
     pub unpushed_shas: Option<HashSet<String>>,
     pub branch: Option<String>,

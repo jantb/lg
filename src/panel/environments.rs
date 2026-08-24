@@ -8,15 +8,17 @@ use ratatui::{
 
 use crate::{
     app,
-    config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST},
-    git::{Branch, NestedRepo, ReleaseTargetStatus, RemoteBranch},
+    config::BRANCH_MAIN,
+    git::{Branch, NestedRepo, ReleaseEnv, ReleaseTargetStatus, RemoteBranch},
     state::{AppState, BranchView, SPINNER_FRAMES, clamp_index},
     ui,
 };
 
 use super::scroll;
 
-const DEPLOYMENT_STATUS_HEIGHT: u16 = 6;
+/// Borders plus the branch line plus the `main` row. Deploy branches add one
+/// row each, and a checkout does not have to have both.
+const DEPLOYMENT_STATUS_BASE_HEIGHT: u16 = 4;
 const MIN_REPOSITORY_TREE_WITH_DEPLOYMENT: u16 = 6;
 const ACTIVE_REPOSITORY_BG: Color = Color::Rgb(24, 54, 34);
 
@@ -32,6 +34,24 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     }
 
     render_deployment_status(state, area, frame);
+}
+
+/// Height the deployment box needs in this checkout: only the deploy branches
+/// that exist get a row.
+fn deployment_status_height(state: &AppState) -> u16 {
+    DEPLOYMENT_STATUS_BASE_HEIGHT + u16::try_from(release_envs(state).len()).unwrap_or(0)
+}
+
+/// The deploy environments this checkout has, in promotion order.
+fn release_envs(state: &AppState) -> Vec<(ReleaseEnv, String)> {
+    [ReleaseEnv::Dev, ReleaseEnv::Test]
+        .into_iter()
+        .filter_map(|env| {
+            state
+                .release_branch(env)
+                .map(|branch| (env, branch.to_string()))
+        })
+        .collect()
 }
 
 fn render_deployment_status(state: &AppState, area: Rect, frame: &mut Frame) {
@@ -56,31 +76,31 @@ fn render_deployment_status(state: &AppState, area: Rect, frame: &mut Frame) {
         state.animation_tick,
         release_status_loading(state),
     ));
-    lines.push(env_line(
-        BRANCH_DEV,
-        state.current_branch_releases.develop.as_ref(),
-        Color::Cyan,
-        state.animation_tick,
-        release_status_loading(state),
-    ));
-    lines.push(env_line(
-        BRANCH_TEST,
-        state.current_branch_releases.test.as_ref(),
-        Color::Yellow,
-        state.animation_tick,
-        release_status_loading(state),
-    ));
+    for (env, branch) in release_envs(state) {
+        let (status, color) = match env {
+            ReleaseEnv::Dev => (state.current_branch_releases.develop.as_ref(), Color::Cyan),
+            ReleaseEnv::Test => (state.current_branch_releases.test.as_ref(), Color::Yellow),
+        };
+        lines.push(env_line(
+            &branch,
+            status,
+            color,
+            state.animation_tick,
+            release_status_loading(state),
+        ));
+    }
 
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn render_nested_repositories(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
+    let deployment_height = deployment_status_height(state);
     let show_deployment = state.flow_available()
-        && area.height >= DEPLOYMENT_STATUS_HEIGHT + MIN_REPOSITORY_TREE_WITH_DEPLOYMENT;
+        && area.height >= deployment_height + MIN_REPOSITORY_TREE_WITH_DEPLOYMENT;
     let (tree_area, deployment_area) = if show_deployment {
         let chunks = Layout::vertical([
             Constraint::Min(MIN_REPOSITORY_TREE_WITH_DEPLOYMENT),
-            Constraint::Length(DEPLOYMENT_STATUS_HEIGHT),
+            Constraint::Length(deployment_height),
         ])
         .split(area);
         (chunks[0], Some(chunks[1]))
@@ -90,9 +110,10 @@ fn render_nested_repositories(state: &AppState, area: Rect, frame: &mut Frame, f
     let rows = nested_repo_tree_rows(state);
     let len = rows.len();
     let selected_idx = clamp_index(state.nested_repo_tree_idx, len);
+    let title = repositories_title(state);
     let block = ui::framed_with_activity(
         1,
-        "Repositories",
+        &title,
         focused,
         selected_idx.map(|idx| (idx + 1, len)),
         state.animation_tick,
@@ -113,10 +134,8 @@ fn render_nested_repositories(state: &AppState, area: Rect, frame: &mut Frame, f
                     .is_some_and(|repo| {
                         state.nested_repo_detail_path.as_deref() == Some(&repo.path)
                     });
-                repository_list_item(
-                    nested_repo_line(repo, row_width, expanded),
-                    nested_repo_selected(state, &repo.path),
-                )
+                let active = nested_repo_selected(state, &repo.path);
+                repository_list_item(nested_repo_line(repo, row_width, expanded, active), active)
             }
             NestedRepoTreeRow::Branch { branch_idx, .. } => ListItem::new(nested_branch_line(
                 &state.nested_repo_branches[*branch_idx],
@@ -464,7 +483,29 @@ fn repository_list_item(line: Line<'static>, selected: bool) -> ListItem<'static
     }
 }
 
-fn nested_repo_line(repo: &NestedRepo, row_width: usize, expanded: bool) -> Line<'static> {
+/// Names the checkout every other panel is showing, so the active repository
+/// is readable from the panel frame and not only from the highlighted row.
+fn repositories_title(state: &AppState) -> String {
+    match active_repo_name(state) {
+        Some(name) => format!("Repositories \u{2022} {name}"),
+        None => "Repositories".to_string(),
+    }
+}
+
+fn active_repo_name(state: &AppState) -> Option<String> {
+    let root = state.repo_root.as_deref()?;
+    std::path::Path::new(root)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+}
+
+fn nested_repo_line(
+    repo: &NestedRepo,
+    row_width: usize,
+    expanded: bool,
+    active: bool,
+) -> Line<'static> {
     let branch = repo
         .branch
         .clone()
@@ -474,7 +515,7 @@ fn nested_repo_line(repo: &NestedRepo, row_width: usize, expanded: bool) -> Line
                 .map(|sha| format!("detached@{sha}"))
         })
         .unwrap_or_else(|| "unknown".to_string());
-    let marker_width = 2 + if repo.has_changes { 2 } else { 0 };
+    let marker_width = 4 + if repo.has_changes { 2 } else { 0 };
     let branch_width = branch.chars().count().saturating_add(1);
     let max_path_width = row_width
         .saturating_sub(marker_width)
@@ -484,6 +525,12 @@ fn nested_repo_line(repo: &NestedRepo, row_width: usize, expanded: bool) -> Line
     spans.push(Span::styled(
         if expanded { "\u{25be} " } else { "\u{25b8} " },
         Style::default().fg(Color::LightMagenta),
+    ));
+    spans.push(Span::styled(
+        if active { "* " } else { "  " },
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
     ));
     if repo.has_changes {
         spans.push(Span::styled(
@@ -495,7 +542,13 @@ fn nested_repo_line(repo: &NestedRepo, row_width: usize, expanded: bool) -> Line
     }
     spans.push(Span::styled(
         truncate_chars(&repo.path, max_path_width),
-        Style::default().fg(Color::Gray),
+        if active {
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        },
     ));
     spans.push(Span::raw(" "));
     spans.push(Span::styled(
@@ -582,7 +635,7 @@ fn nested_remote_branch_line(branch: &RemoteBranch, row_width: usize) -> Line<'s
 }
 
 fn env_line(
-    label: &'static str,
+    label: &str,
     status: Option<&ReleaseTargetStatus>,
     color: Color,
     tick: usize,
@@ -598,7 +651,7 @@ fn env_line(
         Span::styled(marker, Style::default().fg(color)),
         Span::raw(" "),
         Span::styled(
-            label,
+            label.to_string(),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),

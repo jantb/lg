@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::{
     app,
-    config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST, DEFAULT_PUSH_REMOTE},
+    config::{BRANCH_MAIN, DEFAULT_PUSH_REMOTE, is_deploy_branch_name, is_protected_branch_name},
     git::{Branch, RemoteBranch},
     state::{AppState, BranchView, FlowAction, PendingAction, SPINNER_FRAMES, clamp_index},
     ui,
@@ -205,7 +205,9 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 }
             } else if !state.merge_main_available() {
                 let status = match state.branch.as_deref() {
-                    Some(BRANCH_DEV | BRANCH_TEST) => "current branch is not behind origin/main",
+                    Some(branch) if is_deploy_branch_name(branch) => {
+                        "current branch is not behind origin/main"
+                    }
                     _ => "checkout a feature branch before merging main",
                 };
                 state.set_status(status, true);
@@ -268,7 +270,7 @@ fn shifted_char(key: KeyEvent, lower: char, upper: char) -> bool {
 }
 
 fn protected_branch(name: &str) -> bool {
-    matches!(name, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST)
+    is_protected_branch_name(name)
 }
 
 fn local_branch_line(state: &AppState, branch: &Branch, row_width: usize) -> Line<'static> {

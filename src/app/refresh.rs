@@ -73,7 +73,7 @@ pub(super) fn build_refresh_snapshot(workspace_root: Option<String>) -> RefreshS
         branches,
         remote_branches,
         nested_repositories,
-        flow_branches_available: crate::git::flow_branches_available(),
+        release_branches: crate::git::release_branches(),
         commits,
         unpushed_shas,
         branch,

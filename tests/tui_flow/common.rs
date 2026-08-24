@@ -1,7 +1,7 @@
 pub use lg::{
     git::{
         AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry, NestedRepo,
-        ReleaseTargetStatus, RemoteBranch, ReviewNode,
+        ReleaseBranches, ReleaseTargetStatus, RemoteBranch, ReviewNode,
     },
     panel,
     state::{

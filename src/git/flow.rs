@@ -4,7 +4,10 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST, DEFAULT_PUSH_REMOTE};
+use crate::config::{
+    BRANCH_MAIN, BRANCH_TEST, DEFAULT_PUSH_REMOTE, DEV_BRANCH_NAMES, deploy_branch_list,
+    is_deploy_branch_name, is_protected_branch_name, protected_branch_list,
+};
 
 use super::{counts_ahead_behind, head_branch, list_branches, run, run_combined, stage};
 
@@ -266,7 +269,7 @@ pub fn flow_release_current_with_progress(
     pop_stash_if_needed(stashed)?;
     delete_safety_ref(&safety_ref)?;
 
-    let env = if target_branch == BRANCH_DEV {
+    let env = if DEV_BRANCH_NAMES.contains(&target_branch) {
         "dev"
     } else if target_branch == BRANCH_TEST {
         "test"
@@ -553,7 +556,7 @@ pub fn delete_remote_branch(name: &str) -> Result<String> {
 }
 
 fn is_protected_branch(name: &str) -> bool {
-    matches!(name, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST)
+    is_protected_branch_name(name)
 }
 
 pub fn flow_clean_orphan_branches(current_branch: &str) -> Result<String> {
@@ -765,9 +768,10 @@ fn git_path_exists(name: &str) -> Result<bool> {
 }
 
 fn ensure_feature_branch(branch: &str) -> Result<()> {
-    if branch.is_empty() || matches!(branch, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST) {
+    if branch.is_empty() || is_protected_branch_name(branch) {
         anyhow::bail!(
-            "checkout a feature branch first; protected branches: {BRANCH_MAIN}, {BRANCH_DEV}, {BRANCH_TEST}"
+            "checkout a feature branch first; protected branches: {}",
+            protected_branch_list()
         );
     }
     Ok(())
@@ -775,20 +779,26 @@ fn ensure_feature_branch(branch: &str) -> Result<()> {
 
 fn ensure_merge_main_branch(branch: &str) -> Result<()> {
     if branch.is_empty() || branch == BRANCH_MAIN {
-        anyhow::bail!("checkout a feature, {BRANCH_DEV}, or {BRANCH_TEST} branch first");
+        anyhow::bail!(
+            "checkout a feature branch or a deploy branch ({}) first",
+            deploy_branch_list()
+        );
     }
     Ok(())
 }
 
 fn ensure_release_branch(branch: &str) -> Result<()> {
     if !is_release_branch(branch) {
-        anyhow::bail!("expected {BRANCH_DEV} or {BRANCH_TEST}, got {branch}");
+        anyhow::bail!(
+            "expected a deploy branch ({}), got {branch}",
+            deploy_branch_list()
+        );
     }
     Ok(())
 }
 
 fn is_release_branch(branch: &str) -> bool {
-    matches!(branch, BRANCH_DEV | BRANCH_TEST)
+    is_deploy_branch_name(branch)
 }
 
 fn upstream_push_target(upstream: &str) -> Option<(&str, &str)> {
@@ -958,7 +968,7 @@ fn orphan_branches() -> Result<Vec<String>> {
     let text = String::from_utf8_lossy(&out.stdout);
     let mut orphans = Vec::new();
     for branch in text.lines().map(str::trim).filter(|b| !b.is_empty()) {
-        if matches!(branch, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST) {
+        if is_protected_branch_name(branch) {
             continue;
         }
         let upstream = Command::new("git")

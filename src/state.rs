@@ -6,9 +6,10 @@ use std::thread::JoinHandle;
 use chrono::{DateTime, Utc};
 
 use crate::{
-    config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST},
+    config::{BRANCH_MAIN, BRANCH_TEST, DEV_BRANCH_NAMES, is_deploy_branch_name},
     git::{
-        AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry, NestedRepo, RemoteBranch,
+        AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry, NestedRepo,
+        ReleaseBranches, ReleaseEnv, RemoteBranch,
     },
 };
 
@@ -279,7 +280,7 @@ pub struct AppState {
     pub commits_ref: Option<String>,
     pub current_branch_releases: BranchReleaseStatus,
     pub current_branch_releases_ref: Option<String>,
-    pub flow_branches_available: bool,
+    pub release_branches: ReleaseBranches,
     pub unpushed_shas: HashSet<String>,
 
     pub files_idx: usize,
@@ -462,6 +463,16 @@ impl FlowAction {
         }
     }
 
+    /// The environment a release or reset action targets. `None` for actions
+    /// that do not touch a deploy branch.
+    pub fn release_env(self) -> Option<ReleaseEnv> {
+        match self {
+            Self::ReleaseDev | Self::ResetDev => Some(ReleaseEnv::Dev),
+            Self::ReleaseTest | Self::ResetTest => Some(ReleaseEnv::Test),
+            _ => None,
+        }
+    }
+
     pub fn needs_confirmation(self) -> bool {
         !matches!(self, Self::NewFeature | Self::TransferDiff)
     }
@@ -489,7 +500,7 @@ impl AppState {
             commits_ref: None,
             current_branch_releases: BranchReleaseStatus::default(),
             current_branch_releases_ref: None,
-            flow_branches_available: false,
+            release_branches: ReleaseBranches::default(),
             unpushed_shas: HashSet::new(),
 
             files_idx: 0,
@@ -800,9 +811,46 @@ impl AppState {
         })
     }
 
+    /// The branch that deploys `env` in this checkout, if it has one. Falls back
+    /// to the local branch list so the panels are right before the first
+    /// refresh snapshot lands.
+    pub fn release_branch(&self, env: ReleaseEnv) -> Option<&str> {
+        if let Some(branch) = self.release_branches.branch(env) {
+            return Some(branch);
+        }
+        match env {
+            ReleaseEnv::Dev => DEV_BRANCH_NAMES
+                .into_iter()
+                .find(|name| self.branch_exists(name)),
+            ReleaseEnv::Test => self.branch_exists(BRANCH_TEST).then_some(BRANCH_TEST),
+        }
+    }
+
+    /// Whether this checkout deploys from any branch at all. One deploy branch
+    /// is enough — the release actions for the missing one stay hidden.
     pub fn flow_available(&self) -> bool {
-        self.flow_branches_available
-            || (self.branch_exists(BRANCH_DEV) && self.branch_exists(BRANCH_TEST))
+        self.release_branch(ReleaseEnv::Dev).is_some()
+            || self.release_branch(ReleaseEnv::Test).is_some()
+    }
+
+    /// The label for a flow action, naming the deploy branch this checkout
+    /// actually uses instead of the default spelling.
+    pub fn flow_action_label(&self, action: FlowAction) -> String {
+        let Some(branch) = action
+            .release_env()
+            .and_then(|env| self.release_branch(env))
+        else {
+            return action.label().to_string();
+        };
+        match action {
+            FlowAction::ReleaseDev | FlowAction::ReleaseTest => {
+                format!("Release current branch into {branch}")
+            }
+            FlowAction::ResetDev | FlowAction::ResetTest => {
+                format!("Reset {branch} from origin/{BRANCH_MAIN}")
+            }
+            _ => action.label().to_string(),
+        }
     }
 
     pub fn environments_visible(&self) -> bool {
@@ -824,7 +872,9 @@ impl AppState {
         };
         match branch {
             BRANCH_MAIN => false,
-            BRANCH_DEV | BRANCH_TEST => self.current_branch_behind_main().is_some_and(|n| n > 0),
+            _ if is_deploy_branch_name(branch) => {
+                self.current_branch_behind_main().is_some_and(|n| n > 0)
+            }
             _ => true,
         }
     }

@@ -51,7 +51,37 @@ Staged changes:
 pub const DEFAULT_PUSH_REMOTE: &str = "origin";
 pub const BRANCH_MAIN: &str = "main";
 pub const BRANCH_DEV: &str = "develop";
+/// Second spelling of the dev deploy branch. Checkouts name it either way, and
+/// both deploy the same environment, so lg accepts whichever one exists.
+pub const BRANCH_DEV_SHORT: &str = "dev";
 pub const BRANCH_TEST: &str = "test";
+/// Dev deploy branch names in preference order.
+pub const DEV_BRANCH_NAMES: [&str; 2] = [BRANCH_DEV, BRANCH_DEV_SHORT];
+
+/// Whether the name is one lg deploys from rather than treating as a feature
+/// branch. A repository needs only one of them: alv.no deploys `test` and has
+/// no develop branch, so the names are checked one at a time.
+pub fn is_deploy_branch_name(name: &str) -> bool {
+    name == BRANCH_TEST || DEV_BRANCH_NAMES.contains(&name)
+}
+
+/// Deploy branches plus `main`, the branches lg refuses to treat as a feature
+/// branch.
+pub fn is_protected_branch_name(name: &str) -> bool {
+    name == BRANCH_MAIN || is_deploy_branch_name(name)
+}
+
+/// Deploy branch names for error messages, in promotion order.
+pub fn deploy_branch_list() -> String {
+    let mut names = DEV_BRANCH_NAMES.to_vec();
+    names.push(BRANCH_TEST);
+    names.join(", ")
+}
+
+/// Protected branch names for error messages, in promotion order.
+pub fn protected_branch_list() -> String {
+    format!("{BRANCH_MAIN}, {}", deploy_branch_list())
+}
 pub const STATUS_BAR_HEIGHT: u16 = 1;
 pub const STATUS_MSG_LIFETIME_SECS: i64 = 3;
 /// Errors linger far longer than successes so a failure cannot scroll past unseen.

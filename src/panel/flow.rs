@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::{
     app,
-    config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST},
+    config::{BRANCH_MAIN, is_protected_branch_name},
     state::{AppState, BranchView, FlowAction, Modal, SPINNER_FRAMES, clamp_index},
     ui,
 };
@@ -29,7 +29,9 @@ pub(crate) fn available_actions(state: &AppState) -> Vec<FlowAction> {
             FlowAction::ReleaseDev
             | FlowAction::ReleaseTest
             | FlowAction::ResetDev
-            | FlowAction::ResetTest => state.flow_available(),
+            | FlowAction::ResetTest => action
+                .release_env()
+                .is_some_and(|env| state.release_branch(env).is_some()),
             FlowAction::TransferDiff => selected_feature_branch(state).is_some(),
             FlowAction::DiscardCheckout => state.branch.is_some(),
             FlowAction::NewFeature | FlowAction::CleanOrphans => true,
@@ -97,7 +99,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     }
 
     if let Some(action) = state.flow_input {
-        let mut text = vec![Line::from(action.label()), Line::from("")];
+        let mut text = vec![Line::from(state.flow_action_label(action)), Line::from("")];
         if action == FlowAction::TransferDiff {
             if let Some(source) = selected_feature_branch(state) {
                 text.push(Line::from(vec![
@@ -131,13 +133,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     if let Some(action) = state.flow_confirm {
         let text = vec![
             Line::from(Span::styled(
-                action.label(),
+                state.flow_action_label(action),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            warning_for(action),
+            warning_for(state, action),
             Line::from(""),
             Line::from(vec![
                 Span::styled("y", Style::default().fg(Color::Green)),
@@ -167,7 +169,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let actions = available_actions(state);
     let items: Vec<ListItem> = actions
         .iter()
-        .map(|action| ListItem::new(Line::from(action.label())))
+        .map(|action| ListItem::new(Line::from(state.flow_action_label(*action))))
         .collect();
     let list = List::new(items)
         .block(ui::bordered("Branch Actions"))
@@ -313,7 +315,12 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-fn warning_for(action: FlowAction) -> Line<'static> {
+fn warning_for(state: &AppState, action: FlowAction) -> Line<'static> {
+    let target = action
+        .release_env()
+        .and_then(|env| state.release_branch(env))
+        .unwrap_or_default()
+        .to_string();
     match action {
         FlowAction::ResetDev | FlowAction::ResetTest => Line::from(Span::styled(
             "Hard reset and force push. Unique target history will be lost.",
@@ -327,12 +334,9 @@ fn warning_for(action: FlowAction) -> Line<'static> {
             "Deletes local branches without upstream tracking.",
             Style::default().fg(Color::Red),
         )),
-        FlowAction::ReleaseDev => Line::from(
-            "Pushes current branch, syncs develop, merges origin/main, merges current, pushes HEAD to develop -> dev, then returns.",
-        ),
-        FlowAction::ReleaseTest => Line::from(
-            "Pushes current branch, syncs test, merges origin/main, merges current, pushes HEAD to test -> test, then returns.",
-        ),
+        FlowAction::ReleaseDev | FlowAction::ReleaseTest => Line::from(format!(
+            "Pushes current branch, syncs {target}, merges origin/{BRANCH_MAIN}, merges current, pushes HEAD to {target}, then returns."
+        )),
         FlowAction::MergeMain => Line::from(
             "Stashes local changes, updates main from origin/main, returns, merges origin/main, pushes current, then restores.",
         ),
@@ -346,7 +350,7 @@ fn selected_feature_branch(state: &AppState) -> Option<String> {
         return None;
     }
     let branch = state.selected_branch_ref()?;
-    if matches!(branch, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST) {
+    if is_protected_branch_name(branch) {
         None
     } else {
         Some(branch.to_string())

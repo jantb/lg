@@ -4,7 +4,9 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{Mutex, OnceLock};
 
-use crate::config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST, DEFAULT_PUSH_REMOTE};
+use crate::config::{
+    BRANCH_MAIN, BRANCH_TEST, DEFAULT_PUSH_REMOTE, DEV_BRANCH_NAMES, is_protected_branch_name,
+};
 
 mod config;
 mod diff;
@@ -377,6 +379,40 @@ pub struct NestedRepo {
     pub branch: Option<String>,
     pub detached_at: Option<String>,
     pub has_changes: bool,
+}
+
+/// The two environments lg releases into. Which branch feeds each one is
+/// per checkout, so the environment and the branch name are kept apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseEnv {
+    Dev,
+    Test,
+}
+
+/// Deploy branches found in a checkout. Neither is required: alv.no deploys
+/// `test` and has no develop branch, and a repository with only a develop
+/// branch works the same way.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReleaseBranches {
+    dev: Option<String>,
+    test: Option<String>,
+}
+
+impl ReleaseBranches {
+    pub fn new(dev: Option<String>, test: Option<String>) -> Self {
+        Self { dev, test }
+    }
+
+    pub fn branch(&self, env: ReleaseEnv) -> Option<&str> {
+        match env {
+            ReleaseEnv::Dev => self.dev.as_deref(),
+            ReleaseEnv::Test => self.test.as_deref(),
+        }
+    }
+
+    pub fn any(&self) -> bool {
+        self.dev.is_some() || self.test.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -873,7 +909,7 @@ where
 }
 
 pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
-    if branch.is_empty() || matches!(branch, BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST) {
+    if branch.is_empty() || is_protected_branch_name(branch) {
         return Ok(BranchReleaseStatus::default());
     }
 
@@ -886,10 +922,9 @@ pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
     let Some(branch_oid) = commit_oid(branch) else {
         return Ok(BranchReleaseStatus::default());
     };
-    let develop_ref =
-        preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_DEV}"), BRANCH_DEV);
-    let test_ref =
-        preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_TEST}"), BRANCH_TEST);
+    let targets = release_branches();
+    let develop_ref = release_branch_ref(targets.branch(ReleaseEnv::Dev));
+    let test_ref = release_branch_ref(targets.branch(ReleaseEnv::Test));
     let key = ReleaseStatusCacheKey {
         branch: branch.to_string(),
         branch_oid,
@@ -938,10 +973,24 @@ pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
     Ok(status)
 }
 
-pub fn flow_branches_available() -> bool {
-    preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_DEV}"), BRANCH_DEV).is_some()
-        && preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_TEST}"), BRANCH_TEST)
-            .is_some()
+/// The deploy branches this checkout actually has. Each environment is looked
+/// up on its own so a repository with only one of them still gets its release
+/// actions and deployment status.
+pub fn release_branches() -> ReleaseBranches {
+    ReleaseBranches::new(
+        DEV_BRANCH_NAMES
+            .into_iter()
+            .find(|name| release_branch_ref(Some(name)).is_some())
+            .map(str::to_string),
+        release_branch_ref(Some(BRANCH_TEST)).map(|_| BRANCH_TEST.to_string()),
+    )
+}
+
+/// The ref to compare against for a deploy branch, preferring the remote so an
+/// out-of-date local checkout does not report a release that never landed.
+fn release_branch_ref(branch: Option<&str>) -> Option<String> {
+    let branch = branch?;
+    preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{branch}"), branch)
 }
 
 fn release_target_status(

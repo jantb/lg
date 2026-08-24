@@ -4,9 +4,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::{
-    config::{
-        BACKGROUND_FETCH_INTERVAL_SECS, BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST, COMMIT_LIST_LIMIT,
-    },
+    config::{BACKGROUND_FETCH_INTERVAL_SECS, COMMIT_LIST_LIMIT, is_protected_branch_name},
     state::{
         CheckoutMsg, CommitLogJob, CommitLogMsg, DiffJob, DiffMsg, DiffSource, FetchJob, FetchMsg,
         GenMsg, Modal, OperationKind, OperationMsg, Pane, PushMsg, RefreshJob, RefreshMsg,
@@ -247,7 +245,7 @@ impl App {
             self.defer_release_status_job();
             return;
         }
-        if matches!(branch.as_str(), BRANCH_MAIN | BRANCH_DEV | BRANCH_TEST) {
+        if is_protected_branch_name(&branch) {
             self.state.current_branch_releases = Default::default();
             self.state.current_branch_releases_ref = Some(branch);
             self.defer_release_status_job();
@@ -336,7 +334,7 @@ impl App {
         if let Some(repositories) = snapshot.nested_repositories {
             self.state.nested_repositories = repositories;
         }
-        self.state.flow_branches_available = snapshot.flow_branches_available;
+        self.state.release_branches = snapshot.release_branches;
         if let Some(shas) = snapshot.unpushed_shas {
             self.state.unpushed_shas = shas;
         }

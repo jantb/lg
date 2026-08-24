@@ -1,4 +1,4 @@
-use crate::config::{BRANCH_DEV, BRANCH_MAIN, BRANCH_TEST};
+use crate::config::{BRANCH_MAIN, is_deploy_branch_name, protected_branch_list};
 use crate::state::{
     AppState, BranchView, ConflictFollowup, FlowAction, Modal, Pane, SafetyRefCleanup, WorkflowJob,
     WorkflowMsg,
@@ -17,9 +17,18 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
         state.set_status(status, true);
         return;
     }
-    if requires_release_branches(action) && !state.flow_available() {
+    let release_target = action
+        .release_env()
+        .and_then(|env| state.release_branch(env).map(str::to_string));
+    if action.release_env().is_some() && release_target.is_none() {
         state.modal = Modal::None;
-        state.set_status("branch action unavailable: missing develop or test", true);
+        state.set_status(
+            format!(
+                "branch action unavailable: no deploy branch in this repository ({})",
+                protected_branch_list()
+            ),
+            true,
+        );
         return;
     }
 
@@ -35,10 +44,17 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
         current.clone()
     };
 
-    let label = action.label().to_owned();
-    let steps = workflow_steps(action, &action_branch, input.as_deref());
+    let label = state.flow_action_label(action);
+    let steps = workflow_steps(
+        action,
+        &action_branch,
+        input.as_deref(),
+        release_target.as_deref(),
+    );
     let thread_steps = steps.clone();
-    state.conflict_followup = conflict_followup_for_flow(action, &action_branch);
+    state.conflict_followup =
+        conflict_followup_for_flow(action, &action_branch, release_target.as_deref());
+    let target = release_target.unwrap_or_default();
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
         let mut step_idx = 0usize;
@@ -50,22 +66,16 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
             FlowAction::MergeMain => {
                 crate::git::flow_merge_main_into_current_with_progress(&current, &mut progress)
             }
-            FlowAction::ReleaseDev => {
-                crate::git::flow_release_current_with_progress(&current, BRANCH_DEV, &mut progress)
+            FlowAction::ReleaseDev | FlowAction::ReleaseTest => {
+                crate::git::flow_release_current_with_progress(&current, &target, &mut progress)
             }
-            FlowAction::ReleaseTest => {
-                crate::git::flow_release_current_with_progress(&current, BRANCH_TEST, &mut progress)
+            FlowAction::ResetDev | FlowAction::ResetTest => {
+                crate::git::flow_reset_branch_from_main_with_progress(
+                    &current,
+                    &target,
+                    &mut progress,
+                )
             }
-            FlowAction::ResetDev => crate::git::flow_reset_branch_from_main_with_progress(
-                &current,
-                BRANCH_DEV,
-                &mut progress,
-            ),
-            FlowAction::ResetTest => crate::git::flow_reset_branch_from_main_with_progress(
-                &current,
-                BRANCH_TEST,
-                &mut progress,
-            ),
             FlowAction::DiscardCheckout => {
                 crate::git::flow_discard_checkout_from_remote_with_progress(&current, &mut progress)
             }
@@ -110,16 +120,6 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
     state.set_status("running branch action\u{2026}", false);
 }
 
-fn requires_release_branches(action: FlowAction) -> bool {
-    matches!(
-        action,
-        FlowAction::ReleaseDev
-            | FlowAction::ReleaseTest
-            | FlowAction::ResetDev
-            | FlowAction::ResetTest
-    )
-}
-
 fn selected_action_branch(state: &AppState, current: &str) -> String {
     if state.focus == Pane::Branches
         && state.branch_view == BranchView::Local
@@ -131,13 +131,18 @@ fn selected_action_branch(state: &AppState, current: &str) -> String {
 }
 
 fn merge_main_unavailable_status(current: &str) -> &'static str {
-    match current {
-        BRANCH_DEV | BRANCH_TEST => "current branch is not behind origin/main",
-        _ => "checkout a feature branch before merging main",
+    if is_deploy_branch_name(current) {
+        "current branch is not behind origin/main"
+    } else {
+        "checkout a feature branch before merging main"
     }
 }
 
-fn conflict_followup_for_flow(action: FlowAction, current: &str) -> Option<ConflictFollowup> {
+fn conflict_followup_for_flow(
+    action: FlowAction,
+    current: &str,
+    release_target: Option<&str>,
+) -> Option<ConflictFollowup> {
     match action {
         FlowAction::MergeMain => Some(ConflictFollowup {
             push_branch: Some(current.to_string()),
@@ -147,16 +152,8 @@ fn conflict_followup_for_flow(action: FlowAction, current: &str) -> Option<Confl
                 branch: current.to_string(),
             }),
         }),
-        FlowAction::ReleaseDev => Some(ConflictFollowup {
-            push_branch: Some(BRANCH_DEV.to_string()),
-            return_branch: Some(current.to_string()),
-            safety_ref_cleanup: Some(SafetyRefCleanup {
-                label: "release-current".to_string(),
-                branch: current.to_string(),
-            }),
-        }),
-        FlowAction::ReleaseTest => Some(ConflictFollowup {
-            push_branch: Some(BRANCH_TEST.to_string()),
+        FlowAction::ReleaseDev | FlowAction::ReleaseTest => Some(ConflictFollowup {
+            push_branch: release_target.map(str::to_string),
             return_branch: Some(current.to_string()),
             safety_ref_cleanup: Some(SafetyRefCleanup {
                 label: "release-current".to_string(),
@@ -176,7 +173,9 @@ pub(super) fn workflow_steps(
     action: FlowAction,
     current: &str,
     input: Option<&str>,
+    release_target: Option<&str>,
 ) -> Vec<String> {
+    let target = release_target.unwrap_or_default();
     match action {
         FlowAction::MergeMain => vec![
             "stash current changes".into(),
@@ -191,10 +190,8 @@ pub(super) fn workflow_steps(
             "restore stashed changes".into(),
             "remove safety backup".into(),
         ],
-        FlowAction::ReleaseDev => release_steps(current, BRANCH_DEV),
-        FlowAction::ReleaseTest => release_steps(current, BRANCH_TEST),
-        FlowAction::ResetDev => reset_steps(current, BRANCH_DEV),
-        FlowAction::ResetTest => reset_steps(current, BRANCH_TEST),
+        FlowAction::ReleaseDev | FlowAction::ReleaseTest => release_steps(current, target),
+        FlowAction::ResetDev | FlowAction::ResetTest => reset_steps(current, target),
         FlowAction::DiscardCheckout => vec![
             "fetch remote".into(),
             format!("reset {current} to remote"),

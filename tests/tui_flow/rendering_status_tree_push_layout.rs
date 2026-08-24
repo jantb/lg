@@ -155,6 +155,104 @@ fn current_branch_panel_renders_environment_history() {
 }
 
 #[test]
+fn deployment_status_lists_only_the_deploy_branches_the_repo_has() {
+    let mut state = AppState::new();
+    state.release_branches = ReleaseBranches::new(None, Some("test".into()));
+    state.branch = Some("feature/box-adjustments".into());
+    state.current_branch_releases = BranchReleaseStatus {
+        main: Some(ReleaseTargetStatus {
+            released_at: String::new(),
+            missing_commits: 3,
+        }),
+        develop: None,
+        test: Some(ReleaseTargetStatus {
+            released_at: "2026-04-29 14:25".into(),
+            missing_commits: 0,
+        }),
+    };
+
+    let backend = TestBackend::new(90, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::environments::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(
+        text.contains("Deployment Status"),
+        "missing deployment status panel: {text}"
+    );
+    assert!(text.contains("test"), "missing test badge: {text}");
+    assert!(
+        text.contains("2026-04-29 14:25"),
+        "missing test release timestamp: {text}"
+    );
+    assert!(
+        !text.contains("develop"),
+        "a repo without a develop branch should not get a develop row: {text}"
+    );
+}
+
+#[test]
+fn repository_panel_marks_the_active_repository() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace/services/api".into());
+    state.nested_repositories = vec![
+        NestedRepo {
+            path: "services/api".into(),
+            branch: Some("feature/api".into()),
+            detached_at: None,
+            has_changes: false,
+        },
+        NestedRepo {
+            path: "services/web".into(),
+            branch: Some("main".into()),
+            detached_at: None,
+            has_changes: false,
+        },
+    ];
+
+    let backend = TestBackend::new(60, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::environments::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(
+        text.contains("Repositories \u{2022} api"),
+        "panel title should name the active repository: {text}"
+    );
+    assert!(
+        text.contains("* services/api"),
+        "active repository row should be marked: {text}"
+    );
+    assert!(
+        text.contains("  services/web"),
+        "inactive repository row should not be marked: {text}"
+    );
+}
+
+#[test]
 fn current_branch_panel_shows_deployment_status_loading() {
     let mut state = AppState::new();
     add_flow_branches(&mut state);

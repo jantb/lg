@@ -114,7 +114,7 @@ fn scroll_handlers_clamp_stale_indices_before_moving() {
     assert_eq!(state.conflict_idx, 0);
 
     add_flow_branches(&mut state);
-    state.flow_branches_available = true;
+    state.release_branches = ReleaseBranches::new(Some("develop".into()), Some("test".into()));
     state.branch = Some("feature/demo".into());
     state.flow_idx = usize::MAX;
     panel::flow::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
@@ -182,7 +182,7 @@ fn scroll_handlers_clamp_stale_indices_before_moving_up() {
     assert_eq!(state.conflict_idx, 0);
 
     add_flow_branches(&mut state);
-    state.flow_branches_available = true;
+    state.release_branches = ReleaseBranches::new(Some("develop".into()), Some("test".into()));
     state.branch = Some("feature/demo".into());
     state.flow_idx = usize::MAX;
     panel::flow::handle_key(&mut state, key(KeyCode::Char('k'))).unwrap();

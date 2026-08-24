@@ -876,6 +876,61 @@ fn pressing_f_opens_branch_actions_from_branches_pane() {
 }
 
 #[test]
+fn flow_menu_offers_release_actions_for_a_test_only_repository() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state.branches = vec![Branch {
+        name: "test".into(),
+        is_current: false,
+        upstream: None,
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 0,
+        last_commit_unix: None,
+    }];
+    app.state.release_branches = ReleaseBranches::new(None, Some("test".into()));
+    app.state.branch = Some("feature/box-adjustments".into());
+    app.state.focus = Pane::Branches;
+    app.send_key(key(KeyCode::Char('F'))).unwrap();
+    assert_eq!(app.state.modal, Modal::Flow);
+
+    let text = buffer_text(&app);
+
+    assert!(
+        text.contains("Release current branch into test"),
+        "missing test release action: {text}"
+    );
+    assert!(
+        text.contains("Reset test from origin/main"),
+        "missing test reset action: {text}"
+    );
+    assert!(
+        !text.contains("develop"),
+        "a repo without a develop branch should not offer develop actions: {text}"
+    );
+}
+
+#[test]
+fn flow_menu_names_the_dev_branch_the_repository_uses() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state.release_branches = ReleaseBranches::new(Some("dev".into()), None);
+    app.state.branch = Some("feature/box-adjustments".into());
+    app.state.focus = Pane::Branches;
+    app.send_key(key(KeyCode::Char('F'))).unwrap();
+
+    let text = buffer_text(&app);
+
+    assert!(
+        text.contains("Release current branch into dev"),
+        "missing dev release action: {text}"
+    );
+    assert!(
+        !text.contains("into test"),
+        "a repo without a test branch should not offer test actions: {text}"
+    );
+}
+
+#[test]
 fn pressing_f_does_not_open_branch_actions_outside_branches_pane() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
     app.send_key(key(KeyCode::Char('F'))).unwrap();
