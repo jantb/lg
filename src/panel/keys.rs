@@ -270,7 +270,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "x",
-                help: "Close the selected session, running or ended",
+                help: "Stop the selected session and forget it",
                 footer: Some(("x", "close session")),
             },
             Binding {

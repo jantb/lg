@@ -451,10 +451,10 @@ pub(crate) fn selected_session(state: &AppState) -> Option<crate::session::Sessi
     }
 }
 
-/// Close the selected session and forget it. A session that has ended keeps
-/// its last screen so the reason can be read, which leaves a row behind; this
-/// is how that row is cleared from where it is actually seen, rather than only
-/// from inside the session pane.
+/// Stop the selected session and forget it. A session that ends on its own is
+/// dropped as soon as that is noticed, so this is for the ones still running:
+/// closing one from the row it is shown on, rather than only from inside the
+/// session pane.
 fn close_selected_session(state: &mut AppState) {
     let Some(NestedRepoTreeRow::Session { id }) = selected_tree_row(state) else {
         state.set_status("select a session row to close it", false);
@@ -465,23 +465,12 @@ fn close_selected_session(state: &mut AppState) {
         .get(id)
         .map(|session| session.label.clone())
         .unwrap_or_default();
-    let ended = state
-        .sessions
-        .get(id)
-        .is_some_and(|session| !session.is_running());
     state.sessions.close(id);
     if state.session_view().is_none() {
         state.show_diff();
     }
     state.clamp();
-    state.set_status(
-        if ended {
-            format!("cleared the finished session in {label}")
-        } else {
-            format!("closed the session in {label}")
-        },
-        false,
-    );
+    state.set_status(format!("closed the session in {label}"), false);
 }
 
 /// Merge the selected worktree's branch into main and clean up after it. The

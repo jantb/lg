@@ -291,7 +291,7 @@ impl Session {
     }
 
     /// Read whatever the program has written since the last call. Returns
-    /// whether anything changed, so the caller can skip a redraw.
+    /// whether anything changed.
     fn pump(&mut self, focused: bool) -> bool {
         let Some(process) = self.process.as_ref() else {
             return false;
@@ -349,6 +349,31 @@ impl Session {
             changed = true;
         }
         changed
+    }
+}
+
+/// A session that has stopped and been dropped from the list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndedSession {
+    pub id: SessionId,
+    /// The checkout it was running in.
+    pub label: String,
+    /// How it ended, in the words the session settled on: "exited", "killed by
+    /// 9", "stopped".
+    pub notice: String,
+}
+
+impl EndedSession {
+    /// What is worth keeping about `session` once it is gone.
+    fn of(session: &Session) -> Self {
+        Self {
+            id: session.id,
+            label: session.label.clone(),
+            notice: match &session.status {
+                SessionStatus::Ended(notice) => notice.clone(),
+                SessionStatus::Running => "stopped".to_string(),
+            },
+        }
     }
 }
 
@@ -500,23 +525,27 @@ impl Sessions {
         }
     }
 
-    /// Read every session's output. Returns whether any of them changed.
-    pub fn pump(&mut self) -> bool {
+    /// Read every session's output, and let go of the ones whose program has
+    /// ended. A stopped session has nothing left to draw and nothing to type
+    /// into, so it goes as soon as it stops rather than staying on as a row
+    /// waiting to be dismissed by hand.
+    ///
+    /// Returns what was dropped, so the caller can say what happened to it.
+    pub fn pump(&mut self) -> Vec<EndedSession> {
         let focused = self.focused;
-        let mut changed = false;
         for session in &mut self.items {
-            changed |= session.pump(focused == Some(session.id));
+            session.pump(focused == Some(session.id));
         }
-        changed
-    }
-
-    /// Sessions that ended and can be cleaned up in one go.
-    pub fn ended_ids(&self) -> Vec<SessionId> {
-        self.items
+        let ended: Vec<EndedSession> = self
+            .items
             .iter()
             .filter(|session| !session.is_running())
-            .map(|session| session.id)
-            .collect()
+            .map(EndedSession::of)
+            .collect();
+        for session in &ended {
+            self.close(session.id);
+        }
+        ended
     }
 
     /// The session after (or before) the one being shown, wrapping round. Used

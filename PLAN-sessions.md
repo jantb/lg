@@ -16,7 +16,7 @@ Verified against the real tools: claude renders correctly inside a session pane,
 and `terrarium run --project <worktree>` starts inside the profile lg derives
 (`cargo test --test session_smoke -- --ignored --nocapture` shows both).
 
-Three details ended up different from the plan below:
+Four details ended up different from the plan below:
 
 - **Switching while a session has the keyboard.** A captured session receives
   every key, Ctrl-C and Ctrl-n included, so switching is `Ctrl-]` first and then
@@ -27,6 +27,9 @@ Three details ended up different from the plan below:
   choice is per session rather than per checkout.
 - **Zoom.** Workspace mode (`F2`) replaced the separate zoom key: it gives the
   session the whole right-hand side with the checkout list still one Tab away.
+- **Ended sessions go.** The plan kept them listed with their final screen, to
+  be dismissed by hand. They are dropped the moment their program ends instead:
+  nothing to press `x` on, and the status line says which session went and how.
 
 Known gaps, in rough order of how much they would be missed: no scrollback in
 the session pane (the program's own scrolling works, lg cannot scroll back
@@ -172,9 +175,9 @@ pub struct Session {
   flags so Shift+Enter reaches claude.
 - **Sizing**: resize the PTY on layout change and on session switch; the resize
   also forces a repaint, which is how a backgrounded session comes back clean.
-- **Lifecycle**: exited sessions stay listed with their final screen; `r`
-  restarts (default `claude --continue`, which resumes that worktree's own
-  conversation), `x` closes. Children are killed in `App::drop` next to
+- **Lifecycle**: a session that exits is dropped as soon as that is noticed —
+  its row goes, and a pane showing it returns to the diff — so `x` is only for
+  stopping one that is still running. Children are killed in `App::drop` next to
   `join_background_jobs` (`src/app.rs:238`); quitting with live sessions goes
   through a confirm modal.
 - **Env**: set `TERM=xterm-256color`, `COLORTERM=truecolor`; scrub `CLAUDECODE`

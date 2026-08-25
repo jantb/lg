@@ -5,10 +5,12 @@ use ratatui::crossterm::event::{
 };
 use ratatui::crossterm::execute;
 
+use ratatui::backend::Backend;
+
 use crate::state::AppState;
 use crate::term;
 
-use super::App;
+use super::{App, HeadlessApp};
 
 /// The key that hands the keyboard back to lg. Esc has to reach the program
 /// being run, so it cannot double as the way out.
@@ -54,24 +56,40 @@ pub(crate) fn forward_paste(state: &mut AppState, text: &str) -> bool {
     true
 }
 
-/// Read every session's output and settle any that ended.
-pub(crate) fn pump(state: &mut AppState) -> SessionEnded {
-    state.sessions.pump();
-    match state.session_view() {
-        Some(id)
-            if state
-                .sessions
-                .get(id)
-                .is_some_and(|session| !session.is_running()) =>
-        {
-            SessionEnded(state.session_capture)
-        }
-        _ => SessionEnded(false),
+/// Read every session's output and settle any that ended. A session whose
+/// program has stopped is dropped by the pump itself, so what is left to do
+/// here is clear up after it: the pane goes back to the diff if it was the one
+/// on screen, and the tree loses a row.
+///
+/// Returns what to say about it, and whether the keyboard has to be taken back
+/// off a session that is no longer there.
+pub(crate) fn pump(state: &mut AppState) -> Option<SessionEnded> {
+    let shown = state.session_view();
+    let ended = state.sessions.pump();
+    let gone = ended
+        .iter()
+        .find(|session| Some(session.id) == shown)
+        .or_else(|| ended.last())?;
+    let was_shown = Some(gone.id) == shown;
+    let notice = format!("the session in {} {}", gone.label, gone.notice);
+    let had_keyboard = was_shown && state.session_capture;
+    if was_shown {
+        state.show_diff();
     }
+    state.clamp();
+    Some(SessionEnded {
+        notice,
+        had_keyboard,
+    })
 }
 
-/// Whether the session on screen ended while it still held the keyboard.
-pub(crate) struct SessionEnded(bool);
+/// A session that ended, ready to be reported.
+pub(crate) struct SessionEnded {
+    /// What to put in the status bar.
+    notice: String,
+    /// Whether it held the keyboard when it went.
+    had_keyboard: bool,
+}
 
 /// Move to the next or previous session, wrapping round.
 pub(crate) fn cycle(state: &mut AppState, forward: bool) -> bool {
@@ -117,11 +135,22 @@ impl App {
     }
 
     pub(super) fn drain_sessions(&mut self) {
-        let SessionEnded(had_keyboard) = pump(&mut self.state);
-        if had_keyboard {
+        let Some(ended) = pump(&mut self.state) else {
+            return;
+        };
+        if ended.had_keyboard {
             self.set_session_capture(false);
-            self.state
-                .set_status("session ended \u{2014} x closes it", false);
+        }
+        self.state.set_status(ended.notice, false);
+    }
+}
+
+impl<B: Backend> HeadlessApp<B> {
+    /// What the real loop does to the sessions each frame, without a terminal
+    /// to keep in step. This is the seam tests drive.
+    pub fn drain_sessions(&mut self) {
+        if let Some(ended) = pump(&mut self.state) {
+            self.state.set_status(ended.notice, false);
         }
     }
 }

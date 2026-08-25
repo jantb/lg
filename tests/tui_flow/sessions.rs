@@ -41,14 +41,14 @@ fn session_contents(app: &lg::app::HeadlessApp<TestBackend>) -> String {
 /// Pump until the session's screen contains `needle`, or give up.
 fn wait_for(app: &mut lg::app::HeadlessApp<TestBackend>, needle: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(10);
+    let mut contents = String::new();
     loop {
         app.state.sessions.pump();
-        let contents = app
-            .state
-            .sessions
-            .focused_session()
-            .map(|session| session.screen().contents())
-            .unwrap_or_default();
+        // A session that ends is dropped, taking its screen with it; the last
+        // one seen is then all there is to answer with.
+        if let Some(session) = app.state.sessions.focused_session() {
+            contents = session.screen().contents();
+        }
         if contents.contains(needle) || Instant::now() > deadline {
             return contents;
         }
@@ -101,11 +101,19 @@ fn a_captured_session_receives_typing_and_not_lg() {
 
 #[test]
 fn ctrl_c_interrupts_the_session_rather_than_quitting_lg() {
+    // A program that reads its own keys rather than letting the line
+    // discipline turn Ctrl-C into a signal: it prints the byte it was sent and
+    // stays up, so what arrived can still be read off the screen. A shell that
+    // took the signal would be gone by then, session and screen with it.
+    const STAND_IN: &str = r"stty raw -echo; printf 'ready
+'; cat -v";
+
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
-    shell_session(
-        &mut app,
-        "trap 'printf interrupted; exit 0' INT; while :; do sleep 0.05; done",
-        "/tmp/c",
+    shell_session(&mut app, STAND_IN, "/tmp/c");
+    let ready = wait_for(&mut app, "ready");
+    assert!(
+        ready.contains("ready"),
+        "the stand-in never started: {ready:?}"
     );
     app.state.session_capture = true;
 
@@ -113,11 +121,9 @@ fn ctrl_c_interrupts_the_session_rather_than_quitting_lg() {
         .unwrap();
     assert!(!app.state.should_quit);
 
-    // The terminal echoes the interrupt as `^C`, which only appears if the byte
-    // was written to the session rather than eaten by lg's own quit handling.
     let contents = wait_for(&mut app, "^C");
     assert!(
-        contents.contains("^C") || contents.contains("interrupted"),
+        contents.contains("^C"),
         "the interrupt never reached the session: {contents:?}"
     );
 }
@@ -147,37 +153,33 @@ fn the_release_key_hands_the_keyboard_back_to_lg() {
 }
 
 #[test]
-fn a_session_that_ends_keeps_its_last_screen_and_releases_the_keyboard() {
+fn a_session_that_ends_is_dropped_and_hands_the_keyboard_back() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
     shell_session(&mut app, "printf 'all done'", "/tmp/e");
     app.state.session_capture = true;
 
-    let contents = wait_for(&mut app, "all done");
-    assert!(contents.contains("all done"), "{contents:?}");
-
-    // Pump until the exit is noticed.
+    // Pump until the exit is noticed; noticing it is what drops the session.
     let deadline = Instant::now() + Duration::from_secs(10);
-    while app
-        .state
-        .sessions
-        .focused_session()
-        .is_some_and(|session| session.is_running())
-        && Instant::now() < deadline
-    {
-        app.state.sessions.pump();
+    while !app.state.sessions.is_empty() && Instant::now() < deadline {
+        app.drain_sessions();
         std::thread::sleep(Duration::from_millis(10));
     }
 
-    let session = app.state.sessions.focused_session().expect("session");
-    assert!(!session.is_running());
     assert!(
-        session.screen().contents().contains("all done"),
-        "the final screen must stay readable"
+        app.state.sessions.is_empty(),
+        "a session that ended is not kept around to be dismissed"
     );
+    assert_eq!(
+        app.state.main_view,
+        MainView::Diff,
+        "the pane it filled goes back to the diff"
+    );
+    assert!(!app.state.session_capture, "the keyboard comes back to lg");
+    let status = app.state.status.as_ref().expect("status");
     assert!(
-        session.title().contains("exited"),
-        "the title should say how it ended: {}",
-        session.title()
+        status.text.contains("feat/x") && status.text.contains("exited"),
+        "the status says which session went and how: {}",
+        status.text
     );
 }
 
@@ -713,49 +715,45 @@ fn closing_the_session_frees_the_worktree_to_be_landed() {
 }
 
 #[test]
-fn a_finished_session_can_be_cleared_from_the_row_it_is_shown_on() {
+fn a_finished_session_leaves_the_tree_on_its_own() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
     app.state.workspace_root = Some("/workspace".into());
     app.state.repo_root = Some("/workspace".into());
-    app.state.worktrees = vec![Worktree {
-        is_main: true,
-        ..worktree("/workspace", "main")
-    }];
-    shell_session(&mut app, "exit 0", "/workspace");
+    app.state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        worktree("/workspace.worktrees/feat-x", "feat/x"),
+    ];
+    shell_session(&mut app, "exit 0", "/workspace.worktrees/feat-x");
 
-    // Let it finish; the last screen is kept, so the row stays behind.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while app
-        .state
-        .sessions
-        .focused_session()
-        .is_some_and(|session| session.is_running())
-    {
-        app.state.sessions.pump();
-        assert!(Instant::now() < deadline, "the session never ended");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    // Row 0 the root, row 1 the worktree, row 2 its session — until it ends.
+    app.state.show_diff();
+    app.state.focus = Pane::Status;
+    app.state.nested_repo_tree_idx = 2;
     app.render().unwrap();
     assert!(
         buffer_text(&app).contains("claude"),
-        "the finished session still has a row"
+        "the running session has a row"
     );
 
-    // Row 0 is the root, row 1 its session.
-    app.state.show_diff();
-    app.state.focus = Pane::Status;
-    app.state.nested_repo_tree_idx = 1;
-    app.send_key(key(KeyCode::Char('x'))).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !app.state.sessions.is_empty() {
+        app.drain_sessions();
+        assert!(Instant::now() < deadline, "the session never ended");
+        std::thread::sleep(Duration::from_millis(10));
+    }
 
-    assert!(
-        app.state.sessions.focused_session().is_none(),
-        "x on the row should forget it"
-    );
     app.render().unwrap();
     let screen = buffer_text(&app);
     assert!(
         !screen.contains("claude"),
-        "the row is gone from the tree: {screen}"
+        "the row goes with it, with no key to press: {screen}"
+    );
+    assert_eq!(
+        app.state.nested_repo_tree_idx, 1,
+        "the selection follows the rows that are left"
     );
 }
 
