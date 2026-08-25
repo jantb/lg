@@ -1160,13 +1160,6 @@ fn finalize_review_pr_text(raw: &str) -> String {
         .collect()
 }
 
-#[cfg(test)]
-fn finalize_review_style_flag(raw: &str) -> String {
-    let cleaned = strip_think_tags(raw);
-    let finding = parse_review_style_finding(&cleaned);
-    format_review_style_finding(&finding)
-}
-
 fn finalize_review_style_flag_for_path(path: &str, raw: &str) -> String {
     let cleaned = strip_think_tags(raw);
     let mut finding = parse_review_style_finding(&cleaned);
@@ -1499,6 +1492,15 @@ fn partial_tail_len(s: &str, tag: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::sync::mpsc::channel;
+
+    /// The path-independent half of [`finalize_review_style_flag_for_path`].
+    fn finalize_review_style_flag(raw: &str) -> String {
+        let cleaned = strip_think_tags(raw);
+        let finding = parse_review_style_finding(&cleaned);
+        format_review_style_finding(&finding)
+    }
 
     #[test]
     fn conventions_reply_is_parsed_into_language_and_style() {
@@ -1515,8 +1517,6 @@ mod tests {
         assert!(language.is_none());
         assert!(shapes.is_empty());
     }
-    use super::*;
-    use std::sync::mpsc::channel;
 
     #[test]
     fn finalize_strips_quotes_and_keeps_overflow() {
