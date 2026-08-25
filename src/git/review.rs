@@ -560,7 +560,12 @@ fn push_entry_nodes(
         parents: &parents,
     };
     let mut emitted = BTreeSet::new();
-    let mut category_nodes = BTreeSet::new();
+    let mut categories = CategoryNodes {
+        prefix,
+        root_id: &root_id,
+        summaries: &category_summaries,
+        emitted: BTreeSet::new(),
+    };
     for category in ReviewEntryCategory::ALL {
         for (path, group_indices) in groups_by_path(
             groups
@@ -573,27 +578,12 @@ fn push_entry_nodes(
                 .map(|(group_idx, _)| group_idx),
             &groups,
         ) {
-            let category_id = ensure_review_category_node(
-                nodes,
-                prefix,
-                &root_id,
-                category,
-                category_summaries.get(&category),
-                &mut category_nodes,
-            );
+            let category_id = categories.ensure(nodes, category);
             tree.push_file(nodes, &path, &group_indices, &category_id, 2, &mut emitted);
         }
     }
     for (group_idx, group) in groups.iter().enumerate() {
-        let category = ReviewEntryCategory::for_path(&group.path);
-        let category_id = ensure_review_category_node(
-            nodes,
-            prefix,
-            &root_id,
-            category,
-            category_summaries.get(&category),
-            &mut category_nodes,
-        );
+        let category_id = categories.ensure(nodes, ReviewEntryCategory::for_path(&group.path));
         tree.push_file(
             nodes,
             &group.path,
@@ -698,28 +688,34 @@ fn review_category_summaries(
     summaries
 }
 
-fn ensure_review_category_node(
-    nodes: &mut Vec<ReviewNode>,
-    prefix: &str,
-    root_id: &str,
-    category: ReviewEntryCategory,
-    summary: Option<&ReviewCategorySummary>,
-    emitted: &mut BTreeSet<ReviewEntryCategory>,
-) -> String {
-    let id = format!("{prefix}:category:{}", category.id());
-    if emitted.insert(category) {
-        nodes.push(ReviewNode {
-            id: id.clone(),
-            parent: Some(root_id.to_string()),
-            depth: 1,
-            title: summary
-                .map(|summary| summary.title(category))
-                .unwrap_or_else(|| category.label().to_string()),
-            body: Vec::new(),
-            context: Vec::new(),
-        });
+/// Emits a category node the first time that category is asked for, and hands
+/// back its id every time.
+struct CategoryNodes<'a> {
+    prefix: &'a str,
+    root_id: &'a str,
+    summaries: &'a BTreeMap<ReviewEntryCategory, ReviewCategorySummary>,
+    emitted: BTreeSet<ReviewEntryCategory>,
+}
+
+impl CategoryNodes<'_> {
+    fn ensure(&mut self, nodes: &mut Vec<ReviewNode>, category: ReviewEntryCategory) -> String {
+        let id = format!("{}:category:{}", self.prefix, category.id());
+        if self.emitted.insert(category) {
+            nodes.push(ReviewNode {
+                id: id.clone(),
+                parent: Some(self.root_id.to_string()),
+                depth: 1,
+                title: self
+                    .summaries
+                    .get(&category)
+                    .map(|summary| summary.title(category))
+                    .unwrap_or_else(|| category.label().to_string()),
+                body: Vec::new(),
+                context: Vec::new(),
+            });
+        }
+        id
     }
-    id
 }
 
 struct EntryTree<'a> {
@@ -1169,7 +1165,7 @@ fn render_entry_points(out: &mut String, entries: &[ReviewEntryPoint]) {
         }
         let location = entry
             .line
-            .map(|line| format!(":{}", line))
+            .map(|line| format!(":{line}"))
             .unwrap_or_default();
         out.push_str(&format!(
             "- {}{} in {} - {}\n",
@@ -1180,6 +1176,36 @@ fn render_entry_points(out: &mut String, entries: &[ReviewEntryPoint]) {
         out.push('\n');
     }
 }
+
+/// A prompt per domain, added when the change touches that domain's paths or
+/// symbols. Listed in the order they appear in the checklist.
+const DOMAIN_CHECKS: [(&[&str], &[&str], &str); 5] = [
+    (
+        &["kafka", "topic", "event", "request", "response"],
+        &["request", "response", "event", "topic"],
+        "- Verify message contracts: topic names, serialized field names, nullable/default values, and backwards compatibility.",
+    ),
+    (
+        &["adapter", "mapper", "converter"],
+        &["adapter", "mapper", "convert", "deserialize"],
+        "- Check adapter and mapping boundaries with representative old and new payloads.",
+    ),
+    (
+        &["service", "processor", "workflow", "flow"],
+        &["service", "processor", "workflow", "flow"],
+        "- Trace service flow side effects, ordering, retries, and idempotency for partial failures.",
+    ),
+    (
+        &["model", "dto", "request", "response"],
+        &["data class", "class", "enum"],
+        "- Review model/API compatibility: required fields, defaults, validation, and renamed concepts.",
+    ),
+    (
+        &["repository", "database", "migration", "cache", "dao"],
+        &["repository", "cache", "query"],
+        "- Check persistence and cache behavior, including migrations, invalidation, and rollback expectations.",
+    ),
+];
 
 fn review_checklist(files: &[ReviewFile], entries: &[ReviewEntryPoint]) -> Vec<String> {
     let mut lines = Vec::new();
@@ -1205,48 +1231,12 @@ fn review_checklist(files: &[ReviewFile], entries: &[ReviewEntryPoint]) -> Vec<S
         );
     }
 
-    if path_matches_any(&paths, &["kafka", "topic", "event", "request", "response"])
-        || symbol_matches_any(entries, &["request", "response", "event", "topic"])
-    {
-        lines.push(
-            "- Verify message contracts: topic names, serialized field names, nullable/default values, and backwards compatibility."
-                .to_string(),
-        );
+    for (path_needles, symbol_needles, prompt) in DOMAIN_CHECKS {
+        if path_matches_any(&paths, path_needles) || symbol_matches_any(entries, symbol_needles) {
+            lines.push(prompt.to_string());
+        }
     }
-    if path_matches_any(&paths, &["adapter", "mapper", "converter"])
-        || symbol_matches_any(entries, &["adapter", "mapper", "convert", "deserialize"])
-    {
-        lines.push(
-            "- Check adapter and mapping boundaries with representative old and new payloads."
-                .to_string(),
-        );
-    }
-    if path_matches_any(&paths, &["service", "processor", "workflow", "flow"])
-        || symbol_matches_any(entries, &["service", "processor", "workflow", "flow"])
-    {
-        lines.push(
-            "- Trace service flow side effects, ordering, retries, and idempotency for partial failures."
-                .to_string(),
-        );
-    }
-    if path_matches_any(&paths, &["model", "dto", "request", "response"])
-        || symbol_matches_any(entries, &["data class", "class", "enum"])
-    {
-        lines.push(
-            "- Review model/API compatibility: required fields, defaults, validation, and renamed concepts."
-                .to_string(),
-        );
-    }
-    if path_matches_any(
-        &paths,
-        &["repository", "database", "migration", "cache", "dao"],
-    ) || symbol_matches_any(entries, &["repository", "cache", "query"])
-    {
-        lines.push(
-            "- Check persistence and cache behavior, including migrations, invalidation, and rollback expectations."
-                .to_string(),
-        );
-    }
+
     if has_tests {
         lines.push(
             "- Run the changed tests plus the nearest broader suite that exercises the touched production paths."
