@@ -176,3 +176,17 @@ fn normalize_no_index_path(diff: &mut String, path: &str) {
     let to = format!("b/{path}");
     *diff = diff.replace(&from, &to);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_commit_patch_inserts_patch_heading() {
+        let text = "commit abc\n\nFiles changed:\n a.rs | 1 +\n\ndiff --git a/a.rs b/a.rs\n";
+        assert_eq!(
+            label_commit_patch(text),
+            "commit abc\n\nFiles changed:\n a.rs | 1 +\n\nPatch:\ndiff --git a/a.rs b/a.rs\n"
+        );
+    }
+}

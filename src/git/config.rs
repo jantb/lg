@@ -372,3 +372,91 @@ fn config_value(args: &[&str]) -> Result<Option<String>> {
     let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
     Ok((!value.is_empty()).then_some(value))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ide_open_command_uses_jetbrains_launcher_for_source_type() {
+        let kotlin = build_ide_open_command("/repo", "src/main/kotlin/App.kt", 42);
+        assert_eq!(kotlin.program, "idea");
+        assert_eq!(
+            kotlin.args,
+            vec!["/repo", "--line", "42", "/repo/src/main/kotlin/App.kt"]
+        );
+
+        let rust = build_ide_open_command("/repo", "src/main.rs", 7);
+        assert_eq!(rust.program, "rustrover");
+        assert_eq!(rust.args, vec!["/repo", "--line", "7", "/repo/src/main.rs"]);
+
+        let markdown = build_ide_open_command("/repo", "README.md", 1);
+        assert_eq!(markdown.program, "idea");
+        assert_eq!(
+            markdown.args,
+            vec!["/repo", "--line", "1", "/repo/README.md"]
+        );
+
+        let toml = build_ide_open_command(
+            "/repo",
+            "scenarios/From Postman/household_join_leave_transactions_flow_v2.toml",
+            3,
+        );
+        assert_eq!(toml.program, "idea");
+        assert_eq!(
+            toml.args,
+            vec![
+                "/repo",
+                "--line",
+                "3",
+                "/repo/scenarios/From Postman/household_join_leave_transactions_flow_v2.toml"
+            ]
+        );
+
+        let extensionless = build_ide_open_command("/repo", "Dockerfile", 1);
+        assert_eq!(extensionless.program, "idea");
+    }
+
+    #[test]
+    fn project_scan_finds_shallow_sources_but_stays_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // A source file at a normal depth is found.
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+        assert_eq!(
+            build_project_open_command(&root.to_string_lossy()).program,
+            "rustrover"
+        );
+
+        // A heavy vendor directory is skipped outright, however deep it goes.
+        let other = tempfile::tempdir().unwrap();
+        let noisy = other.path().join("node_modules/pkg/deep/deeper");
+        std::fs::create_dir_all(&noisy).unwrap();
+        std::fs::write(noisy.join("mod.rs"), "fn main() {}").unwrap();
+        std::fs::write(other.path().join("App.kt"), "fun main() {}").unwrap();
+        assert_eq!(
+            build_project_open_command(&other.path().to_string_lossy()).program,
+            "idea",
+            "sources inside skipped vendor directories must not decide the IDE"
+        );
+
+        // A source file buried past the depth cap does not stall the scan.
+        let deep = tempfile::tempdir().unwrap();
+        let buried = deep.path().join("a/b/c/d/e/f");
+        std::fs::create_dir_all(&buried).unwrap();
+        std::fs::write(buried.join("main.rs"), "fn main() {}").unwrap();
+        assert_eq!(
+            build_project_open_command(&deep.path().to_string_lossy()).program,
+            "idea"
+        );
+    }
+
+    #[test]
+    fn diff_hunk_start_line_reads_changed_line_number() {
+        assert_eq!(diff_hunk_start_line("@@ -12,3 +42,8 @@ fun main"), Some(42));
+        assert_eq!(diff_hunk_start_line("@@ -9,0 +0,0 @@ removed"), Some(9));
+        assert_eq!(diff_hunk_start_line("diff --git a/a b/a"), None);
+    }
+}
