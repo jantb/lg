@@ -853,6 +853,40 @@ fn stream_messages(
     );
 }
 
+/// The output accumulated from one response stream, and the byte counts the
+/// trace log reports alongside it.
+#[derive(Default)]
+struct StreamOutput {
+    parser: ThinkSplit,
+    text: String,
+    think_bytes: usize,
+    out_bytes: usize,
+}
+
+impl StreamOutput {
+    /// Route a content chunk, splitting any `<think>` span out of it.
+    /// `Err(())` means the receiver is gone.
+    fn feed(&mut self, chunk: &str, tx: &Sender<GenMsg>) -> std::result::Result<(), ()> {
+        let (think, out) = self.parser.feed(chunk, tx, &mut self.text)?;
+        self.think_bytes += think;
+        self.out_bytes += out;
+        Ok(())
+    }
+
+    /// Route a chunk the server itself labelled as reasoning.
+    fn feed_thinking(&mut self, chunk: &str, tx: &Sender<GenMsg>) -> std::result::Result<(), ()> {
+        self.think_bytes += chunk.len();
+        tx.send(GenMsg::Thinking(chunk.to_owned())).map_err(|_| ())
+    }
+
+    /// Release whatever the tag splitter is still holding back.
+    fn flush(&mut self, tx: &Sender<GenMsg>) {
+        let (think, out) = self.parser.flush(tx, &mut self.text).unwrap_or((0, 0));
+        self.think_bytes += think;
+        self.out_bytes += out;
+    }
+}
+
 /// Split the response body's lines between [`GenMsg::Thinking`] and
 /// [`GenMsg::Output`], ending with exactly one [`GenMsg::Done`] or
 /// [`GenMsg::Error`].
@@ -867,22 +901,13 @@ fn consume_stream(
     trace: &mut Option<std::fs::File>,
     start: Instant,
 ) {
-    let mut parser = ThinkSplit::default();
-    let mut full_output = String::new();
-    let mut think_bytes: usize = 0;
-    let mut out_bytes: usize = 0;
+    let mut output = StreamOutput::default();
 
     for line in lines {
         let line = match line {
             Ok(l) => l,
             Err(e) => {
-                trace_event(
-                    trace,
-                    start,
-                    think_bytes,
-                    out_bytes,
-                    &format!("# ERROR stream read: {e}"),
-                );
+                trace_event(trace, start, &output, &format!("# ERROR stream read: {e}"));
                 fail(trace, tx, format!("stream read: {e}"));
                 return;
             }
@@ -890,16 +915,14 @@ fn consume_stream(
         if line.trim().is_empty() {
             continue;
         }
-        trace_event(trace, start, think_bytes, out_bytes, &line);
+        trace_event(trace, start, &output, &line);
         if stream_sse_done_line(&line) {
-            let (tb, ob) = parser.flush(tx, &mut full_output).unwrap_or((0, 0));
-            think_bytes += tb;
-            out_bytes += ob;
+            output.flush(tx);
             send_done(
                 trace,
                 &finalizer,
-                &full_output,
-                DoneStats::untimed("sse_done", think_bytes, out_bytes),
+                &output,
+                DoneStats::untimed("sse_done"),
                 tx,
             );
             return;
@@ -911,45 +934,28 @@ fn consume_stream(
             continue;
         };
 
-        if let Some(t) = stream_thinking_chunk(&v) {
-            think_bytes += t.len();
-            if tx.send(GenMsg::Thinking(t.to_owned())).is_err() {
-                return;
-            }
+        if let Some(t) = stream_thinking_chunk(&v)
+            && output.feed_thinking(t, tx).is_err()
+        {
+            return;
         }
-        if let Some(c) = stream_output_chunk(&v) {
-            let Ok((tb, ob)) = parser.feed(c, tx, &mut full_output) else {
-                return;
-            };
-            think_bytes += tb;
-            out_bytes += ob;
+        if let Some(c) = stream_output_chunk(&v)
+            && output.feed(c, tx).is_err()
+        {
+            return;
         }
-        if let Some(done) = stream_done_stats(&v, think_bytes, out_bytes) {
-            let (tb, ob) = parser.flush(tx, &mut full_output).unwrap_or((0, 0));
-            think_bytes += tb;
-            out_bytes += ob;
-            send_done(
-                trace,
-                &finalizer,
-                &full_output,
-                DoneStats {
-                    think_bytes,
-                    out_bytes,
-                    ..done
-                },
-                tx,
-            );
+        if let Some(done) = stream_done_stats(&v) {
+            output.flush(tx);
+            send_done(trace, &finalizer, &output, done, tx);
             return;
         }
     }
-    let (tb, ob) = parser.flush(tx, &mut full_output).unwrap_or((0, 0));
-    think_bytes += tb;
-    out_bytes += ob;
+    output.flush(tx);
     send_done(
         trace,
         &finalizer,
-        &full_output,
-        DoneStats::untimed("loop_exhausted", think_bytes, out_bytes),
+        &output,
+        DoneStats::untimed("loop_exhausted"),
         tx,
     );
 }
@@ -965,15 +971,16 @@ fn trace_line(trace: &mut Option<std::fs::File>, line: &str) {
 fn trace_event(
     trace: &mut Option<std::fs::File>,
     start: Instant,
-    think_bytes: usize,
-    out_bytes: usize,
+    output: &StreamOutput,
     payload: &str,
 ) {
     trace_line(
         trace,
         &format!(
-            "+T{} think_bytes={think_bytes} out_bytes={out_bytes} | {payload}",
+            "+T{} think_bytes={} out_bytes={} | {payload}",
             start.elapsed().as_millis(),
+            output.think_bytes,
+            output.out_bytes,
         ),
     );
 }
@@ -1039,30 +1046,22 @@ struct DoneStats {
     prompt_eval_count: u64,
     total_ms: u64,
     eval_ms: u64,
-    think_bytes: usize,
-    out_bytes: usize,
 }
 
 impl DoneStats {
     /// Stats for an end the server sent no generation counters with.
-    fn untimed(reason: &str, think_bytes: usize, out_bytes: usize) -> Self {
+    fn untimed(reason: &str) -> Self {
         Self {
             reason: reason.to_string(),
             eval_count: 0,
             prompt_eval_count: 0,
             total_ms: 0,
             eval_ms: 0,
-            think_bytes,
-            out_bytes,
         }
     }
 }
 
-fn stream_done_stats(
-    v: &serde_json::Value,
-    think_bytes: usize,
-    out_bytes: usize,
-) -> Option<DoneStats> {
+fn stream_done_stats(v: &serde_json::Value) -> Option<DoneStats> {
     (v.get("done").and_then(|done| done.as_bool()) == Some(true)).then(|| DoneStats {
         reason: v
             .get("done_reason")
@@ -1073,8 +1072,6 @@ fn stream_done_stats(
         prompt_eval_count: json_u64(v, "prompt_eval_count"),
         total_ms: nanos_to_ms(json_u64(v, "total_duration")),
         eval_ms: nanos_to_ms(json_u64(v, "eval_duration")),
-        think_bytes,
-        out_bytes,
     })
 }
 
@@ -1089,11 +1086,11 @@ fn nanos_to_ms(nanos: u64) -> u64 {
 fn send_done(
     trace: &mut Option<std::fs::File>,
     finalizer: &dyn Fn(&str) -> String,
-    full_output: &str,
+    output: &StreamOutput,
     stats: DoneStats,
     tx: &Sender<GenMsg>,
 ) {
-    let final_output = finalizer(full_output);
+    let final_output = finalizer(&output.text);
     if let Some(f) = trace.as_mut() {
         let _ = writeln!(
             f,
@@ -1103,8 +1100,8 @@ fn send_done(
             stats.prompt_eval_count,
             stats.total_ms,
             stats.eval_ms,
-            stats.think_bytes,
-            stats.out_bytes,
+            output.think_bytes,
+            output.out_bytes,
         );
     }
     let _ = tx.send(GenMsg::Done(final_output));
@@ -2029,7 +2026,7 @@ Real body.
 
         assert_eq!(stream_output_chunk(&value), Some("hello"));
         assert_eq!(stream_thinking_chunk(&value), Some("plan"));
-        assert!(stream_done_stats(&value, 4, 5).is_none());
+        assert!(stream_done_stats(&value).is_none());
     }
 
     #[test]
@@ -2048,15 +2045,13 @@ Real body.
             r#"{"done":true,"done_reason":"stop","eval_count":9,"prompt_eval_count":7,"total_duration":3000000,"eval_duration":2000000}"#,
         )
         .unwrap();
-        let stats = stream_done_stats(&value, 4, 5).unwrap();
+        let stats = stream_done_stats(&value).unwrap();
 
         assert_eq!(stats.reason, "stop");
         assert_eq!(stats.eval_count, 9);
         assert_eq!(stats.prompt_eval_count, 7);
         assert_eq!(stats.total_ms, 3);
         assert_eq!(stats.eval_ms, 2);
-        assert_eq!(stats.think_bytes, 4);
-        assert_eq!(stats.out_bytes, 5);
     }
 
     #[test]
