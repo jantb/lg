@@ -52,7 +52,8 @@ pub use status::{
 pub use worktree::{
     Worktree, common_git_dir, default_worktree_path, main_worktree, parse_worktree_list,
     preferred_base_ref, same_dir, worktree_add, worktree_bring_home, worktree_land,
-    worktree_land_with_progress, worktree_prune, worktree_remove, worktree_slug, worktrees,
+    worktree_land_with_progress, worktree_prune, worktree_remove, worktree_slug,
+    worktree_sync_main, worktree_sync_main_with_progress, worktrees,
 };
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]

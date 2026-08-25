@@ -350,6 +350,11 @@ pub enum PendingAction {
         path: String,
         branch: String,
     },
+    /// Merge main into a worktree's branch, in the worktree.
+    SyncWorktree {
+        path: String,
+        branch: String,
+    },
     /// Remove a worktree and check its branch out in the main checkout.
     BringWorktreeHome {
         path: String,
@@ -942,6 +947,7 @@ impl AppState {
                 Some(PendingAction::CreateWorktree { .. }) => Some("adding worktree"),
                 Some(PendingAction::RemoveWorktree { .. }) => Some("removing worktree"),
                 Some(PendingAction::LandWorktree { .. }) => Some("landing worktree"),
+                Some(PendingAction::SyncWorktree { .. }) => Some("syncing worktree"),
                 Some(PendingAction::BringWorktreeHome { .. }) => Some("moving branch home"),
                 Some(PendingAction::PruneWorktrees) => Some("pruning worktrees"),
                 Some(PendingAction::StartSession { .. }) => Some("starting session"),

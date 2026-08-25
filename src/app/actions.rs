@@ -410,6 +410,24 @@ impl App {
                     },
                 );
             }
+            PendingAction::SyncWorktree { path, branch } => {
+                // A conflict is resolved where it happened, and the conflict
+                // modal reads whichever checkout lg is pointed at, so the
+                // worktree has to be that checkout before the merge starts.
+                self.enter_checkout_before_merge(&path);
+                spawn_operation_with_progress(
+                    &mut self.state,
+                    "syncing worktree",
+                    OperationKind::WorkingTree,
+                    move |progress| {
+                        crate::git::worktree_sync_main_with_progress(
+                            Path::new(&path),
+                            &branch,
+                            progress,
+                        )
+                    },
+                );
+            }
             PendingAction::BringWorktreeHome { path, branch } => {
                 self.leave_checkout_before_removal(&path);
                 spawn_operation(
@@ -505,6 +523,26 @@ impl App {
     /// Move lg off a checkout that is about to be removed, so the panels are
     /// not left pointing at a directory that no longer exists. The main
     /// worktree is where every repository has one.
+    /// Point lg at the checkout a merge is about to run in, so the conflict
+    /// modal and everything it drives — the file list, staging, validation —
+    /// act on the checkout holding the conflict.
+    fn enter_checkout_before_merge(&mut self, path: &str) {
+        let already_there = self
+            .state
+            .repo_root
+            .as_deref()
+            .is_some_and(|root| crate::git::same_dir(Path::new(root), Path::new(path)));
+        if already_there {
+            return;
+        }
+        let dir = PathBuf::from(path);
+        let label = dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| dir.to_string_lossy().into_owned());
+        self.switch_to_repository(&dir, &label);
+    }
+
     fn leave_checkout_before_removal(&mut self, path: &str) {
         let showing_it = self
             .state

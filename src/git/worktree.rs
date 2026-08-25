@@ -245,6 +245,73 @@ pub fn worktree_land_with_progress(
     Ok(steps.join("; "))
 }
 
+/// Merge `main` into a worktree's branch, in the worktree itself.
+///
+/// This is the step before landing when `main` has moved on. Landing merges the
+/// other way, so a conflict there lands in `main`; doing it here keeps both the
+/// merge and any conflict in the worktree, and leaves `main` untouched whatever
+/// happens. A conflict is left in place rather than aborted, because resolving
+/// it is the point — finishing it completes the merge and landing is then a
+/// fast-forward.
+pub fn worktree_sync_main(path: &Path, branch: &str) -> Result<String> {
+    worktree_sync_main_with_progress(path, branch, &mut |_| {})
+}
+
+/// Same, reporting each step as it starts. A fetch against a slow remote is
+/// long enough that a spinner saying only "syncing worktree" reads as a hang.
+pub fn worktree_sync_main_with_progress(
+    path: &Path,
+    branch: &str,
+    progress: &mut dyn FnMut(&str),
+) -> Result<String> {
+    let worktrees = worktrees()?;
+    let branch = movable_branch(&worktrees, path, branch)?;
+
+    // Being offline is no reason to refuse a local merge, so a failed fetch
+    // only means `main` is compared against what the last fetch left behind.
+    progress("fetching");
+    let _ = run_in_dir(path, &["fetch", DEFAULT_PUSH_REMOTE, "--prune"]);
+
+    let base = sync_base_ref(path)?;
+    if behind_count(path, &base)? == 0 {
+        return Ok(format!("{branch} is already up to date with {base}"));
+    }
+
+    progress(&format!("merging {base} into {branch}"));
+    let out = run_combined_in_dir(path, &["merge", "--no-edit", &base])?;
+    Ok(last_line(&out, &format!("merged {base} into {branch}")))
+}
+
+/// Which `main` a worktree merges from. Remote-tracking refs live in the shared
+/// git directory, so both candidates are visible from any worktree. The remote
+/// one wins unless the local branch carries commits it does not, which is the
+/// case where merging the remote would report success while leaving the branch
+/// short of what the branch list says it is missing.
+fn sync_base_ref(dir: &Path) -> Result<String> {
+    let remote_main = format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
+    let local = ref_exists_in(dir, BRANCH_MAIN);
+    let remote = ref_exists_in(dir, &remote_main);
+    if !local && !remote {
+        anyhow::bail!("could not find {BRANCH_MAIN} or {remote_main}");
+    }
+    if !remote {
+        return Ok(BRANCH_MAIN.to_string());
+    }
+    if !local || commits_not_in(dir, &remote_main, BRANCH_MAIN)? == 0 {
+        return Ok(remote_main);
+    }
+    Ok(BRANCH_MAIN.to_string())
+}
+
+/// How many commits `ahead_of` carries that `base` does not.
+fn commits_not_in(dir: &Path, base: &str, ahead_of: &str) -> Result<u32> {
+    let out = run_in_dir(dir, &["rev-list", "--count", ahead_of, "--not", base])?;
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .with_context(|| format!("parsing how far {ahead_of} is ahead of {base}"))
+}
+
 /// Move a worktree's branch back to the main checkout: remove the worktree and
 /// check the branch out where the repository was cloned. Nothing is merged and
 /// the branch keeps living — this is for carrying on with the work in one

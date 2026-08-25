@@ -266,6 +266,7 @@ pub fn handle_key(
         KeyCode::Char('D') => remove_selected_worktree(state),
         KeyCode::Char('x') => close_selected_session(state),
         KeyCode::Char('m') => land_selected_worktree(state),
+        KeyCode::Char('M') => sync_selected_worktree(state),
         KeyCode::Char('b') => bring_selected_worktree_home(state),
         KeyCode::Char('r') if state.nested_repo_detail_path.is_some() => {
             state.nested_repo_branch_view = match state.nested_repo_branch_view {
@@ -492,6 +493,26 @@ fn land_selected_worktree(state: &mut AppState) {
         ]
         .join("\n"),
         crate::state::PendingAction::LandWorktree { path, branch },
+    );
+}
+
+/// Merge main into the selected worktree's branch, in the worktree. This is
+/// what unblocks a land that main has moved out from under: the merge conflict
+/// belongs to the branch, not to main.
+fn sync_selected_worktree(state: &mut AppState) {
+    let Some((path, branch)) = handover_candidate(state, "sync") else {
+        return;
+    };
+    state.confirm_reversible_action(
+        "Sync Worktree",
+        format!("Merge main into {branch}?"),
+        [
+            format!("merge main into {branch} in {path}"),
+            "main is not touched".to_string(),
+            "conflicts are resolved here, then landing is a fast-forward".to_string(),
+        ]
+        .join("\n"),
+        crate::state::PendingAction::SyncWorktree { path, branch },
     );
 }
 

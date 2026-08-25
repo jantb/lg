@@ -1541,6 +1541,27 @@ fn m_on_a_worktree_row_parks_the_land_behind_a_confirmation() {
 }
 
 #[test]
+fn shift_m_on_a_worktree_row_offers_to_merge_main_into_it() {
+    let mut state = state_on_a_worktree_row();
+
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('M'))).unwrap();
+
+    assert_eq!(state.pending_action, None, "nothing runs before the y/n");
+    assert_eq!(
+        state.confirm.as_ref().expect("confirm prompt").action,
+        PendingAction::SyncWorktree {
+            path: "/workspace.worktrees/feat-x".into(),
+            branch: "feat/x".into(),
+        }
+    );
+    let detail = &state.confirm.as_ref().expect("confirm prompt").detail;
+    assert!(
+        detail.contains("main is not touched"),
+        "the prompt says main is safe: {detail}"
+    );
+}
+
+#[test]
 fn b_on_a_worktree_row_offers_to_move_the_branch_home() {
     let mut state = state_on_a_worktree_row();
 

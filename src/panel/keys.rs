@@ -279,6 +279,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("m", "land worktree")),
             },
             Binding {
+                key: "M",
+                help: "Merge main into the worktree's branch",
+                footer: Some(("M", "sync main")),
+            },
+            Binding {
                 key: "b",
                 help: "Move its branch to the main checkout",
                 footer: Some(("b", "branch home")),
@@ -320,6 +325,7 @@ pub const SECTIONS: &[Section] = &[
             "Enter",
             "n",
             "m",
+            "M",
             "b",
             "s",
             "x",
@@ -1165,6 +1171,7 @@ mod tests {
                     ("Enter", "expand/checkout"),
                     ("n", "new worktree"),
                     ("m", "land worktree"),
+                    ("M", "sync main"),
                     ("b", "branch home"),
                     ("s", "claude session"),
                     // Added after the merge: a session row had no way to be

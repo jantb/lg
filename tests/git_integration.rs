@@ -3294,6 +3294,117 @@ fn a_conflicting_land_is_aborted_and_leaves_main_where_it_was() {
     assert!(branch_list(repo.path()).contains("feat/x"));
 }
 
+/// The case landing is stuck on: main moved on, so the merge into main is no
+/// longer a fast-forward. Syncing first moves the merge into the worktree,
+/// after which landing goes through.
+#[test]
+fn syncing_a_worktree_behind_main_lets_it_land() {
+    let (repo, _bare, _elsewhere, path) = repo_with_landable_worktree();
+    fs::write(repo.path().join("moved-on.txt"), "main moved on\n").unwrap();
+    stage_in(repo.path(), "moved-on.txt");
+    commit_in(repo.path(), "main moves on");
+    git_ok(repo.path(), &["push", "origin", "main"]);
+
+    let report = lg::git::with_repo(repo.path(), || lg::git::worktree_sync_main(&path, "feat/x"))
+        .expect("sync worktree");
+
+    assert!(
+        path.join("moved-on.txt").is_file(),
+        "the branch carries main's work now: {report}"
+    );
+    assert_eq!(
+        head_branch(repo.path()),
+        "main",
+        "main stayed checked out where it was"
+    );
+
+    let landed = lg::git::with_repo(repo.path(), || lg::git::worktree_land(&path, "feat/x"))
+        .expect("land after syncing");
+    assert!(repo.path().join("feature.txt").is_file(), "{landed}");
+    assert!(!path.exists(), "{landed}");
+}
+
+/// A sync conflict is the branch's to resolve, so it is left open rather than
+/// aborted — that is what lets the conflict modal drive it to a finish.
+#[test]
+fn a_conflicting_sync_stays_open_in_the_worktree_and_leaves_main_alone() {
+    let (repo, _bare, _elsewhere, path) = repo_with_landable_worktree();
+    fs::write(path.join("shared.txt"), "from the branch\n").unwrap();
+    stage_in(&path, "shared.txt");
+    commit_in(&path, "branch writes shared");
+    fs::write(repo.path().join("shared.txt"), "from main\n").unwrap();
+    stage_in(repo.path(), "shared.txt");
+    commit_in(repo.path(), "main writes shared");
+    let main_before = git(repo.path(), &["rev-parse", "HEAD"]);
+
+    let err = lg::git::with_repo(repo.path(), || lg::git::worktree_sync_main(&path, "feat/x"))
+        .expect_err("the merge conflicts");
+    assert!(
+        err.to_string().contains("shared.txt"),
+        "the error names the conflicted file: {err}"
+    );
+
+    let conflicts = lg::git::with_repo(&path, lg::git::conflicted_files).expect("conflicted files");
+    assert_eq!(
+        conflicts,
+        vec!["shared.txt".to_string()],
+        "the conflict is left open in the worktree for the modal to pick up"
+    );
+
+    let main_after = git(repo.path(), &["rev-parse", "HEAD"]);
+    assert_eq!(
+        String::from_utf8_lossy(&main_before.stdout).trim(),
+        String::from_utf8_lossy(&main_after.stdout).trim(),
+        "main never moved"
+    );
+    assert!(
+        !repo.path().join(".git/MERGE_HEAD").exists(),
+        "the main checkout has no merge in progress"
+    );
+}
+
+#[test]
+fn syncing_a_worktree_that_is_already_current_changes_nothing() {
+    let (repo, _bare, _elsewhere, path) = repo_with_landable_worktree();
+    let before = git(&path, &["rev-parse", "HEAD"]);
+
+    let report = lg::git::with_repo(repo.path(), || lg::git::worktree_sync_main(&path, "feat/x"))
+        .expect("sync worktree");
+
+    assert!(
+        report.contains("already up to date"),
+        "it says there was nothing to do: {report}"
+    );
+    let after = git(&path, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        String::from_utf8_lossy(&before.stdout).trim(),
+        String::from_utf8_lossy(&after.stdout).trim(),
+        "the branch did not move"
+    );
+}
+
+#[test]
+fn syncing_refuses_while_the_worktree_has_uncommitted_work() {
+    let (repo, _bare, _elsewhere, path) = repo_with_landable_worktree();
+    fs::write(repo.path().join("moved-on.txt"), "main moved on\n").unwrap();
+    stage_in(repo.path(), "moved-on.txt");
+    commit_in(repo.path(), "main moves on");
+    fs::write(path.join("scratch.txt"), "unsaved\n").unwrap();
+    stage_in(&path, "scratch.txt");
+
+    let err = lg::git::with_repo(repo.path(), || lg::git::worktree_sync_main(&path, "feat/x"))
+        .expect_err("the worktree is dirty");
+
+    assert!(
+        err.to_string().contains("commit or discard"),
+        "the error says what to do first: {err}"
+    );
+    assert!(
+        !path.join("moved-on.txt").exists(),
+        "nothing was merged into a dirty worktree"
+    );
+}
+
 #[test]
 fn a_handover_refuses_while_the_worktree_has_uncommitted_work() {
     let (repo, _bare, _elsewhere, path) = repo_with_landable_worktree();
