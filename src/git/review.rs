@@ -365,14 +365,20 @@ fn flush_review_hunk(entries: &mut Vec<ReviewEntryPoint>, path: &str, hunk: Opti
     });
 }
 
+/// The added and removed lines of a patch, without their leading marker.
+fn changed_bodies(patch: &[String]) -> impl Iterator<Item = &str> {
+    patch
+        .iter()
+        .filter(|line| {
+            (line.starts_with('+') && !line.starts_with("+++"))
+                || (line.starts_with('-') && !line.starts_with("---"))
+        })
+        .map(|line| &line[1..])
+}
+
 fn is_import_only_hunk(path: &str, patch: &[String]) -> bool {
     let mut changed = 0usize;
-    for line in patch
-        .iter()
-        .filter(|line| line.starts_with('+') || line.starts_with('-'))
-        .filter(|line| !line.starts_with("+++") && !line.starts_with("---"))
-    {
-        let body = line[1..].trim();
+    for body in changed_bodies(patch).map(str::trim) {
         if body.is_empty() {
             continue;
         }
@@ -406,12 +412,8 @@ fn describe_hunk(patch: &[String], added: usize, removed: usize) -> String {
         (false, false) => "touches",
     };
     let mut signals = Vec::new();
-    for line in patch
-        .iter()
-        .filter(|line| line.starts_with('+') || line.starts_with('-'))
-        .filter(|line| !line.starts_with("+++") && !line.starts_with("---"))
-    {
-        collect_signal_words(&line[1..], &mut signals);
+    for body in changed_bodies(patch) {
+        collect_signal_words(body, &mut signals);
         if signals.len() >= 4 {
             break;
         }
@@ -687,18 +689,11 @@ fn review_category_summaries(
     for group in groups {
         let category = ReviewEntryCategory::for_path(&group.path);
         let summary = summaries.entry(category).or_default();
+        let (added, removed) = group_totals(entries, group);
         summary.files.insert(group.path.clone());
         summary.entries += 1;
-        summary.added += group
-            .indices
-            .iter()
-            .map(|idx| entries[*idx].added)
-            .sum::<usize>();
-        summary.removed += group
-            .indices
-            .iter()
-            .map(|idx| entries[*idx].removed)
-            .sum::<usize>();
+        summary.added += added;
+        summary.removed += removed;
     }
     summaries
 }
@@ -831,17 +826,10 @@ impl EntryTree<'_> {
         let mut added = 0usize;
         let mut removed = 0usize;
         for group in self.groups.iter().filter(|group| group.path == path) {
+            let (group_added, group_removed) = group_totals(self.entries, group);
             entry_count += 1;
-            added += group
-                .indices
-                .iter()
-                .map(|idx| self.entries[*idx].added)
-                .sum::<usize>();
-            removed += group
-                .indices
-                .iter()
-                .map(|idx| self.entries[*idx].removed)
-                .sum::<usize>();
+            added += group_added;
+            removed += group_removed;
         }
         let noun = if entry_count == 1 {
             "entry point"
@@ -887,9 +875,15 @@ struct EntryGroup {
     indices: Vec<usize>,
 }
 
+/// The added and removed line counts across every hunk in the group.
+fn group_totals(entries: &[ReviewEntryPoint], group: &EntryGroup) -> (usize, usize) {
+    group.indices.iter().fold((0, 0), |(added, removed), idx| {
+        (added + entries[*idx].added, removed + entries[*idx].removed)
+    })
+}
+
 fn entry_group_description(entries: &[ReviewEntryPoint], group: &EntryGroup) -> String {
-    let added: usize = group.indices.iter().map(|idx| entries[*idx].added).sum();
-    let removed: usize = group.indices.iter().map(|idx| entries[*idx].removed).sum();
+    let (added, removed) = group_totals(entries, group);
     if group.indices.len() == 1 {
         entries[group.indices[0]].description.clone()
     } else {
