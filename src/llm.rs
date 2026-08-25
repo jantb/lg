@@ -111,28 +111,6 @@ struct ChatMessage {
     content: String,
 }
 
-#[derive(Serialize)]
-struct Options {
-    temperature: f32,
-    top_p: f32,
-    num_predict: i32,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        let num_predict = std::env::var("LG_LLM_NUM_PREDICT")
-            .ok()
-            .and_then(|v| v.parse::<i32>().ok())
-            .unwrap_or(LLM_NUM_PREDICT);
-
-        Self {
-            temperature: LLM_TEMPERATURE,
-            top_p: LLM_TOP_P,
-            num_predict,
-        }
-    }
-}
-
 #[derive(Default)]
 struct DiffFileSummary {
     path: String,
@@ -594,7 +572,7 @@ pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
     let limits = settings.clone();
     stream_prompt(
         build_commit_prompt(&diff, &settings),
-        options_with_budget(COMMIT_NUM_PREDICT),
+        num_predict_for(COMMIT_NUM_PREDICT),
         move |raw| crate::settings::enforce_commit_limits(&finalize(raw), &limits),
         tx,
     );
@@ -610,7 +588,7 @@ pub fn suggest_repo_conventions(history: String, tx: Sender<crate::state::Settin
     std::thread::spawn(move || {
         stream_prompt(
             build_conventions_prompt(&history),
-            options_with_budget(CONVENTIONS_NUM_PREDICT),
+            num_predict_for(CONVENTIONS_NUM_PREDICT),
             |raw| strip_think_tags(raw).trim().to_string(),
             gen_tx,
         );
@@ -691,7 +669,7 @@ fn parse_conventions(raw: &str) -> (Option<String>, Vec<String>) {
 pub fn stream_review_assist(context: String, tx: Sender<GenMsg>) {
     stream_prompt(
         build_review_assist_prompt(&context, &crate::settings::load()),
-        options_with_budget(REVIEW_ASSIST_NUM_PREDICT),
+        num_predict_for(REVIEW_ASSIST_NUM_PREDICT),
         finalize_review_assist,
         tx,
     );
@@ -701,7 +679,7 @@ pub fn stream_review_style_flag(path: String, context: String, tx: Sender<GenMsg
     let finalizer_path = path.clone();
     stream_prompt(
         build_review_style_flag_prompt(&path, &context, &crate::settings::load()),
-        options_with_budget(REVIEW_STYLE_FLAG_NUM_PREDICT),
+        num_predict_for(REVIEW_STYLE_FLAG_NUM_PREDICT),
         move |raw| finalize_review_style_flag_for_path(&finalizer_path, raw),
         tx,
     );
@@ -710,7 +688,7 @@ pub fn stream_review_style_flag(path: String, context: String, tx: Sender<GenMsg
 pub fn stream_review_pr_text(context: String, tx: Sender<GenMsg>) {
     stream_prompt(
         build_review_pr_text_prompt(&context, &crate::settings::load()),
-        options_with_budget(REVIEW_PR_NUM_PREDICT),
+        num_predict_for(REVIEW_PR_NUM_PREDICT),
         finalize_review_pr_text,
         tx,
     );
@@ -745,26 +723,26 @@ pub fn stream_review_chat(
     });
     stream_messages(
         messages,
-        options_with_budget(REVIEW_CHAT_NUM_PREDICT),
+        num_predict_for(REVIEW_CHAT_NUM_PREDICT),
         finalize_review_chat,
         tx,
     );
 }
 
-/// Options for a task that wants `budget` output tokens.
+/// The generation budget for a task that wants `budget` output tokens.
 ///
-/// `LG_LLM_NUM_PREDICT` overrides `budget`: while it is set, `num_predict` is
-/// whatever [`Options::default`] resolved, and a value that does not parse
-/// resolves to [`LLM_NUM_PREDICT`] rather than to `budget`.
-fn options_with_budget(budget: i32) -> Options {
-    let mut opts = Options::default();
-    if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
-        opts.num_predict = budget;
-    }
-    opts
+/// `LG_LLM_NUM_PREDICT` overrides `budget` while it is set; a value that does
+/// not parse resolves to [`LLM_NUM_PREDICT`] rather than to `budget`.
+fn num_predict_for(budget: i32) -> i32 {
+    let Some(raw) = std::env::var_os("LG_LLM_NUM_PREDICT") else {
+        return budget;
+    };
+    raw.to_str()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(LLM_NUM_PREDICT)
 }
 
-fn stream_prompt<F>(prompt: String, opts: Options, finalizer: F, tx: Sender<GenMsg>)
+fn stream_prompt<F>(prompt: String, num_predict: i32, finalizer: F, tx: Sender<GenMsg>)
 where
     F: Fn(&str) -> String,
 {
@@ -773,7 +751,7 @@ where
             role: "user",
             content: prompt,
         }],
-        opts,
+        num_predict,
         finalizer,
         tx,
     );
@@ -781,7 +759,7 @@ where
 
 fn stream_messages(
     messages: Vec<ChatMessage>,
-    opts: Options,
+    num_predict: i32,
     finalizer: impl Fn(&str) -> String,
     tx: Sender<GenMsg>,
 ) {
@@ -793,9 +771,8 @@ fn stream_messages(
         .iter()
         .map(|message| message.content.len())
         .sum::<usize>();
-    let num_predict = opts.num_predict;
 
-    let body = match chat_request_body(&model, messages, opts) {
+    let body = match chat_request_body(&model, messages, num_predict) {
         Ok(body) => body,
         Err(e) => {
             let _ = tx.send(GenMsg::Error(format!("llm request body: {e}")));
@@ -992,16 +969,16 @@ fn fail(trace: &mut Option<std::fs::File>, tx: &Sender<GenMsg>, message: String)
 fn chat_request_body(
     model: &str,
     messages: Vec<ChatMessage>,
-    opts: Options,
+    num_predict: i32,
 ) -> Result<serde_json::Value> {
     Ok(serde_json::to_value(OllamaChatRequest {
         model,
         messages,
         stream: true,
         options: OllamaOptions {
-            temperature: opts.temperature,
-            top_p: opts.top_p,
-            num_predict: (opts.num_predict > 0).then_some(opts.num_predict),
+            temperature: LLM_TEMPERATURE,
+            top_p: LLM_TOP_P,
+            num_predict: (num_predict > 0).then_some(num_predict),
         },
         think: false,
     })?)
@@ -1848,10 +1825,7 @@ Real body.
         assert_eq!(COMMIT_NUM_PREDICT, 8_192);
         const { assert!(COMMIT_NUM_PREDICT > LLM_NUM_PREDICT) };
         if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
-            assert_eq!(
-                options_with_budget(COMMIT_NUM_PREDICT).num_predict,
-                COMMIT_NUM_PREDICT
-            );
+            assert_eq!(num_predict_for(COMMIT_NUM_PREDICT), COMMIT_NUM_PREDICT);
         }
     }
 
@@ -1990,17 +1964,13 @@ Real body.
 
     #[test]
     fn ollama_request_uses_native_chat_shape() {
-        let opts = Options {
-            num_predict: 42,
-            ..Default::default()
-        };
         let body = chat_request_body(
             "qwen-local",
             vec![ChatMessage {
                 role: "user",
                 content: "hi".into(),
             }],
-            opts,
+            42,
         )
         .unwrap();
 
