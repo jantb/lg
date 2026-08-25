@@ -229,13 +229,12 @@ fn workspace_mode_with_a_real_session() {
 
 // ── What a session looks like it is doing ─────────────────────────────────────
 //
-// The activity dot reads claude's own screen, so it is only as good as the
-// strings claude prints. This is how those were established, and how to check
-// them again when claude changes its status line — which it has: `esc to
-// interrupt`, the obvious marker, is not in 2.1.241 at all.
+// Busy or ready is reported by claude itself, through the hooks lg starts it
+// with. This is the probe for that whole chain — settings file, hook commands,
+// the file they append to, and lg reading it back — because none of it can be
+// checked without a real claude running a real turn.
 
 use lg::session::{SessionActivity, SessionId};
-use lg::term::Spawn;
 
 /// Pump for `millis`, printing the activity and the status line whenever either
 /// changes.
@@ -283,25 +282,22 @@ fn submit(sessions: &mut Sessions, id: SessionId, text: &[u8]) {
 fn activity_tracks_a_real_claude_turn() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("hello.txt"), "hello\n").unwrap();
+    // Hooks report into the repository's git directory, so the probe needs a
+    // repository — a bare directory would run claude with nothing to report to.
+    let git = std::process::Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(dir.path())
+        .output()
+        .expect("spawn git");
+    assert!(git.status.success(), "git init failed");
 
     let mut sessions = Sessions::new();
     let id = sessions
-        .start_with(
+        .start(
             SessionSpec {
                 label: "probe".into(),
                 cwd: dir.path().to_path_buf(),
                 sandboxed: false,
-            },
-            &Spawn {
-                program: "claude".into(),
-                args: Vec::new(),
-                cwd: dir.path().to_path_buf(),
-                env: vec![("TERM".into(), "xterm-256color".into())],
-                env_remove: vec![
-                    "CLAUDECODE".into(),
-                    "CLAUDE_CODE_CHILD_SESSION".into(),
-                    "CLAUDE_CODE_ENTRYPOINT".into(),
-                ],
             },
             (40, 120),
         )
@@ -337,7 +333,11 @@ fn activity_tracks_a_real_claude_turn() {
             break;
         }
     }
-    assert!(saw_working, "a working turn should have read as Working");
+    assert!(
+        saw_working,
+        "a working turn should have read as Working — check the hook settings lg \
+         wrote under <git dir>/lg/sessions, and that claude ran them"
+    );
 
     let settled = watch(&mut sessions, id, 4000, "settled");
     assert_eq!(

@@ -6,6 +6,8 @@
 //! checkouts can be worked on at once and switched between.
 
 use anyhow::Result;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::term::{PtyMsg, PtyProcess, Spawn};
@@ -15,6 +17,10 @@ const SCROLLBACK: usize = 1000;
 
 /// Size a session starts at before the pane it lives in has been laid out.
 const DEFAULT_SIZE: (u16, u16) = (24, 80);
+
+/// Screen lines an `LG_SESSION_TRACE` entry keeps — enough to hold the status
+/// line and whatever claude drew under it.
+const TRACE_TAIL_LINES: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionId(u64);
@@ -32,12 +38,14 @@ pub enum SessionStatus {
     Ended(String),
 }
 
-/// What a running session looks like it is doing.
+/// What a running session is doing.
 ///
-/// claude tells lg nothing, so this is read off the screen claude has drawn:
-/// its own status line says when it is working, and its prompts look like
-/// prompts. A program that says neither reads as [`SessionActivity::Idle`],
-/// which is the honest answer for anything that is not claude.
+/// Busy or ready comes from claude itself, through the hooks lg starts it with
+/// (see [`crate::hooks`]). Being asked a question is still read off the screen:
+/// the questions worth a red dot include the ones claude puts up before it has
+/// run a single hook. A program that neither reports nor asks reads as
+/// [`SessionActivity::Idle`], which is the honest answer for anything that is
+/// not claude.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionActivity {
     /// Sitting at its prompt with nothing to do — ready for a command.
@@ -54,45 +62,6 @@ const QUESTION_MARKERS: &[&str] = &["do you want", "would you like", "do you tru
 
 /// What a chosen option is ticked with once the question has been answered.
 const ANSWERED_MARKS: &[char] = &['\u{2714}', '\u{2713}'];
-
-/// What `text` — a session's screen, as drawn — says the program is doing.
-///
-/// A question outranks the spinner: claude can leave a stale spinner line above
-/// a prompt it has just put up, and being asked something is the state worth
-/// interrupting a person for.
-fn activity_from_screen(text: &str) -> SessionActivity {
-    if is_asking(text) {
-        return SessionActivity::NeedsInput;
-    }
-    if is_working(text) {
-        return SessionActivity::Working;
-    }
-    SessionActivity::Idle
-}
-
-/// Whether claude's status line says it is still going.
-///
-/// Not `esc to interrupt`: claude 2.1.241 never prints it, so it read every
-/// working session as ready — and it matched any session that happened to be
-/// showing lg's own source, which is where the string used to live.
-///
-/// While it works the line reads `\u{273b} Enchanting\u{2026} (12s \u{b7} thinking with xhigh
-/// effort)`; the moment it stops, the same line becomes `\u{273b} Brewed for 4s`. The
-/// ellipsis and the bracketed count are what tell those apart — the spinner
-/// glyph and the word are shared, and the word is picked at random from a long
-/// list, so neither can be matched on.
-fn is_working(text: &str) -> bool {
-    text.lines().any(elapsed_in_brackets)
-}
-
-/// Whether `line` carries an ellipsis followed by a bracketed elapsed time.
-fn elapsed_in_brackets(line: &str) -> bool {
-    let Some((_, rest)) = line.split_once("\u{2026} (") else {
-        return false;
-    };
-    let digits = leading_digits(rest);
-    digits > 0 && rest[digits..].starts_with('s')
-}
 
 /// Whether the screen is showing a question claude is waiting on an answer to.
 ///
@@ -139,6 +108,40 @@ fn leading_digits(text: &str) -> usize {
     text.len() - text.trim_start_matches(|c: char| c.is_ascii_digit()).len()
 }
 
+/// Records a hook reporting in, and what the session reads as now.
+fn trace_event(label: &str, event: crate::hooks::HookEvent, activity: SessionActivity) {
+    trace(&format!("{label} hook {} -> {activity:?}", event.name));
+}
+
+/// Records a question appearing or going away, with the screen lines it was read
+/// off, so a shape this misses can be recovered afterwards instead of having to
+/// be caught live.
+fn trace_reading(label: &str, activity: SessionActivity, screen: &str) {
+    let mut tail: Vec<&str> = screen
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .rev()
+        .take(TRACE_TAIL_LINES)
+        .collect();
+    tail.reverse();
+    trace(&format!(
+        "{label} screen -> {activity:?} | {}",
+        tail.join(" \u{23ce} ")
+    ));
+}
+
+/// Appends a line to the file named by `LG_SESSION_TRACE`, when there is one.
+fn trace(line: &str) {
+    let Some(path) = std::env::var_os("LG_SESSION_TRACE") else {
+        return;
+    };
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = writeln!(file, "{line}");
+}
+
 /// What to run, and where.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSpec {
@@ -156,10 +159,15 @@ pub struct Session {
     pub status: SessionStatus,
     /// Output arrived while this session was not the one being shown.
     pub attention: bool,
-    /// What the last screen it drew says it is doing. Recomputed on output
-    /// rather than on render, so the repo tree can show it for every session
-    /// at once without re-reading five screens a frame.
+    /// What claude last reported through its hooks. Starts idle: a session that
+    /// has not said anything yet has nothing to show for it.
     activity: SessionActivity,
+    /// Whether the last screen it drew was showing a question. Recomputed on
+    /// output rather than on render, so the repo tree can show it for every
+    /// session at once without re-reading five screens a frame.
+    asking: bool,
+    /// Hooks reporting in, for a session started with them.
+    events: Option<crate::hooks::HookEvents>,
     parser: vt100::Parser,
     process: Option<PtyProcess>,
 }
@@ -174,11 +182,16 @@ impl Session {
     }
 
     /// What it is doing, for the dot the repo tree puts in front of it. A
-    /// session that has ended is doing nothing, whatever its last screen said.
+    /// session that has ended is doing nothing, whatever it last reported.
+    ///
+    /// A question on screen outranks the hooks. claude can be mid-turn and still
+    /// be blocked on an answer — that is what a permission prompt is — and being
+    /// asked something is the state worth interrupting a person for.
     pub fn activity(&self) -> SessionActivity {
         match self.status {
-            SessionStatus::Running => self.activity,
             SessionStatus::Ended(_) => SessionActivity::Idle,
+            SessionStatus::Running if self.asking => SessionActivity::NeedsInput,
+            SessionStatus::Running => self.activity,
         }
     }
 
@@ -307,11 +320,26 @@ impl Session {
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
             }
         }
-        // Scrolled back, the visible screen is history, and history would read
-        // as whatever the program was doing then. The last live reading stands
-        // until the view returns to the bottom.
+        // Scrolled back, the visible screen is history, and a question in it
+        // has long since been answered. The last live reading stands until the
+        // view returns to the bottom.
         if changed && self.parser.screen().scrollback() == 0 {
-            self.activity = activity_from_screen(&self.parser.screen().contents());
+            let screen = self.parser.screen().contents();
+            let asking = is_asking(&screen);
+            if asking != self.asking {
+                self.asking = asking;
+                trace_reading(&self.label, self.activity(), &screen);
+            }
+        }
+        for event in self
+            .events
+            .as_mut()
+            .map_or_else(Vec::new, |events| events.drain())
+        {
+            self.activity = event.activity;
+            // The dot moved, even if nothing was drawn.
+            changed = true;
+            trace_event(&self.label, event, self.activity());
         }
         if let Some(notice) = ended {
             self.status = SessionStatus::Ended(notice);
@@ -402,8 +430,20 @@ impl Sessions {
     /// Start a claude session for `spec`, or hand back the one already running
     /// there.
     pub fn start(&mut self, spec: SessionSpec, size: (u16, u16)) -> Result<SessionId> {
-        let spawn = claude_spawn(&spec.cwd, spec.sandboxed);
-        self.start_with(spec, &spawn, size)
+        if let Some(existing) = self.for_dir(&spec.cwd) {
+            self.focus(existing);
+            return Ok(existing);
+        }
+        // A checkout with nowhere to keep a hook file still gets a session; it
+        // just has to do without claude saying what it is up to.
+        let hooks = crate::hooks::install(&spec.cwd).ok();
+        let settings = hooks.as_ref().map(|channel| channel.settings.as_path());
+        let spawn = claude_spawn(&spec.cwd, spec.sandboxed, settings);
+        let id = self.start_with(spec, &spawn, size)?;
+        if let Some(session) = self.get_mut(id) {
+            session.events = hooks.map(|channel| channel.events);
+        }
+        Ok(id)
     }
 
     /// Start a session running something other than claude. This is the seam a
@@ -431,6 +471,8 @@ impl Sessions {
             status: SessionStatus::Running,
             attention: false,
             activity: SessionActivity::Idle,
+            asking: false,
+            events: None,
             parser: vt100::Parser::new(size.0, size.1, SCROLLBACK),
             process: None,
         });
@@ -510,11 +552,15 @@ const AUTO_PERMISSION_MODE: &str = "auto";
 /// which confines the process to that worktree. An unsandboxed one runs in
 /// auto mode: nothing is holding it back anyway, so stopping to ask buys
 /// little.
-pub fn claude_spawn(cwd: &Path, sandboxed: bool) -> Spawn {
+///
+/// `settings` is the hook settings file from [`crate::hooks::install`], which is
+/// how the session comes to report what it is doing. Without one it still runs —
+/// it just says nothing.
+pub fn claude_spawn(cwd: &Path, sandboxed: bool, settings: Option<&Path>) -> Spawn {
     // terrarium resolves the project path before looking up its profile, so the
     // path handed to it has to be resolved too.
     let cwd = &crate::terrarium::resolve(cwd);
-    let (program, args) = if sandboxed {
+    let (program, mut args) = if sandboxed {
         (
             "terrarium".to_string(),
             vec![
@@ -534,6 +580,12 @@ pub fn claude_spawn(cwd: &Path, sandboxed: bool) -> Spawn {
             ],
         )
     };
+    // Last, so it lands after the `--` a sandboxed session goes through: these
+    // are claude's arguments, not terrarium's.
+    if let Some(settings) = settings {
+        args.push("--settings".to_string());
+        args.push(settings.to_string_lossy().into_owned());
+    }
     Spawn {
         program,
         args,
@@ -546,6 +598,7 @@ pub fn claude_spawn(cwd: &Path, sandboxed: bool) -> Spawn {
         // dropping these the child would think it is nested in one.
         env_remove: vec![
             "CLAUDECODE".to_string(),
+            "CLAUDE_CODE_CHILD_SESSION".to_string(),
             "CLAUDE_CODE_ENTRYPOINT".to_string(),
         ],
     }
@@ -589,7 +642,7 @@ mod tests {
 
     #[test]
     fn a_sandboxed_session_goes_through_terrarium_in_its_own_worktree() {
-        let spawn = claude_spawn(Path::new("/dev/lg.worktrees/feat-x"), true);
+        let spawn = claude_spawn(Path::new("/dev/lg.worktrees/feat-x"), true, None);
         assert_eq!(spawn.program, "terrarium");
         assert_eq!(
             spawn.args,
@@ -606,15 +659,48 @@ mod tests {
 
     #[test]
     fn an_unsandboxed_session_runs_claude_in_auto_mode() {
-        let spawn = claude_spawn(Path::new("/dev/lg"), false);
+        let spawn = claude_spawn(Path::new("/dev/lg"), false, None);
         assert_eq!(spawn.program, "claude");
         assert_eq!(spawn.args, ["--permission-mode", "auto"]);
         assert_eq!(spawn.cwd, Path::new("/dev/lg"));
     }
 
+    /// The hook settings are claude's argument. A sandboxed session is started by
+    /// terrarium, so they have to land after the `--` that separates the two
+    /// command lines, or terrarium would try to take them itself.
+    #[test]
+    fn hook_settings_are_passed_to_claude_and_not_to_terrarium() {
+        let settings = Path::new("/dev/lg/.git/lg/sessions/dev-lg/settings.json");
+
+        let sandboxed = claude_spawn(Path::new("/dev/lg"), true, Some(settings));
+        assert_eq!(
+            sandboxed.args,
+            [
+                "run",
+                "--project",
+                "/dev/lg",
+                "--",
+                "claude",
+                "--settings",
+                "/dev/lg/.git/lg/sessions/dev-lg/settings.json"
+            ]
+        );
+
+        let plain = claude_spawn(Path::new("/dev/lg"), false, Some(settings));
+        assert_eq!(
+            plain.args,
+            [
+                "--permission-mode",
+                "auto",
+                "--settings",
+                "/dev/lg/.git/lg/sessions/dev-lg/settings.json"
+            ]
+        );
+    }
+
     #[test]
     fn sessions_declare_a_terminal_and_drop_the_nested_claude_markers() {
-        let spawn = claude_spawn(Path::new("/dev/lg"), false);
+        let spawn = claude_spawn(Path::new("/dev/lg"), false, None);
         assert!(
             spawn
                 .env
@@ -647,6 +733,8 @@ mod tests {
             status: SessionStatus::Running,
             attention: false,
             activity: SessionActivity::Idle,
+            asking: false,
+            events: None,
             parser: vt100::Parser::new(24, 80, 0),
             process: None,
         }
@@ -663,40 +751,28 @@ mod tests {
         sessions
     }
 
-    /// Every string below was copied off a real claude 2.1.241 session by
-    /// `tests/session_smoke.rs`. They are written escaped, which also keeps the
-    /// detector from matching its own source when lg is used to edit lg.
+    /// Busy or ready is claude's to report, not lg's to guess: the spinner line
+    /// says nothing lg reads any more. Matching it went wrong twice — once when
+    /// `esc to interrupt` stopped being printed, once when a turn past a minute
+    /// grew a `1m ` its clock did not have before.
     #[test]
-    fn the_status_line_while_working_reads_as_working() {
+    fn the_spinner_line_is_not_read_at_all() {
         for line in [
             "\u{273b} Enchanting\u{2026} (12s \u{b7} still thinking with xhigh effort)",
-            "\u{273d} Metamorphosing\u{2026} (0s)",
-            "\u{b7} Enchanting\u{2026} (1s)",
-            "\u{2733} Enchanting\u{2026} (2s \u{b7} thinking with xhigh effort)",
+            "\u{273b} Enchanting\u{2026} (1m 12s \u{b7} esc to interrupt)",
+            "\u{273b} Brewed for 4s",
         ] {
-            assert_eq!(
-                activity_from_screen(line),
-                SessionActivity::Working,
-                "{line:?} is claude working"
-            );
+            assert!(!is_asking(line), "{line:?} is not a question");
         }
     }
 
-    /// The finished line keeps the spinner glyph and the word, and drops the
-    /// ellipsis and the bracket. That is the whole difference.
-    #[test]
-    fn the_status_line_after_working_reads_as_ready() {
-        assert_eq!(
-            activity_from_screen("\u{273b} Brewed for 4s"),
-            SessionActivity::Idle
-        );
-    }
-
+    /// The prompt every fresh checkout opens on, and the reason the screen is
+    /// still read: it is up before claude has run a single hook.
     #[test]
     fn the_trust_prompt_reads_as_needing_input() {
         let screen = "Quick safety check: Is this a project you created or one you trust?\n\
                       \u{276f} 1. Yes, I trust this folder\n  2. No, exit";
-        assert_eq!(activity_from_screen(screen), SessionActivity::NeedsInput);
+        assert!(is_asking(screen));
     }
 
     /// An answered question stays on screen with its chosen row ticked. Reading
@@ -704,17 +780,18 @@ mod tests {
     /// dealt with.
     #[test]
     fn an_answered_question_stops_reading_as_one() {
-        assert_eq!(
-            activity_from_screen("\u{276f} 1. Yes, I trust this folder \u{2714}"),
-            SessionActivity::Idle
-        );
+        assert!(!is_asking("\u{276f} 1. Yes, I trust this folder \u{2714}"));
     }
 
+    /// A permission prompt comes up mid-turn, so the hooks have the session down
+    /// as working when it is really blocked on an answer. The question wins.
     #[test]
-    fn a_question_outranks_a_spinner_left_above_it() {
-        let screen =
-            "\u{273b} Enchanting\u{2026} (3s)\n\nDo you want to proceed?\n\u{276f} 1. Yes\n  2. No";
-        assert_eq!(activity_from_screen(screen), SessionActivity::NeedsInput);
+    fn a_question_outranks_what_the_hooks_last_said() {
+        let mut session = fake(1, "/a");
+        session.activity = SessionActivity::Working;
+        session.asking = true;
+
+        assert_eq!(session.activity(), SessionActivity::NeedsInput);
     }
 
     #[test]
@@ -724,9 +801,8 @@ mod tests {
             "\u{276f} think carefully and write an essay",
             "\u{23f5}\u{23f5} auto mode on (shift+tab to cycle)",
         ] {
-            assert_eq!(
-                activity_from_screen(line),
-                SessionActivity::Idle,
+            assert!(
+                !is_asking(line),
                 "{line:?} is claude waiting for a command, not asking one"
             );
         }
@@ -734,21 +810,22 @@ mod tests {
 
     #[test]
     fn prose_that_merely_mentions_a_question_is_not_a_question() {
-        assert_eq!(
-            activity_from_screen(
-                "I can add the flag if you want. Do you want me to also update the docs?"
-            ),
-            SessionActivity::Idle,
+        assert!(
+            !is_asking("I can add the flag if you want. Do you want me to also update the docs?"),
             "an answer that uses the words is not a prompt with options to pick"
         );
     }
 
     #[test]
     fn a_quiet_screen_reads_as_ready() {
-        assert_eq!(
-            activity_from_screen("Welcome to claude\n\n"),
-            SessionActivity::Idle
-        );
+        assert!(!is_asking("Welcome to claude\n\n"));
+    }
+
+    /// Nothing has reported in yet, and nothing is being asked. A session that
+    /// has said nothing is not busy.
+    #[test]
+    fn a_session_that_has_reported_nothing_reads_as_ready() {
+        assert_eq!(fake(1, "/a").activity(), SessionActivity::Idle);
     }
 
     #[test]

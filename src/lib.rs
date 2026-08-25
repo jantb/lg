@@ -2,6 +2,7 @@ pub mod app;
 pub mod config;
 pub mod git;
 pub mod graph;
+pub mod hooks;
 pub mod llm;
 pub mod panel;
 pub mod session;

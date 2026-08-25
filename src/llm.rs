@@ -14,6 +14,11 @@ const MAX_DIFF_EXCERPT_LINES: usize = 180;
 const MAX_DIFF_EXCERPT_BYTES: usize = 16_000;
 const MAX_SUMMARY_FILES: usize = 24;
 const MAX_SIGNAL_LINES: usize = 48;
+/// Generation budget for a commit message. The model streams its reasoning
+/// into the same budget as its answer, so this has to cover both: at the bare
+/// [`LLM_NUM_PREDICT`] default the reasoning ate the budget and the message
+/// came back truncated mid-word.
+const COMMIT_NUM_PREDICT: i32 = 8_192;
 const REVIEW_ASSIST_NUM_PREDICT: i32 = 16_000;
 const REVIEW_ASSIST_MAX_CHARS: usize = 16_000;
 const REVIEW_ASSIST_MAX_LINES: usize = 128;
@@ -596,10 +601,18 @@ pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
     let limits = settings.clone();
     stream_prompt(
         build_commit_prompt(&diff, &settings),
-        Options::default(),
+        commit_options(),
         move |raw| crate::settings::enforce_commit_limits(&finalize(raw), &limits),
         tx,
     );
+}
+
+fn commit_options() -> Options {
+    let mut opts = Options::default();
+    if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
+        opts.num_predict = COMMIT_NUM_PREDICT;
+    }
+    opts
 }
 
 /// Derives this checkout's writing conventions — the language its commit
@@ -1707,6 +1720,15 @@ Real body.
         assert_eq!(finalized.chars().count(), REVIEW_ASSIST_MAX_CHARS);
         assert_eq!(REVIEW_ASSIST_MAX_CHARS, 16_000);
         assert_eq!(REVIEW_ASSIST_NUM_PREDICT, 16_000);
+    }
+
+    #[test]
+    fn commit_options_leave_room_for_reasoning() {
+        assert_eq!(COMMIT_NUM_PREDICT, 8_192);
+        assert!(COMMIT_NUM_PREDICT > LLM_NUM_PREDICT);
+        if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
+            assert_eq!(commit_options().num_predict, COMMIT_NUM_PREDICT);
+        }
     }
 
     #[test]
