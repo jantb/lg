@@ -3404,3 +3404,236 @@ fn a_worktree_reports_how_far_its_branch_has_run_ahead_of_main() {
         .expect("feature worktree");
     assert_eq!(feature.unmerged, Some(0), "merged, so only cleanup is left");
 }
+
+/// Merging main from a linked worktree used to run `git checkout main` there,
+/// which git refuses because the main checkout still holds it. The flow died
+/// after its auto-stash, so the worktree went empty with the work in a stash
+/// nobody mentioned.
+#[test]
+fn merge_main_flow_merges_from_a_worktree_without_checking_main_out() {
+    let repo = init_repo();
+    fs::write(repo.path().join("init.txt"), "init").unwrap();
+    stage_in(repo.path(), "init.txt");
+    commit_in(repo.path(), "initial commit");
+
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let linked = elsewhere.path().join("feat-x");
+    git_ok(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature/x",
+            linked.to_str().expect("worktree path"),
+        ],
+    );
+
+    fs::write(repo.path().join("main.txt"), "main update").unwrap();
+    stage_in(repo.path(), "main.txt");
+    commit_in(repo.path(), "main update");
+
+    fs::write(linked.join("dirty.txt"), "dirty work").unwrap();
+
+    let summary = lg::git::with_repo(&linked, || {
+        lg::git::flow_merge_main_into_current("feature/x")
+    })
+    .expect("merge main into the worktree's branch");
+
+    let log = git(&linked, &["log", "--oneline", "feature/x"]);
+    assert!(
+        String::from_utf8_lossy(&log.stdout).contains("main update"),
+        "the worktree's branch did not receive main: {summary}"
+    );
+    assert!(
+        linked.join("dirty.txt").exists(),
+        "the stashed work should be back: {summary}"
+    );
+    assert!(
+        stash_list(&linked).is_empty(),
+        "auto-stash should be restored and dropped: {}",
+        stash_list(&linked)
+    );
+    assert_eq!(head_branch(&linked), "feature/x");
+    assert_eq!(
+        head_branch(repo.path()),
+        "main",
+        "the main checkout should be left where it was"
+    );
+    assert!(
+        summary.contains("kept feature/x local"),
+        "a branch without an upstream is not published by a merge: {summary}"
+    );
+    assert!(
+        !branch_list(repo.path()).contains("lg/backup/merge-main-"),
+        "a successful merge-main cleans its safety backup: {}",
+        branch_list(repo.path())
+    );
+}
+
+/// The branch list counts how far behind the local `main` a branch is, so that
+/// is the `main` a merge has to deliver — merging only `origin/main` reported
+/// success while leaving the branch exactly as behind as it was.
+#[test]
+fn merge_main_flow_merges_commits_only_the_local_main_has() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+
+    let feature = "feature/local-main";
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("local.txt"), "not pushed").unwrap();
+    stage_in(dir.path(), "local.txt");
+    commit_in(dir.path(), "local main commit");
+    git_ok(dir.path(), &["checkout", feature]);
+
+    let summary = lg::git::with_repo(dir.path(), || {
+        lg::git::flow_merge_main_into_current(feature)
+    })
+    .expect("merge main into feature");
+
+    let log = git(dir.path(), &["log", "--oneline", feature]);
+    assert!(
+        String::from_utf8_lossy(&log.stdout).contains("local main commit"),
+        "the unpushed main commit should have been merged: {summary}"
+    );
+}
+
+/// A flow that fails after auto-stashing has to put the work back. Leaving it
+/// stashed empties the checkout with nothing on screen saying why.
+#[test]
+fn merge_main_flow_restores_the_auto_stash_when_it_fails() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+    git_ok(dir.path(), &["checkout", "-b", "feature/no-main"]);
+    git_ok(dir.path(), &["branch", "-D", "main"]);
+
+    fs::write(dir.path().join("dirty.txt"), "dirty work").unwrap();
+
+    let err = lg::git::with_repo(dir.path(), || {
+        lg::git::flow_merge_main_into_current("feature/no-main")
+    })
+    .expect_err("a repository without main cannot merge it");
+
+    let message = err.to_string();
+    assert!(
+        message.contains("could not find main"),
+        "the failure should say what was missing: {message}"
+    );
+    assert!(
+        message.contains("restored your uncommitted changes"),
+        "the failure should say the work came back: {message}"
+    );
+    assert!(
+        dir.path().join("dirty.txt").exists(),
+        "the stashed work should be back"
+    );
+    assert!(
+        stash_list(dir.path()).is_empty(),
+        "nothing should be left stashed: {}",
+        stash_list(dir.path())
+    );
+}
+
+/// A conflicted merge cannot take the stash back, so the error says where the
+/// work is and validating the resolution restores it.
+#[test]
+fn merge_main_conflict_keeps_the_stash_until_the_conflict_is_validated() {
+    let dir = init_repo();
+    fs::write(dir.path().join("conflict.txt"), "base\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let feature = "feature/stashed-conflict";
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("conflict.txt"), "feature\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "feature side");
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("conflict.txt"), "main\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "main side");
+    git_ok(dir.path(), &["checkout", feature]);
+
+    fs::write(dir.path().join("dirty.txt"), "dirty work").unwrap();
+
+    let _cwd = CwdGuard::new(dir.path());
+    let err = lg::git::flow_merge_main_into_current(feature)
+        .expect_err("merge-main should stop for manual conflict resolution");
+    let message = err.to_string();
+    assert!(
+        message.contains("git stash pop"),
+        "the error should say how to get the work back: {message}"
+    );
+    assert!(
+        !dir.path().join("dirty.txt").exists(),
+        "the work stays stashed while the merge is conflicted"
+    );
+
+    fs::write(dir.path().join("conflict.txt"), "resolved\n").unwrap();
+    let out = lg::git::validate_conflict_resolution_with_cleanup(
+        None,
+        Some(feature),
+        Some(("merge-main", feature)),
+    )
+    .expect("continue merge-main conflict");
+
+    assert!(
+        out.contains("restored"),
+        "validation should report the stash coming back: {out}"
+    );
+    assert!(
+        dir.path().join("dirty.txt").exists(),
+        "the stashed work should be back after validation: {out}"
+    );
+    assert!(
+        stash_list(dir.path()).is_empty(),
+        "nothing should be left stashed: {}",
+        stash_list(dir.path())
+    );
+}
+
+/// A git process that died mid-write leaves `index.lock` behind, and from then
+/// on everything that writes the index fails while `git status` keeps working
+/// — so lg shows the files and refuses to stage them. Git's four-line refusal
+/// puts the part worth acting on last, which a one-line status bar cuts off.
+#[test]
+fn staging_against_a_leftover_index_lock_says_what_to_do_about_it() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+    fs::write(dir.path().join("work.txt"), "work").unwrap();
+    fs::write(dir.path().join(".git/index.lock"), "").unwrap();
+
+    let err = lg::git::with_repo(dir.path(), || lg::git::stage("work.txt"))
+        .expect_err("git cannot take the index lock twice");
+    let first_line = err
+        .to_string()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+
+    assert!(
+        first_line.contains("index.lock"),
+        "the first line should name the lock: {first_line}"
+    );
+    assert!(
+        first_line.contains("delete it if none is"),
+        "the first line should say what to do: {first_line}"
+    );
+}

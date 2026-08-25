@@ -71,6 +71,38 @@ fn release_status_cache() -> &'static Mutex<HashMap<ReleaseStatusCacheKey, Branc
     RELEASE_STATUS_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// The lock file git refused over, when that is why a command failed.
+///
+/// Git says so across four lines and puts the part worth acting on last, so a
+/// status bar with room for the first line says only that some file exists.
+/// A lock left behind by a git process that died — lg crashing takes its own
+/// git children with it — then makes every command that writes the index fail
+/// while `git status` carries on as if nothing were wrong.
+fn refused_lock_path(text: &str) -> Option<&str> {
+    let (_, rest) = text.split_once("Unable to create '")?;
+    let (path, _) = rest.split_once("': File exists")?;
+    Some(path)
+}
+
+/// What a failed git command should say, in one line that survives being cut
+/// to the width of a status bar.
+fn failure_message(command: &str, text: &str) -> String {
+    match refused_lock_path(text) {
+        Some(path) => format!(
+            "{command} failed: {path} exists, so another git process may be running here; delete it if none is"
+        ),
+        None => format!("{command} failed: {}", text.trim()),
+    }
+}
+
+/// Same, keeping git's own output for the callers that show all of it.
+fn combined_failure_message(command: &str, text: &str) -> String {
+    match refused_lock_path(text) {
+        Some(_) => failure_message(command, text),
+        None => format!("{command} failed:\n{text}"),
+    }
+}
+
 fn run(args: &[&str]) -> Result<Output> {
     let out = git_command(args)
         .output()
@@ -80,9 +112,8 @@ fn run(args: &[&str]) -> Result<Output> {
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr);
         Err(anyhow::anyhow!(
-            "git {} failed: {}",
-            args.join(" "),
-            stderr.trim()
+            "{}",
+            failure_message(&format!("git {}", args.join(" ")), &stderr)
         ))
     }
 }
@@ -100,10 +131,11 @@ fn run_in_dir(dir: &Path, args: &[&str]) -> Result<Output> {
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr);
         Err(anyhow::anyhow!(
-            "git -C {} {} failed: {}",
-            dir.display(),
-            args.join(" "),
-            stderr.trim()
+            "{}",
+            failure_message(
+                &format!("git -C {} {}", dir.display(), args.join(" ")),
+                &stderr
+            )
         ))
     }
 }
@@ -117,7 +149,10 @@ fn run_combined(args: &[&str]) -> Result<String> {
     if out.status.success() {
         Ok(text)
     } else {
-        Err(anyhow::anyhow!("git {} failed:\n{text}", args.join(" ")))
+        Err(anyhow::anyhow!(
+            "{}",
+            combined_failure_message(&format!("git {}", args.join(" ")), &text)
+        ))
     }
 }
 
@@ -135,9 +170,11 @@ fn run_combined_in_dir(dir: &Path, args: &[&str]) -> Result<String> {
         Ok(text)
     } else {
         Err(anyhow::anyhow!(
-            "git -C {} {} failed:\n{text}",
-            dir.display(),
-            args.join(" ")
+            "{}",
+            combined_failure_message(
+                &format!("git -C {} {}", dir.display(), args.join(" ")),
+                &text
+            )
         ))
     }
 }

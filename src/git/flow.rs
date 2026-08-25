@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,11 +10,20 @@ use crate::config::{
 };
 
 use super::{
-    counts_ahead_behind, git_command, head_branch, list_branches, run, run_combined, stage,
+    counts_ahead_behind, git_command, head_branch, list_branches, parse_worktree_list, run,
+    run_combined, run_in_dir, stage,
 };
 
 const SAFETY_REF_PREFIX: &str = "lg/backup/";
 const SAFETY_REF_KEEP: usize = 20;
+
+/// What lg calls the stashes it takes on the way into a flow. A flow that
+/// fails puts its own stash back and a conflict says where it is, so the
+/// message has to still be recognisable long after it was written.
+const AUTO_STASH_MERGE_MAIN: &str = "lg flow: auto-stash before merging main";
+const AUTO_STASH_RELEASE: &str = "lg flow: auto-stash before release";
+const AUTO_STASH_NEW_BRANCH: &str = "lg flow: auto-stash before branch creation";
+const AUTO_STASH_TAGS: [&str; 2] = ["lg flow: auto-stash", "lg: auto-stash"];
 
 pub fn checkout_branch(name: &str) -> Result<String> {
     let stashed = stash_before_branch_change(name, "lg: auto-stash before checkout")?;
@@ -172,28 +181,149 @@ pub fn flow_merge_main_into_current_with_progress(
 ) -> Result<String> {
     ensure_merge_main_branch(current_branch)?;
     progress();
-    let stashed = stash_uncommitted_changes("lg flow: auto-stash before merging main")?;
+    let stashed = stash_uncommitted_changes(AUTO_STASH_MERGE_MAIN)?;
     progress();
     let safety_ref = create_safety_ref("merge-main")?;
+    match merge_main_into_current(current_branch, progress) {
+        Ok(mut steps) => {
+            progress();
+            pop_stash_if_needed(stashed)?;
+            if stashed {
+                steps.push("restored stashed changes".to_string());
+            }
+            progress();
+            delete_safety_ref(&safety_ref)?;
+            Ok(steps.join("; "))
+        }
+        Err(err) => Err(restore_auto_stash_after_failure(
+            err,
+            stashed,
+            AUTO_STASH_MERGE_MAIN,
+            current_branch,
+        )),
+    }
+}
+
+/// Merge `main` into the checked-out branch without ever leaving it. Checking
+/// `main` out here cannot work from a linked worktree, which is where lg
+/// expects the work to happen: git hands the same branch to one checkout at a
+/// time, and the main one is already holding it.
+fn merge_main_into_current(
+    current_branch: &str,
+    progress: &mut impl FnMut(),
+) -> Result<Vec<String>> {
+    let mut steps = Vec::new();
     progress();
-    run(&["fetch"])?;
+    // Being offline is no reason to refuse a local merge, so a failed fetch
+    // only means main is merged as the last fetch left it.
+    if run(&["fetch"]).is_err() {
+        steps.push(format!("could not reach {DEFAULT_PUSH_REMOTE}"));
+    }
     progress();
     pull_current_branch_for_merge_main(current_branch)?;
     progress();
-    run(&["checkout", BRANCH_MAIN])?;
+    steps.extend(update_local_main()?);
     progress();
-    run(&["pull", "--rebase", DEFAULT_PUSH_REMOTE, BRANCH_MAIN])?;
+    let (base, note) = merge_main_base_ref()?;
+    steps.extend(note);
+    run_combined(&["merge", "--no-edit", &base])?;
+    steps.push(format!("merged {base} into {current_branch}"));
     progress();
-    run(&["checkout", current_branch])?;
-    progress();
-    run(&["merge", &format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}")])?;
-    progress();
-    run(&["push"])?;
-    progress();
-    pop_stash_if_needed(stashed)?;
-    progress();
-    delete_safety_ref(&safety_ref)?;
-    Ok(format!("merged origin/{BRANCH_MAIN} into {current_branch}"))
+    steps.push(push_after_merge_main(current_branch)?);
+    Ok(steps)
+}
+
+/// Advance the local `main` to the remote's without checking it out here. It
+/// may be checked out in another worktree, so the fast-forward runs where it
+/// lives; a checkout that will not take it is worth a note rather than a
+/// failed merge, because what gets merged below is whichever `main` is ahead.
+fn update_local_main() -> Result<Option<String>> {
+    let remote_main = format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
+    if !ref_exists(&remote_main) {
+        return Ok(None);
+    }
+    if !ref_exists(BRANCH_MAIN) {
+        run(&["branch", BRANCH_MAIN, &remote_main])?;
+        return Ok(Some(format!("created {BRANCH_MAIN} from {remote_main}")));
+    }
+    if commits_missing_from(BRANCH_MAIN, &remote_main)? == 0 {
+        return Ok(None);
+    }
+    let Some(host) = branch_checkout_dir(BRANCH_MAIN)? else {
+        run(&[
+            "fetch",
+            DEFAULT_PUSH_REMOTE,
+            &format!("{BRANCH_MAIN}:{BRANCH_MAIN}"),
+        ])?;
+        return Ok(Some(format!("updated {BRANCH_MAIN} from {remote_main}")));
+    };
+    match run_in_dir(&host, &["merge", "--ff-only", &remote_main]) {
+        Ok(_) => Ok(Some(format!("updated {BRANCH_MAIN} from {remote_main}"))),
+        Err(_) => Ok(Some(format!(
+            "left {BRANCH_MAIN} where {} has it",
+            host.display()
+        ))),
+    }
+}
+
+/// Which `main` to merge. The local branch and the remote one can hold
+/// different commits — a commit made on `main` here, a remote that has moved
+/// on — and merging the one that is behind reports success while leaving the
+/// branch short of what the branch list says it is missing.
+fn merge_main_base_ref() -> Result<(String, Option<String>)> {
+    let remote_main = format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
+    let local = ref_exists(BRANCH_MAIN);
+    let remote = ref_exists(&remote_main);
+    if !local && !remote {
+        anyhow::bail!("could not find {BRANCH_MAIN} or {remote_main}");
+    }
+    if !local {
+        return Ok((remote_main, None));
+    }
+    if !remote {
+        return Ok((BRANCH_MAIN.to_string(), None));
+    }
+    if commits_missing_from(&remote_main, BRANCH_MAIN)? == 0 {
+        return Ok((remote_main, None));
+    }
+    let behind = commits_missing_from(BRANCH_MAIN, &remote_main)?;
+    let note = (behind > 0).then(|| {
+        format!(
+            "{remote_main} has {behind} commits {BRANCH_MAIN} does not; reconcile those separately"
+        )
+    });
+    Ok((BRANCH_MAIN.to_string(), note))
+}
+
+/// Push the merge when the branch has somewhere to go. A branch nobody has
+/// published stays local: publishing it as a side effect of a merge is not
+/// what the key was pressed for.
+fn push_after_merge_main(branch: &str) -> Result<String> {
+    if branch_upstream(branch)?.is_none() {
+        return Ok(format!("kept {branch} local, it has no upstream"));
+    }
+    run_combined(&["push"])?;
+    Ok(format!("pushed {branch}"))
+}
+
+/// How many commits `ahead_of` carries that `base` does not.
+fn commits_missing_from(base: &str, ahead_of: &str) -> Result<u32> {
+    let out = run(&["rev-list", "--count", ahead_of, "--not", base])?;
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .with_context(|| format!("parsing how far {ahead_of} is ahead of {base}"))
+}
+
+/// The checkout holding `branch`, when one does. Git refuses to move a branch
+/// another worktree has checked out, so this is what says whether a ref can be
+/// updated from here at all.
+fn branch_checkout_dir(branch: &str) -> Result<Option<PathBuf>> {
+    let out = run(&["worktree", "list", "--porcelain"])?;
+    Ok(parse_worktree_list(&String::from_utf8_lossy(&out.stdout))
+        .into_iter()
+        .find(|worktree| worktree.branch.as_deref() == Some(branch))
+        .map(|worktree| PathBuf::from(worktree.path)))
 }
 
 fn pull_current_branch_for_merge_main(current_branch: &str) -> Result<()> {
@@ -224,9 +354,41 @@ pub fn flow_release_current_with_progress(
 ) -> Result<String> {
     ensure_feature_branch(current_branch)?;
     progress();
-    let stashed = stash_uncommitted_changes("lg flow: auto-stash before release")?;
+    let stashed = stash_uncommitted_changes(AUTO_STASH_RELEASE)?;
     progress();
     let safety_ref = create_safety_ref("release-current")?;
+    if let Err(err) = release_current_branch(current_branch, target_branch, progress) {
+        return Err(restore_auto_stash_after_failure(
+            err,
+            stashed,
+            AUTO_STASH_RELEASE,
+            current_branch,
+        ));
+    }
+    progress();
+    pop_stash_if_needed(stashed)?;
+    delete_safety_ref(&safety_ref)?;
+    Ok(format!(
+        "released {current_branch} to {target_branch} -> {}",
+        release_environment(target_branch)
+    ))
+}
+
+fn release_environment(target_branch: &str) -> &str {
+    if DEV_BRANCH_NAMES.contains(&target_branch) {
+        "dev"
+    } else if target_branch == BRANCH_TEST {
+        "test"
+    } else {
+        target_branch
+    }
+}
+
+fn release_current_branch(
+    current_branch: &str,
+    target_branch: &str,
+    progress: &mut impl FnMut(),
+) -> Result<()> {
     progress();
     run(&["push", DEFAULT_PUSH_REMOTE, current_branch])?;
     if target_branch != current_branch {
@@ -265,20 +427,7 @@ pub fn flow_release_current_with_progress(
     ])?;
     progress();
     run(&["checkout", current_branch])?;
-    progress();
-    pop_stash_if_needed(stashed)?;
-    delete_safety_ref(&safety_ref)?;
-
-    let env = if DEV_BRANCH_NAMES.contains(&target_branch) {
-        "dev"
-    } else if target_branch == BRANCH_TEST {
-        "test"
-    } else {
-        target_branch
-    };
-    Ok(format!(
-        "released {current_branch} to {target_branch} -> {env}"
-    ))
+    Ok(())
 }
 
 pub(super) fn update_release_branch_from_main_before_commit() -> Result<Option<String>> {
@@ -408,16 +557,13 @@ pub fn flow_create_feature_branch(current_branch: &str, new_branch: &str) -> Res
     if !is_valid_branch_name(new_branch) {
         anyhow::bail!("invalid branch name: {new_branch}");
     }
-    let stashed = has_uncommitted_changes()?;
-    if stashed {
-        run(&[
-            "stash",
-            "push",
-            "-u",
-            "-m",
-            "lg flow: auto-stash before branch creation",
-        ])?;
-    }
+    let stashed = stash_uncommitted_changes(AUTO_STASH_NEW_BRANCH)?;
+    create_feature_branch(current_branch, new_branch, stashed).map_err(|err| {
+        restore_auto_stash_after_failure(err, stashed, AUTO_STASH_NEW_BRANCH, current_branch)
+    })
+}
+
+fn create_feature_branch(current_branch: &str, new_branch: &str, stashed: bool) -> Result<String> {
     run(&["fetch"])?;
     let start_point = if current_branch == BRANCH_MAIN {
         run(&["pull", "--rebase"])?;
@@ -426,9 +572,7 @@ pub fn flow_create_feature_branch(current_branch: &str, new_branch: &str) -> Res
         format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}")
     };
     run(&["checkout", "--no-track", "-b", new_branch, &start_point])?;
-    if stashed {
-        run(&["stash", "pop"])?;
-    }
+    pop_stash_if_needed(stashed)?;
     let upstream = push_new_feature_branch_upstream(new_branch)?;
     Ok(if let Some(upstream) = upstream {
         format!("created {new_branch} from {start_point}, tracking {upstream}")
@@ -677,6 +821,14 @@ pub fn validate_conflict_resolution_with_cleanup(
     {
         out.push_str("\n\nBackup:\nremoved ");
         out.push_str(&backup);
+    }
+
+    // The conflict is settled, so the changes the flow stashed on the way in
+    // can come back. Leaving them there is how a checkout ends up looking
+    // empty long after the flow that emptied it finished.
+    if let Some(note) = restore_auto_stash_after_conflict() {
+        out.push_str("\n\nStash:\n");
+        out.push_str(&note);
     }
 
     Ok(out)
@@ -940,6 +1092,85 @@ fn pop_stash_with_index_if_needed(stashed: bool) -> Result<()> {
         run(&["stash", "pop", "--index"])?;
     }
     Ok(())
+}
+
+/// Undo the auto-stash a failed flow took, and say in the error what became
+/// of it. Leaving it stashed empties the checkout the user was working in and
+/// nothing on screen says why, which is how a flow that stopped half-way looks
+/// like lost work.
+///
+/// A conflicted merge is the one case the stash cannot come back on top of, so
+/// that error carries where the work is instead; the conflict modal is showing
+/// the whole message by then.
+fn restore_auto_stash_after_failure(
+    err: anyhow::Error,
+    stashed: bool,
+    message: &str,
+    branch: &str,
+) -> anyhow::Error {
+    if !stashed {
+        return err;
+    }
+    // The flow may have popped it already and failed on a later step.
+    if !matches!(newest_stash_subject(), Some(subject) if subject.contains(message)) {
+        return err;
+    }
+    if merge_or_rebase_in_progress() {
+        return anyhow::anyhow!(
+            "{err:#}\nyour uncommitted changes are stashed as \"{message}\"; git stash pop brings them back once this is settled"
+        );
+    }
+    // The flow may have stopped on another branch, and the stash belongs to
+    // the one it started on.
+    if head_branch().map(|head| head != branch).unwrap_or(true)
+        && let Err(back) = run(&["checkout", branch])
+    {
+        return anyhow::anyhow!(
+            "your uncommitted changes are stashed as \"{message}\" and {branch} could not be checked out again: {back:#}\n{err:#}"
+        );
+    }
+    match pop_stash_with_index_if_needed(true) {
+        Ok(()) => anyhow::anyhow!("{err:#}\nrestored your uncommitted changes"),
+        Err(pop) => anyhow::anyhow!(
+            "your uncommitted changes are stashed as \"{message}\" and could not be restored: {pop:#}\n{err:#}"
+        ),
+    }
+}
+
+/// Whether git is part-way through something a stash cannot be applied over.
+fn merge_or_rebase_in_progress() -> bool {
+    [
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "rebase-merge",
+        "rebase-apply",
+    ]
+    .iter()
+    .any(|name| git_path_exists(name).unwrap_or(false))
+        || !conflicted_files().unwrap_or_default().is_empty()
+}
+
+/// Bring back what a flow stashed before it ran into the conflict now being
+/// validated. Only lg's own stash is popped, and only while it is the newest
+/// one, so a stash the user made themselves is never pulled out from under
+/// them.
+fn restore_auto_stash_after_conflict() -> Option<String> {
+    let subject = newest_stash_subject()?;
+    if !AUTO_STASH_TAGS.iter().any(|tag| subject.contains(tag)) {
+        return None;
+    }
+    match pop_stash_with_index_if_needed(true) {
+        Ok(()) => Some(format!("restored \"{subject}\"")),
+        Err(err) => Some(format!("could not restore \"{subject}\": {err:#}")),
+    }
+}
+
+fn newest_stash_subject() -> Option<String> {
+    let out = run(&["stash", "list", "-1", "--format=%gs"]).ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let subject = text.lines().next()?.trim().to_string();
+    (!subject.is_empty()).then_some(subject)
 }
 
 fn restore_stash_after_failed_checkout(stashed: bool) -> Result<()> {
