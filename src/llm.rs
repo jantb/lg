@@ -15,9 +15,7 @@ const MAX_DIFF_EXCERPT_BYTES: usize = 16_000;
 const MAX_SUMMARY_FILES: usize = 24;
 const MAX_SIGNAL_LINES: usize = 48;
 /// Generation budget for a commit message. The model streams its reasoning
-/// into the same budget as its answer, so this has to cover both: at the bare
-/// [`LLM_NUM_PREDICT`] default the reasoning ate the budget and the message
-/// came back truncated mid-word.
+/// into the same budget as its answer, so this has to cover both.
 const COMMIT_NUM_PREDICT: i32 = 8_192;
 const CONVENTIONS_NUM_PREDICT: i32 = 300;
 const REVIEW_ASSIST_NUM_PREDICT: i32 = 16_000;
@@ -612,9 +610,8 @@ pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
 
 /// Derives this checkout's writing conventions — the language its commit
 /// messages are written in, and candidate shapes for their format — from recent
-/// history. Runs
-/// once when a checkout has no settings of its own, so the settings modal opens
-/// with values that match the project instead of bare defaults.
+/// history, and reports them on `tx` as a single
+/// [`SettingsSuggestMsg`](crate::state::SettingsSuggestMsg).
 pub fn suggest_repo_conventions(history: String, tx: Sender<crate::state::SettingsSuggestMsg>) {
     use crate::state::SettingsSuggestMsg;
     let (gen_tx, gen_rx) = std::sync::mpsc::channel();
@@ -1348,10 +1345,9 @@ fn trim_outer_quotes_without_backticks(s: &str) -> &str {
 /// Take the model's reasoning out of a reply.
 ///
 /// A paired `<think>\u{2026}</think>` block goes as a unit. A bare `</think>` counts
-/// too: some chat templates open the block themselves, so the reply arrives as
-/// reasoning, a closing tag, and only then the answer. Keeping that prefix is
-/// what leaves a stray tag in a commit message with the answer written twice —
-/// once as the model's draft, once for real.
+/// too, and discards everything before it: some chat templates open the block
+/// themselves, so the reply arrives as reasoning, a closing tag, and only then
+/// the answer.
 fn strip_think_tags(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
