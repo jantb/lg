@@ -21,6 +21,45 @@ pub fn highlight_source_line_for_path<'a>(line: &'a str, path: &str) -> Line<'a>
 }
 
 pub fn highlight_diff_text(text: &str) -> Vec<Line<'_>> {
+    unified_diff_lines(text)
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect()
+}
+
+/// A unified diff wrapped to `width` rather than run off the right edge of the
+/// pane. Continuation rows are indented past the line-number gutter so the code
+/// column stays aligned.
+pub fn highlight_diff_text_wrapped(text: &str, width: u16) -> Vec<Line<'static>> {
+    unified_diff_lines(text)
+        .into_iter()
+        .flat_map(|(line, gutter)| wrap_line(line, width as usize, gutter))
+        .collect()
+}
+
+/// Rows a unified diff takes once wrapped. The scroll bound has to count what
+/// [`highlight_diff_text_wrapped`] actually draws, or the tail of a diff with
+/// long lines cannot be scrolled to.
+pub fn diff_text_line_count(text: &str, width: u16) -> usize {
+    unified_diff_lines(text)
+        .iter()
+        .map(|(line, gutter)| wrapped_row_count(spans_width(&line.spans), *gutter, width as usize))
+        .sum()
+}
+
+/// One diff line, wrapped to `width`. For callers that render diff bodies a
+/// line at a time rather than as one block of text.
+pub fn highlight_diff_line_wrapped_for_path(
+    line: &str,
+    path: &str,
+    width: u16,
+) -> Vec<Line<'static>> {
+    wrap_line(highlight_diff_line_for_path(line, path), width as usize, 0)
+}
+
+/// Each rendered line paired with the gutter width its continuation rows have
+/// to clear.
+fn unified_diff_lines(text: &str) -> Vec<(Line<'_>, usize)> {
     let mut syntax = None;
     let mut line_numbers = None;
     text.split('\n')
@@ -30,15 +69,18 @@ pub fn highlight_diff_text(text: &str) -> Vec<Line<'_>> {
             }
             if let Some((old_line, new_line)) = parse_hunk_line_numbers(line) {
                 line_numbers = Some(DiffLineNumbers { old_line, new_line });
-                return highlight_diff_line_for_syntax(line, syntax);
+                return (highlight_diff_line_for_syntax(line, syntax), 0);
             }
             let highlighted = highlight_diff_line_for_syntax(line, syntax);
             if let Some(numbers) = line_numbers.as_mut()
                 && let Some(kind) = diff_content_kind(line)
             {
-                return add_diff_line_numbers(highlighted, numbers, kind);
+                return (
+                    add_diff_line_numbers(highlighted, numbers, kind),
+                    DIFF_NUMBER_GUTTER,
+                );
             }
-            highlighted
+            (highlighted, 0)
         })
         .collect()
 }
@@ -72,6 +114,11 @@ const DIFF_ADDED_BG: Color = Color::Rgb(24, 54, 34);
 const DIFF_REMOVED_BG: Color = Color::Rgb(60, 28, 38);
 const SIDE_SEPARATOR: &str = " | ";
 const SIDE_NUMBER_WIDTH: usize = 4;
+/// Number, space, +/- marker, space — what a side-by-side cell spends before
+/// the code starts, and what a wrapped continuation row leaves blank.
+const SIDE_GUTTER_WIDTH: usize = SIDE_NUMBER_WIDTH + 3;
+/// The `old new ` prefix [`add_diff_line_numbers`] puts on a unified diff line.
+const DIFF_NUMBER_GUTTER: usize = SIDE_NUMBER_WIDTH * 2 + 2;
 
 #[derive(Clone, Copy)]
 enum Syntax {
@@ -157,7 +204,7 @@ impl SideBySideDiffRenderer {
                     numbers.old_line = numbers.old_line.saturating_add(1);
                     numbers.new_line = numbers.new_line.saturating_add(1);
                     let text = line.strip_prefix(' ').unwrap_or(line).to_string();
-                    self.lines.push(render_side_by_side_row(
+                    self.lines.extend(render_side_by_side_rows(
                         Some(&SideDiffCell {
                             number: old,
                             text: text.clone(),
@@ -204,14 +251,17 @@ impl SideBySideDiffRenderer {
 
     fn push_full_line(&mut self, line: &str) {
         self.flush_change_run();
-        self.lines
-            .push(render_full_side_by_side_line(line, self.width, self.syntax));
+        self.lines.extend(render_full_side_by_side_lines(
+            line,
+            self.width,
+            self.syntax,
+        ));
     }
 
     fn flush_change_run(&mut self) {
         let rows = self.pending_removed.len().max(self.pending_added.len());
         for idx in 0..rows {
-            self.lines.push(render_side_by_side_row(
+            self.lines.extend(render_side_by_side_rows(
                 self.pending_removed.get(idx),
                 self.pending_added.get(idx),
                 self.width,
@@ -371,23 +421,25 @@ fn add_diff_line_numbers<'a>(
     Line::from(spans)
 }
 
-fn render_full_side_by_side_line(
+fn render_full_side_by_side_lines(
     line: &str,
     width: usize,
     syntax: Option<Syntax>,
-) -> Line<'static> {
-    let text = truncate_chars(line, width);
-    static_line(highlight_diff_line_for_syntax(&text, syntax))
+) -> Vec<Line<'static>> {
+    wrap_line(highlight_diff_line_for_syntax(line, syntax), width, 0)
 }
 
-fn render_side_by_side_row(
+/// One side-by-side pair. Either cell can wrap into several rows; the pair
+/// takes as many rows as the longer of the two, with the shorter side padded so
+/// the change block keeps its background.
+fn render_side_by_side_rows(
     old: Option<&SideDiffCell>,
     new: Option<&SideDiffCell>,
     width: usize,
     syntax: Option<Syntax>,
-) -> Line<'static> {
+) -> Vec<Line<'static>> {
     if width == 0 {
-        return Line::from("");
+        return vec![Line::from("")];
     }
 
     let separator_width = SIDE_SEPARATOR.chars().count();
@@ -395,34 +447,80 @@ fn render_side_by_side_row(
     let old_width = body_width / 2;
     let new_width = body_width.saturating_sub(old_width);
 
-    let mut spans = Vec::new();
-    spans.extend(render_side_cell(old, old_width, syntax));
-    if width >= separator_width {
-        spans.push(Span::styled(
-            SIDE_SEPARATOR,
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-    spans.extend(render_side_cell(new, new_width, syntax));
-    Line::from(spans)
+    let old_rows = render_side_cell_rows(old, old_width, syntax);
+    let new_rows = render_side_cell_rows(new, new_width, syntax);
+    let rows = old_rows.len().max(new_rows.len()).max(1);
+
+    (0..rows)
+        .map(|idx| {
+            let mut spans = Vec::new();
+            spans.extend(
+                old_rows
+                    .get(idx)
+                    .cloned()
+                    .unwrap_or_else(|| side_cell_filler(old, old_width)),
+            );
+            if width >= separator_width {
+                spans.push(Span::styled(
+                    SIDE_SEPARATOR,
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            spans.extend(
+                new_rows
+                    .get(idx)
+                    .cloned()
+                    .unwrap_or_else(|| side_cell_filler(new, new_width)),
+            );
+            Line::from(spans)
+        })
+        .collect()
 }
 
-fn render_side_cell(
+/// A cell's rows, each padded to exactly `width` so the two columns line up.
+fn render_side_cell_rows(
     cell: Option<&SideDiffCell>,
     width: usize,
     syntax: Option<Syntax>,
-) -> Vec<Span<'static>> {
+) -> Vec<Vec<Span<'static>>> {
     if width == 0 {
-        return Vec::new();
+        return vec![Vec::new()];
     }
 
     let Some(cell) = cell else {
-        return vec![Span::raw(" ".repeat(width))];
+        return vec![vec![Span::raw(" ".repeat(width))]];
     };
 
     let base_style = diff_content_style(cell.kind);
-    let number_style = diff_number_style(cell.kind);
-    let marker_style = diff_marker_style(cell.kind);
+    if width <= SIDE_GUTTER_WIDTH {
+        // No room for code beside the gutter — nothing useful to wrap into.
+        return vec![render_side_cell_gutter(cell, width)];
+    }
+
+    let content_width = width - SIDE_GUTTER_WIDTH;
+    let content = highlight_code(&cell.text, syntax, base_style);
+    wrap_spans(content, content_width)
+        .into_iter()
+        .enumerate()
+        .map(|(idx, content)| {
+            let mut spans = if idx == 0 {
+                render_side_cell_gutter(cell, SIDE_GUTTER_WIDTH)
+            } else {
+                vec![Span::styled(" ".repeat(SIDE_GUTTER_WIDTH), base_style)]
+            };
+            spans.extend(content);
+            let remaining = width.saturating_sub(spans_width(&spans).min(width));
+            if remaining > 0 {
+                spans.push(Span::styled(" ".repeat(remaining), base_style));
+            }
+            spans
+        })
+        .collect()
+}
+
+/// Line number, marker, and the spaces around them, capped at `width`.
+fn render_side_cell_gutter(cell: &SideDiffCell, width: usize) -> Vec<Span<'static>> {
+    let base_style = diff_content_style(cell.kind);
     let marker = match cell.kind {
         DiffContentKind::Context => " ",
         DiffContentKind::Added => "+",
@@ -434,23 +532,31 @@ fn render_side_cell(
     push_capped_span(
         &mut spans,
         &format!("{:>width$}", cell.number, width = SIDE_NUMBER_WIDTH),
-        number_style,
+        diff_number_style(cell.kind),
         &mut remaining,
     );
     push_capped_span(&mut spans, " ", base_style, &mut remaining);
-    push_capped_span(&mut spans, marker, marker_style, &mut remaining);
+    push_capped_span(
+        &mut spans,
+        marker,
+        diff_marker_style(cell.kind),
+        &mut remaining,
+    );
     push_capped_span(&mut spans, " ", base_style, &mut remaining);
-
-    if remaining > 0 {
-        let text = truncate_chars(&cell.text, remaining);
-        spans.extend(highlight_code(&text, syntax, base_style));
-        let used = spans_width(&spans).min(width);
-        remaining = width.saturating_sub(used);
-    }
     if remaining > 0 {
         spans.push(Span::styled(" ".repeat(remaining), base_style));
     }
     spans
+}
+
+/// The blank a cell shows on rows the *other* side wrapped into. A cell that
+/// exists keeps its background so the change block stays solid.
+fn side_cell_filler(cell: Option<&SideDiffCell>, width: usize) -> Vec<Span<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let style = cell.map_or_else(Style::default, |cell| diff_content_style(cell.kind));
+    vec![Span::styled(" ".repeat(width), style)]
 }
 
 fn diff_content_style(kind: DiffContentKind) -> Style {
@@ -508,13 +614,124 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
-fn static_line(line: Line<'_>) -> Line<'static> {
-    Line::from(
-        line.spans
-            .into_iter()
-            .map(|span| Span::styled(span.content.into_owned(), span.style))
-            .collect::<Vec<_>>(),
-    )
+fn owned_spans(line: Line<'_>) -> Vec<Span<'static>> {
+    line.spans
+        .into_iter()
+        .map(|span| Span::styled(span.content.into_owned(), span.style))
+        .collect()
+}
+
+/// Wrap one rendered line to `width`, treating its first `gutter` columns as a
+/// prefix that continuation rows leave blank, so wrapped text stays under the
+/// text it continues rather than under the line numbers.
+fn wrap_line(line: Line<'_>, width: usize, gutter: usize) -> Vec<Line<'static>> {
+    let spans = owned_spans(line);
+    if width == 0 || gutter >= width || spans_width(&spans) <= width {
+        return vec![Line::from(spans)];
+    }
+
+    let (head, body) = split_spans_at(spans, gutter);
+    // Carry only the background across: a wrapped `+` line should keep its
+    // green block, not repeat the line number's colour in the blank gutter.
+    let indent_style = body
+        .first()
+        .and_then(|span| span.style.bg)
+        .map_or_else(Style::default, |bg| Style::default().bg(bg));
+    let mut rows = wrap_spans(body, width - gutter).into_iter();
+    let mut lines = Vec::new();
+    if let Some(first) = rows.next() {
+        let mut spans = head;
+        spans.extend(first);
+        lines.push(Line::from(spans));
+    }
+    for row in rows {
+        let mut spans = Vec::new();
+        if gutter > 0 {
+            spans.push(Span::styled(" ".repeat(gutter), indent_style));
+        }
+        spans.extend(row);
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+/// How many rows [`wrap_line`] would produce for a line of `total` columns.
+fn wrapped_row_count(total: usize, gutter: usize, width: usize) -> usize {
+    if width == 0 || gutter >= width || total <= width {
+        return 1;
+    }
+    total.saturating_sub(gutter).div_ceil(width - gutter).max(1)
+}
+
+/// Split spans at a column, cutting the span that straddles it in two.
+fn split_spans_at(
+    spans: Vec<Span<'static>>,
+    column: usize,
+) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
+    let mut head = Vec::new();
+    let mut tail = Vec::new();
+    let mut used = 0usize;
+    for span in spans {
+        let len = span.content.chars().count();
+        if used >= column {
+            tail.push(span);
+        } else if used + len <= column {
+            used += len;
+            head.push(span);
+        } else {
+            let style = span.style;
+            let (before, after) = split_text_at(span.content.as_ref(), column - used);
+            head.push(Span::styled(before, style));
+            tail.push(Span::styled(after, style));
+            used = column;
+        }
+    }
+    (head, tail)
+}
+
+/// Break spans into rows of at most `width` columns, keeping each span's style
+/// across the break.
+fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'static>>> {
+    if width == 0 {
+        return vec![spans];
+    }
+
+    let mut rows = Vec::new();
+    let mut row: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    for span in spans {
+        let style = span.style;
+        let mut rest = span.content.into_owned();
+        loop {
+            let len = rest.chars().count();
+            if used + len <= width {
+                if len > 0 {
+                    row.push(Span::styled(rest, style));
+                    used += len;
+                }
+                break;
+            }
+            if used == width {
+                rows.push(std::mem::take(&mut row));
+                used = 0;
+                continue;
+            }
+            let (head, tail) = split_text_at(&rest, width - used);
+            row.push(Span::styled(head, style));
+            used = width;
+            rest = tail;
+        }
+    }
+    rows.push(row);
+    rows
+}
+
+fn split_text_at(text: &str, column: usize) -> (String, String) {
+    let split = text
+        .char_indices()
+        .nth(column)
+        .map_or(text.len(), |(idx, _)| idx);
+    (text[..split].to_string(), text[split..].to_string())
 }
 
 fn diff_line_syntax(line: &str) -> Option<Syntax> {

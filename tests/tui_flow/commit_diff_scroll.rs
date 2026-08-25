@@ -356,6 +356,94 @@ fn side_by_side_diff_line_count_pairs_replacements() {
     assert_eq!(panel::main::rendered_line_count(&state), 7);
 }
 
+/// A diff whose added line is far wider than the pane it is shown in.
+fn long_line_diff() -> String {
+    [
+        "diff --git a/a.txt b/a.txt",
+        "--- a/a.txt",
+        "+++ b/a.txt",
+        "@@ -1,1 +1,1 @@",
+        "-short old",
+        "+0123456789abcdefghijklmnopqrstuvwxyz",
+    ]
+    .join("\n")
+}
+
+fn line_text(line: &ratatui::text::Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
+#[test]
+fn side_by_side_diff_wraps_long_lines_into_aligned_rows() {
+    let rows: Vec<String> = lg::ui::highlight_side_by_side_diff_text(&long_line_diff(), 60)
+        .iter()
+        .map(line_text)
+        .collect();
+
+    let head = rows
+        .iter()
+        .position(|row| row.contains("0123456789abcdefghijkl"))
+        .expect("first row of the wrapped line");
+    let tail = rows
+        .iter()
+        .position(|row| row.contains("mnopqrstuvwxyz"))
+        .expect("wrapped remainder");
+
+    assert_eq!(tail, head + 1, "{rows:#?}");
+    // The continuation carries no line number or marker of its own.
+    assert!(!rows[tail].contains('+'), "{}", rows[tail]);
+    for row in &rows[head..=tail] {
+        assert_eq!(row.chars().count(), 60, "{row}");
+    }
+    // The removed side ran out of rows, so it pads instead of repeating.
+    assert!(rows[head].contains("short old"), "{}", rows[head]);
+    assert!(!rows[tail].contains("short old"), "{}", rows[tail]);
+}
+
+#[test]
+fn side_by_side_diff_line_count_counts_wrapped_rows() {
+    let mut state = AppState::new();
+    state.diff_source = lg::state::DiffSource::File("a.txt".into());
+    state.diff_view_mode = DiffViewMode::SideBySide;
+    state.diff_viewport_width = 60;
+    state.diff_text = long_line_diff();
+
+    assert_eq!(panel::main::rendered_line_count(&state), 6);
+}
+
+#[test]
+fn unified_diff_wraps_long_lines_under_the_number_gutter() {
+    let rows: Vec<String> = lg::ui::highlight_diff_text_wrapped(&long_line_diff(), 40)
+        .iter()
+        .map(line_text)
+        .collect();
+
+    let tail = rows
+        .iter()
+        .position(|row| row.contains("tuvwxyz"))
+        .expect("wrapped remainder");
+
+    assert!(rows[tail].starts_with("          "), "{}", rows[tail]);
+    assert_eq!(rows[tail].trim_end(), "          tuvwxyz", "{rows:#?}");
+    for row in &rows {
+        assert!(row.chars().count() <= 40, "{row}");
+    }
+}
+
+#[test]
+fn unified_diff_line_count_counts_wrapped_rows() {
+    let mut state = AppState::new();
+    state.diff_source = lg::state::DiffSource::File("a.txt".into());
+    state.diff_view_mode = DiffViewMode::Unified;
+    state.diff_viewport_width = 40;
+    state.diff_text = long_line_diff();
+
+    assert_eq!(panel::main::rendered_line_count(&state), 7);
+}
+
 #[test]
 fn branch_log_render_clamps_offset_to_rendered_lines() {
     let mut state = AppState::new();

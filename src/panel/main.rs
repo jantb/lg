@@ -122,7 +122,7 @@ fn render_main_content(state: &AppState, area: Rect, frame: &mut Frame, focused:
     } else if side_by_side_diff_enabled(state) {
         ui::highlight_side_by_side_diff_text(&state.diff_text, viewport_width)
     } else {
-        ui::highlight_diff_text(&state.diff_text)
+        ui::highlight_diff_text_wrapped(&state.diff_text, viewport_width)
     };
 
     let max_offset = max_scroll_offset(state);
@@ -303,7 +303,7 @@ pub fn rendered_line_count(state: &AppState) -> usize {
     if side_by_side_diff_enabled(state) {
         return ui::side_by_side_diff_line_count(&state.diff_text, state.diff_viewport_width);
     }
-    state.diff_text.lines().count()
+    ui::diff_text_line_count(&state.diff_text, state.diff_viewport_width)
 }
 
 fn side_by_side_diff_enabled(state: &AppState) -> bool {

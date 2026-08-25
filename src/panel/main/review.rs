@@ -138,12 +138,13 @@ fn render_lines(state: &AppState, focused: bool, wrap_width: u16) -> Vec<Line<'s
                             wrap_width,
                         ));
                     } else {
-                        for body in &node.body {
-                            let mut spans = vec![Span::styled(body_prefix.clone(), body_style)];
-                            let body_line = ui::highlight_diff_line_for_path(body, path);
-                            spans.extend(owned_spans(body_line));
-                            lines.push(Line::from(spans));
-                        }
+                        lines.extend(prefixed_unified_diff_lines(
+                            &node.body,
+                            path,
+                            &body_prefix,
+                            body_style,
+                            wrap_width,
+                        ));
                     }
                 } else {
                     lines.extend(markdown::render(
@@ -194,8 +195,42 @@ fn prefixed_side_by_side_diff_lines(
     prefix_style: Style,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let diff_width = width.saturating_sub(prefix.chars().count().min(u16::MAX as usize) as u16);
-    ui::highlight_side_by_side_diff_text_for_path(&body.join("\n"), diff_width, path)
+    prefixed_diff_lines(
+        ui::highlight_side_by_side_diff_text_for_path(
+            &body.join("\n"),
+            diff_body_width(width, prefix),
+            path,
+        ),
+        prefix,
+        prefix_style,
+    )
+}
+
+/// Unified diff body, wrapped to what is left of the pane beside the tree
+/// prefix so long lines stay readable instead of running off the edge.
+fn prefixed_unified_diff_lines(
+    body: &[String],
+    path: &str,
+    prefix: &str,
+    prefix_style: Style,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let diff_width = diff_body_width(width, prefix);
+    prefixed_diff_lines(
+        body.iter()
+            .flat_map(|line| ui::highlight_diff_line_wrapped_for_path(line, path, diff_width))
+            .collect(),
+        prefix,
+        prefix_style,
+    )
+}
+
+fn prefixed_diff_lines(
+    lines: Vec<Line<'static>>,
+    prefix: &str,
+    prefix_style: Style,
+) -> Vec<Line<'static>> {
+    lines
         .into_iter()
         .map(|line| {
             let mut spans = vec![Span::styled(prefix.to_string(), prefix_style)];
@@ -203,6 +238,11 @@ fn prefixed_side_by_side_diff_lines(
             Line::from(spans)
         })
         .collect()
+}
+
+/// Width a diff body gets once the tree prefix has taken its share.
+fn diff_body_width(width: u16, prefix: &str) -> u16 {
+    width.saturating_sub(prefix.chars().count().min(u16::MAX as usize) as u16)
 }
 
 fn review_title_line(
@@ -1003,9 +1043,9 @@ fn review_node_line_count(state: &AppState, idx: usize) -> usize {
 }
 
 fn review_body_line_count(state: &AppState, node: &crate::git::ReviewNode) -> usize {
-    let Some(_path) = review_node_syntax_path(&node.title) else {
-        let indent = review_indent(node.depth);
-        let prefix = format!("{indent}  │ ");
+    let indent = review_indent(node.depth);
+    let prefix = format!("{indent}  │ ");
+    let Some(path) = review_node_syntax_path(&node.title) else {
         return markdown::render(
             &node.body.join("\n"),
             &prefix,
@@ -1013,10 +1053,15 @@ fn review_body_line_count(state: &AppState, node: &crate::git::ReviewNode) -> us
         )
         .len();
     };
+    // Count the wrapped rows the body actually draws, not its source lines.
+    let diff_width = diff_body_width(state.diff_viewport_width, &prefix);
     if side_by_side_diff_enabled(state) {
-        ui::side_by_side_diff_line_count(&node.body.join("\n"), state.diff_viewport_width)
+        ui::side_by_side_diff_line_count(&node.body.join("\n"), diff_width)
     } else {
-        node.body.len()
+        node.body
+            .iter()
+            .map(|line| ui::highlight_diff_line_wrapped_for_path(line, path, diff_width).len())
+            .sum()
     }
 }
 
