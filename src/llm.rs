@@ -224,10 +224,6 @@ pub fn config_file_display() -> String {
         .unwrap_or_else(|_| "$HOME/.config/lg/config".to_string())
 }
 
-pub fn save_model(model: &str) -> Result<()> {
-    save_llm_settings(model, current_provider())
-}
-
 pub fn save_llm_settings(model: &str, provider: LlmProvider) -> Result<()> {
     let model = model.trim();
     if model.is_empty() {
@@ -246,10 +242,6 @@ pub fn save_llm_settings(model: &str, provider: LlmProvider) -> Result<()> {
     set_config_entry(&mut entries, CONFIG_PROVIDER_KEY, provider.config_value());
     fs::write(&path, render_config_entries(&entries))
         .with_context(|| format!("failed to write {}", path.display()))
-}
-
-pub fn clear_saved_model() -> Result<()> {
-    clear_saved_llm_settings()
 }
 
 pub fn clear_saved_llm_settings() -> Result<()> {
