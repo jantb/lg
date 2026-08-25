@@ -495,11 +495,13 @@ fn review_indent(depth: u16) -> String {
     }
 }
 
-pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
+pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     let visible = visible_review_node_indices(state);
     if visible.is_empty() {
         state.diff_offset = 0;
-        return Ok(());
+        // An empty review has nothing to move through, but the keys are still
+        // review mode's; reporting them as unbound would be wrong.
+        return Ok(true);
     }
     state.diff_offset = state.diff_offset.min(super::max_scroll_offset(state));
     let current_pos = visible
@@ -611,9 +613,9 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             }
             state.diff_offset = super::max_scroll_offset(state);
         }
-        _ => {}
+        _ => return Ok(false),
     }
-    Ok(())
+    Ok(true)
 }
 
 fn toggle_review_tree_node(state: &mut AppState) {

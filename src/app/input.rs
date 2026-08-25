@@ -311,6 +311,95 @@ where
     fn before_flow_modal(&mut self) {}
 }
 
+/// A jump through a list pane: to either end, half a page, or a whole page.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Jump {
+    Top,
+    Bottom,
+    HalfDown,
+    HalfUp,
+    PageDown,
+    PageUp,
+}
+
+fn jump_for(k: KeyEvent) -> Option<Jump> {
+    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+    match k.code {
+        KeyCode::Char('g') if !ctrl => Some(Jump::Top),
+        KeyCode::Char('G') if !ctrl => Some(Jump::Bottom),
+        KeyCode::Char('d') if ctrl => Some(Jump::HalfDown),
+        KeyCode::Char('u') if ctrl => Some(Jump::HalfUp),
+        KeyCode::PageDown => Some(Jump::PageDown),
+        KeyCode::PageUp => Some(Jump::PageUp),
+        _ => None,
+    }
+}
+
+/// Rows the list in `pane` can show at once.
+fn list_page<H: AppHost>(host: &H, pane: Pane) -> Result<usize> {
+    let area = host.area()?;
+    let rects = super::render::layout_for(host.state(), area);
+    let rect = match pane {
+        // The repository tree is the list the Status pane scrolls.
+        Pane::Status => rects.environments,
+        Pane::Files => rects.files,
+        Pane::Branches => rects.branches,
+        Pane::Commits => rects.commits,
+        Pane::Main => rects.main,
+    };
+    Ok(crate::panel::scroll::list_viewport_height(rect.height).max(1))
+}
+
+/// Move the selection in a list pane by a jump key, and say whether one was
+/// pressed.
+///
+/// This sits in front of the pane handlers rather than inside each of them so
+/// that all four lists jump the same way, and so Ctrl-d and Ctrl-u cannot fall
+/// through to the plain `d` and `u` beneath them — which, in Files, are delete
+/// and unstage.
+fn list_jump<H: AppHost>(host: &mut H, pane: Pane, k: KeyEvent) -> Result<bool> {
+    // The diff pane scrolls text, not a list, and handles these keys itself.
+    if pane == Pane::Main {
+        return Ok(false);
+    }
+    let Some(jump) = jump_for(k) else {
+        return Ok(false);
+    };
+    let (down, amount) = match jump {
+        Jump::Top => (false, usize::MAX),
+        Jump::Bottom => (true, usize::MAX),
+        Jump::HalfDown => (true, (list_page(host, pane)? / 2).max(1)),
+        Jump::HalfUp => (false, (list_page(host, pane)? / 2).max(1)),
+        Jump::PageDown => (true, list_page(host, pane)?),
+        Jump::PageUp => (false, list_page(host, pane)?),
+    };
+    super::mouse::scroll_list(host.state_mut(), pane, down, amount);
+    Ok(true)
+}
+
+/// Say so when a key does nothing here. lg has enough per-pane keys that a
+/// silent no-op reads as a bug; naming the pane and pointing at the help turns
+/// a dead end into the answer.
+fn report_unbound(state: &mut AppState, pane: Pane, k: KeyEvent) {
+    let KeyCode::Char(c) = k.code else {
+        return;
+    };
+    // Modified keys are the terminal's business as often as lg's, and a bare
+    // space reads as nothing at all when quoted back.
+    if k.modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        || c.is_whitespace()
+    {
+        return;
+    }
+    let where_it_is = panel::keys::active_section(pane, state.main_keys())
+        .map_or("this pane", panel::keys::footer_label);
+    state.set_status(
+        format!("no binding for '{c}' in {where_it_is} \u{2014} ? for help"),
+        false,
+    );
+}
+
 /// Route one key press. Modals get it first, then lg's global bindings, then the
 /// focused pane.
 fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> {
@@ -398,10 +487,13 @@ fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('?') => {
             let focus = host.state().focus;
+            let area = host.area()?;
             let state = host.state_mut();
             state.prev_focus = focus;
-            state.help_offset = 0;
             state.modal = Modal::Help;
+            // The table is longer than any terminal, and Global sits at the
+            // top of it. Open where the keys the user just pressed ? about are.
+            state.help_offset = panel::help::open_offset(state, area);
             return Ok(());
         }
         KeyCode::Char('F') => {
@@ -517,12 +609,19 @@ fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> {
     let focus_before = host.state().focus;
     let commit_ref_before = selected_commit_ref(host.state());
 
-    match focus_before {
-        Pane::Status => panel::environments::handle_key(host.state_mut(), k)?,
-        Pane::Files => panel::files::handle_key(host.state_mut(), k)?,
-        Pane::Branches => panel::branches::handle_key(host.state_mut(), k)?,
-        Pane::Commits => panel::commits::handle_key(host.state_mut(), k)?,
-        Pane::Main => panel::main::handle_key(host.state_mut(), k)?,
+    let handled = if list_jump(host, focus_before, k)? {
+        true
+    } else {
+        match focus_before {
+            Pane::Status => panel::environments::handle_key(host.state_mut(), k)?,
+            Pane::Files => panel::files::handle_key(host.state_mut(), k)?,
+            Pane::Branches => panel::branches::handle_key(host.state_mut(), k)?,
+            Pane::Commits => panel::commits::handle_key(host.state_mut(), k)?,
+            Pane::Main => panel::main::handle_key(host.state_mut(), k)?,
+        }
+    };
+    if !handled {
+        report_unbound(host.state_mut(), focus_before, k);
     }
 
     if host.state().pending_action.is_none()

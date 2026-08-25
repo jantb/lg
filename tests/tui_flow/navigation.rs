@@ -396,3 +396,94 @@ fn files_panel_r_rolls_back_selected_file_or_folder_after_confirmation() {
         })
     );
 }
+
+// ── Jumping through a list ────────────────────────────────────────────────────
+
+fn app_with_many_files(rows: usize) -> lg::app::HeadlessApp<TestBackend> {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 40)).unwrap();
+    app.state.files = (0..rows)
+        .map(|i| FileEntry {
+            path: format!("f{i:02}.rs"),
+            x: ' ',
+            y: 'M',
+        })
+        .collect();
+    app.state.focus = Pane::Files;
+    app.render().unwrap();
+    app
+}
+
+#[test]
+fn g_and_shift_g_jump_to_the_ends_of_a_list() {
+    let mut app = app_with_many_files(40);
+    let last = app.state.tree_rows().len() - 1;
+
+    app.send_key(key(KeyCode::Char('G'))).unwrap();
+    assert_eq!(app.state.files_idx, last, "G should land on the last row");
+
+    app.send_key(key(KeyCode::Char('g'))).unwrap();
+    assert_eq!(app.state.files_idx, 0, "g should land on the first row");
+}
+
+#[test]
+fn page_keys_move_further_than_a_single_step() {
+    let mut app = app_with_many_files(40);
+
+    app.send_key(key(KeyCode::PageDown)).unwrap();
+    let paged = app.state.files_idx;
+    assert!(
+        paged > 1,
+        "PageDown should move more than one row, moved to {paged}"
+    );
+
+    app.send_key(key(KeyCode::PageUp)).unwrap();
+    assert_eq!(app.state.files_idx, 0, "PageUp should come back to the top");
+}
+
+#[test]
+fn ctrl_d_pages_the_file_list_instead_of_deleting_a_file() {
+    let mut app = app_with_many_files(40);
+
+    app.send_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+        .unwrap();
+
+    assert_eq!(
+        app.state.modal,
+        Modal::None,
+        "Ctrl-d must not fall through to the plain d that deletes a file"
+    );
+    assert!(
+        app.state.files_idx > 0,
+        "Ctrl-d should have moved the selection down a half page"
+    );
+
+    let down = app.state.files_idx;
+    app.send_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL))
+        .unwrap();
+    assert!(
+        app.state.files_idx < down,
+        "Ctrl-u should move back up rather than unstaging"
+    );
+}
+
+#[test]
+fn a_jump_in_the_commits_pane_skips_the_graph_rows() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 40)).unwrap();
+    app.state.commits = (0..30)
+        .map(|i| Commit {
+            sha: format!("{i:07}a"),
+            author: "a@b.c".into(),
+            author_short: "ab".into(),
+            subject: format!("commit {i}"),
+            parents: Vec::new(),
+            is_first_parent: true,
+        })
+        .collect();
+    app.state.focus = Pane::Commits;
+    app.render().unwrap();
+
+    app.send_key(key(KeyCode::Char('G'))).unwrap();
+
+    let landed = &app.state.commits[app.state.commits_idx];
+    assert!(!landed.is_graph_row(), "G must land on a real commit row");
+}

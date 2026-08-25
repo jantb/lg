@@ -106,9 +106,9 @@ fn main_footer_and_help_call_out_review_mode() {
 
     app.state.modal = Modal::Help;
     app.state.prev_focus = Pane::Main;
-    app.render().unwrap();
-
-    let help = buffer_text(&app);
+    // Read the whole table: the overlay now opens at the focused pane's own
+    // section, so what is on screen at any one moment is only part of it.
+    let help = help_text(&mut app, Rect::new(0, 0, 120, 80));
     assert!(
         help.contains("Review mode"),
         "help should include a Review mode section: {help}"

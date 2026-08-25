@@ -386,3 +386,77 @@ fn a_multi_step_confirm_shows_every_step_it_names() {
         "the keys are still reachable below the steps: {screen}"
     );
 }
+
+// ── Finding your way around ───────────────────────────────────────────────────
+
+#[test]
+fn help_opens_at_the_focused_panes_own_section() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 40)).unwrap();
+    app.state.focus = Pane::Branches;
+
+    app.send_key(key(KeyCode::Char('?'))).unwrap();
+
+    assert_eq!(app.state.modal, Modal::Help);
+    let help = buffer_text(&app);
+    assert!(
+        help.contains("Delete branch: local/remote/force options"),
+        "the Branches section should be on screen: {help}"
+    );
+    assert!(
+        !help.contains("Swap between the git and workspace views"),
+        "Global sits above Branches and should have scrolled off: {help}"
+    );
+}
+
+#[test]
+fn help_opened_from_the_diff_pane_starts_at_the_diff_section() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 40)).unwrap();
+    app.state.focus = Pane::Main;
+
+    app.send_key(key(KeyCode::Char('?'))).unwrap();
+
+    let help = buffer_text(&app);
+    assert!(
+        help.contains("Scroll half page"),
+        "the Diff pane section should be on screen: {help}"
+    );
+}
+
+#[test]
+fn an_unbound_key_says_so_and_points_at_the_help() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 40)).unwrap();
+    app.state.focus = Pane::Branches;
+    app.render().unwrap();
+
+    app.send_key(key(KeyCode::Char('z'))).unwrap();
+
+    let status = app.state.status.clone().expect("a status message");
+    assert!(
+        status.text.contains("no binding for 'z'"),
+        "should name the key: {}",
+        status.text
+    );
+    assert!(
+        status.text.contains("Branches"),
+        "should name the pane: {}",
+        status.text
+    );
+    assert!(!status.is_error, "an unknown key is not an error");
+}
+
+#[test]
+fn a_bound_key_leaves_no_unbound_key_message() {
+    let mut state = make_state_with_files();
+    state.focus = Pane::Files;
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 40)).unwrap();
+    app.state = state;
+    app.render().unwrap();
+
+    app.send_key(key(KeyCode::Char('j'))).unwrap();
+
+    let text = app.state.status.as_ref().map(|s| s.text.clone());
+    assert!(
+        !text.is_some_and(|t| t.contains("no binding")),
+        "j moves the selection and must not be reported as unbound"
+    );
+}

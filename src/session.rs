@@ -32,6 +32,78 @@ pub enum SessionStatus {
     Ended(String),
 }
 
+/// What a running session looks like it is doing.
+///
+/// claude tells lg nothing, so this is read off the screen claude has drawn:
+/// its own status line says when it is working, and its prompts look like
+/// prompts. A program that says neither reads as [`SessionActivity::Idle`],
+/// which is the honest answer for anything that is not claude.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionActivity {
+    /// Sitting at its prompt with nothing to do — ready for a command.
+    Idle,
+    /// Busy, and interruptible. Nothing is being asked of us.
+    Working,
+    /// Blocked on a question only the user can answer.
+    NeedsInput,
+}
+
+/// claude's spinner line always offers this way out, and nothing else on its
+/// screen says it.
+const WORKING_MARKER: &str = "esc to interrupt";
+
+/// Openings of the questions claude blocks on: tool permissions, file edits,
+/// and the trust prompt a new directory gets.
+const QUESTION_MARKERS: &[&str] = &["do you want", "would you like", "do you trust"];
+
+/// What `text` — a session's screen, as drawn — says the program is doing.
+///
+/// A question outranks the spinner: claude can leave a stale spinner line above
+/// a prompt it has just put up, and being asked something is the state worth
+/// interrupting a person for.
+fn activity_from_screen(text: &str) -> SessionActivity {
+    if is_asking(text) {
+        return SessionActivity::NeedsInput;
+    }
+    if text.to_lowercase().contains(WORKING_MARKER) {
+        return SessionActivity::Working;
+    }
+    SessionActivity::Idle
+}
+
+/// Whether the screen is showing a question claude is waiting on an answer to.
+///
+/// A choice list with one row selected is claude's own shape for asking, and
+/// nothing it writes in an answer looks like that. The wording on its own is not
+/// enough — an answer can easily contain "do you want" — so a question phrase
+/// only counts when there are numbered options under it to pick from.
+fn is_asking(text: &str) -> bool {
+    if text
+        .lines()
+        .any(|line| option_row(line).is_some_and(|selected| selected))
+    {
+        return true;
+    }
+    let lowered = text.to_lowercase();
+    QUESTION_MARKERS
+        .iter()
+        .any(|marker| lowered.contains(marker))
+        && text.lines().any(|line| option_row(line).is_some())
+}
+
+/// Whether `line` is a row of a numbered choice list, and whether it is the
+/// selected one. The caret alone does not make a choice list — it is also
+/// claude's ordinary input prompt — so the number after it is what counts.
+fn option_row(line: &str) -> Option<bool> {
+    let line = line.trim_start();
+    let (selected, rest) = match line.strip_prefix('\u{276f}') {
+        Some(rest) => (true, rest.trim_start()),
+        None => (false, line),
+    };
+    let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    (digits > 0 && rest[digits..].starts_with('.')).then_some(selected)
+}
+
 /// What to run, and where.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSpec {
@@ -49,6 +121,10 @@ pub struct Session {
     pub status: SessionStatus,
     /// Output arrived while this session was not the one being shown.
     pub attention: bool,
+    /// What the last screen it drew says it is doing. Recomputed on output
+    /// rather than on render, so the repo tree can show it for every session
+    /// at once without re-reading five screens a frame.
+    activity: SessionActivity,
     parser: vt100::Parser,
     process: Option<PtyProcess>,
 }
@@ -60,6 +136,15 @@ impl Session {
 
     pub fn is_running(&self) -> bool {
         self.status == SessionStatus::Running
+    }
+
+    /// What it is doing, for the dot the repo tree puts in front of it. A
+    /// session that has ended is doing nothing, whatever its last screen said.
+    pub fn activity(&self) -> SessionActivity {
+        match self.status {
+            SessionStatus::Running => self.activity,
+            SessionStatus::Ended(_) => SessionActivity::Idle,
+        }
     }
 
     /// Line for the session pane's frame.
@@ -187,6 +272,12 @@ impl Session {
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
             }
         }
+        // Scrolled back, the visible screen is history, and history would read
+        // as whatever the program was doing then. The last live reading stands
+        // until the view returns to the bottom.
+        if changed && self.parser.screen().scrollback() == 0 {
+            self.activity = activity_from_screen(&self.parser.screen().contents());
+        }
         if let Some(notice) = ended {
             self.status = SessionStatus::Ended(notice);
             // Keep the final screen readable, but let go of the pty.
@@ -304,6 +395,7 @@ impl Sessions {
             sandboxed: spec.sandboxed,
             status: SessionStatus::Running,
             attention: false,
+            activity: SessionActivity::Idle,
             parser: vt100::Parser::new(size.0, size.1, SCROLLBACK),
             process: None,
         });
@@ -519,6 +611,7 @@ mod tests {
             sandboxed: false,
             status: SessionStatus::Running,
             attention: false,
+            activity: SessionActivity::Idle,
             parser: vt100::Parser::new(24, 80, 0),
             process: None,
         }
@@ -533,6 +626,73 @@ mod tests {
         }
         sessions.focused = sessions.items.first().map(|session| session.id);
         sessions
+    }
+
+    #[test]
+    fn a_screen_offering_a_way_out_reads_as_working() {
+        assert_eq!(
+            activity_from_screen("\u{273b} Thinking\u{2026} (esc to interrupt)"),
+            SessionActivity::Working
+        );
+    }
+
+    #[test]
+    fn a_question_outranks_a_spinner_left_above_it() {
+        let screen = "\u{273b} Working\u{2026} (esc to interrupt)\n\nDo you want to proceed?\n\u{276f} 1. Yes\n  2. No";
+        assert_eq!(activity_from_screen(screen), SessionActivity::NeedsInput);
+    }
+
+    #[test]
+    fn a_numbered_choice_is_enough_to_read_as_a_question() {
+        assert_eq!(
+            activity_from_screen("  \u{276f} 2. Yes, and don't ask again"),
+            SessionActivity::NeedsInput
+        );
+    }
+
+    #[test]
+    fn the_ordinary_prompt_caret_is_not_a_question() {
+        assert_eq!(
+            activity_from_screen("\u{276f} write me a test"),
+            SessionActivity::Idle
+        );
+        assert_eq!(
+            activity_from_screen("\u{256d}\u{2500}\u{256e}\n\u{2502} > fix the bug \u{2502}"),
+            SessionActivity::Idle
+        );
+    }
+
+    #[test]
+    fn prose_that_merely_mentions_a_question_is_not_a_question() {
+        assert_eq!(
+            activity_from_screen(
+                "I can add the flag if you want. Do you want me to also update the docs?"
+            ),
+            SessionActivity::Idle,
+            "an answer that uses the words is not a prompt with options to pick"
+        );
+    }
+
+    #[test]
+    fn a_quiet_screen_reads_as_ready() {
+        assert_eq!(
+            activity_from_screen("Welcome to claude\n\n"),
+            SessionActivity::Idle
+        );
+    }
+
+    #[test]
+    fn an_ended_session_is_never_reported_as_busy() {
+        let mut session = fake(1, "/a");
+        session.activity = SessionActivity::Working;
+        assert_eq!(session.activity(), SessionActivity::Working);
+
+        session.status = SessionStatus::Ended("stopped".into());
+        assert_eq!(
+            session.activity(),
+            SessionActivity::Idle,
+            "a dead session is not still working"
+        );
     }
 
     #[test]

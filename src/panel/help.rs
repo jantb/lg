@@ -10,8 +10,8 @@ use ratatui::{
 
 use crate::{
     config::BORDER_COLOR,
-    panel::keys::SECTIONS,
-    state::{AppState, Modal, Pane},
+    panel::keys::{self, SECTIONS},
+    state::{AppState, Modal},
     ui::centered,
 };
 
@@ -25,14 +25,10 @@ const KEY_COLUMN: usize = 16;
 #[cfg(test)]
 const DESC_WIDTH: usize = OVERLAY_WIDTH as usize - 2 - 2 - KEY_COLUMN;
 
-fn pane_name(p: Pane) -> &'static str {
-    match p {
-        Pane::Status => "Status",
-        Pane::Files => "Files",
-        Pane::Branches => "Branches",
-        Pane::Commits => "Commits",
-        Pane::Main => "Diff",
-    }
+/// The section the overlay opens at and highlights: the one whose keys the
+/// pane behind it is listening for.
+fn active_title(state: &AppState) -> Option<&'static str> {
+    keys::active_section(state.prev_focus, state.main_keys()).map(|section| section.title)
 }
 
 /// Body lines the help text occupies, excluding the modal borders.
@@ -80,9 +76,10 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 
     frame.render_widget(Clear, overlay);
 
+    let active = active_title(state);
     let mut lines: Vec<Line> = Vec::new();
     for (i, section) in SECTIONS.iter().enumerate() {
-        let is_active = section.pane == Some(state.prev_focus);
+        let is_active = Some(section.title) == active;
         let heading_style = if is_active {
             Style::default()
                 .fg(Color::Cyan)
@@ -113,7 +110,12 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(BORDER_COLOR))
-        .title(format!("Help \u{2014} {}", pane_name(state.prev_focus)))
+        .title(format!(
+            "Help \u{2014} {}",
+            active_title(state)
+                .and_then(keys::section)
+                .map_or("lg", keys::footer_label)
+        ))
         .title_bottom(
             Line::from(Span::styled(
                 if max_offset(area) > 0 {
@@ -143,6 +145,12 @@ fn scroll_percent(offset: u16, max: u16) -> u16 {
     }
 }
 
+/// Where to open the overlay so the focused pane's section is the first thing
+/// on it. Clamped, so a short table still opens at the top.
+pub fn open_offset(state: &AppState, area: Rect) -> u16 {
+    active_title(state).map_or(0, |title| keys::section_line(title).min(max_offset(area)))
+}
+
 pub fn handle_key(state: &mut AppState, key: KeyEvent, area: Rect) -> Result<()> {
     let page = viewport_height(area).saturating_sub(1).max(1);
     match key.code {
@@ -169,6 +177,24 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent, area: Rect) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The offset the overlay opens at is counted in `keys`, and the lines it
+    /// draws are laid out here. If the two ever disagree, pressing ? lands near
+    /// the right section instead of on it.
+    #[test]
+    fn a_sections_line_is_where_the_overlay_draws_it() {
+        let mut expected = 0u16;
+        for section in SECTIONS {
+            assert_eq!(
+                keys::section_line(section.title),
+                expected,
+                "{} starts somewhere else on screen",
+                section.title
+            );
+            // Heading, bindings, and the blank line before the next section.
+            expected += 2 + section.bindings.len() as u16;
+        }
+    }
 
     /// The overlay does not wrap. A binding that outgrows it is not shortened,
     /// it is cut off — so the table is checked rather than trusted.

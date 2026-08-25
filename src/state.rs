@@ -59,6 +59,18 @@ pub enum Pane {
     Main,
 }
 
+/// Which of the main pane's three key sets is live. [`MainView`] says whether a
+/// session is up; this folds in review mode, which the diff source decides. The
+/// footer, the help overlay and the unbound-key hint all read it, so they cannot
+/// end up describing different keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MainKeys {
+    Diff,
+    Review,
+    /// A terminal session, which has its own keys and its own way out.
+    Session,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Modal {
     None,
@@ -1196,6 +1208,17 @@ impl AppState {
 
     pub fn branch_actions_available(&self) -> bool {
         self.branch.is_some() || !self.branches.is_empty()
+    }
+
+    /// Which set of keys the main pane is listening for right now.
+    pub fn main_keys(&self) -> MainKeys {
+        if self.session_view().is_some() {
+            MainKeys::Session
+        } else if matches!(self.diff_source, DiffSource::Review) && self.review.is_some() {
+            MainKeys::Review
+        } else {
+            MainKeys::Diff
+        }
     }
 
     pub fn merge_main_available(&self) -> bool {

@@ -200,14 +200,16 @@ pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
 pub fn handle_key(
     state: &mut AppState,
     key: ratatui::crossterm::event::KeyEvent,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     use ratatui::crossterm::event::KeyCode;
 
     if state.nested_repositories.is_empty()
         && state.workspace_root.is_none()
         && state.repo_root.is_none()
     {
-        return Ok(());
+        // Nothing to steer. The keys are still this pane's, so swallow them
+        // rather than telling the user they do not exist.
+        return Ok(true);
     }
     state.clamp();
     match key.code {
@@ -278,9 +280,9 @@ pub fn handle_key(
         KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('h') => {
             close_nested_repo_detail(state);
         }
-        _ => {}
+        _ => return Ok(false),
     }
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) fn activate_selected_repository_row(state: &mut AppState) -> bool {
@@ -1038,20 +1040,48 @@ fn show_session_row(state: &mut AppState, id: crate::session::SessionId) {
     state.session_capture = true;
 }
 
-/// A session under its checkout: whether it is running, and whether it has said
-/// something since it was last looked at.
+/// The colour of a running session's dot: green when it is ready for a command,
+/// yellow while it works, red when it is blocked on a question.
+fn activity_color(activity: crate::session::SessionActivity) -> Color {
+    match activity {
+        crate::session::SessionActivity::Idle => Color::Green,
+        crate::session::SessionActivity::Working => Color::Yellow,
+        crate::session::SessionActivity::NeedsInput => Color::Red,
+    }
+}
+
+/// What to add after "claude" for an activity, or nothing when it is simply
+/// ready — the row is narrow, and "ready" is the state that needs no words.
+fn activity_word(activity: crate::session::SessionActivity) -> Option<&'static str> {
+    match activity {
+        crate::session::SessionActivity::Idle => None,
+        crate::session::SessionActivity::Working => Some("working"),
+        crate::session::SessionActivity::NeedsInput => Some("needs input"),
+    }
+}
+
+/// A session under its checkout: whether it is running, what it is doing, and
+/// whether it has said something since it was last looked at.
 fn session_line(session: &crate::session::Session, row_width: usize, shown: bool) -> Line<'static> {
-    let (glyph, glyph_color) = match (&session.status, session.attention) {
-        (crate::session::SessionStatus::Ended(_), _) => ("\u{25cb} ", Color::DarkGray),
-        (_, true) => ("\u{25cf} ", Color::Yellow),
-        _ => ("\u{25cf} ", Color::Green),
+    let (glyph, glyph_color) = match &session.status {
+        crate::session::SessionStatus::Ended(_) => ("\u{25cb} ", Color::DarkGray),
+        crate::session::SessionStatus::Running => ("\u{25cf} ", activity_color(session.activity())),
     };
+    // The dot says what it is doing; the word repeats it for anyone the colour
+    // alone does not reach, and the caret still marks output nobody has read.
     let state_text = match &session.status {
-        crate::session::SessionStatus::Running if session.attention => {
-            "claude \u{25b4}".to_string()
-        }
-        crate::session::SessionStatus::Running => "claude".to_string(),
         crate::session::SessionStatus::Ended(notice) => format!("claude {notice}"),
+        crate::session::SessionStatus::Running => {
+            let mut text = "claude".to_string();
+            if let Some(word) = activity_word(session.activity()) {
+                text.push_str(" \u{b7} ");
+                text.push_str(word);
+            }
+            if session.attention {
+                text.push_str(" \u{25b4}");
+            }
+            text
+        }
     };
     let mut spans = vec![
         Span::styled("    ", Style::default()),

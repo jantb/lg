@@ -5,7 +5,7 @@
 //! visibility rule, and the four drifted: the footer offered F2 and g/G that
 //! the help never mentioned. Now the text lives here once.
 
-use crate::state::Pane;
+use crate::state::{MainKeys, Pane};
 
 pub struct Binding {
     /// How the help overlay names the keys.
@@ -31,6 +31,30 @@ pub struct Section {
     /// against this section first and then Global, so a pane repeats a global
     /// key without restating what it does.
     pub footer_order: &'static [&'static str],
+}
+
+/// How much care a footer's colour should ask for. Named by meaning rather than
+/// by colour, so the mapping to a terminal colour stays in the footer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Normal,
+    /// A step that stages something before it happens.
+    Caution,
+    /// Something destructive.
+    Danger,
+}
+
+/// A modal's footer. Modals used to spell their footers out in `footer.rs`,
+/// which is how the settings modal came to be documented as saving on Enter in
+/// the help and on Ctrl+S in the footer. Both now read this.
+pub struct ModalFooter {
+    /// The section whose bindings this footer prints.
+    pub section: &'static str,
+    /// The words in front of the keys.
+    pub prefix: &'static str,
+    pub tone: Tone,
+    /// Keys to print, in order, resolved against the named section.
+    pub order: &'static [&'static str],
 }
 
 pub const SECTIONS: &[Section] = &[
@@ -176,6 +200,21 @@ pub const SECTIONS: &[Section] = &[
                 help: "Refresh diff",
                 footer: None,
             },
+            Binding {
+                key: "g / G",
+                help: "First / last row",
+                footer: None,
+            },
+            Binding {
+                key: "Ctrl-d / Ctrl-u",
+                help: "Half a page down / up",
+                footer: None,
+            },
+            Binding {
+                key: "PgDn / PgUp",
+                help: "A whole page down / up",
+                footer: None,
+            },
         ],
         footer_meta: Some((2, "Files")),
         footer_order: &[
@@ -259,6 +298,21 @@ pub const SECTIONS: &[Section] = &[
                 help: "Collapse expanded repository",
                 footer: None,
             },
+            Binding {
+                key: "g / G",
+                help: "First / last row",
+                footer: None,
+            },
+            Binding {
+                key: "Ctrl-d / Ctrl-u",
+                help: "Half a page down / up",
+                footer: None,
+            },
+            Binding {
+                key: "PgDn / PgUp",
+                help: "A whole page down / up",
+                footer: None,
+            },
         ],
         footer_meta: Some((1, "Status")),
         footer_order: &[
@@ -335,6 +389,21 @@ pub const SECTIONS: &[Section] = &[
                 help: "Branch action menu",
                 footer: Some(("F", "actions")),
             },
+            Binding {
+                key: "g / G",
+                help: "First / last row",
+                footer: None,
+            },
+            Binding {
+                key: "Ctrl-d / Ctrl-u",
+                help: "Half a page down / up",
+                footer: None,
+            },
+            Binding {
+                key: "PgDn / PgUp",
+                help: "A whole page down / up",
+                footer: None,
+            },
         ],
         footer_meta: Some((3, "Branches")),
         footer_order: &[
@@ -354,6 +423,21 @@ pub const SECTIONS: &[Section] = &[
                 key: "Enter",
                 help: "Focus diff pane",
                 footer: Some(("Enter", "focus diff")),
+            },
+            Binding {
+                key: "g / G",
+                help: "First / last row",
+                footer: None,
+            },
+            Binding {
+                key: "Ctrl-d / Ctrl-u",
+                help: "Half a page down / up",
+                footer: None,
+            },
+            Binding {
+                key: "PgDn / PgUp",
+                help: "A whole page down / up",
+                footer: None,
             },
         ],
         footer_meta: Some((4, "Commits")),
@@ -547,12 +631,12 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "Enter",
                 help: "Send prompt",
-                footer: None,
+                footer: Some(("Enter", "send")),
             },
             Binding {
                 key: "Esc",
                 help: "Cancel the running answer, then close chat",
-                footer: None,
+                footer: Some(("Esc", "close")),
             },
             Binding {
                 key: "Ctrl+A / Ctrl+E",
@@ -575,7 +659,7 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "Ctrl+S",
                 help: "Commit",
-                footer: None,
+                footer: Some(("Ctrl+S", "commit")),
             },
             Binding {
                 key: "Ctrl+P",
@@ -585,16 +669,31 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "Enter",
                 help: "New line",
-                footer: None,
+                footer: Some(("Enter", "newline")),
             },
             Binding {
                 key: "Ctrl+R",
                 help: "Regenerate message",
-                footer: None,
+                footer: Some(("Ctrl+R", "regen")),
             },
             Binding {
                 key: "Ctrl+U",
                 help: "Clear message",
+                footer: Some(("Ctrl+U", "clear")),
+            },
+            Binding {
+                key: "Ctrl+A / Ctrl+E",
+                help: "Start or end of the line",
+                footer: None,
+            },
+            Binding {
+                key: "Home / End",
+                help: "Start or end of the message",
+                footer: None,
+            },
+            Binding {
+                key: "Arrows",
+                help: "Move the cursor",
                 footer: None,
             },
             Binding {
@@ -603,9 +702,167 @@ pub const SECTIONS: &[Section] = &[
                 footer: None,
             },
             Binding {
+                key: "Delete",
+                help: "Delete the char to the right",
+                footer: None,
+            },
+            Binding {
                 key: "Esc",
                 help: "Cancel",
+                footer: Some(("Esc", "cancel")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Stage all",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "y",
+                help: "Stage everything, then commit",
+                footer: Some(("y", "stage all")),
+            },
+            Binding {
+                key: "n / Esc",
+                help: "Cancel",
+                footer: Some(("n/Esc", "cancel")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "New worktree",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "Tab / arrows",
+                help: "Switch field",
+                footer: Some(("Tab", "field")),
+            },
+            Binding {
+                key: "Enter",
+                help: "Create the worktree",
+                footer: Some(("Enter", "create")),
+            },
+            Binding {
+                key: "Esc",
+                help: "Cancel",
+                footer: Some(("Esc", "cancel")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Branch actions",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "j/k",
+                help: "Move between actions",
+                footer: Some(("j/k", "select")),
+            },
+            Binding {
+                key: "Enter",
+                help: "Run the selected action",
+                footer: Some(("Enter", "continue")),
+            },
+            Binding {
+                key: "Esc",
+                help: "Back",
+                footer: Some(("Esc", "back")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Conflict",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "j/k",
+                help: "Move between conflicted files",
+                footer: Some(("j/k", "select")),
+            },
+            Binding {
+                key: "o / Enter",
+                help: "Open the file in the editor",
+                footer: Some(("o/Enter", "open")),
+            },
+            Binding {
+                key: "v",
+                help: "Check the resolution, then continue",
+                footer: Some(("v", "validate")),
+            },
+            Binding {
+                key: "a",
+                help: "Abort merge, rebase or cherry-pick",
+                footer: Some(("a", "abort")),
+            },
+            Binding {
+                key: "Esc",
+                help: "Close",
+                footer: Some(("Esc", "close")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Delete branch",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "Tab / j/k",
+                help: "Move between the delete options",
+                footer: Some(("Tab", "field")),
+            },
+            Binding {
+                key: "space",
+                help: "Toggle the selected option",
+                footer: Some(("Space", "toggle")),
+            },
+            Binding {
+                key: "Enter",
+                help: "Delete with the chosen options",
+                footer: Some(("Enter", "confirm")),
+            },
+            Binding {
+                key: "Esc",
+                help: "Cancel",
+                footer: Some(("Esc", "cancel")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Help overlay",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "j/k",
+                help: "Scroll",
+                footer: Some(("j/k", "scroll")),
+            },
+            Binding {
+                key: "Ctrl-d / Ctrl-u",
+                help: "Half a page down / up",
                 footer: None,
+            },
+            Binding {
+                key: "g / G",
+                help: "Top / bottom",
+                footer: Some(("g/G", "top/bot")),
+            },
+            Binding {
+                key: "q / Esc",
+                help: "Close",
+                footer: Some(("q/Esc", "close")),
             },
         ],
         footer_meta: None,
@@ -618,32 +875,32 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "Tab / arrows",
                 help: "Switch field",
-                footer: None,
+                footer: Some(("Tab", "field")),
             },
             Binding {
                 key: "Enter",
                 help: "Save subtree rule",
-                footer: None,
+                footer: Some(("Enter", "save subtree")),
             },
             Binding {
                 key: "Ctrl+L",
                 help: "Save repo-local author",
-                footer: None,
+                footer: Some(("Ctrl+L", "save local")),
             },
             Binding {
                 key: "Ctrl+U",
                 help: "Clear subtree rule",
-                footer: None,
+                footer: Some(("Ctrl+U", "clear subtree")),
             },
             Binding {
                 key: "Ctrl+X",
                 help: "Clear repo-local author",
-                footer: None,
+                footer: Some(("Ctrl+X", "clear local")),
             },
             Binding {
                 key: "Esc",
                 help: "Cancel",
-                footer: None,
+                footer: Some(("Esc", "cancel")),
             },
         ],
         footer_meta: None,
@@ -654,19 +911,24 @@ pub const SECTIONS: &[Section] = &[
         pane: None,
         bindings: &[
             Binding {
-                key: "Tab",
-                help: "Next field",
+                key: "Tab / Shift-Tab",
+                help: "Move between fields",
                 footer: None,
             },
             Binding {
                 key: "Up / Down",
-                help: "Pick known model or move field",
-                footer: None,
+                help: "Move field, or step the open one",
+                footer: Some(("Up/Down", "select")),
             },
             Binding {
                 key: "Enter",
+                help: "Open the field, or run what it does",
+                footer: Some(("Enter", "open/confirm")),
+            },
+            Binding {
+                key: "Ctrl+S",
                 help: "Save model and per-checkout settings",
-                footer: None,
+                footer: Some(("Ctrl+S", "save")),
             },
             Binding {
                 key: "Ctrl+E",
@@ -676,12 +938,12 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "Ctrl+U",
                 help: "Reset saved settings to defaults",
-                footer: None,
+                footer: Some(("Ctrl+U", "reset")),
             },
             Binding {
                 key: "Esc",
-                help: "Cancel",
-                footer: None,
+                help: "Leave the open field, then close",
+                footer: Some(("Esc", "cancel")),
             },
         ],
         footer_meta: None,
@@ -694,12 +956,12 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "y",
                 help: "Confirm the destructive action",
-                footer: None,
+                footer: Some(("y", "confirm")),
             },
             Binding {
                 key: "n / Esc",
                 help: "Cancel",
-                footer: None,
+                footer: Some(("n/Esc", "cancel")),
             },
         ],
         footer_meta: None,
@@ -712,12 +974,12 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "Enter",
                 help: "Push to origin",
-                footer: None,
+                footer: Some(("Enter", "push")),
             },
             Binding {
                 key: "Esc",
                 help: "Cancel",
-                footer: None,
+                footer: Some(("Esc", "cancel")),
             },
         ],
         footer_meta: None,
@@ -725,9 +987,132 @@ pub const SECTIONS: &[Section] = &[
     },
 ];
 
+/// Every modal footer, in the order its keys are printed.
+pub const MODAL_FOOTERS: &[ModalFooter] = &[
+    ModalFooter {
+        section: "Commit modal",
+        prefix: "Commit modal ",
+        tone: Tone::Normal,
+        order: &["Ctrl+S", "Enter", "Ctrl+R", "Ctrl+U", "Esc"],
+    },
+    ModalFooter {
+        section: "Stage all",
+        prefix: "Commit ",
+        tone: Tone::Caution,
+        order: &["y", "n / Esc"],
+    },
+    ModalFooter {
+        section: "Push modal",
+        prefix: "Push modal ",
+        tone: Tone::Normal,
+        order: &["Enter", "Esc"],
+    },
+    ModalFooter {
+        section: "New worktree",
+        prefix: "New worktree ",
+        tone: Tone::Normal,
+        order: &["Tab / arrows", "Enter", "Esc"],
+    },
+    ModalFooter {
+        section: "Author settings",
+        prefix: "Author ",
+        tone: Tone::Normal,
+        order: &["Tab / arrows", "Enter", "Ctrl+L", "Ctrl+U", "Ctrl+X", "Esc"],
+    },
+    ModalFooter {
+        section: "Settings",
+        prefix: "Settings ",
+        tone: Tone::Normal,
+        order: &["Up / Down", "Enter", "Ctrl+S", "Ctrl+U", "Esc"],
+    },
+    ModalFooter {
+        section: "Help overlay",
+        prefix: "Help ",
+        tone: Tone::Normal,
+        order: &["j/k", "g / G", "q / Esc"],
+    },
+    ModalFooter {
+        section: "Branch actions",
+        prefix: "Branches ",
+        tone: Tone::Normal,
+        order: &["j/k", "Enter", "Esc"],
+    },
+    ModalFooter {
+        section: "Conflict",
+        prefix: "Conflict ",
+        tone: Tone::Danger,
+        order: &["j/k", "o / Enter", "v", "a", "Esc"],
+    },
+    ModalFooter {
+        section: "Delete branch",
+        prefix: "Delete branch ",
+        tone: Tone::Danger,
+        order: &["Tab / j/k", "space", "Enter", "Esc"],
+    },
+    ModalFooter {
+        section: "Confirm prompts",
+        prefix: "Confirm ",
+        tone: Tone::Danger,
+        order: &["y", "n / Esc"],
+    },
+    ModalFooter {
+        section: "Review chat",
+        prefix: "Review chat ",
+        tone: Tone::Normal,
+        order: &["Enter", "Esc"],
+    },
+];
+
 /// The section with this title.
 pub fn section(title: &str) -> Option<&'static Section> {
     SECTIONS.iter().find(|section| section.title == title)
+}
+
+/// The modal footer for the section with this title.
+pub fn modal_footer(section: &str) -> Option<&'static ModalFooter> {
+    MODAL_FOOTERS.iter().find(|modal| modal.section == section)
+}
+
+/// The section whose bindings are live right now.
+///
+/// The main pane holds three of them, so `keys` decides which. The footer, the
+/// help overlay and the unbound-key hint all ask this, which is what keeps them
+/// describing the same set.
+pub fn active_section(pane: Pane, keys: MainKeys) -> Option<&'static Section> {
+    section(match pane {
+        Pane::Status => "Repositories",
+        Pane::Files => "Files",
+        Pane::Branches => "Branches",
+        Pane::Commits => "Commits",
+        Pane::Main => match keys {
+            MainKeys::Session => "Session",
+            MainKeys::Review => "Review mode",
+            MainKeys::Diff => "Diff pane",
+        },
+    })
+}
+
+/// What the footer calls a section — the name the user reads on screen, which
+/// is not always the title the help gives it.
+pub fn footer_label(section: &Section) -> &'static str {
+    match section.footer_meta {
+        Some((_, name)) => name,
+        None => section.title,
+    }
+}
+
+/// Body lines `title`'s section starts at in the help overlay, counting the
+/// heading and blank line each earlier section takes.
+pub fn section_line(title: &str) -> u16 {
+    let mut line = 0u16;
+    for section in SECTIONS {
+        if section.title == title {
+            break;
+        }
+        // Heading, bindings, and the blank line before the next section.
+        line = line.saturating_add(2 + section.bindings.len() as u16);
+    }
+    line
 }
 
 /// What the footer prints for one of `section`'s footer keys: the section's own
@@ -746,6 +1131,15 @@ pub fn footer_entry(from: &Section, key: &str) -> Option<(&'static str, &'static
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The main pane is three panes wearing one name, and each has its own keys.
+    #[test]
+    fn the_main_pane_reports_the_key_set_that_is_live() {
+        let title = |keys| active_section(Pane::Main, keys).map(|section| section.title);
+        assert_eq!(title(MainKeys::Diff), Some("Diff pane"));
+        assert_eq!(title(MainKeys::Review), Some("Review mode"));
+        assert_eq!(title(MainKeys::Session), Some("Session"));
+    }
 
     /// What every pane's footer showed before the help and footer tables were
     /// merged, copied from the old footer_spec. The merge must not have moved,

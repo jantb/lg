@@ -6,26 +6,62 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::panel::keys::{self, Section};
+use crate::panel::keys::{self, Section, Tone};
 use crate::state::{AppState, DiffSource, Modal, Pane};
 
-/// The section this pane's footer is built from. Review mode and the diff share
-/// a pane, so which of them is showing decides between their two sections.
+/// The section this pane's footer is built from.
 fn footer_section(state: &AppState) -> Option<&'static Section> {
-    let title = match state.focus {
-        Pane::Status => "Repositories",
-        Pane::Files => "Files",
-        Pane::Branches => "Branches",
-        Pane::Commits => "Commits",
-        Pane::Main => {
-            if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
-                "Review mode"
-            } else {
-                "Diff pane"
-            }
-        }
+    keys::active_section(state.focus, state.main_keys())
+}
+
+/// The help section a modal's keys are documented in. Its footer is built from
+/// the same bindings, so the two cannot say different things.
+fn modal_section(modal: Modal) -> Option<&'static str> {
+    Some(match modal {
+        Modal::None => return None,
+        Modal::Commit => "Commit modal",
+        Modal::StageAllBeforeCommit => "Stage all",
+        Modal::Push => "Push modal",
+        Modal::Author => "Author settings",
+        Modal::Model => "Settings",
+        Modal::Help => "Help overlay",
+        Modal::Flow => "Branch actions",
+        Modal::Conflict => "Conflict",
+        Modal::DeleteBranch => "Delete branch",
+        Modal::Worktree => "New worktree",
+        Modal::ReviewChat => "Review chat",
+        Modal::ConfirmDestructive => "Confirm prompts",
+    })
+}
+
+fn tone_color(tone: Tone) -> Color {
+    match tone {
+        Tone::Normal => Color::Cyan,
+        Tone::Caution => Color::Yellow,
+        Tone::Danger => Color::Red,
+    }
+}
+
+/// The footer for an open modal, read off the key table.
+///
+/// The branch-action list is the one modal whose keys depend on the repository:
+/// with no branches to act on there is nothing to select or run, so only the
+/// way out is offered.
+fn modal_footer_spans(state: &AppState, modal: Modal) -> Option<Vec<Span<'static>>> {
+    let title = modal_section(modal)?;
+    let section = keys::section(title)?;
+    let footer = keys::modal_footer(title)?;
+    let keys_shown: Vec<&'static str> = if modal == Modal::Flow && !state.branch_actions_available()
+    {
+        vec!["Esc"]
+    } else {
+        footer.order.to_vec()
     };
-    keys::section(title)
+    let pairs: Vec<(&'static str, &'static str)> = keys_shown
+        .iter()
+        .filter_map(|key| keys::footer_entry(section, key))
+        .collect();
+    Some(modal_spans(footer.prefix, &pairs, tone_color(footer.tone)))
 }
 
 pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -34,99 +70,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
             session_spans(state)
         }
         Modal::None => default_spans(state),
-        Modal::Commit => modal_spans(
-            "Commit modal ",
-            &[
-                ("Ctrl+S", "commit"),
-                ("Enter", "newline"),
-                ("Ctrl+R", "regen"),
-                ("Ctrl+U", "clear"),
-                ("Esc", "cancel"),
-            ],
-            Color::Cyan,
-        ),
-        Modal::StageAllBeforeCommit => modal_spans(
-            "Commit ",
-            &[("y", "stage all"), ("n/Esc", "cancel")],
-            Color::Yellow,
-        ),
-        Modal::Push => modal_spans(
-            "Push modal ",
-            &[("Enter", "push"), ("Esc", "cancel")],
-            Color::Cyan,
-        ),
-        Modal::Worktree => modal_spans(
-            "New worktree ",
-            &[("Tab", "field"), ("Enter", "create"), ("Esc", "cancel")],
-            Color::Cyan,
-        ),
-        Modal::Author => modal_spans(
-            "Author ",
-            &[
-                ("Tab", "field"),
-                ("Enter", "save subtree"),
-                ("Ctrl+L", "save local"),
-                ("Ctrl+U", "clear subtree"),
-                ("Ctrl+X", "clear local"),
-                ("Esc", "cancel"),
-            ],
-            Color::Cyan,
-        ),
-        Modal::Model => modal_spans(
-            "Settings ",
-            &[
-                ("Up/Down", "select"),
-                ("Enter", "open/confirm"),
-                ("Ctrl+S", "save"),
-                ("Ctrl+U", "reset"),
-                ("Esc", "cancel"),
-            ],
-            Color::Cyan,
-        ),
-        Modal::Help => modal_spans(
-            "Help ",
-            &[("j/k", "scroll"), ("g/G", "top/bot"), ("q/Esc", "close")],
-            Color::Cyan,
-        ),
-        Modal::Flow => {
-            let pairs = if state.branch_actions_available() {
-                &[("j/k", "select"), ("Enter", "continue"), ("Esc", "back")][..]
-            } else {
-                &[("Esc", "back")][..]
-            };
-            modal_spans("Branches ", pairs, Color::Cyan)
-        }
-        Modal::Conflict => modal_spans(
-            "Conflict ",
-            &[
-                ("j/k", "select"),
-                ("o/Enter", "open"),
-                ("v", "validate"),
-                ("a", "abort"),
-                ("Esc", "close"),
-            ],
-            Color::Red,
-        ),
-        Modal::DeleteBranch => modal_spans(
-            "Delete branch ",
-            &[
-                ("Tab", "field"),
-                ("Space", "toggle"),
-                ("Enter", "confirm"),
-                ("Esc", "cancel"),
-            ],
-            Color::Red,
-        ),
-        Modal::ConfirmDestructive => modal_spans(
-            "Confirm ",
-            &[("y", "confirm"), ("n/Esc", "cancel")],
-            Color::Red,
-        ),
-        Modal::ReviewChat => modal_spans(
-            "Review chat ",
-            &[("Enter", "send"), ("Esc", "close")],
-            Color::Cyan,
-        ),
+        modal => modal_footer_spans(state, modal).unwrap_or_default(),
     };
 
     let (right_text, right_color) = status_text(state);
@@ -263,7 +207,7 @@ fn diff_view_toggle_available(state: &AppState) -> bool {
 
 fn modal_spans(
     title: &'static str,
-    pairs: &'static [(&'static str, &'static str)],
+    pairs: &[(&'static str, &'static str)],
     color: Color,
 ) -> Vec<Span<'static>> {
     let mut spans = vec![Span::styled(
@@ -336,4 +280,74 @@ fn compact_model(model: &str) -> String {
     }
     out.push_str("...");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every modal lg can open has a footer, and every key that footer prints is
+    /// a binding the help documents.
+    ///
+    /// Modals used to spell their footers out here, in a table nothing checked
+    /// against the help. That is how the settings modal came to be documented as
+    /// saving on Enter while its footer offered Ctrl+S — both true of different
+    /// keys, and only one of them the save.
+    #[test]
+    fn every_modal_footer_is_built_from_the_key_table() {
+        let modals = [
+            Modal::Commit,
+            Modal::StageAllBeforeCommit,
+            Modal::Push,
+            Modal::Author,
+            Modal::Model,
+            Modal::Help,
+            Modal::Flow,
+            Modal::Conflict,
+            Modal::DeleteBranch,
+            Modal::Worktree,
+            Modal::ReviewChat,
+            Modal::ConfirmDestructive,
+        ];
+        let state = AppState::new();
+        for modal in modals {
+            let title =
+                modal_section(modal).unwrap_or_else(|| panic!("{modal:?} names no help section"));
+            let section =
+                keys::section(title).unwrap_or_else(|| panic!("{title} is not in the key table"));
+            let footer = keys::modal_footer(title)
+                .unwrap_or_else(|| panic!("{title} has no footer to print"));
+            for key in footer.order {
+                assert!(
+                    keys::footer_entry(section, key).is_some(),
+                    "{title} prints {key:?}, which its own section does not document"
+                );
+            }
+            assert!(
+                modal_footer_spans(&state, modal).is_some_and(|spans| spans.len() > 1),
+                "{modal:?} draws an empty footer"
+            );
+        }
+        assert!(
+            modal_section(Modal::None).is_none(),
+            "no modal is open, so there is no modal footer"
+        );
+    }
+
+    /// The footer and the help overlay ask the same question about which pane is
+    /// live, so a pane cannot end up with hints from one section and a help
+    /// heading from another.
+    #[test]
+    fn the_diff_pane_switches_sections_with_its_contents() {
+        let mut state = AppState::new();
+        state.focus = Pane::Main;
+        assert_eq!(
+            footer_section(&state).map(|section| section.title),
+            Some("Diff pane")
+        );
+        assert_eq!(
+            keys::active_section(Pane::Main, state.main_keys()).map(|section| section.title),
+            Some("Diff pane")
+        );
+    }
 }

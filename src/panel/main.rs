@@ -142,7 +142,7 @@ fn session_handle_key(
     state: &mut AppState,
     id: crate::session::SessionId,
     key: KeyEvent,
-) -> Result<()> {
+) -> Result<bool> {
     match key.code {
         KeyCode::Char('i') | KeyCode::Enter => {
             if state
@@ -163,9 +163,9 @@ fn session_handle_key(
             }
         }
         KeyCode::Backspace => state.show_diff(),
-        _ => {}
+        _ => return Ok(false),
     }
-    Ok(())
+    Ok(true)
 }
 
 pub fn review_chat_layout(state: &AppState, area: Rect) -> std::rc::Rc<[Rect]> {
@@ -179,7 +179,7 @@ pub fn review_chat_layout(state: &AppState, area: Rect) -> std::rc::Rc<[Rect]> {
         .constraints([Constraint::Min(0), Constraint::Length(chat_height)])
         .split(area)
 }
-pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
+pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     if let Some(id) = state.session_view() {
         return session_handle_key(state, id, key);
     }
@@ -227,9 +227,9 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.set_status("no source file selected", false);
             }
         }
-        _ => {}
+        _ => return Ok(false),
     }
-    Ok(())
+    Ok(true)
 }
 
 /// One wheel notch over the main pane, at a cell of it. A session whose

@@ -129,7 +129,7 @@ fn visible_scroll_offset(state: &AppState, area: Rect) -> usize {
     )
 }
 
-pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
+pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     state.commits_idx = selected_commit_index(state).unwrap_or(0);
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
@@ -143,9 +143,9 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Enter => {
             state.focus = Pane::Main;
         }
-        _ => {}
+        _ => return Ok(false),
     }
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) fn selected_commit_index(state: &AppState) -> Option<usize> {

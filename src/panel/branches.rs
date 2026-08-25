@@ -109,7 +109,7 @@ fn branch_scroll_offset_mut(state: &mut AppState) -> &mut usize {
     }
 }
 
-pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
+pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     state.clamp();
     let shifted_m = shifted_char(key, 'm', 'M');
     let shifted_d = shifted_char(key, 'd', 'D');
@@ -150,7 +150,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ if shifted_d => {
             if state.branch_view == BranchView::Remote {
                 state.set_status("delete remote branches from local branch view", false);
-                return Ok(());
+                return Ok(true);
             }
             if let Some(b) = state.branches.get(state.branches_idx) {
                 if protected_branch(&b.name) {
@@ -164,10 +164,10 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Char('d') if !shifted_d => {
             if state.branch_view == BranchView::Remote {
                 state.set_status("delete remote branches from local branch view", false);
-                return Ok(());
+                return Ok(true);
             }
             let Some(branch) = state.branches.get(state.branches_idx) else {
-                return Ok(());
+                return Ok(true);
             };
             if protected_branch(&branch.name) {
                 state.set_status(
@@ -222,9 +222,9 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.pending_action = Some(PendingAction::MergeMainAllBranches);
             }
         }
-        _ => {}
+        _ => return Ok(false),
     }
-    Ok(())
+    Ok(true)
 }
 
 fn queue_set_upstream(state: &mut AppState) {

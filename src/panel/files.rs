@@ -165,7 +165,7 @@ fn confirm_delete(state: &mut AppState, path: String, is_dir: bool) {
     );
 }
 
-pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
+pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     let rows = state.tree_rows();
     let total = rows.len();
     state.files_idx = clamp_index(state.files_idx, total).unwrap_or(0);
@@ -317,7 +317,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.set_status("nothing to pull", false);
             }
         }
-        _ => {}
+        _ => return Ok(false),
     }
-    Ok(())
+    Ok(true)
 }
