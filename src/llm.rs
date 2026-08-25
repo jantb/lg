@@ -1210,6 +1210,15 @@ fn reason_mentions_other_style_rule(reason: &str) -> bool {
     .any(|needle| reason.contains(needle))
 }
 
+/// The text after `key:` on a line that opens with it, matched against
+/// `lower` so the key is case-insensitive while the value keeps its case.
+fn field_value<'a>(line: &'a str, lower: &str, key: &str) -> Option<&'a str> {
+    lower
+        .starts_with(key)
+        .then(|| line.split_once(':'))?
+        .map(|(_, value)| value)
+}
+
 pub fn parse_review_style_finding(raw: &str) -> ReviewStyleFinding {
     let mut severity = None;
     let mut line_number = None;
@@ -1222,26 +1231,14 @@ pub fn parse_review_style_finding(raw: &str) -> ReviewStyleFinding {
         .filter(|line| !line.is_empty())
     {
         let lower = line.to_ascii_lowercase();
-        if let Some((_, value)) = lower
-            .starts_with("severity:")
-            .then(|| line.split_once(':'))
-            .flatten()
-        {
+        if let Some(value) = field_value(line, &lower, "severity:") {
             if let Some(parsed) = parse_review_style_severity(value) {
                 severity = Some(parsed);
                 reason = None;
             }
-        } else if let Some((_, value)) = lower
-            .starts_with("line:")
-            .then(|| line.split_once(':'))
-            .flatten()
-        {
+        } else if let Some(value) = field_value(line, &lower, "line:") {
             line_number = parse_review_style_line_number(value);
-        } else if let Some((_, value)) = lower
-            .starts_with("reason:")
-            .then(|| line.split_once(':'))
-            .flatten()
-        {
+        } else if let Some(value) = field_value(line, &lower, "reason:") {
             if severity.is_some() {
                 reason = Some(value.trim().to_string());
             }
