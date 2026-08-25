@@ -19,12 +19,15 @@ const MAX_SIGNAL_LINES: usize = 48;
 /// [`LLM_NUM_PREDICT`] default the reasoning ate the budget and the message
 /// came back truncated mid-word.
 const COMMIT_NUM_PREDICT: i32 = 8_192;
+const CONVENTIONS_NUM_PREDICT: i32 = 300;
 const REVIEW_ASSIST_NUM_PREDICT: i32 = 16_000;
 const REVIEW_ASSIST_MAX_CHARS: usize = 16_000;
 const REVIEW_ASSIST_MAX_LINES: usize = 128;
 const REVIEW_PR_NUM_PREDICT: i32 = 4_096;
 const REVIEW_PR_MAX_CHARS: usize = 8_000;
+const REVIEW_CHAT_NUM_PREDICT: i32 = 768;
 const REVIEW_CHAT_MAX_CHARS: usize = 12_000;
+const REVIEW_STYLE_FLAG_NUM_PREDICT: i32 = 96;
 const CONFIG_FILE_ENV: &str = "LG_CONFIG_FILE";
 const CONFIG_MODEL_KEY: &str = "llm_model";
 const CONFIG_PROVIDER_KEY: &str = "llm_provider";
@@ -601,18 +604,10 @@ pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
     let limits = settings.clone();
     stream_prompt(
         build_commit_prompt(&diff, &settings),
-        commit_options(),
+        options_with_budget(COMMIT_NUM_PREDICT),
         move |raw| crate::settings::enforce_commit_limits(&finalize(raw), &limits),
         tx,
     );
-}
-
-fn commit_options() -> Options {
-    let mut opts = Options::default();
-    if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
-        opts.num_predict = COMMIT_NUM_PREDICT;
-    }
-    opts
 }
 
 /// Derives this checkout's writing conventions — the language its commit
@@ -626,7 +621,7 @@ pub fn suggest_repo_conventions(history: String, tx: Sender<crate::state::Settin
     std::thread::spawn(move || {
         stream_prompt(
             build_conventions_prompt(&history),
-            conventions_options(),
+            options_with_budget(CONVENTIONS_NUM_PREDICT),
             |raw| strip_think_tags(raw).trim().to_string(),
             gen_tx,
         );
@@ -650,14 +645,6 @@ pub fn suggest_repo_conventions(history: String, tx: Sender<crate::state::Settin
             SettingsSuggestMsg::Done { language, shapes }
         }
     });
-}
-
-fn conventions_options() -> Options {
-    let mut opts = Options::default();
-    if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
-        opts.num_predict = 300;
-    }
-    opts
 }
 
 fn build_conventions_prompt(history: &str) -> String {
@@ -715,7 +702,7 @@ fn parse_conventions(raw: &str) -> (Option<String>, Vec<String>) {
 pub fn stream_review_assist(context: String, tx: Sender<GenMsg>) {
     stream_prompt(
         build_review_assist_prompt(&context, &crate::settings::load()),
-        review_assist_options(),
+        options_with_budget(REVIEW_ASSIST_NUM_PREDICT),
         finalize_review_assist,
         tx,
     );
@@ -725,7 +712,7 @@ pub fn stream_review_style_flag(path: String, context: String, tx: Sender<GenMsg
     let finalizer_path = path.clone();
     stream_prompt(
         build_review_style_flag_prompt(&path, &context, &crate::settings::load()),
-        review_style_flag_options(),
+        options_with_budget(REVIEW_STYLE_FLAG_NUM_PREDICT),
         move |raw| finalize_review_style_flag_for_path(&finalizer_path, raw),
         tx,
     );
@@ -734,7 +721,7 @@ pub fn stream_review_style_flag(path: String, context: String, tx: Sender<GenMsg
 pub fn stream_review_pr_text(context: String, tx: Sender<GenMsg>) {
     stream_prompt(
         build_review_pr_text_prompt(&context, &crate::settings::load()),
-        review_pr_options(),
+        options_with_budget(REVIEW_PR_NUM_PREDICT),
         finalize_review_pr_text,
         tx,
     );
@@ -767,37 +754,23 @@ pub fn stream_review_chat(
         role: "user",
         content: prompt,
     });
-    stream_messages(messages, review_chat_options(), finalize_review_chat, tx);
+    stream_messages(
+        messages,
+        options_with_budget(REVIEW_CHAT_NUM_PREDICT),
+        finalize_review_chat,
+        tx,
+    );
 }
 
-fn review_assist_options() -> Options {
+/// Options for a task that wants `budget` output tokens.
+///
+/// `LG_LLM_NUM_PREDICT` overrides `budget`: while it is set, `num_predict` is
+/// whatever [`Options::default`] resolved, and a value that does not parse
+/// resolves to [`LLM_NUM_PREDICT`] rather than to `budget`.
+fn options_with_budget(budget: i32) -> Options {
     let mut opts = Options::default();
     if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
-        opts.num_predict = REVIEW_ASSIST_NUM_PREDICT;
-    }
-    opts
-}
-
-fn review_chat_options() -> Options {
-    let mut opts = Options::default();
-    if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
-        opts.num_predict = 768;
-    }
-    opts
-}
-
-fn review_pr_options() -> Options {
-    let mut opts = Options::default();
-    if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
-        opts.num_predict = REVIEW_PR_NUM_PREDICT;
-    }
-    opts
-}
-
-fn review_style_flag_options() -> Options {
-    let mut opts = Options::default();
-    if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
-        opts.num_predict = 96;
+        opts.num_predict = budget;
     }
     opts
 }
@@ -1727,7 +1700,10 @@ Real body.
         assert_eq!(COMMIT_NUM_PREDICT, 8_192);
         const { assert!(COMMIT_NUM_PREDICT > LLM_NUM_PREDICT) };
         if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
-            assert_eq!(commit_options().num_predict, COMMIT_NUM_PREDICT);
+            assert_eq!(
+                options_with_budget(COMMIT_NUM_PREDICT).num_predict,
+                COMMIT_NUM_PREDICT
+            );
         }
     }
 
