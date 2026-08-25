@@ -72,7 +72,7 @@ where
 
 /// A `git` invocation aimed at this thread's repository.
 pub(super) fn git_command(args: &[&str]) -> Command {
-    let mut command = Command::new("git");
+    let mut command = base_command();
     if let Some(dir) = repo_dir() {
         command.arg("-C").arg(dir);
     }
@@ -84,9 +84,24 @@ pub(super) fn git_command(args: &[&str]) -> Command {
 /// selection, so callers that already know which checkout they mean — nested
 /// repositories, worktrees — are unaffected by it.
 pub(super) fn git_command_in_dir(dir: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new("git");
+    let mut command = base_command();
     command.arg("-C").arg(dir);
     command.args(args);
+    command
+}
+
+/// Every git command lg runs, with the optional index lock turned off.
+///
+/// `git status` rewrites the index whenever the stat data it cached has gone
+/// stale, and a refresh runs one in the checkout and in every worktree. The
+/// watcher sees that write and asks for another refresh, which writes the index
+/// again — and in a worktree something else keeps touching, a claude session or
+/// a build, the stat data is never fresh, so the two chase each other for as
+/// long as that worktree is busy. Reading a repository must not change it.
+/// Commands that write take locks that are not optional and are unaffected.
+fn base_command() -> Command {
+    let mut command = Command::new("git");
+    command.env("GIT_OPTIONAL_LOCKS", "0");
     command
 }
 
@@ -154,5 +169,22 @@ mod tests {
             let args: Vec<_> = command.get_args().collect();
             assert_eq!(args, ["-C", "/tmp/pinned", "status", "--porcelain"]);
         });
+    }
+
+    /// A status that rewrites the index wakes the watcher that asked for it,
+    /// and the refresh it triggers runs another status.
+    #[test]
+    fn commands_leave_the_index_alone() {
+        for command in [
+            git_command(&["status"]),
+            git_command_in_dir(Path::new("/tmp/explicit"), &["status"]),
+        ] {
+            assert!(
+                command.get_envs().any(|(key, value)| key
+                    == std::ffi::OsStr::new("GIT_OPTIONAL_LOCKS")
+                    && value == Some(std::ffi::OsStr::new("0"))),
+                "reading a repository must not write to it"
+            );
+        }
     }
 }

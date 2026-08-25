@@ -235,7 +235,8 @@ impl App {
             return;
         }
         let source = selected_diff_source(&self.state);
-        if !force && source == self.state.diff_source {
+        let same_source = source == self.state.diff_source;
+        if !force && same_source {
             return;
         }
         if self
@@ -247,15 +248,22 @@ impl App {
             return;
         }
         self.state.diff_source = source.clone();
-        self.state.diff_offset = 0;
-        self.state
-            .set_diff_text(if matches!(source, DiffSource::None) {
-                String::new()
-            } else if matches!(source, DiffSource::Branch(_)) {
-                "loading log...".to_string()
-            } else {
-                "loading diff...".to_string()
-            });
+        // Reloading what is already on screen leaves it there until the new
+        // text arrives. The pane holds the last answer for this selection, and
+        // blanking it would flash a placeholder and throw the scroll position
+        // away on every refresh — which is once per file event, and a busy
+        // worktree produces those all day.
+        if !same_source {
+            self.state.diff_offset = 0;
+            self.state
+                .set_diff_text(if matches!(source, DiffSource::None) {
+                    String::new()
+                } else if matches!(source, DiffSource::Branch(_)) {
+                    "loading log...".to_string()
+                } else {
+                    "loading diff...".to_string()
+                });
+        }
         if matches!(source, DiffSource::None) {
             self.defer_diff_job();
             return;
