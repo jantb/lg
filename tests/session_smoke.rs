@@ -226,3 +226,125 @@ fn workspace_mode_with_a_real_session() {
     app.state.sessions.close_all();
     let _ = lg::git::with_repo(repo.path(), || lg::git::worktree_remove(&worktree, true));
 }
+
+// ── What a session looks like it is doing ─────────────────────────────────────
+//
+// The activity dot reads claude's own screen, so it is only as good as the
+// strings claude prints. This is how those were established, and how to check
+// them again when claude changes its status line — which it has: `esc to
+// interrupt`, the obvious marker, is not in 2.1.241 at all.
+
+use lg::session::{SessionActivity, SessionId};
+use lg::term::Spawn;
+
+/// Pump for `millis`, printing the activity and the status line whenever either
+/// changes.
+fn watch(sessions: &mut Sessions, id: SessionId, millis: u64, label: &str) -> SessionActivity {
+    let deadline = Instant::now() + Duration::from_millis(millis);
+    let mut last = None;
+    let mut activity = SessionActivity::Idle;
+    while Instant::now() < deadline {
+        sessions.pump();
+        if let Some(session) = sessions.get(id) {
+            activity = session.activity();
+            let contents = session.screen().contents();
+            let status = contents
+                .lines()
+                .map(str::trim)
+                .rfind(|l| {
+                    !l.is_empty()
+                        && (l.contains('\u{2026}')
+                            || l.contains(" for ")
+                            || l.starts_with('\u{276f}'))
+                })
+                .unwrap_or("")
+                .chars()
+                .take(78)
+                .collect::<String>();
+            let now = (activity, status.clone());
+            if last.as_ref() != Some(&now) {
+                println!("[{label:^18}] {activity:?}  | {status}");
+                last = Some(now);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    activity
+}
+
+fn submit(sessions: &mut Sessions, id: SessionId, text: &[u8]) {
+    sessions.get_mut(id).unwrap().send(text);
+    watch(sessions, id, 700, "typing");
+    sessions.get_mut(id).unwrap().send(b"\r");
+}
+
+#[test]
+#[ignore = "needs the claude binary and an interactive login"]
+fn activity_tracks_a_real_claude_turn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("hello.txt"), "hello\n").unwrap();
+
+    let mut sessions = Sessions::new();
+    let id = sessions
+        .start_with(
+            SessionSpec {
+                label: "probe".into(),
+                cwd: dir.path().to_path_buf(),
+                sandboxed: false,
+            },
+            &Spawn {
+                program: "claude".into(),
+                args: Vec::new(),
+                cwd: dir.path().to_path_buf(),
+                env: vec![("TERM".into(), "xterm-256color".into())],
+                env_remove: vec![
+                    "CLAUDECODE".into(),
+                    "CLAUDE_CODE_CHILD_SESSION".into(),
+                    "CLAUDE_CODE_ENTRYPOINT".into(),
+                ],
+            },
+            (40, 120),
+        )
+        .expect("start claude");
+
+    // The trust prompt is a real question: this must read NeedsInput.
+    let asking = watch(&mut sessions, id, 8000, "startup");
+    assert_eq!(
+        asking,
+        SessionActivity::NeedsInput,
+        "the trust prompt is a question and should show red"
+    );
+
+    sessions.get_mut(id).unwrap().send(b"\r");
+    let after_answer = watch(&mut sessions, id, 5000, "answered");
+    assert_eq!(
+        after_answer,
+        SessionActivity::Idle,
+        "an answered prompt must stop reading as a question"
+    );
+
+    submit(
+        &mut sessions,
+        id,
+        b"think carefully and then write a 200 word essay about rust lifetimes",
+    );
+
+    let mut saw_working = false;
+    for step in 0..12 {
+        let activity = watch(&mut sessions, id, 2500, &format!("turn {step}"));
+        saw_working |= activity == SessionActivity::Working;
+        if saw_working && activity == SessionActivity::Idle {
+            break;
+        }
+    }
+    assert!(saw_working, "a working turn should have read as Working");
+
+    let settled = watch(&mut sessions, id, 4000, "settled");
+    assert_eq!(
+        settled,
+        SessionActivity::Idle,
+        "a finished turn should fall back to Idle"
+    );
+
+    sessions.close_all();
+}

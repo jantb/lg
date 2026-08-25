@@ -48,13 +48,12 @@ pub enum SessionActivity {
     NeedsInput,
 }
 
-/// claude's spinner line always offers this way out, and nothing else on its
-/// screen says it.
-const WORKING_MARKER: &str = "esc to interrupt";
-
 /// Openings of the questions claude blocks on: tool permissions, file edits,
 /// and the trust prompt a new directory gets.
 const QUESTION_MARKERS: &[&str] = &["do you want", "would you like", "do you trust"];
+
+/// What a chosen option is ticked with once the question has been answered.
+const ANSWERED_MARKS: &[char] = &['\u{2714}', '\u{2713}'];
 
 /// What `text` — a session's screen, as drawn — says the program is doing.
 ///
@@ -65,10 +64,34 @@ fn activity_from_screen(text: &str) -> SessionActivity {
     if is_asking(text) {
         return SessionActivity::NeedsInput;
     }
-    if text.to_lowercase().contains(WORKING_MARKER) {
+    if is_working(text) {
         return SessionActivity::Working;
     }
     SessionActivity::Idle
+}
+
+/// Whether claude's status line says it is still going.
+///
+/// Not `esc to interrupt`: claude 2.1.241 never prints it, so it read every
+/// working session as ready — and it matched any session that happened to be
+/// showing lg's own source, which is where the string used to live.
+///
+/// While it works the line reads `\u{273b} Enchanting\u{2026} (12s \u{b7} thinking with xhigh
+/// effort)`; the moment it stops, the same line becomes `\u{273b} Brewed for 4s`. The
+/// ellipsis and the bracketed count are what tell those apart — the spinner
+/// glyph and the word are shared, and the word is picked at random from a long
+/// list, so neither can be matched on.
+fn is_working(text: &str) -> bool {
+    text.lines().any(elapsed_in_brackets)
+}
+
+/// Whether `line` carries an ellipsis followed by a bracketed elapsed time.
+fn elapsed_in_brackets(line: &str) -> bool {
+    let Some((_, rest)) = line.split_once("\u{2026} (") else {
+        return false;
+    };
+    let digits = leading_digits(rest);
+    digits > 0 && rest[digits..].starts_with('s')
 }
 
 /// Whether the screen is showing a question claude is waiting on an answer to.
@@ -80,7 +103,7 @@ fn activity_from_screen(text: &str) -> SessionActivity {
 fn is_asking(text: &str) -> bool {
     if text
         .lines()
-        .any(|line| option_row(line).is_some_and(|selected| selected))
+        .any(|line| pending_choice(line).is_some_and(|selected| selected))
     {
         return true;
     }
@@ -88,20 +111,32 @@ fn is_asking(text: &str) -> bool {
     QUESTION_MARKERS
         .iter()
         .any(|marker| lowered.contains(marker))
-        && text.lines().any(|line| option_row(line).is_some())
+        && text.lines().any(|line| pending_choice(line).is_some())
 }
 
-/// Whether `line` is a row of a numbered choice list, and whether it is the
-/// selected one. The caret alone does not make a choice list — it is also
-/// claude's ordinary input prompt — so the number after it is what counts.
-fn option_row(line: &str) -> Option<bool> {
-    let line = line.trim_start();
+/// Whether `line` is a row of a choice list still waiting to be answered, and
+/// whether it is the selected one.
+///
+/// The caret alone does not make a choice list — it is also claude's ordinary
+/// input prompt — so the number after it is what counts. An answered question
+/// stays on screen with its chosen row ticked, which is how a prompt that has
+/// already been dealt with is told from one that has not.
+fn pending_choice(line: &str) -> Option<bool> {
+    let line = line.trim();
+    if line.contains(ANSWERED_MARKS) {
+        return None;
+    }
     let (selected, rest) = match line.strip_prefix('\u{276f}') {
         Some(rest) => (true, rest.trim_start()),
         None => (false, line),
     };
-    let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let digits = leading_digits(rest);
     (digits > 0 && rest[digits..].starts_with('.')).then_some(selected)
+}
+
+/// Bytes of ASCII digits at the start of `text`.
+fn leading_digits(text: &str) -> usize {
+    text.len() - text.trim_start_matches(|c: char| c.is_ascii_digit()).len()
 }
 
 /// What to run, and where.
@@ -628,38 +663,73 @@ mod tests {
         sessions
     }
 
+    /// Every string below was copied off a real claude 2.1.241 session by
+    /// `tests/session_smoke.rs`. They are written escaped, which also keeps the
+    /// detector from matching its own source when lg is used to edit lg.
     #[test]
-    fn a_screen_offering_a_way_out_reads_as_working() {
+    fn the_status_line_while_working_reads_as_working() {
+        for line in [
+            "\u{273b} Enchanting\u{2026} (12s \u{b7} still thinking with xhigh effort)",
+            "\u{273d} Metamorphosing\u{2026} (0s)",
+            "\u{b7} Enchanting\u{2026} (1s)",
+            "\u{2733} Enchanting\u{2026} (2s \u{b7} thinking with xhigh effort)",
+        ] {
+            assert_eq!(
+                activity_from_screen(line),
+                SessionActivity::Working,
+                "{line:?} is claude working"
+            );
+        }
+    }
+
+    /// The finished line keeps the spinner glyph and the word, and drops the
+    /// ellipsis and the bracket. That is the whole difference.
+    #[test]
+    fn the_status_line_after_working_reads_as_ready() {
         assert_eq!(
-            activity_from_screen("\u{273b} Thinking\u{2026} (esc to interrupt)"),
-            SessionActivity::Working
+            activity_from_screen("\u{273b} Brewed for 4s"),
+            SessionActivity::Idle
+        );
+    }
+
+    #[test]
+    fn the_trust_prompt_reads_as_needing_input() {
+        let screen = "Quick safety check: Is this a project you created or one you trust?\n\
+                      \u{276f} 1. Yes, I trust this folder\n  2. No, exit";
+        assert_eq!(activity_from_screen(screen), SessionActivity::NeedsInput);
+    }
+
+    /// An answered question stays on screen with its chosen row ticked. Reading
+    /// that as a live question is what left a session red after it had been
+    /// dealt with.
+    #[test]
+    fn an_answered_question_stops_reading_as_one() {
+        assert_eq!(
+            activity_from_screen("\u{276f} 1. Yes, I trust this folder \u{2714}"),
+            SessionActivity::Idle
         );
     }
 
     #[test]
     fn a_question_outranks_a_spinner_left_above_it() {
-        let screen = "\u{273b} Working\u{2026} (esc to interrupt)\n\nDo you want to proceed?\n\u{276f} 1. Yes\n  2. No";
+        let screen =
+            "\u{273b} Enchanting\u{2026} (3s)\n\nDo you want to proceed?\n\u{276f} 1. Yes\n  2. No";
         assert_eq!(activity_from_screen(screen), SessionActivity::NeedsInput);
     }
 
     #[test]
-    fn a_numbered_choice_is_enough_to_read_as_a_question() {
-        assert_eq!(
-            activity_from_screen("  \u{276f} 2. Yes, and don't ask again"),
-            SessionActivity::NeedsInput
-        );
-    }
-
-    #[test]
     fn the_ordinary_prompt_caret_is_not_a_question() {
-        assert_eq!(
-            activity_from_screen("\u{276f} write me a test"),
-            SessionActivity::Idle
-        );
-        assert_eq!(
-            activity_from_screen("\u{256d}\u{2500}\u{256e}\n\u{2502} > fix the bug \u{2502}"),
-            SessionActivity::Idle
-        );
+        for line in [
+            "\u{276f} Try \"fix lint errors\"",
+            "\u{276f} think carefully and write an essay",
+            "\u{23f5}\u{23f5} auto mode on (shift+tab to cycle)",
+        ] {
+            assert_eq!(
+                activity_from_screen(line),
+                SessionActivity::Idle,
+                "{line:?} is claude waiting for a command, not asking one"
+            );
+        }
     }
 
     #[test]
