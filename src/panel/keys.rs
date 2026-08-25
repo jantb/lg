@@ -1,9 +1,7 @@
 //! Every key binding lg documents, in one table.
 //!
-//! The help overlay and the footer both read it. Adding a key used to mean
-//! editing the dispatch, the help table, the footer table and the footer's
-//! visibility rule, and the four drifted: the footer offered F2 and g/G that
-//! the help never mentioned. Now the text lives here once.
+//! The help overlay, the footer and the unbound-key hint all read it, so a key
+//! documented here reads the same way in each of them.
 
 use crate::state::{MainKeys, Pane};
 
@@ -44,9 +42,8 @@ pub enum Tone {
     Danger,
 }
 
-/// A modal's footer. Modals used to spell their footers out in `footer.rs`,
-/// which is how the settings modal came to be documented as saving on Enter in
-/// the help and on Ctrl+S in the footer. Both now read this.
+/// A modal's footer. The help overlay and the footer both read it, so a modal
+/// documents each of its keys once.
 pub struct ModalFooter {
     /// The section whose bindings this footer prints.
     pub section: &'static str,
@@ -1147,9 +1144,8 @@ mod tests {
         assert_eq!(title(MainKeys::Session), Some("Session"));
     }
 
-    /// What every pane's footer showed before the help and footer tables were
-    /// merged, copied from the old footer_spec. The merge must not have moved,
-    /// dropped or reworded a single hint.
+    /// Every pane's footer, hint for hint, in the order it prints them. The
+    /// shared table has to rebuild each one exactly.
     #[test]
     fn the_shared_table_rebuilds_every_footer_unchanged() {
         /// A section title, the pane number and name its footer carries, and
@@ -1174,8 +1170,6 @@ mod tests {
                     ("M", "sync main"),
                     ("b", "branch home"),
                     ("s", "claude session"),
-                    // Added after the merge: a session row had no way to be
-                    // cleared from the tree it is shown in.
                     ("x", "close session"),
                     ("o", "open IDE"),
                     ("r", "remotes"),
