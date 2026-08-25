@@ -129,6 +129,34 @@ fn ctrl_c_interrupts_the_session_rather_than_quitting_lg() {
 }
 
 #[test]
+fn shift_enter_reaches_the_session_as_a_newline_rather_than_a_submit() {
+    // The same stand-in as the interrupt test: it prints the bytes it is sent,
+    // so what claude would have read can be read off the screen instead.
+    const STAND_IN: &str = r"stty raw -echo; printf 'ready
+'; cat -v";
+
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    shell_session(&mut app, STAND_IN, "/tmp/n");
+    let ready = wait_for(&mut app, "ready");
+    assert!(
+        ready.contains("ready"),
+        "the stand-in never started: {ready:?}"
+    );
+    app.state.session_capture = true;
+
+    app.send_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT))
+        .unwrap();
+
+    // `cat -v` spells the escape `^[` and the carriage return `^M`: the pair a
+    // prompt reads as "break the line" rather than "send it".
+    let contents = wait_for(&mut app, "^[^M");
+    assert!(
+        contents.contains("^[^M"),
+        "shift+enter did not arrive as an escaped return: {contents:?}"
+    );
+}
+
+#[test]
 fn the_release_key_hands_the_keyboard_back_to_lg() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
     shell_session(&mut app, "sleep 30", "/tmp/d");

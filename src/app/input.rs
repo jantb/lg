@@ -1,7 +1,9 @@
 use anyhow::Result;
 use ratatui::{
     backend::Backend,
-    crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},
+    crossterm::event::{
+        KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    },
     layout::Rect,
 };
 
@@ -403,6 +405,11 @@ fn report_unbound(state: &mut AppState, pane: Pane, k: KeyEvent) {
 /// Route one key press. Modals get it first, then lg's global bindings, then the
 /// focused pane.
 fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> {
+    // A terminal spelling keys out can also report them being let go. Acting on
+    // both halves would type everything twice.
+    if k.kind == KeyEventKind::Release {
+        return Ok(());
+    }
     // A session holding the keyboard sees everything, Ctrl-C included —
     // interrupting the program inside it matters more than quitting lg, which
     // Ctrl-] then q still does.

@@ -27,9 +27,12 @@ pub fn encode_key(key: KeyEvent, application_cursor: bool) -> Option<Vec<u8>> {
             bytes
         }
         // Shift+Enter and Alt+Enter are how a prompt gets a newline instead of
-        // being submitted; both spellings are in wide use.
-        KeyCode::Enter if shift => b"\x1b[13;2u".to_vec(),
-        KeyCode::Enter if alt => vec![0x1b, b'\r'],
+        // being submitted, and both are spelled as an escape before the
+        // carriage return. The `CSI 13;2u` form says the same thing, but only
+        // to a program that asked for the kitty keyboard protocol — and lg's
+        // own terminal never answers that query, so nothing running inside it
+        // ever asks. Sent there, it would read as nothing at all.
+        KeyCode::Enter if shift || alt => vec![0x1b, b'\r'],
         KeyCode::Enter => vec![b'\r'],
         KeyCode::Tab => vec![b'\t'],
         KeyCode::BackTab => b"\x1b[Z".to_vec(),
@@ -200,10 +203,8 @@ mod tests {
 
     #[test]
     fn shift_enter_asks_for_a_newline_rather_than_submitting() {
-        assert_eq!(
-            encode(with(KeyCode::Enter, KeyModifiers::SHIFT)),
-            b"\x1b[13;2u"
-        );
+        assert_eq!(encode(with(KeyCode::Enter, KeyModifiers::SHIFT)), b"\x1b\r");
+        assert_eq!(encode(plain(KeyCode::Enter)), b"\r", "plain Enter submits");
     }
 
     #[test]

@@ -1,11 +1,17 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use notify::RecommendedWatcher;
-use ratatui::crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableMouseCapture};
+use ratatui::crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use ratatui::crossterm::{
     event::{self, Event},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+        supports_keyboard_enhancement,
+    },
 };
 use ratatui::{
     Terminal,
@@ -13,6 +19,7 @@ use ratatui::{
 };
 use std::{
     io::{Stdout, Write},
+    sync::atomic::{AtomicBool, Ordering},
     sync::mpsc::Receiver,
     time::{Duration, Instant},
 };
@@ -66,9 +73,13 @@ pub struct App {
     /// Held so the watcher keeps running; replaced when lg switches checkout.
     file_watcher: RecommendedWatcher,
     last_fetch_started: Instant,
-    /// Whether the terminal is currently reporting pastes as pastes, which lg
-    /// only wants while a session holds the keyboard.
-    bracketed_paste: bool,
+    /// Whether the terminal is currently set up for a session to hold the
+    /// keyboard: pastes reported as pastes, and keys spelled out rather than
+    /// flattened. lg's own panels want neither.
+    session_keyboard: bool,
+    /// Whether the terminal can spell keys out at all, asked once at startup
+    /// because the answer costs a round trip.
+    keys_can_disambiguate: bool,
 }
 
 pub struct HeadlessApp<B: Backend> {
@@ -97,7 +108,32 @@ fn drain_pending_terminal_events() {
     }
 }
 
+/// Whether the enhancement flags are currently on the terminal's stack. A
+/// static because the panic hook restores the terminal without an `App` to ask.
+static KEYS_DISAMBIGUATED: AtomicBool = AtomicBool::new(false);
+
+/// Ask the terminal to spell keys out rather than flatten them, which is what
+/// tells Shift+Enter apart from Enter. Only while a session holds the keyboard:
+/// lg's own panels are written against what a plain terminal sends.
+fn set_key_disambiguation<W: Write>(output: &mut W, on: bool) {
+    if KEYS_DISAMBIGUATED.load(Ordering::Relaxed) == on {
+        return;
+    }
+    let changed = if on {
+        execute!(
+            output,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )
+    } else {
+        execute!(output, PopKeyboardEnhancementFlags)
+    };
+    if changed.is_ok() {
+        KEYS_DISAMBIGUATED.store(on, Ordering::Relaxed);
+    }
+}
+
 fn restore_terminal<W: Write>(output: &mut W) {
+    set_key_disambiguation(output, false);
     let _ = execute!(output, DisableMouseCapture, DisableBracketedPaste);
     let _ = output.flush();
     drain_pending_terminal_events();
@@ -148,6 +184,10 @@ impl App {
         let mut stdout = std::io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture).context("enter alt screen")?;
 
+        // Asked before the loop starts: the query waits on the terminal's
+        // reply, which is not something to do between frames.
+        let keys_can_disambiguate = supports_keyboard_enhancement().unwrap_or(false);
+
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend).context("create terminal")?;
 
@@ -158,7 +198,8 @@ impl App {
             file_watcher,
             last_fetch_started: Instant::now()
                 - Duration::from_secs(BACKGROUND_FETCH_INTERVAL_SECS),
-            bracketed_paste: false,
+            session_keyboard: false,
+            keys_can_disambiguate,
         };
         prime_branches(&mut app.state);
         prime_files(&mut app.state);
@@ -173,7 +214,7 @@ impl App {
                 break;
             }
 
-            self.sync_bracketed_paste();
+            self.sync_session_keyboard();
             self.render()?;
 
             self.drain_generation();

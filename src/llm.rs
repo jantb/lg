@@ -1725,7 +1725,7 @@ Real body.
     #[test]
     fn commit_options_leave_room_for_reasoning() {
         assert_eq!(COMMIT_NUM_PREDICT, 8_192);
-        assert!(COMMIT_NUM_PREDICT > LLM_NUM_PREDICT);
+        const { assert!(COMMIT_NUM_PREDICT > LLM_NUM_PREDICT) };
         if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
             assert_eq!(commit_options().num_predict, COMMIT_NUM_PREDICT);
         }

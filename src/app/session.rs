@@ -105,30 +105,39 @@ impl App {
     /// Point the keyboard at the focused session, or back at lg.
     pub(super) fn set_session_capture(&mut self, on: bool) {
         self.state.session_capture = on;
-        self.sync_bracketed_paste();
+        self.sync_session_keyboard();
     }
 
-    /// Bracketed paste is only switched on while a session holds the keyboard,
-    /// so lg's own text fields keep receiving pastes as ordinary typing. Called
-    /// once per loop so it also covers captures started from panel keys.
-    pub(super) fn sync_bracketed_paste(&mut self) {
+    /// The terminal is only put in session mode while a session holds the
+    /// keyboard, so lg's own text fields keep receiving pastes as ordinary
+    /// typing and its panels keep seeing the keys they were written against.
+    /// Called once per loop so it also covers captures started from panel keys.
+    ///
+    /// Session mode is bracketed paste plus spelled-out keys: without the
+    /// second, the terminal sends the same bare `\r` for Enter and Shift+Enter,
+    /// and a prompt can only ever be submitted, never given a newline.
+    pub(super) fn sync_session_keyboard(&mut self) {
         let wanted = self.state.session_capture;
-        if wanted == self.bracketed_paste {
+        if wanted == self.session_keyboard {
             return;
         }
-        self.bracketed_paste = wanted;
+        self.session_keyboard = wanted;
+        let disambiguate = self.keys_can_disambiguate;
         let out = self.terminal.backend_mut();
         let _ = if wanted {
             execute!(out, EnableBracketedPaste)
         } else {
             execute!(out, DisableBracketedPaste)
         };
+        if disambiguate {
+            super::set_key_disambiguation(out, wanted);
+        }
     }
 
     /// Show the next or previous session and hand it the keyboard.
     pub(super) fn cycle_session(&mut self, forward: bool) {
         if cycle(&mut self.state, forward) {
-            self.sync_bracketed_paste();
+            self.sync_session_keyboard();
         } else {
             self.state.set_status("no sessions running", false);
         }
