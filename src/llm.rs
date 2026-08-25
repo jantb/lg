@@ -806,17 +806,13 @@ fn stream_messages(
     let mut trace = std::env::var_os("LG_LLM_TRACE")
         .and_then(|path| OpenOptions::new().create(true).append(true).open(path).ok());
 
-    if let Some(f) = trace.as_mut() {
-        let _ = writeln!(
-            f,
-            "# START provider={} model={} endpoint={} num_predict={} prompt_bytes={} elapsed_ms=0",
+    trace_line(
+        &mut trace,
+        &format!(
+            "# START provider={} model={model} endpoint={endpoint} num_predict={num_predict} prompt_bytes={prompt_bytes} elapsed_ms=0",
             provider.label(),
-            model,
-            endpoint,
-            num_predict,
-            prompt_bytes,
-        );
-    }
+        ),
+    );
 
     let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(300))
@@ -824,10 +820,7 @@ fn stream_messages(
     {
         Ok(c) => c,
         Err(e) => {
-            if let Some(f) = trace.as_mut() {
-                let _ = writeln!(f, "# ERROR http client: {e}");
-            }
-            let _ = tx.send(GenMsg::Error(format!("http client: {e}")));
+            fail(&mut trace, &tx, format!("http client: {e}"));
             return;
         }
     };
@@ -835,88 +828,87 @@ fn stream_messages(
     let resp = match client.post(&endpoint).json(&body).send() {
         Ok(r) => r,
         Err(e) => {
-            if let Some(f) = trace.as_mut() {
-                let _ = writeln!(f, "# ERROR {} request: {e}", provider.label());
-            }
-            let _ = tx.send(GenMsg::Error(format!("{} request: {e}", provider.label())));
+            fail(
+                &mut trace,
+                &tx,
+                format!("{} request: {e}", provider.label()),
+            );
             return;
         }
     };
     let resp = match resp.error_for_status() {
         Ok(r) => r,
         Err(e) => {
-            if let Some(f) = trace.as_mut() {
-                let _ = writeln!(f, "# ERROR {} status: {e}", provider.label());
-            }
-            let _ = tx.send(GenMsg::Error(format!("{} status: {e}", provider.label())));
+            fail(&mut trace, &tx, format!("{} status: {e}", provider.label()));
             return;
         }
     };
 
-    let reader = BufReader::new(resp);
+    consume_stream(
+        BufReader::new(resp).lines(),
+        finalizer,
+        &tx,
+        &mut trace,
+        start,
+    );
+}
+
+/// Split the response body's lines between [`GenMsg::Thinking`] and
+/// [`GenMsg::Output`], ending with exactly one [`GenMsg::Done`] or
+/// [`GenMsg::Error`].
+///
+/// Both an `Ollama` `done` object and an SSE `[DONE]` marker end the stream;
+/// so does the iterator running out. A line that is blank, is not JSON, or
+/// carries neither a chunk nor a done marker is skipped.
+fn consume_stream(
+    lines: impl Iterator<Item = std::io::Result<String>>,
+    finalizer: impl Fn(&str) -> String,
+    tx: &Sender<GenMsg>,
+    trace: &mut Option<std::fs::File>,
+    start: Instant,
+) {
     let mut parser = ThinkSplit::default();
     let mut full_output = String::new();
     let mut think_bytes: usize = 0;
     let mut out_bytes: usize = 0;
 
-    for line in reader.lines() {
+    for line in lines {
         let line = match line {
             Ok(l) => l,
             Err(e) => {
-                if let Some(f) = trace.as_mut() {
-                    let _ = writeln!(
-                        f,
-                        "+T{} think_bytes={} out_bytes={} | # ERROR stream read: {e}",
-                        start.elapsed().as_millis(),
-                        think_bytes,
-                        out_bytes,
-                    );
-                    let _ = writeln!(f, "# ERROR stream read: {e}");
-                }
-                let _ = tx.send(GenMsg::Error(format!("stream read: {e}")));
+                trace_event(
+                    trace,
+                    start,
+                    think_bytes,
+                    out_bytes,
+                    &format!("# ERROR stream read: {e}"),
+                );
+                fail(trace, tx, format!("stream read: {e}"));
                 return;
             }
         };
         if line.trim().is_empty() {
             continue;
         }
-        if let Some(f) = trace.as_mut() {
-            let _ = writeln!(
-                f,
-                "+T{} think_bytes={} out_bytes={} | {}",
-                start.elapsed().as_millis(),
-                think_bytes,
-                out_bytes,
-                line,
-            );
-        }
+        trace_event(trace, start, think_bytes, out_bytes, &line);
         if stream_sse_done_line(&line) {
-            let (tb, ob) = parser.flush(&tx, &mut full_output).unwrap_or((0, 0));
+            let (tb, ob) = parser.flush(tx, &mut full_output).unwrap_or((0, 0));
             think_bytes += tb;
             out_bytes += ob;
             send_done(
-                &mut trace,
+                trace,
                 &finalizer,
                 &full_output,
-                DoneStats {
-                    reason: "sse_done".to_string(),
-                    eval_count: 0,
-                    prompt_eval_count: 0,
-                    total_ms: 0,
-                    eval_ms: 0,
-                    think_bytes,
-                    out_bytes,
-                },
-                &tx,
+                DoneStats::untimed("sse_done", think_bytes, out_bytes),
+                tx,
             );
             return;
         }
         let Some(json_line) = stream_json_line(&line) else {
             continue;
         };
-        let v: serde_json::Value = match serde_json::from_str(json_line) {
-            Ok(v) => v,
-            Err(_) => continue,
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(json_line) else {
+            continue;
         };
 
         if let Some(t) = stream_thinking_chunk(&v) {
@@ -926,19 +918,18 @@ fn stream_messages(
             }
         }
         if let Some(c) = stream_output_chunk(&v) {
-            let (tb, ob) = match parser.feed(c, &tx, &mut full_output) {
-                Ok(counts) => counts,
-                Err(()) => return,
+            let Ok((tb, ob)) = parser.feed(c, tx, &mut full_output) else {
+                return;
             };
             think_bytes += tb;
             out_bytes += ob;
         }
         if let Some(done) = stream_done_stats(&v, think_bytes, out_bytes) {
-            let (tb, ob) = parser.flush(&tx, &mut full_output).unwrap_or((0, 0));
+            let (tb, ob) = parser.flush(tx, &mut full_output).unwrap_or((0, 0));
             think_bytes += tb;
             out_bytes += ob;
             send_done(
-                &mut trace,
+                trace,
                 &finalizer,
                 &full_output,
                 DoneStats {
@@ -946,29 +937,51 @@ fn stream_messages(
                     out_bytes,
                     ..done
                 },
-                &tx,
+                tx,
             );
             return;
         }
     }
-    let (tb, ob) = parser.flush(&tx, &mut full_output).unwrap_or((0, 0));
+    let (tb, ob) = parser.flush(tx, &mut full_output).unwrap_or((0, 0));
     think_bytes += tb;
     out_bytes += ob;
     send_done(
-        &mut trace,
+        trace,
         &finalizer,
         &full_output,
-        DoneStats {
-            reason: "loop_exhausted".to_string(),
-            eval_count: 0,
-            prompt_eval_count: 0,
-            total_ms: 0,
-            eval_ms: 0,
-            think_bytes,
-            out_bytes,
-        },
-        &tx,
+        DoneStats::untimed("loop_exhausted", think_bytes, out_bytes),
+        tx,
     );
+}
+
+/// Append one line to the trace log, if one is open.
+fn trace_line(trace: &mut Option<std::fs::File>, line: &str) {
+    if let Some(f) = trace.as_mut() {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+/// Append one line stamped with the elapsed time and the byte counts so far.
+fn trace_event(
+    trace: &mut Option<std::fs::File>,
+    start: Instant,
+    think_bytes: usize,
+    out_bytes: usize,
+    payload: &str,
+) {
+    trace_line(
+        trace,
+        &format!(
+            "+T{} think_bytes={think_bytes} out_bytes={out_bytes} | {payload}",
+            start.elapsed().as_millis(),
+        ),
+    );
+}
+
+/// Trace `message` and send it as the generation's [`GenMsg::Error`].
+fn fail(trace: &mut Option<std::fs::File>, tx: &Sender<GenMsg>, message: String) {
+    trace_line(trace, &format!("# ERROR {message}"));
+    let _ = tx.send(GenMsg::Error(message));
 }
 
 fn chat_request_body(
@@ -1028,6 +1041,21 @@ struct DoneStats {
     eval_ms: u64,
     think_bytes: usize,
     out_bytes: usize,
+}
+
+impl DoneStats {
+    /// Stats for an end the server sent no generation counters with.
+    fn untimed(reason: &str, think_bytes: usize, out_bytes: usize) -> Self {
+        Self {
+            reason: reason.to_string(),
+            eval_count: 0,
+            prompt_eval_count: 0,
+            total_ms: 0,
+            eval_ms: 0,
+            think_bytes,
+            out_bytes,
+        }
+    }
 }
 
 fn stream_done_stats(
@@ -1494,6 +1522,143 @@ fn partial_tail_len(s: &str, tag: &str) -> usize {
 mod tests {
     use super::*;
     use std::sync::mpsc::channel;
+
+    /// Drive [`consume_stream`] over `lines` with an identity finalizer and no
+    /// trace, and collect everything it sent.
+    fn drive(lines: Vec<std::io::Result<String>>) -> Vec<GenMsg> {
+        let (tx, rx) = channel::<GenMsg>();
+        consume_stream(
+            lines.into_iter(),
+            |raw: &str| raw.to_string(),
+            &tx,
+            &mut None,
+            Instant::now(),
+        );
+        drop(tx);
+        rx.iter().collect()
+    }
+
+    #[test]
+    fn a_stream_routes_ndjson_content_and_ends_on_the_done_object() {
+        let msgs = drive(vec![
+            Ok(r#"{"message":{"content":"feat: "}}"#.to_string()),
+            Ok(r#"{"message":{"content":"add a thing"}}"#.to_string()),
+            Ok(r#"{"done":true,"done_reason":"stop"}"#.to_string()),
+        ]);
+
+        assert!(matches!(&msgs[0], GenMsg::Output(s) if s == "feat: "));
+        assert!(matches!(&msgs[1], GenMsg::Output(s) if s == "add a thing"));
+        assert!(matches!(&msgs[2], GenMsg::Done(s) if s == "feat: add a thing"));
+        assert_eq!(msgs.len(), 3);
+    }
+
+    #[test]
+    fn a_stream_that_never_reports_done_still_finishes() {
+        let msgs = drive(vec![Ok(
+            r#"{"message":{"content":"only this"}}"#.to_string()
+        )]);
+
+        assert!(matches!(&msgs[0], GenMsg::Output(s) if s == "only this"));
+        assert!(matches!(&msgs[1], GenMsg::Done(s) if s == "only this"));
+        assert_eq!(msgs.len(), 2);
+    }
+
+    #[test]
+    fn a_stream_ending_mid_tag_still_releases_the_held_bytes() {
+        // The parser holds back a partial `<think>` prefix, so only the flush
+        // after the last line can send it.
+        let msgs = drive(vec![Ok(
+            r#"{"message":{"content":"answer<thi"}}"#.to_string()
+        )]);
+
+        assert!(matches!(&msgs[0], GenMsg::Output(s) if s == "answer"));
+        assert!(matches!(&msgs[1], GenMsg::Output(s) if s == "<thi"));
+        assert!(matches!(&msgs[2], GenMsg::Done(s) if s == "answer<thi"));
+        assert_eq!(msgs.len(), 3);
+    }
+
+    #[test]
+    fn a_stream_stops_at_the_sse_done_marker() {
+        let msgs = drive(vec![
+            Ok(r#"data: {"choices":[{"delta":{"content":"kept"}}]}"#.to_string()),
+            Ok("data: [DONE]".to_string()),
+            Ok(r#"data: {"choices":[{"delta":{"content":"ignored"}}]}"#.to_string()),
+        ]);
+
+        assert!(matches!(&msgs[0], GenMsg::Output(s) if s == "kept"));
+        assert!(matches!(&msgs[1], GenMsg::Done(s) if s == "kept"));
+        assert_eq!(msgs.len(), 2);
+    }
+
+    #[test]
+    fn a_stream_splits_think_tags_spanning_chunks() {
+        let msgs = drive(vec![
+            Ok(r#"{"message":{"content":"answer<thi"}}"#.to_string()),
+            Ok(r#"{"message":{"content":"nk>hmm</think> done"}}"#.to_string()),
+            Ok(r#"{"done":true}"#.to_string()),
+        ]);
+
+        assert!(matches!(&msgs[0], GenMsg::Output(s) if s == "answer"));
+        assert!(matches!(&msgs[1], GenMsg::Thinking(s) if s == "hmm"));
+        assert!(matches!(&msgs[2], GenMsg::Output(s) if s == " done"));
+        assert!(matches!(&msgs[3], GenMsg::Done(s) if s == "answer done"));
+    }
+
+    #[test]
+    fn a_stream_sends_a_reasoning_field_as_thinking() {
+        let msgs = drive(vec![
+            Ok(r#"{"choices":[{"delta":{"reasoning_content":"weighing it"}}]}"#.to_string()),
+            Ok(r#"{"message":{"content":"the answer"}}"#.to_string()),
+            Ok(r#"{"done":true}"#.to_string()),
+        ]);
+
+        assert!(matches!(&msgs[0], GenMsg::Thinking(s) if s == "weighing it"));
+        assert!(matches!(&msgs[1], GenMsg::Output(s) if s == "the answer"));
+        assert!(matches!(&msgs[2], GenMsg::Done(s) if s == "the answer"));
+    }
+
+    #[test]
+    fn a_stream_skips_blank_and_unparsable_lines() {
+        let msgs = drive(vec![
+            Ok(String::new()),
+            Ok("   ".to_string()),
+            Ok("not json at all".to_string()),
+            Ok("{ broken".to_string()),
+            Ok(r#"{"unrelated":"field"}"#.to_string()),
+            Ok(r#"{"message":{"content":"survived"}}"#.to_string()),
+            Ok(r#"{"done":true}"#.to_string()),
+        ]);
+
+        assert!(matches!(&msgs[0], GenMsg::Output(s) if s == "survived"));
+        assert!(matches!(&msgs[1], GenMsg::Done(s) if s == "survived"));
+        assert_eq!(msgs.len(), 2);
+    }
+
+    #[test]
+    fn a_read_error_ends_the_stream_with_an_error() {
+        let msgs = drive(vec![
+            Ok(r#"{"message":{"content":"partial"}}"#.to_string()),
+            Err(std::io::Error::other("socket closed")),
+            Ok(r#"{"done":true}"#.to_string()),
+        ]);
+
+        assert!(matches!(&msgs[0], GenMsg::Output(s) if s == "partial"));
+        assert!(matches!(&msgs[1], GenMsg::Error(s) if s == "stream read: socket closed"));
+        assert_eq!(msgs.len(), 2);
+    }
+
+    #[test]
+    fn a_bare_close_mid_stream_resets_what_was_sent_as_output() {
+        let msgs = drive(vec![
+            Ok(r#"{"message":{"content":"draft answer"}}"#.to_string()),
+            Ok(r#"{"message":{"content":"</think>real answer"}}"#.to_string()),
+            Ok(r#"{"done":true}"#.to_string()),
+        ]);
+
+        assert!(matches!(&msgs[0], GenMsg::Output(s) if s == "draft answer"));
+        assert!(matches!(&msgs[1], GenMsg::Reset));
+        assert!(matches!(&msgs[3], GenMsg::Done(s) if s == "real answer"));
+    }
 
     /// The path-independent half of [`finalize_review_style_flag_for_path`].
     fn finalize_review_style_flag(raw: &str) -> String {
