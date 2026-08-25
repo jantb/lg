@@ -24,6 +24,8 @@ const REVIEW_ASSIST_MAX_LINES: usize = 128;
 const REVIEW_PR_NUM_PREDICT: i32 = 4_096;
 const REVIEW_PR_MAX_CHARS: usize = 8_000;
 const REVIEW_CHAT_NUM_PREDICT: i32 = 768;
+/// How many of the most recent chat turns travel with a follow-up question.
+const REVIEW_CHAT_HISTORY_TURNS: usize = 8;
 const REVIEW_CHAT_MAX_CHARS: usize = 12_000;
 const REVIEW_STYLE_FLAG_NUM_PREDICT: i32 = 96;
 const CONFIG_FILE_ENV: &str = "LG_CONFIG_FILE";
@@ -154,7 +156,7 @@ fn normalize_ollama_chat_endpoint(endpoint: &str) -> String {
 }
 
 fn ollama_tags_endpoint() -> String {
-    let endpoint = endpoint_for_provider(current_provider());
+    let endpoint = current_endpoint();
     let base = endpoint.trim_end_matches("/api/chat").trim_end_matches('/');
     format!("{base}/api/tags")
 }
@@ -704,14 +706,8 @@ pub fn stream_review_chat(
         role: "system",
         content: build_review_chat_system_prompt(&context, &crate::settings::load()),
     }];
-    for message in history
-        .into_iter()
-        .rev()
-        .take(8)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-    {
+    let window = history.len().saturating_sub(REVIEW_CHAT_HISTORY_TURNS);
+    for message in history.into_iter().skip(window) {
         messages.push(ChatMessage {
             role: message.role.as_chat_role(),
             content: message.content,
@@ -1099,10 +1095,6 @@ fn finalize(raw: &str) -> String {
     }
     while lines.last().is_some_and(|line| line.is_empty()) {
         lines.pop();
-    }
-
-    if lines.is_empty() {
-        return String::new();
     }
 
     lines.join("\n")
