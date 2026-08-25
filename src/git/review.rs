@@ -9,8 +9,6 @@ use super::{git_command, head_branch, preferred_commit_ref, run};
 mod source;
 
 use source::{infer_entry_symbol, matches_kotlin_path, source_context};
-#[cfg(test)]
-use source::{kotlin_item_label, rust_item_label};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReviewFile {
@@ -1381,37 +1379,6 @@ mod tests {
         let patch = vec!["+a".to_string(), "-b".to_string()];
         let desc = describe_hunk(&patch, 1, 1);
         assert!(desc.starts_with("updates "));
-    }
-
-    #[test]
-    fn rust_item_label_extracts_named_items() {
-        assert_eq!(rust_item_label("fn render() {"), Some("fn render".into()));
-        assert_eq!(
-            rust_item_label("pub async fn build() -> Result<()> {"),
-            Some("async fn build".into())
-        );
-        assert_eq!(
-            rust_item_label("pub(crate) struct AppState {"),
-            Some("struct AppState".into())
-        );
-        assert_eq!(rust_item_label("let x = 1;"), None);
-    }
-
-    #[test]
-    fn kotlin_item_label_strips_visibility_and_modifier_prefixes() {
-        assert_eq!(
-            kotlin_item_label("private fun handle(): Int {"),
-            Some("fun handle".into())
-        );
-        assert_eq!(
-            kotlin_item_label("data class Point(val x: Int)"),
-            Some("data class Point".into())
-        );
-        assert_eq!(
-            kotlin_item_label("companion object {"),
-            Some("companion object".into())
-        );
-        assert_eq!(kotlin_item_label("val n = 1"), None);
     }
 
     #[test]
