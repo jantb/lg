@@ -814,32 +814,10 @@ fn stream_messages(
         ),
     );
 
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            fail(&mut trace, &tx, format!("http client: {e}"));
-            return;
-        }
-    };
-
-    let resp = match client.post(&endpoint).json(&body).send() {
-        Ok(r) => r,
-        Err(e) => {
-            fail(
-                &mut trace,
-                &tx,
-                format!("{} request: {e}", provider.label()),
-            );
-            return;
-        }
-    };
-    let resp = match resp.error_for_status() {
-        Ok(r) => r,
-        Err(e) => {
-            fail(&mut trace, &tx, format!("{} status: {e}", provider.label()));
+    let resp = match open_chat_stream(&endpoint, &body, provider) {
+        Ok(resp) => resp,
+        Err(message) => {
+            fail(&mut trace, &tx, message);
             return;
         }
     };
@@ -851,6 +829,26 @@ fn stream_messages(
         &mut trace,
         start,
     );
+}
+
+/// POST the request and hand back the streaming response, or the message to
+/// report the failure with.
+fn open_chat_stream(
+    endpoint: &str,
+    body: &serde_json::Value,
+    provider: LlmProvider,
+) -> std::result::Result<reqwest::blocking::Response, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    client
+        .post(endpoint)
+        .json(body)
+        .send()
+        .map_err(|e| format!("{} request: {e}", provider.label()))?
+        .error_for_status()
+        .map_err(|e| format!("{} status: {e}", provider.label()))
 }
 
 /// The output accumulated from one response stream, and the byte counts the
