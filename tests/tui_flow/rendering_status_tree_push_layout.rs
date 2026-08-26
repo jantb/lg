@@ -1116,6 +1116,7 @@ fn flow_modal_renders_running_workflow_steps() {
             "push test".into(),
         ],
         current_step: Some(1),
+        flow: None,
     });
 
     let backend = TestBackend::new(90, 20);
@@ -1145,6 +1146,76 @@ fn flow_modal_renders_running_workflow_steps() {
     assert!(
         text.contains("[ ] push test"),
         "missing pending step: {text}"
+    );
+}
+
+/// A list of eleven git operations does not say what is being done to the
+/// repository, so a running flow draws the same graph the menu drew, with the
+/// marker moved to the step in progress.
+#[test]
+fn flow_modal_draws_the_graph_beside_the_running_steps() {
+    let mut state = AppState::new();
+    state.branch = Some("feature/demo".into());
+    state.release_branches = ReleaseBranches::new(Some("develop".into()), Some("test".into()));
+    let (_tx, rx) = mpsc::channel();
+    state.workflow_job = Some(WorkflowJob {
+        rx,
+        handle: None,
+        spinner: 0,
+        label: "Release current branch into test".into(),
+        steps: vec![
+            "stash current changes".into(),
+            "create safety backup".into(),
+            "push feature/demo".into(),
+            "fetch origin".into(),
+            "sync test from origin/test".into(),
+            "checkout test".into(),
+            "merge origin/main".into(),
+            "merge origin/feature/demo".into(),
+            "push HEAD to origin/test".into(),
+            "checkout feature/demo".into(),
+            "restore stashed changes".into(),
+        ],
+        // The flow is merging main into the deploy branch, which the graph draws.
+        current_step: Some(6),
+        flow: Some(FlowRun {
+            action: FlowAction::ReleaseTest,
+            branch: "feature/demo".into(),
+            target: Some("test".into()),
+            input: None,
+        }),
+    });
+
+    let backend = TestBackend::new(90, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::flow::render(&state, frame.area(), frame);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(
+        text.contains(">|< merge origin/main"),
+        "the step in progress should still be marked in the list: {text}"
+    );
+    assert!(text.contains("Where it is"), "missing graph pane: {text}");
+    for lane in ["origin/main", "origin/test"] {
+        assert!(
+            text.contains(lane),
+            "graph is missing the {lane} lane: {text}"
+        );
+    }
+    assert!(
+        text.contains('\u{25c9}'),
+        "the marker should be on the graph: {text}"
     );
 }
 

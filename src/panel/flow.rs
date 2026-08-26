@@ -11,7 +11,7 @@ use ratatui::{
 use crate::{
     app,
     config::{BRANCH_MAIN, is_protected_branch_name},
-    state::{AppState, BranchView, FlowAction, Modal, SPINNER_FRAMES, clamp_index},
+    state::{AppState, BranchView, FlowAction, FlowRun, Modal, SPINNER_FRAMES, clamp_index},
     ui,
 };
 
@@ -55,35 +55,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     frame.render_widget(Clear, modal);
 
     if let Some(job) = &state.workflow_job {
-        let spinner = SPINNER_FRAMES[job.spinner % SPINNER_FRAMES.len()];
-        let mut text = vec![
-            Line::from(""),
-            Line::from(vec![
-                Span::styled(
-                    spinner,
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-                Span::styled(job.label.clone(), Style::default().fg(Color::Cyan)),
-            ]),
-            Line::from(""),
-        ];
-        if job.steps.is_empty() {
-            text.push(Line::from(Span::styled(
-                "Git workflow is running",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM),
-            )));
-        } else {
-            text.extend(workflow_lines(job));
-        }
-        frame.render_widget(
-            Paragraph::new(text).block(ui::bordered("Branch Actions")),
-            modal,
-        );
+        render_running(state, job, modal, frame);
         return;
     }
 
@@ -203,13 +175,15 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     if let Some(area) = preview_area
         && let Some(action) = selected_idx.and_then(|idx| actions.get(idx).copied())
     {
+        let run = flow_run(state, action);
         let mut lines = preview::lines(
             state,
-            action,
+            &run,
+            preview::Progress::Menu,
             state.animation_tick,
             area.width.saturating_sub(2),
         );
-        lines.extend(step_lines(state, action));
+        lines.extend(step_lines(&run));
         frame.render_widget(
             Paragraph::new(lines)
                 .block(ui::bordered("What it does"))
@@ -221,11 +195,84 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     }
 }
 
+/// The modal while a branch action runs: the steps down the left with the one
+/// in progress marked, and beside them the graph the menu drew, its marker moved
+/// to wherever the run has got to. The list says what is being done; the picture
+/// says what it is being done to, which is the part a list of eleven git
+/// operations does not tell you.
+fn render_running(
+    state: &AppState,
+    job: &crate::state::WorkflowJob,
+    modal: Rect,
+    frame: &mut Frame,
+) {
+    // Only a branch action has a graph, and only where it has room for one; the
+    // jobs that have neither keep the whole modal for their steps.
+    let graph = job
+        .flow
+        .as_ref()
+        .filter(|run| preview::preview(state, run).is_some());
+    let (steps_area, graph_area) = match graph {
+        Some(_) => split_menu(modal),
+        None => (modal, None),
+    };
+
+    let spinner = SPINNER_FRAMES[job.spinner % SPINNER_FRAMES.len()];
+    let mut text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                spinner,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(job.label.clone(), Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(""),
+    ];
+    if job.steps.is_empty() {
+        text.push(Line::from(Span::styled(
+            "Git workflow is running",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM),
+        )));
+    } else {
+        text.extend(workflow_lines(job));
+    }
+    frame.render_widget(
+        Paragraph::new(text).block(ui::bordered("Branch Actions")),
+        steps_area,
+    );
+
+    if let Some(area) = graph_area
+        && let Some(run) = graph
+    {
+        let lines = preview::lines(
+            state,
+            run,
+            // No progress reported yet means the first step is the one running,
+            // which is what the step list beside it shows too.
+            preview::Progress::Step(job.current_step.unwrap_or(0)),
+            state.animation_tick,
+            area.width.saturating_sub(2),
+        );
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(ui::bordered("Where it is"))
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+    }
+}
+
 /// The steps the flow will run, in order, under the diagram. The picture shows
 /// where commits end up; this shows what is actually done to get them there,
 /// which is the part worth reading before a force-push.
-fn step_lines(state: &AppState, action: FlowAction) -> Vec<Line<'static>> {
-    let steps = steps_for(state, action);
+fn step_lines(run: &FlowRun) -> Vec<Line<'static>> {
+    let steps = steps_for(run);
     if steps.is_empty() {
         return Vec::new();
     }
@@ -250,19 +297,37 @@ fn step_lines(state: &AppState, action: FlowAction) -> Vec<Line<'static>> {
     lines
 }
 
-/// The steps `action` would run here, asked of the same code that narrates them
-/// while it runs — so what the menu promises and what the progress list shows
-/// cannot drift apart.
-fn steps_for(state: &AppState, action: FlowAction) -> Vec<String> {
+/// What the highlighted action would run against, resolved the way running it
+/// resolves it. The graph and the step list are both built from this, so the
+/// menu cannot draw one branch and run against another.
+fn flow_run(state: &AppState, action: FlowAction) -> FlowRun {
     let branch = match action {
         FlowAction::TransferDiff => selected_feature_branch(state),
         _ => state.branch.clone(),
     }
     .unwrap_or_default();
-    let target = action
-        .release_env()
-        .and_then(|env| state.release_branch(env));
-    app::workflow_steps(action, &branch, None, target)
+    FlowRun {
+        action,
+        branch,
+        target: action
+            .release_env()
+            .and_then(|env| state.release_branch(env))
+            .map(str::to_string),
+        // Nothing has been typed yet; a run carries the name it was given.
+        input: None,
+    }
+}
+
+/// The steps a run performs, asked of the same code that narrates them while it
+/// runs — so what the menu promises and what the progress list shows cannot
+/// drift apart.
+fn steps_for(run: &FlowRun) -> Vec<String> {
+    app::workflow_steps(
+        run.action,
+        &run.branch,
+        run.input.as_deref(),
+        run.target.as_deref(),
+    )
 }
 
 /// Background of the highlighted action. The same green the workspace pane uses
@@ -567,8 +632,9 @@ mod tests {
     fn every_step_the_flow_would_run_is_listed() {
         let state = state();
         for action in available_actions(&state) {
-            let shown = text(&step_lines(&state, action));
-            for step in steps_for(&state, action) {
+            let run = flow_run(&state, action);
+            let shown = text(&step_lines(&run));
+            for step in steps_for(&run) {
                 assert!(
                     shown.contains(&step),
                     "{action:?} does not list {step:?}: {shown}"
@@ -581,7 +647,8 @@ mod tests {
     /// deploy branch rather than whatever branch happens to be checked out.
     #[test]
     fn the_steps_for_a_release_name_the_branch_it_lands_on() {
-        let steps = steps_for(&state(), FlowAction::ReleaseTest).join("\n");
+        let state = state();
+        let steps = steps_for(&flow_run(&state, FlowAction::ReleaseTest)).join("\n");
         assert!(steps.contains("checkout test"), "{steps}");
         assert!(steps.contains("merge origin/feature/send-cv"), "{steps}");
     }

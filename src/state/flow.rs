@@ -64,6 +64,25 @@ impl FlowAction {
     }
 }
 
+/// What a branch action runs against: the action, the branch it acts on, and
+/// the names it was given.
+///
+/// A flow checks other branches out while it runs, so anything drawn about a
+/// running one has to read the names it started with rather than whatever
+/// happens to be checked out at the moment. The menu resolves one of these too,
+/// so the picture it draws and the picture the run draws are built the same way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlowRun {
+    pub action: FlowAction,
+    /// The branch the action acts on — for a diff transfer the selected branch,
+    /// otherwise the checkout.
+    pub branch: String,
+    /// The deploy branch a release or reset lands on.
+    pub target: Option<String>,
+    /// The name typed for the actions that create a branch.
+    pub input: Option<String>,
+}
+
 impl AppState {
     /// Whether this checkout deploys from any branch at all. One deploy branch
     /// is enough — the release actions for the missing one stay hidden.

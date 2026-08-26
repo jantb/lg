@@ -1,7 +1,7 @@
 use crate::config::{BRANCH_MAIN, is_deploy_branch_name, protected_branch_list};
 use crate::state::{
-    AppState, BranchView, ConflictFollowup, FlowAction, Modal, Pane, SafetyRefCleanup, WorkflowJob,
-    WorkflowMsg,
+    AppState, BranchView, ConflictFollowup, FlowAction, FlowRun, Modal, Pane, SafetyRefCleanup,
+    WorkflowJob, WorkflowMsg,
 };
 
 use super::spawn::git_job_running;
@@ -52,6 +52,15 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
         release_target.as_deref(),
     );
     let thread_steps = steps.clone();
+    // What the run is doing, resolved once here: the flow checks other branches
+    // out as it goes, so the modal cannot read the names off the state it is
+    // drawn from.
+    let flow = FlowRun {
+        action,
+        branch: action_branch.clone(),
+        target: release_target.clone(),
+        input: input.clone().filter(|name| !name.is_empty()),
+    };
     state.conflict_followup =
         conflict_followup_for_flow(action, &action_branch, release_target.as_deref());
     let target = release_target.unwrap_or_default();
@@ -116,6 +125,7 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
         label,
         steps,
         current_step: None,
+        flow: Some(flow),
     });
     state.set_status("running branch action\u{2026}", false);
 }
@@ -294,6 +304,7 @@ pub(crate) fn validate_conflict_resolution(state: &mut AppState) {
             "return to feature branch if needed".to_string(),
         ],
         current_step: None,
+        flow: None,
     });
     state.set_status("validating conflict resolution\u{2026}", false);
 }
@@ -405,6 +416,7 @@ pub(crate) fn abort_conflict_operation(state: &mut AppState) {
         label: "abort merge".to_string(),
         steps: Vec::new(),
         current_step: None,
+        flow: None,
     });
     state.set_status("aborting git operation\u{2026}", false);
 }

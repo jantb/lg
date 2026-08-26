@@ -7,7 +7,7 @@ use crate::git::{
     RemoteBranch, Worktree,
 };
 
-use super::DiffSource;
+use super::{DiffSource, FlowRun};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewStyleSeverity {
@@ -359,4 +359,8 @@ pub struct WorkflowJob {
     pub label: String,
     pub steps: Vec<String>,
     pub current_step: Option<usize>,
+    /// The branch action being run, kept so the modal can go on drawing the
+    /// graph the menu drew and move its marker along with the steps. `None` for
+    /// the jobs that are not a branch action, which have no graph to draw.
+    pub flow: Option<FlowRun>,
 }
