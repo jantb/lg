@@ -4146,3 +4146,79 @@ fn a_merge_in_progress_is_detected_from_outside_the_repository() {
         "nothing should still be conflicted"
     );
 }
+
+/// Syncing every branch stops at the first one that will not merge, and that
+/// branch is left merged-but-unpushed with the branches after it untouched.
+/// Running the sync again is what finishes it, so it has to be safe to repeat:
+/// the branch that conflicted gets pushed, and the ones already done are
+/// no-ops rather than errors.
+#[test]
+fn syncing_again_after_a_conflict_pushes_the_branch_it_stopped_on() {
+    let dir = init_repo();
+    fs::write(dir.path().join("shared.txt"), "base\n").unwrap();
+    stage_in(dir.path(), "shared.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+
+    // A branch that will conflict with main.
+    git_ok(dir.path(), &["checkout", "-b", "test"]);
+    fs::write(dir.path().join("shared.txt"), "release\n").unwrap();
+    stage_in(dir.path(), "shared.txt");
+    commit_in(dir.path(), "release side");
+    git_ok(dir.path(), &["push", "-u", "origin", "test"]);
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("shared.txt"), "main update\n").unwrap();
+    stage_in(dir.path(), "shared.txt");
+    commit_in(dir.path(), "main update");
+    git_ok(dir.path(), &["push", "origin", "main"]);
+
+    let _cwd = CwdGuard::new(dir.path());
+
+    // The sync stops on test, which is left mid-merge.
+    lg::git::flow_merge_main_into_all_local_branches()
+        .expect_err("the sync should stop on the branch that conflicts");
+    assert!(
+        !lg::git::conflicted_files()
+            .expect("conflicted files")
+            .is_empty(),
+        "the conflict should be sitting in the checkout"
+    );
+
+    // Resolved and continued, exactly as pressing v does.
+    fs::write(dir.path().join("shared.txt"), "resolved\n").unwrap();
+    lg::git::validate_conflict_resolution(lg::git::Followup::default())
+        .expect("continue the conflict");
+
+    // At this point the merge is committed but nothing has been pushed — the
+    // state the sync used to be abandoned in.
+    let pushed = git(bare.path(), &["show", "test:shared.txt"]);
+    assert_eq!(
+        String::from_utf8_lossy(&pushed.stdout),
+        "release\n",
+        "the resolution should not have reached the remote yet"
+    );
+
+    // Running the sync again is what the followup does, and it finishes.
+    lg::git::flow_merge_main_into_all_local_branches().expect("the sync should complete");
+
+    let pushed = git(bare.path(), &["show", "test:shared.txt"]);
+    assert_eq!(
+        String::from_utf8_lossy(&pushed.stdout),
+        "resolved\n",
+        "the branch it stopped on should now be pushed"
+    );
+    assert!(
+        lg::git::conflicted_files()
+            .expect("conflicted files")
+            .is_empty(),
+        "nothing should be left conflicted"
+    );
+}

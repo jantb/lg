@@ -1893,3 +1893,63 @@ fn f_reopens_a_conflict_that_is_still_unfinished() {
     app.send_key(key(KeyCode::Char('F'))).unwrap();
     assert_ne!(app.state.modal, Modal::Conflict);
 }
+
+/// A conflict stopped a sync part-way through its branches, so settling it is
+/// where finishing starts: the branch just merged is still unpushed and the
+/// branches after it are untouched.
+fn stopped_sync() -> AppState {
+    let mut state = AppState::new();
+    state.modal = Modal::Conflict;
+    state.conflicts = vec!["src/a.rs".into()];
+    state.conflict_followup = Some(lg::state::ConflictFollowup {
+        resume: Some(Box::new(PendingAction::MergeMainAllBranches)),
+        ..Default::default()
+    });
+    state
+}
+
+#[test]
+fn continuing_a_conflict_resumes_the_sync_that_stopped_on_it() {
+    let mut state = stopped_sync();
+
+    state.settle_conflict(true);
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::MergeMainAllBranches),
+        "the sync should run again, which is what pushes the branch just merged"
+    );
+    assert_eq!(state.modal, Modal::None);
+    assert!(state.conflicts.is_empty());
+    assert_eq!(state.conflict_followup, None, "the followup is spent");
+}
+
+/// Aborting is giving up on the flow, so it must not start it again.
+#[test]
+fn aborting_a_conflict_does_not_resume_anything() {
+    let mut state = stopped_sync();
+
+    state.settle_conflict(false);
+
+    assert_eq!(
+        state.pending_action, None,
+        "abort must not queue the flow it is giving up on"
+    );
+    assert_eq!(state.modal, Modal::None);
+    assert_eq!(state.conflict_followup, None);
+}
+
+/// A conflict from something with nothing left to do settles without queueing
+/// anything at all.
+#[test]
+fn continuing_a_conflict_with_nothing_to_resume_queues_nothing() {
+    let mut state = AppState::new();
+    state.modal = Modal::Conflict;
+    state.conflicts = vec!["src/a.rs".into()];
+    state.conflict_followup = Some(lg::state::ConflictFollowup::default());
+
+    state.settle_conflict(true);
+
+    assert_eq!(state.pending_action, None);
+    assert_eq!(state.modal, Modal::None);
+}

@@ -300,6 +300,9 @@ impl App {
         self.state.current_branch_releases_ref = None;
         match msg {
             OperationMsg::Done(s) => {
+                if !matches!(self.state.modal, Modal::Conflict) {
+                    self.state.conflict_followup = None;
+                }
                 self.state.set_status(s, false);
                 if kind == OperationKind::Commit {
                     self.state.modal = Modal::None;
@@ -323,6 +326,7 @@ impl App {
                     self.state.push_after_commit = false;
                 }
                 if !open_conflict_modal_if_needed(&mut self.state, e.clone()) {
+                    self.state.conflict_followup = None;
                     self.state.set_status(e, true);
                 }
             }
@@ -368,9 +372,11 @@ impl App {
                         finished_label.as_deref(),
                         Some("validate conflict resolution") | Some("abort merge")
                     ) {
-                        self.state.conflict_followup = None;
-                        self.state.conflicts.clear();
-                        self.state.modal = Modal::None;
+                        // Continuing means the rest of the flow, not just the
+                        // merge that was in the way.
+                        self.state.settle_conflict(
+                            finished_label.as_deref() == Some("validate conflict resolution"),
+                        );
                     } else if !matches!(self.state.modal, Modal::Conflict) {
                         self.state.conflict_followup = None;
                     }

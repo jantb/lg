@@ -154,6 +154,7 @@ fn conflict_followup_for_flow(
                 label: "merge-main".to_string(),
                 branch: current.to_string(),
             }),
+            resume: None,
         }),
         FlowAction::ReleaseDev | FlowAction::ReleaseTest => Some(ConflictFollowup {
             // A release merges main in before it merges the feature, so a
@@ -165,6 +166,7 @@ fn conflict_followup_for_flow(
                 label: "release-current".to_string(),
                 branch: current.to_string(),
             }),
+            resume: None,
         }),
         FlowAction::ResetDev
         | FlowAction::ResetTest

@@ -131,6 +131,16 @@ impl App {
                 );
             }
             PendingAction::MergeMainAllBranches => {
+                // The sync stops at the first branch that will not merge, and
+                // that branch is then unpushed with every branch after it
+                // untouched. Settling the conflict is where finishing it
+                // starts, so the followup carries the sync itself: continuing
+                // runs it again, which pushes the branch just merged and picks
+                // up the rest.
+                self.state.conflict_followup = Some(crate::state::ConflictFollowup {
+                    resume: Some(Box::new(PendingAction::MergeMainAllBranches)),
+                    ..Default::default()
+                });
                 spawn_operation(
                     &mut self.state,
                     "syncing branches",

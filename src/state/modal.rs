@@ -6,7 +6,7 @@ use crate::git::Branch;
 
 use super::{AppState, FlowAction};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConflictFollowup {
     /// A branch whose remote head the flow still has to merge into
     /// `push_branch` — the half of a release its conflict interrupted.
@@ -14,6 +14,28 @@ pub struct ConflictFollowup {
     pub push_branch: Option<String>,
     pub return_branch: Option<String>,
     pub safety_ref_cleanup: Option<SafetyRefCleanup>,
+    /// What to run again once the conflict is settled, for a flow whose
+    /// remaining work is more than a push and a checkout. Syncing every branch
+    /// stops at the first one that will not merge, leaving that branch unpushed
+    /// and the branches after it untouched; committing the merge is the start
+    /// of finishing that, not the end.
+    pub resume: Option<Box<PendingAction>>,
+}
+
+impl AppState {
+    /// Put a conflict to rest once it has been validated or aborted, and queue
+    /// whatever flow it was holding up.
+    ///
+    /// Only a validation picks the flow back up. Aborting is giving up on it,
+    /// and starting it again would be the opposite of what was asked for.
+    pub fn settle_conflict(&mut self, validated: bool) {
+        let followup = self.conflict_followup.take();
+        self.conflicts.clear();
+        self.modal = Modal::None;
+        if validated && let Some(resume) = followup.and_then(|followup| followup.resume) {
+            self.pending_action = Some(*resume);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
