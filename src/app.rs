@@ -50,7 +50,7 @@ pub(crate) use spawn::{
     checkout_remote_branch_async,
 };
 pub(crate) use workflow::{
-    abort_conflict_operation, run_flow_action, validate_conflict_resolution,
+    abort_conflict_operation, run_flow_action, start_conflict_session, validate_conflict_resolution,
 };
 
 use refresh::{

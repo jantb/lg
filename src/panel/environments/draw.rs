@@ -300,8 +300,9 @@ fn activity_color(activity: crate::session::SessionActivity) -> Color {
     }
 }
 
-/// What to add after "claude" for an activity, or nothing when it is simply
-/// ready — the row is narrow, and "ready" is the state that needs no words.
+/// What to add after the program's name for an activity, or nothing when it is
+/// simply ready — the row is narrow, and "ready" is the state that needs no
+/// words.
 fn activity_word(activity: crate::session::SessionActivity) -> Option<&'static str> {
     match activity {
         crate::session::SessionActivity::Idle => None,
@@ -319,10 +320,11 @@ fn session_line(session: &crate::session::Session, row_width: usize, shown: bool
     };
     // The dot says what it is doing; the word repeats it for anyone the colour
     // alone does not reach, and the caret still marks output nobody has read.
+    let kind = session.kind.label();
     let state_text = match &session.status {
-        crate::session::SessionStatus::Ended(notice) => format!("claude {notice}"),
+        crate::session::SessionStatus::Ended(notice) => format!("{kind} {notice}"),
         crate::session::SessionStatus::Running => {
-            let mut text = "claude".to_string();
+            let mut text = kind.to_string();
             if let Some(word) = activity_word(session.activity()) {
                 text.push_str(" \u{b7} ");
                 text.push_str(word);

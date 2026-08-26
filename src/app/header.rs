@@ -66,17 +66,28 @@ fn project_line(state: &AppState) -> Line<'static> {
 }
 
 /// Sessions running elsewhere are easy to forget about, so the header says how
-/// many there are and how many have said something unread.
+/// many there are and what the most pressing of them is doing.
+///
+/// Only one number is shown, and it is the one that would make somebody get up:
+/// a session blocked on a question outranks a session busy working, which in
+/// turn outranks the ones sitting idle. It counts the same states the dots in
+/// the tree do, so the header and the rows can never disagree.
 fn session_badge(state: &AppState) -> Option<Span<'static>> {
     let count = state.sessions.len();
     if count == 0 {
         return None;
     }
     let plural = if count == 1 { "session" } else { "sessions" };
-    let waiting = state.sessions.attention_count();
-    let (text, color) = if waiting > 0 {
+    let (needs_input, working) = state.sessions.activity_counts();
+    let (text, color) = if needs_input > 0 {
+        let verb = if needs_input == 1 { "needs" } else { "need" };
         (
-            format!("{count} {plural} \u{b7} {waiting} waiting"),
+            format!("{count} {plural} \u{b7} {needs_input} {verb} input"),
+            Color::Red,
+        )
+    } else if working > 0 {
+        (
+            format!("{count} {plural} \u{b7} {working} working"),
             Color::Yellow,
         )
     } else {

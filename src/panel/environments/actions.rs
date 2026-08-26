@@ -40,15 +40,22 @@ pub(crate) fn activate_selected_repository_row(state: &mut AppState) -> bool {
     }
 }
 
-/// Start a claude session in the selected checkout, or show the one already
-/// running there. One session per checkout, so this is also how you get back to
-/// a session you left.
-pub(super) fn start_session_for_selection(state: &mut AppState, sandboxed: bool) {
+/// Start a session of `kind` in the selected checkout, or show the one already
+/// running there. One session of each kind per checkout, so this is also how
+/// you get back to a session you left.
+pub(super) fn start_session_for_selection(
+    state: &mut AppState,
+    kind: crate::session::SessionKind,
+    sandboxed: bool,
+) {
     let Some((path, label)) = selected_checkout(state) else {
         state.set_status("select a repository or worktree first", false);
         return;
     };
-    if let Some(id) = state.sessions.for_dir(std::path::Path::new(&path)) {
+    if let Some(id) = state
+        .sessions
+        .for_dir_kind(std::path::Path::new(&path), kind)
+    {
         state.show_session(id);
         state.session_capture = true;
         return;
@@ -57,6 +64,8 @@ pub(super) fn start_session_for_selection(state: &mut AppState, sandboxed: bool)
         path,
         label,
         sandboxed,
+        kind,
+        prompt: None,
     });
 }
 
@@ -184,17 +193,17 @@ pub(super) fn close_selected_session(state: &mut AppState) {
         state.set_status("select a session row to close it", false);
         return;
     };
-    let label = state
+    let closed = state
         .sessions
         .get(id)
-        .map(|session| session.label.clone())
-        .unwrap_or_default();
+        .map(|session| format!("{} in {}", session.kind.label(), session.label))
+        .unwrap_or_else(|| "session".to_string());
     state.sessions.close(id);
     if state.session_view().is_none() {
         state.show_diff();
     }
     state.clamp();
-    state.set_status(format!("closed the session in {label}"), false);
+    state.set_status(format!("closed the {closed}"), false);
 }
 
 /// Merge the selected worktree's branch into main and clean up after it. The
@@ -312,15 +321,15 @@ fn handover_candidate(state: &mut AppState, verb: &str) -> Option<(String, Strin
     Some((path, branch))
 }
 
-/// A live claude session keeps its checkout in use: removing the directory
-/// would pull it out from under a running process. The refusal names the keys,
-/// because a session holding the keyboard is exactly when they are hardest to
-/// go looking for.
+/// A live session keeps its checkout in use: removing the directory would pull
+/// it out from under a running process. The refusal names the keys, because a
+/// session holding the keyboard is exactly when they are hardest to go looking
+/// for.
 fn session_in_the_way(state: &AppState, path: &str, label: &str) -> Option<String> {
     state
         .sessions
-        .for_dir(std::path::Path::new(path))
-        .map(|_| format!("close the claude session in {label} first \u{2014} Ctrl-] then x"))
+        .any_in_dir(std::path::Path::new(path))
+        .then(|| format!("close the sessions in {label} first \u{2014} Ctrl-] then x"))
 }
 
 /// Switch to the selected worktree. A worktree git still knows about but whose

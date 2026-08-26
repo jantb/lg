@@ -3,7 +3,7 @@
 //! Ignored by default — it needs claude installed and signed in. Run with
 //! `cargo test --test session_smoke -- --ignored --nocapture`.
 
-use lg::session::{SessionSpec, Sessions};
+use lg::session::{SessionKind, SessionSpec, Sessions};
 use std::time::{Duration, Instant};
 
 #[test]
@@ -17,6 +17,8 @@ fn a_real_claude_session_starts_and_draws_something() {
                 label: "smoke".into(),
                 cwd: dir.path().to_path_buf(),
                 sandboxed: false,
+                kind: SessionKind::Claude,
+                prompt: None,
             },
             (30, 100),
         )
@@ -101,6 +103,8 @@ fn a_sandboxed_worktree_session_starts_inside_terrarium() {
                 label: "feat/x".into(),
                 cwd: worktree.clone(),
                 sandboxed: true,
+                kind: SessionKind::Claude,
+                prompt: None,
             },
             (30, 100),
         )
@@ -190,6 +194,8 @@ fn workspace_mode_with_a_real_session() {
                 label: "feat/x".into(),
                 cwd: worktree.clone(),
                 sandboxed: false,
+                kind: SessionKind::Claude,
+                prompt: None,
             },
             (30, 100),
         )
@@ -298,6 +304,8 @@ fn activity_tracks_a_real_claude_turn() {
                 label: "probe".into(),
                 cwd: dir.path().to_path_buf(),
                 sandboxed: false,
+                kind: SessionKind::Claude,
+                prompt: None,
             },
             (40, 120),
         )

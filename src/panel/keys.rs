@@ -162,6 +162,7 @@ mod tests {
                     ("M", "sync main"),
                     ("b", "branch home"),
                     ("s", "claude session"),
+                    ("t", "terminal"),
                     ("x", "close session"),
                     ("o", "open IDE"),
                     ("r", "remotes"),

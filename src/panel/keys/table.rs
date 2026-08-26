@@ -201,12 +201,22 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "s",
-                help: "Start or show a sandboxed session here",
+                help: "Start or show a sandboxed claude here",
                 footer: Some(("s", "claude session")),
             },
             Binding {
                 key: "S",
-                help: "Session without the sandbox, in auto mode",
+                help: "claude without the sandbox, in auto mode",
+                footer: None,
+            },
+            Binding {
+                key: "t",
+                help: "Start or show a sandboxed terminal here",
+                footer: Some(("t", "terminal")),
+            },
+            Binding {
+                key: "T",
+                help: "Terminal without the sandbox",
                 footer: None,
             },
             Binding {
@@ -274,6 +284,7 @@ pub const SECTIONS: &[Section] = &[
             "M",
             "b",
             "s",
+            "t",
             "x",
             "o",
             "r",
@@ -338,7 +349,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "F",
-                help: "Branch action menu",
+                help: "Branch actions, or back to a live conflict",
                 footer: Some(("F", "actions")),
             },
             Binding {
@@ -406,7 +417,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "Ctrl-]",
-                help: "Take the keyboard back; claude runs on",
+                help: "Take the keyboard back; the program runs on",
                 footer: None,
             },
             Binding {
@@ -746,8 +757,18 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("o/Enter", "open")),
             },
             Binding {
+                key: "c",
+                help: "Hand the conflict to a sandboxed claude here",
+                footer: Some(("c", "claude")),
+            },
+            Binding {
+                key: "C",
+                help: "The same, without the sandbox",
+                footer: None,
+            },
+            Binding {
                 key: "v",
-                help: "Check the resolution, then continue",
+                help: "Check the resolution, then continue the flow",
                 footer: Some(("v", "validate")),
             },
             Binding {
@@ -993,7 +1014,7 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         section: "Conflict",
         prefix: "Conflict ",
         tone: Tone::Danger,
-        order: &["j/k", "o / Enter", "v", "a", "Esc"],
+        order: &["j/k", "o / Enter", "c", "v", "a", "Esc"],
     },
     ModalFooter {
         section: "Delete branch",

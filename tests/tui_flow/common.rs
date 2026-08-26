@@ -4,6 +4,7 @@ pub use lg::{
         ReleaseBranches, ReleaseTargetStatus, RemoteBranch, ReviewNode, Worktree,
     },
     panel,
+    session::SessionKind,
     state::{
         AppState, AuthorField, BranchView, DiffViewMode, FlowAction, Modal, Pane, PendingAction,
         ReleaseStatusJob, RepoTarget, ReviewChatRole, ReviewStyleFinding, ReviewStyleSeverity,

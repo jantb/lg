@@ -25,9 +25,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
-            Constraint::Min(7),
             Constraint::Length(5),
+            Constraint::Min(7),
+            Constraint::Length(4),
         ])
         .split(modal);
 
@@ -38,7 +38,10 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from("Resolve the conflict outside lg, then press v to validate and continue."),
+        Line::from(
+            "Resolve the conflict outside lg or with c, then press v to validate and continue.",
+        ),
+        Line::from("Committing the resolution yourself is fine; v continues either way."),
     ];
     frame.render_widget(
         Paragraph::new(header).block(ui::bordered("Conflict")),
@@ -94,18 +97,26 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         body[1],
     );
 
-    let controls = vec![Line::from(vec![
-        Span::styled("j/k", Style::default().fg(Color::LightCyan)),
-        Span::raw(" select  "),
-        Span::styled("o/Enter", Style::default().fg(Color::LightCyan)),
-        Span::raw(" open  "),
-        Span::styled("v", Style::default().fg(Color::Green)),
-        Span::raw(" validate resolved/staged/merged state  "),
-        Span::styled("a", Style::default().fg(Color::Red)),
-        Span::raw(" abort  "),
-        Span::styled("Esc", Style::default().fg(Color::Gray)),
-        Span::raw(" close"),
-    ])];
+    let controls = vec![
+        Line::from(vec![
+            Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+            Span::raw(" select  "),
+            Span::styled("o/Enter", Style::default().fg(Color::LightCyan)),
+            Span::raw(" open  "),
+            Span::styled("v", Style::default().fg(Color::Green)),
+            Span::raw(" validate resolved/staged/merged state"),
+        ]),
+        Line::from(vec![
+            Span::styled("c", Style::default().fg(Color::LightGreen)),
+            Span::raw(" resolve with claude  "),
+            Span::styled("a", Style::default().fg(Color::Red)),
+            Span::raw(" abort  "),
+            Span::styled("Esc", Style::default().fg(Color::Gray)),
+            Span::raw(" close  "),
+            Span::styled("F", Style::default().fg(Color::Gray)),
+            Span::raw(" reopens this later"),
+        ]),
+    ];
     frame.render_widget(
         Paragraph::new(controls).block(Block::default().borders(Borders::ALL)),
         chunks[2],
@@ -129,9 +140,9 @@ fn files_area(area: Rect) -> Rect {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
-            Constraint::Min(7),
             Constraint::Length(5),
+            Constraint::Min(7),
+            Constraint::Length(4),
         ])
         .split(modal);
     let body = Layout::default()
@@ -160,6 +171,8 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.set_status("no conflicted file selected", false);
             }
         }
+        KeyCode::Char('c') => app::start_conflict_session(state, true),
+        KeyCode::Char('C') => app::start_conflict_session(state, false),
         KeyCode::Char('v') | KeyCode::Char('V') => app::validate_conflict_resolution(state),
         KeyCode::Char('a') | KeyCode::Char('A') => app::abort_conflict_operation(state),
         KeyCode::Esc => {

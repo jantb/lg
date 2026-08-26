@@ -30,6 +30,11 @@ Four details ended up different from the plan below:
 - **Ended sessions go.** The plan kept them listed with their final screen, to
   be dismissed by hand. They are dropped the moment their program ends instead:
   nothing to press `x` on, and the status line says which session went and how.
+- **Two kinds, one of each per checkout.** `SessionKind::{Claude, Terminal}`
+  landed as planned, on the keys `s`/`S` and `t`/`T`. The uniqueness key is the
+  pair, not the directory: a checkout can run claude and a shell side by side,
+  and the tree lists both under it. A terminal is the same PTY through the same
+  terrarium sandbox, running `$SHELL`; only the hooks are claude's.
 
 Known gaps, in rough order of how much they would be missed: no scrollback in
 the session pane (the program's own scrolling works, lg cannot scroll back
@@ -50,7 +55,9 @@ every nested repository at once.
 ## Two modes
 
 `AppMode::Git` is today's layout, unchanged, with a session badge in the header
-(`3 sessions · 1 waiting`).
+(`3 sessions · 1 needs input`). The badge counts the states the tree's dots show
+— blocked outranks busy outranks idle — rather than unread output, which for
+anything mid-turn would be every session at once.
 
 `AppMode::Workspace` is session-centric:
 

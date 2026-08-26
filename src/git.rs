@@ -40,7 +40,7 @@ pub use diff::{
     staged_diff,
 };
 pub use flow::{
-    abort_in_progress_operation, abort_in_progress_operation_with_cleanup,
+    Followup, abort_in_progress_operation, abort_in_progress_operation_with_cleanup,
     abort_in_progress_operation_with_return, checkout_branch, checkout_remote_branch,
     conflicted_files, delete_local_branch, delete_remote_branch, flow_clean_orphan_branches,
     flow_create_feature_branch, flow_discard_checkout_from_remote,
@@ -49,7 +49,7 @@ pub use flow::{
     flow_release_current_with_progress, flow_reset_branch_from_main,
     flow_reset_branch_from_main_with_progress, flow_transfer_diff_to_feature_branch,
     flow_transfer_diff_to_feature_branch_with_progress, stage_resolved_conflicts,
-    validate_conflict_resolution_with_cleanup, validate_conflict_resolution_with_followup,
+    validate_conflict_resolution,
 };
 pub use index::{
     commit, delete_worktree_path, rollback_worktree_path, stage, stage_all, unstage, unstage_all,

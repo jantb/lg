@@ -145,6 +145,9 @@ fn conflict_followup_for_flow(
 ) -> Option<ConflictFollowup> {
     match action {
         FlowAction::MergeMain => Some(ConflictFollowup {
+            // Merging main in is the flow's only merge, so the conflict is that
+            // merge: there is nothing left to catch up on.
+            merge_branch: None,
             push_branch: Some(current.to_string()),
             return_branch: Some(current.to_string()),
             safety_ref_cleanup: Some(SafetyRefCleanup {
@@ -153,6 +156,9 @@ fn conflict_followup_for_flow(
             }),
         }),
         FlowAction::ReleaseDev | FlowAction::ReleaseTest => Some(ConflictFollowup {
+            // A release merges main in before it merges the feature, so a
+            // conflict on the first leaves the second still to do.
+            merge_branch: Some(current.to_string()),
             push_branch: release_target.map(str::to_string),
             return_branch: Some(current.to_string()),
             safety_ref_cleanup: Some(SafetyRefCleanup {
@@ -254,24 +260,25 @@ pub(crate) fn validate_conflict_resolution(state: &mut AppState) {
     }
     let followup = state.conflict_followup.clone();
     let (tx, rx) = std::sync::mpsc::channel();
-    let handle =
-        crate::git::spawn_pinned(
-            move || match crate::git::validate_conflict_resolution_with_cleanup(
-                followup.as_ref().and_then(|f| f.push_branch.as_deref()),
-                followup.as_ref().and_then(|f| f.return_branch.as_deref()),
-                followup
-                    .as_ref()
-                    .and_then(|f| f.safety_ref_cleanup.as_ref())
-                    .map(|cleanup| (cleanup.label.as_str(), cleanup.branch.as_str())),
-            ) {
-                Ok(s) => {
-                    let _ = tx.send(WorkflowMsg::Done(s));
-                }
-                Err(e) => {
-                    let _ = tx.send(WorkflowMsg::Error(e.to_string()));
-                }
-            },
-        );
+    let handle = crate::git::spawn_pinned(move || {
+        let followup = crate::git::Followup {
+            merge_branch: followup.as_ref().and_then(|f| f.merge_branch.as_deref()),
+            push_branch: followup.as_ref().and_then(|f| f.push_branch.as_deref()),
+            return_branch: followup.as_ref().and_then(|f| f.return_branch.as_deref()),
+            safety_cleanup: followup
+                .as_ref()
+                .and_then(|f| f.safety_ref_cleanup.as_ref())
+                .map(|cleanup| (cleanup.label.as_str(), cleanup.branch.as_str())),
+        };
+        match crate::git::validate_conflict_resolution(followup) {
+            Ok(s) => {
+                let _ = tx.send(WorkflowMsg::Done(s));
+            }
+            Err(e) => {
+                let _ = tx.send(WorkflowMsg::Error(e.to_string()));
+            }
+        }
+    });
     state.workflow_job = Some(WorkflowJob {
         rx,
         handle: Some(handle),
@@ -280,12 +287,84 @@ pub(crate) fn validate_conflict_resolution(state: &mut AppState) {
         steps: vec![
             "detect conflict state".to_string(),
             "continue Git operation if needed".to_string(),
+            "finish the merge the flow stopped before".to_string(),
             "push release branch if needed".to_string(),
             "return to feature branch if needed".to_string(),
         ],
         current_step: None,
     });
     state.set_status("validating conflict resolution\u{2026}", false);
+}
+
+/// Hand the conflict to a claude session in the checkout it happened in.
+///
+/// Resolving a merge is reading two versions of a file and deciding what the
+/// result should be, which is work lg deliberately does not do itself — so this
+/// starts something that can, in the checkout the conflict is in, opening on
+/// the files git could not merge. Nothing is settled by it: the flow is still
+/// waiting, and `F` comes back here to finish it with `v`.
+pub(crate) fn start_conflict_session(state: &mut AppState, sandboxed: bool) {
+    let Some(path) = state.repo_root.clone() else {
+        state.set_status("no repository for a session", true);
+        return;
+    };
+    let label = state
+        .branch
+        .clone()
+        .unwrap_or_else(|| checkout_name(&path).to_string());
+    let kind = crate::session::SessionKind::Claude;
+
+    state.modal = Modal::None;
+    // One claude per checkout: a session already open here is the one that
+    // should hear about the conflict, and it cannot be told twice.
+    if let Some(id) = state
+        .sessions
+        .for_dir_kind(std::path::Path::new(&path), kind)
+    {
+        state.show_session(id);
+        state.session_capture = true;
+        state.set_status(
+            "the session here is already running \u{2014} tell it about the conflict yourself",
+            false,
+        );
+        return;
+    }
+
+    state.pending_action = Some(crate::state::PendingAction::StartSession {
+        path,
+        label,
+        sandboxed,
+        kind,
+        prompt: Some(conflict_prompt(&state.conflicts)),
+    });
+}
+
+/// What the session opens on. It names the files rather than describing the
+/// conflict, because the files are the part lg knows and the rest is on disk.
+/// Committing is left open on purpose: validation settles the merge either way,
+/// and a session told not to commit would only be told wrong.
+fn conflict_prompt(conflicts: &[String]) -> String {
+    let mut prompt = String::from(
+        "Resolve the git merge conflict in this repository. Edit each file so the \
+         conflict markers are gone and the result is right; staging or committing \
+         is up to you, lg finishes the merge either way.",
+    );
+    if !conflicts.is_empty() {
+        prompt.push_str("\n\nGit reports these files as conflicted:\n");
+        for path in conflicts {
+            prompt.push_str("- ");
+            prompt.push_str(path);
+            prompt.push('\n');
+        }
+    }
+    prompt
+}
+
+fn checkout_name(path: &str) -> &str {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path)
 }
 
 pub(crate) fn abort_conflict_operation(state: &mut AppState) {

@@ -134,14 +134,19 @@ pub(super) fn nested_repo_tree_rows(state: &AppState) -> Vec<NestedRepoTreeRow> 
     rows
 }
 
-/// Add a checkout row, followed by the session running in it, if any.
+/// Add a checkout row, followed by every session running in it. A checkout can
+/// have a claude and a terminal at once, and both belong under it.
 fn push_checkout(rows: &mut Vec<NestedRepoTreeRow>, state: &AppState, row: NestedRepoTreeRow) {
     rows.push(row);
-    if let Some(dir) = row_checkout_dir(state, row)
-        && let Some(id) = state.sessions.for_dir(std::path::Path::new(&dir))
-    {
-        rows.push(NestedRepoTreeRow::Session { id });
-    }
+    let Some(dir) = row_checkout_dir(state, row) else {
+        return;
+    };
+    rows.extend(
+        state
+            .sessions
+            .for_dir(std::path::Path::new(&dir))
+            .map(|session| NestedRepoTreeRow::Session { id: session.id }),
+    );
 }
 
 /// Where a row's checkout lives, for rows that stand for one.

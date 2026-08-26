@@ -93,11 +93,16 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 /// Footer for the session pane. Which way the keyboard is pointing is the one
-/// thing that must never be in doubt.
+/// thing that must never be in doubt, and which program it is pointing at is
+/// the next: a terminal takes Ctrl-C where claude would only be interrupted.
 fn session_spans(state: &AppState) -> Vec<Span<'static>> {
     let (title, color, pairs): (_, _, &[(&str, &str)]) = if state.session_capture {
+        let program = state
+            .sessions
+            .focused_session()
+            .map_or("the session", |session| session.kind.label());
         (
-            "input \u{2192} claude ",
+            format!("input \u{2192} {program} "),
             Color::Green,
             &[(
                 "Ctrl-]",
@@ -106,7 +111,7 @@ fn session_spans(state: &AppState) -> Vec<Span<'static>> {
         )
     } else {
         (
-            "Session ",
+            "Session ".to_string(),
             Color::Cyan,
             &[
                 ("i", "type into it"),
@@ -206,12 +211,12 @@ fn diff_view_toggle_available(state: &AppState) -> bool {
 }
 
 fn modal_spans(
-    title: &'static str,
+    title: impl Into<String>,
     pairs: &[(&'static str, &'static str)],
     color: Color,
 ) -> Vec<Span<'static>> {
     let mut spans = vec![Span::styled(
-        title,
+        title.into(),
         Style::default().fg(color).add_modifier(Modifier::BOLD),
     )];
     for (idx, (key, label)) in pairs.iter().enumerate() {

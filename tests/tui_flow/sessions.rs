@@ -1,5 +1,5 @@
 use super::common::*;
-use lg::session::{SessionSpec, Sessions};
+use lg::session::{SessionKind, SessionSpec, Sessions};
 use lg::state::{AppMode, MainView};
 use lg::term::Spawn;
 use std::time::{Duration, Instant};
@@ -7,6 +7,15 @@ use std::time::{Duration, Instant};
 /// A session running a shell script instead of claude, so the test controls
 /// exactly what the "program" says and when.
 fn shell_session(app: &mut lg::app::HeadlessApp<TestBackend>, script: &str, dir: &str) -> u64 {
+    session_of(app, script, dir, SessionKind::Claude)
+}
+
+fn session_of(
+    app: &mut lg::app::HeadlessApp<TestBackend>,
+    script: &str,
+    dir: &str,
+    kind: SessionKind,
+) -> u64 {
     let spawn = Spawn {
         program: "/bin/sh".into(),
         args: vec!["-c".into(), script.into()],
@@ -18,6 +27,8 @@ fn shell_session(app: &mut lg::app::HeadlessApp<TestBackend>, script: &str, dir:
         label: "feat/x".into(),
         cwd: dir.into(),
         sandboxed: false,
+        kind,
+        prompt: None,
     };
     let id = app
         .state
@@ -262,6 +273,8 @@ fn output_while_another_session_is_shown_asks_for_attention() {
                 label: "shown".into(),
                 cwd: "/tmp/shown".into(),
                 sandboxed: false,
+                kind: SessionKind::Claude,
+                prompt: None,
             },
             &quiet,
             (24, 80),
@@ -273,6 +286,8 @@ fn output_while_another_session_is_shown_asks_for_attention() {
                 label: "background".into(),
                 cwd: "/tmp/background".into(),
                 sandboxed: false,
+                kind: SessionKind::Claude,
+                prompt: None,
             },
             &noisy,
             (24, 80),
@@ -419,17 +434,87 @@ fn sessions_are_listed_under_their_checkout_and_can_be_reopened() {
     assert!(app.state.session_capture);
 }
 
+/// A checkout holds one session of each kind, and both get a row under it —
+/// starting a terminal must not be mistaken for the claude already there.
 #[test]
-fn the_header_counts_sessions_and_flags_the_ones_waiting() {
+fn a_checkout_lists_its_claude_and_its_terminal_side_by_side() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state.workspace_root = Some("/workspace".into());
+    app.state.repo_root = Some("/workspace".into());
+    app.state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        worktree("/workspace.worktrees/feat-x", "feat/x"),
+    ];
+    let dir = "/workspace.worktrees/feat-x";
+    let claude = session_of(&mut app, "sleep 30", dir, SessionKind::Claude);
+    let terminal = session_of(&mut app, "sleep 30", dir, SessionKind::Terminal);
+    assert_ne!(
+        claude, terminal,
+        "a terminal is a session of its own, not the claude already running there"
+    );
+    assert_eq!(app.state.sessions.len(), 2);
+
+    app.render().unwrap();
+    let screen = buffer_text(&app);
+    assert!(
+        screen.contains("claude") && screen.contains("terminal"),
+        "both sessions should have a row: {screen}"
+    );
+
+    // Row 0 root, row 1 the worktree, rows 2 and 3 its two sessions.
+    app.state.show_diff();
+    app.state.focus = Pane::Status;
+    app.state.nested_repo_tree_idx = 3;
+    app.send_key(key(KeyCode::Enter)).unwrap();
+    assert_eq!(
+        app.state.session_view().map(|id| id.to_string()),
+        Some(terminal.to_string()),
+        "the second row under the checkout is the terminal"
+    );
+}
+
+#[test]
+fn the_header_counts_sessions_and_says_what_they_are_doing() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 30)).unwrap();
     app.state.repo_root = Some("/workspace".into());
     two_sessions(&mut app);
 
     app.render().unwrap();
+    let screen = buffer_text(&app);
     assert!(
-        buffer_text(&app).contains("2 sessions"),
-        "the header should count sessions: {}",
-        buffer_text(&app)
+        screen.contains("2 sessions"),
+        "the header should count sessions: {screen}"
+    );
+    // Both are asleep at their prompt. Output alone is not somebody waiting on
+    // an answer, and the badge must not say it is.
+    assert!(
+        !screen.contains("waiting") && !screen.contains("need"),
+        "idle sessions must not be reported as blocked: {screen}"
+    );
+}
+
+/// The badge counts the same states the dots do. A session drawing a question
+/// is the one worth interrupting somebody for, so it is what gets counted.
+#[test]
+fn the_header_calls_out_a_session_blocked_on_a_question() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 30)).unwrap();
+    app.state.repo_root = Some("/workspace".into());
+    shell_session(&mut app, "sleep 30", "/tmp/quiet");
+    shell_session(
+        &mut app,
+        "printf 'Do you want to proceed?\\n\\342\\235\\257 1. Yes\\n  2. No\\n'; sleep 30",
+        "/tmp/asking",
+    );
+
+    wait_for(&mut app, "1. Yes");
+    app.render().unwrap();
+    let screen = buffer_text(&app);
+    assert!(
+        screen.contains("2 sessions") && screen.contains("1 needs input"),
+        "the header should name the blocked session: {screen}"
     );
 }
 
@@ -697,7 +782,7 @@ fn a_worktree_running_a_session_is_not_removed_from_under_it() {
             "expected an error for {code:?}: {status:?}"
         );
         assert!(
-            status.text.contains("close the claude session"),
+            status.text.contains("close the sessions"),
             "the status names the blocker for {code:?}: {}",
             status.text
         );

@@ -32,6 +32,18 @@ fn git_ok(dir: &std::path::Path, args: &[&str]) {
     );
 }
 
+/// The followup lg hands `v` for a release of `feature` into `target`. Tests go
+/// through this so they exercise the same continuation the UI does, including
+/// the feature merge a conflict may have stopped short of.
+fn release_followup<'a>(feature: &'a str, target: &'a str) -> lg::git::Followup<'a> {
+    lg::git::Followup {
+        merge_branch: Some(feature),
+        push_branch: Some(target),
+        return_branch: Some(feature),
+        safety_cleanup: None,
+    }
+}
+
 fn init_repo() -> TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     git_ok(dir.path(), &["init", "-b", "main"]);
@@ -2209,7 +2221,7 @@ fn release_conflict_continue_auto_stages_pushes_target_and_returns_to_feature() 
     assert_eq!(head_branch(dir.path()), "test");
 
     fs::write(dir.path().join("conflict.txt"), "resolved\n").unwrap();
-    lg::git::validate_conflict_resolution_with_followup(Some("test"), Some(feature))
+    lg::git::validate_conflict_resolution(release_followup(feature, "test"))
         .expect("continue release conflict");
 
     assert_eq!(head_branch(dir.path()), feature);
@@ -2264,7 +2276,7 @@ fn release_conflict_validate_pushes_target_after_user_returns_to_feature() {
     git_ok(dir.path(), &["commit", "--no-edit"]);
     git_ok(dir.path(), &["checkout", feature]);
 
-    lg::git::validate_conflict_resolution_with_followup(Some("test"), Some(feature))
+    lg::git::validate_conflict_resolution(release_followup(feature, "test"))
         .expect("validate manually completed release conflict");
 
     assert_eq!(head_branch(dir.path()), feature);
@@ -2334,7 +2346,7 @@ fn release_conflict_validate_merges_advanced_remote_target_before_push() {
     git_ok(updater.path(), &["push", "origin", "test"]);
 
     fs::write(dir.path().join("conflict.txt"), "resolved\n").unwrap();
-    let out = lg::git::validate_conflict_resolution_with_followup(Some("test"), Some(feature))
+    let out = lg::git::validate_conflict_resolution(release_followup(feature, "test"))
         .expect("continue release conflict after target advanced");
 
     assert!(
@@ -2920,11 +2932,12 @@ fn merge_main_conflict_validation_cleans_safety_backup() {
     );
 
     fs::write(dir.path().join("conflict.txt"), "resolved\n").unwrap();
-    let out = lg::git::validate_conflict_resolution_with_cleanup(
-        Some(feature),
-        Some(feature),
-        Some(("merge-main", feature)),
-    )
+    let out = lg::git::validate_conflict_resolution(lg::git::Followup {
+        push_branch: Some(feature),
+        return_branch: Some(feature),
+        safety_cleanup: Some(("merge-main", feature)),
+        ..Default::default()
+    })
     .expect("continue merge-main conflict");
 
     assert!(
@@ -3695,11 +3708,11 @@ fn merge_main_conflict_keeps_the_stash_until_the_conflict_is_validated() {
     );
 
     fs::write(dir.path().join("conflict.txt"), "resolved\n").unwrap();
-    let out = lg::git::validate_conflict_resolution_with_cleanup(
-        None,
-        Some(feature),
-        Some(("merge-main", feature)),
-    )
+    let out = lg::git::validate_conflict_resolution(lg::git::Followup {
+        return_branch: Some(feature),
+        safety_cleanup: Some(("merge-main", feature)),
+        ..Default::default()
+    })
     .expect("continue merge-main conflict");
 
     assert!(
@@ -3747,4 +3760,107 @@ fn staging_against_a_leftover_index_lock_says_what_to_do_about_it() {
         first_line.contains("delete it if none is"),
         "the first line should say what to do: {first_line}"
     );
+}
+
+/// A release can conflict at two different merges, and the one that goes wrong
+/// first is `origin/main` into the deploy branch — before the feature has been
+/// merged at all. Continuing must finish the release, not just push whatever
+/// the deploy branch happens to hold.
+#[test]
+fn release_conflict_on_the_main_merge_still_releases_the_feature() {
+    let dir = init_repo();
+    fs::write(dir.path().join("shared.txt"), "base\n").unwrap();
+    stage_in(dir.path(), "shared.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "origin", "main"]);
+
+    // test diverges from main on shared.txt...
+    git_ok(dir.path(), &["checkout", "-b", "test"]);
+    fs::write(dir.path().join("shared.txt"), "release\n").unwrap();
+    stage_in(dir.path(), "shared.txt");
+    commit_in(dir.path(), "release side");
+    git_ok(dir.path(), &["push", "origin", "test"]);
+
+    // ...and then main moves on the same file, so merging it into test breaks.
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("shared.txt"), "main update\n").unwrap();
+    stage_in(dir.path(), "shared.txt");
+    commit_in(dir.path(), "main update");
+    git_ok(dir.path(), &["push", "origin", "main"]);
+
+    // The feature touches a different file, so it is not part of the conflict.
+    let feature = "feature/release-main-conflict";
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("feature.txt"), "feature\n").unwrap();
+    stage_in(dir.path(), "feature.txt");
+    commit_in(dir.path(), "feature commit");
+    git_ok(dir.path(), &["push", "origin", feature]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::flow_release_current(feature, "test")
+        .expect_err("the main merge should stop for manual resolution");
+    assert_eq!(head_branch(dir.path()), "test");
+
+    fs::write(dir.path().join("shared.txt"), "resolved\n").unwrap();
+    lg::git::validate_conflict_resolution(release_followup(feature, "test"))
+        .expect("continue the release");
+
+    assert_eq!(head_branch(dir.path()), feature);
+    let released = git(bare.path(), &["show", "test:feature.txt"]);
+    assert!(
+        released.status.success(),
+        "the feature never reached test: {}",
+        String::from_utf8_lossy(&released.stderr)
+    );
+}
+
+/// git reports conflicted paths relative to the repository, and lg never
+/// changes the process working directory — so a file still full of markers must
+/// not read as resolved just because it cannot be found next to the process.
+#[test]
+fn a_conflicted_file_is_read_from_the_repository_not_the_process_directory() {
+    let dir = init_repo();
+    fs::write(dir.path().join("conflict.txt"), "base\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "initial commit");
+
+    git_ok(dir.path(), &["checkout", "-b", "theirs"]);
+    fs::write(dir.path().join("conflict.txt"), "theirs\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "their side");
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("conflict.txt"), "ours\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "our side");
+
+    let merge = git(dir.path(), &["merge", "theirs"]);
+    assert!(!merge.status.success(), "the merge should have conflicted");
+
+    // The process sits somewhere else entirely, as lg's does.
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    let _cwd = CwdGuard::new(elsewhere.path());
+
+    let staged = lg::git::with_repo(dir.path(), lg::git::stage_resolved_conflicts)
+        .expect("stage resolved conflicts");
+    assert!(
+        staged.is_empty(),
+        "a file that still holds markers must not be staged: {staged:?}"
+    );
+    let still_conflicted =
+        lg::git::with_repo(dir.path(), lg::git::conflicted_files).expect("conflicted files");
+    assert_eq!(still_conflicted, ["conflict.txt"]);
+
+    // Resolved for real, it stages from the same distance.
+    fs::write(dir.path().join("conflict.txt"), "resolved\n").unwrap();
+    let staged = lg::git::with_repo(dir.path(), lg::git::stage_resolved_conflicts)
+        .expect("stage resolved conflicts");
+    assert_eq!(staged, ["conflict.txt"]);
 }

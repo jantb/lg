@@ -504,7 +504,14 @@ fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> {
             return Ok(());
         }
         KeyCode::Char('F') => {
-            if host.state().focus == Pane::Branches && host.state().branch_actions_available() {
+            // A flow stopped on a conflict is still the flow: while one is
+            // unfinished, the flow key goes back to it rather than offering to
+            // start another on top.
+            if !host.state().conflicts.is_empty() {
+                host.state_mut().modal = Modal::Conflict;
+            } else if host.state().focus == Pane::Branches
+                && host.state().branch_actions_available()
+            {
                 host.before_flow_modal();
                 host.state_mut().modal = Modal::Flow;
             } else {

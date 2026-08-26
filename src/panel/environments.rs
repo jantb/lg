@@ -4,6 +4,7 @@ use ratatui::{Frame, layout::Rect, style::Color, widgets::Paragraph};
 
 use crate::{
     app,
+    session::SessionKind,
     state::{AppState, BranchView},
 };
 
@@ -119,8 +120,10 @@ pub fn handle_key(
             }
         }
         KeyCode::Char('n') => open_new_worktree_form(state),
-        KeyCode::Char('s') => start_session_for_selection(state, true),
-        KeyCode::Char('S') => start_session_for_selection(state, false),
+        KeyCode::Char('s') => start_session_for_selection(state, SessionKind::Claude, true),
+        KeyCode::Char('S') => start_session_for_selection(state, SessionKind::Claude, false),
+        KeyCode::Char('t') => start_session_for_selection(state, SessionKind::Terminal, true),
+        KeyCode::Char('T') => start_session_for_selection(state, SessionKind::Terminal, false),
         KeyCode::Char('D') => remove_selected_worktree(state),
         KeyCode::Char('x') => close_selected_session(state),
         KeyCode::Char('m') => land_selected_worktree(state),

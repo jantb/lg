@@ -8,6 +8,9 @@ use super::{AppState, FlowAction};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConflictFollowup {
+    /// A branch whose remote head the flow still has to merge into
+    /// `push_branch` — the half of a release its conflict interrupted.
+    pub merge_branch: Option<String>,
     pub push_branch: Option<String>,
     pub return_branch: Option<String>,
     pub safety_ref_cleanup: Option<SafetyRefCleanup>,
@@ -281,6 +284,10 @@ pub enum PendingAction {
         path: String,
         label: String,
         sandboxed: bool,
+        kind: crate::session::SessionKind,
+        /// What the session opens on, when it is started to deal with something
+        /// lg already knows about.
+        prompt: Option<String>,
     },
     Quit,
 }

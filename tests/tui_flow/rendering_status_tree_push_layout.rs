@@ -803,6 +803,8 @@ fn s_asks_for_a_sandboxed_session_in_the_selected_worktree() {
             path: "/workspace.worktrees/feat-x".into(),
             label: "feat/x".into(),
             sandboxed: true,
+            kind: SessionKind::Claude,
+            prompt: None,
         })
     );
 
@@ -815,6 +817,51 @@ fn s_asks_for_a_sandboxed_session_in_the_selected_worktree() {
             path: "/workspace.worktrees/feat-x".into(),
             label: "feat/x".into(),
             sandboxed: false,
+            kind: SessionKind::Claude,
+            prompt: None,
+        })
+    );
+}
+
+/// The terminal keys are the session keys with a different program on the end:
+/// same checkout, same sandbox choice, same shift for going without it.
+#[test]
+fn t_asks_for_a_terminal_in_the_selected_worktree() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        worktree("/workspace.worktrees/feat-x", "feat/x"),
+    ];
+
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('t'))).unwrap();
+
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::StartSession {
+            path: "/workspace.worktrees/feat-x".into(),
+            label: "feat/x".into(),
+            sandboxed: true,
+            kind: SessionKind::Terminal,
+            prompt: None,
+        })
+    );
+
+    state.pending_action = None;
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('T'))).unwrap();
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::StartSession {
+            path: "/workspace.worktrees/feat-x".into(),
+            label: "feat/x".into(),
+            sandboxed: false,
+            kind: SessionKind::Terminal,
+            prompt: None,
         })
     );
 }
@@ -834,6 +881,8 @@ fn a_session_on_the_root_row_uses_the_checked_out_branch_as_its_name() {
             path: "/workspace".into(),
             label: "main".into(),
             sandboxed: true,
+            kind: SessionKind::Claude,
+            prompt: None,
         })
     );
 }
@@ -1762,4 +1811,85 @@ fn a_running_operation_says_which_step_it_is_on() {
         text.contains("landing worktree: pushing main"),
         "the spinner should say what it is doing: {text}"
     );
+}
+
+/// Resolving a merge is reading two versions and deciding what the result
+/// should be — work lg does not do itself, so the modal offers something that
+/// can, in the checkout the conflict is in.
+#[test]
+fn c_hands_the_conflict_to_a_claude_session_in_the_checkout() {
+    let mut state = AppState::new();
+    state.modal = Modal::Conflict;
+    state.repo_root = Some("/workspace/alv-no".into());
+    state.branch = Some("feature/send-cv".into());
+    state.conflicts = vec!["src/a.rs".into(), "src/b.rs".into()];
+
+    panel::conflict::handle_key(&mut state, key(KeyCode::Char('c'))).unwrap();
+
+    let Some(PendingAction::StartSession {
+        path,
+        label,
+        sandboxed,
+        kind,
+        prompt,
+    }) = state.pending_action.clone()
+    else {
+        panic!("c should ask for a session: {:?}", state.pending_action);
+    };
+    assert_eq!(path, "/workspace/alv-no");
+    assert_eq!(label, "feature/send-cv");
+    assert!(sandboxed, "c is the sandboxed one, as elsewhere in lg");
+    assert_eq!(kind, SessionKind::Claude);
+
+    let prompt = prompt.expect("the session should open on the conflict");
+    assert!(
+        prompt.contains("src/a.rs") && prompt.contains("src/b.rs"),
+        "the prompt should name the conflicted files: {prompt}"
+    );
+    // lg settles the merge either way now, so the session must not be told to
+    // leave it uncommitted.
+    assert!(
+        !prompt.to_lowercase().contains("do not commit"),
+        "committing is the session's choice: {prompt}"
+    );
+    assert_eq!(
+        state.modal,
+        Modal::None,
+        "the modal steps aside so the session can be seen"
+    );
+
+    // Shift is the unsandboxed one, matching s/S on the checkout rows.
+    state.pending_action = None;
+    state.modal = Modal::Conflict;
+    panel::conflict::handle_key(&mut state, key(KeyCode::Char('C'))).unwrap();
+    let Some(PendingAction::StartSession { sandboxed, .. }) = state.pending_action.clone() else {
+        panic!("C should ask for a session too");
+    };
+    assert!(!sandboxed);
+}
+
+/// Leaving the modal — to resolve the conflict in a session, or by mistake —
+/// must not strand the flow that is still waiting on it.
+#[test]
+fn f_reopens_a_conflict_that_is_still_unfinished() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state.repo_root = Some("/workspace".into());
+    app.state.conflicts = vec!["src/a.rs".into()];
+    app.state.modal = Modal::Conflict;
+
+    app.send_key(key(KeyCode::Esc)).unwrap();
+    assert_eq!(app.state.modal, Modal::None);
+
+    app.send_key(key(KeyCode::Char('F'))).unwrap();
+    assert_eq!(
+        app.state.modal,
+        Modal::Conflict,
+        "the flow key should go back to the conflict holding the flow up"
+    );
+
+    // With nothing conflicted, F is the branch action menu it has always been.
+    app.state.conflicts.clear();
+    app.state.modal = Modal::None;
+    app.send_key(key(KeyCode::Char('F'))).unwrap();
+    assert_ne!(app.state.modal, Modal::Conflict);
 }

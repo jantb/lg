@@ -457,6 +457,8 @@ impl App {
                 path,
                 label,
                 sandboxed,
+                kind,
+                prompt,
             } => {
                 let cwd = PathBuf::from(&path);
                 if sandboxed {
@@ -477,6 +479,8 @@ impl App {
                     label,
                     cwd,
                     sandboxed,
+                    kind,
+                    prompt,
                 };
                 let size = crate::session::default_size();
                 match self.state.sessions.start(spec, size) {
@@ -489,7 +493,8 @@ impl App {
                             .get(id)
                             .map(|session| session.label.clone())
                             .unwrap_or_default();
-                        self.state.set_status(format!("session for {label}"), false);
+                        self.state
+                            .set_status(format!("{} for {label}", kind.label()), false);
                     }
                     Err(err) => self
                         .state
