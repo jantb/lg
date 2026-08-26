@@ -179,6 +179,16 @@ impl AppState {
             }
     }
 
+    /// Whether something on screen is animating and so wants redrawing at the
+    /// animation clock's rate rather than the idle one.
+    ///
+    /// Only the branch-action menu does: its preview draws a marker travelling
+    /// the route the flow would take, and a picture redrawn slower than it
+    /// moves reads as a stutter rather than a motion.
+    pub fn wants_animation(&self) -> bool {
+        self.modal == Modal::Flow && self.workflow_job.is_none()
+    }
+
     /// Which set of keys the main pane is listening for right now.
     pub fn main_keys(&self) -> MainKeys {
         if self.session_view().is_some() {

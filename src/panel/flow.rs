@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, List, ListItem, Paragraph},
+    widgets::{Clear, List, ListItem, Paragraph, Wrap},
 };
 
 use crate::{
@@ -16,6 +16,8 @@ use crate::{
 };
 
 use super::scroll;
+
+mod preview;
 
 fn merge_main_available(state: &AppState) -> bool {
     state.merge_main_available()
@@ -39,10 +41,17 @@ pub(crate) fn available_actions(state: &AppState) -> Vec<FlowAction> {
         .collect()
 }
 
+/// The modal's footprint. The preview needs room beside the list, so this is
+/// wider than a menu alone would be — and every layout below is measured from
+/// it, so it has one home.
+fn modal_area(area: Rect) -> Rect {
+    let w = (area.width * 9 / 10).clamp(58, 132).min(area.width);
+    let h = (area.height * 4 / 5).clamp(14, 30).min(area.height);
+    ui::centered(area, w, h)
+}
+
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
-    let w = (area.width * 7 / 10).clamp(58, 88).min(area.width);
-    let h = 14.min(area.height);
-    let modal = ui::centered(area, w, h);
+    let modal = modal_area(area);
     frame.render_widget(Clear, modal);
 
     if let Some(job) = &state.workflow_job {
@@ -160,34 +169,151 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(modal);
 
-    let diagram = vec![Line::from(selected_branch_line(state))];
     frame.render_widget(
-        Paragraph::new(diagram).block(ui::bordered("Selected Branch")),
+        Paragraph::new(vec![Line::from(selected_branch_line(state))])
+            .block(ui::bordered("Selected Branch")),
         chunks[0],
     );
 
     let actions = available_actions(state);
+    let selected_idx = clamp_index(state.flow_idx, actions.len());
+    let (list_area, preview_area) = split_menu(chunks[1]);
+
     let items: Vec<ListItem> = actions
         .iter()
-        .map(|action| ListItem::new(Line::from(state.flow_action_label(*action))))
+        .map(|action| ListItem::new(action_line(state, *action)))
         .collect();
     let list = List::new(items)
         .block(ui::bordered("Branch Actions"))
         .highlight_style(
             Style::default()
-                .bg(Color::DarkGray)
+                .bg(SELECTED_ACTION_BG)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("\u{203a} ");
-    let selected_idx = clamp_index(state.flow_idx, actions.len());
     let offset = scroll::selection_scroll_offset(
         selected_idx,
         actions.len(),
-        scroll::list_viewport_height(chunks[1].height),
+        scroll::list_viewport_height(list_area.height),
         state.flow_scroll_offset,
     );
     let mut list_state = scroll::list_state(selected_idx, offset);
-    frame.render_stateful_widget(list, chunks[1], &mut list_state);
+    frame.render_stateful_widget(list, list_area, &mut list_state);
+
+    if let Some(area) = preview_area
+        && let Some(action) = selected_idx.and_then(|idx| actions.get(idx).copied())
+    {
+        let mut lines = preview::lines(
+            state,
+            action,
+            state.animation_tick,
+            area.width.saturating_sub(2),
+        );
+        lines.extend(step_lines(state, action));
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(ui::bordered("What it does"))
+                // The caption is a sentence and runs past the pane; the diagram
+                // lines are built to fit, so only the sentence ever wraps.
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+    }
+}
+
+/// The steps the flow will run, in order, under the diagram. The picture shows
+/// where commits end up; this shows what is actually done to get them there,
+/// which is the part worth reading before a force-push.
+fn step_lines(state: &AppState, action: FlowAction) -> Vec<Line<'static>> {
+    let steps = steps_for(state, action);
+    if steps.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "steps",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ];
+    lines.extend(steps.into_iter().enumerate().map(|(idx, step)| {
+        Line::from(vec![
+            Span::styled(
+                format!("{:>2}. ", idx + 1),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(step, Style::default().fg(Color::Gray)),
+        ])
+    }));
+    lines
+}
+
+/// The steps `action` would run here, asked of the same code that narrates them
+/// while it runs — so what the menu promises and what the progress list shows
+/// cannot drift apart.
+fn steps_for(state: &AppState, action: FlowAction) -> Vec<String> {
+    let branch = match action {
+        FlowAction::TransferDiff => selected_feature_branch(state),
+        _ => state.branch.clone(),
+    }
+    .unwrap_or_default();
+    let target = action
+        .release_env()
+        .and_then(|env| state.release_branch(env));
+    app::workflow_steps(action, &branch, None, target)
+}
+
+/// Background of the highlighted action. The same green the workspace pane uses
+/// for the active checkout, so "this is the one" reads the same everywhere.
+const SELECTED_ACTION_BG: Color = Color::Rgb(24, 54, 34);
+
+/// The menu on the left and the preview on the right, or the whole width for
+/// the menu when there is not enough of it to show both.
+fn split_menu(area: Rect) -> (Rect, Option<Rect>) {
+    let list_width = 46u16;
+    if area.width < list_width + preview::MIN_WIDTH || area.height < preview::MIN_HEIGHT {
+        return (area, None);
+    }
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(list_width),
+            Constraint::Min(preview::MIN_WIDTH),
+        ])
+        .split(area);
+    (chunks[0], Some(chunks[1]))
+}
+
+/// A menu row: a glyph and a colour for what kind of change it is, so the
+/// destructive ones are told apart from the everyday ones before they are read.
+fn action_line(state: &AppState, action: FlowAction) -> Line<'static> {
+    let (glyph, color) = action_mark(action);
+    Line::from(vec![
+        Span::styled(
+            format!("{glyph} "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(state.flow_action_label(action), Style::default().fg(color)),
+    ])
+}
+
+/// What an action is marked with. Deploy branches keep the colours they have in
+/// the deployment block; anything that throws work away is red, whatever it is
+/// called.
+fn action_mark(action: FlowAction) -> (char, Color) {
+    match action {
+        FlowAction::MergeMain => ('\u{2913}', Color::Magenta),
+        FlowAction::ReleaseDev => ('\u{2912}', Color::Cyan),
+        FlowAction::ReleaseTest => ('\u{2912}', Color::Yellow),
+        FlowAction::ResetDev | FlowAction::ResetTest | FlowAction::DiscardCheckout => {
+            ('\u{21ba}', Color::Red)
+        }
+        FlowAction::CleanOrphans => ('\u{2717}', Color::Red),
+        FlowAction::NewFeature => ('\u{271a}', Color::Green),
+        FlowAction::TransferDiff => ('\u{21dd}', Color::LightMagenta),
+    }
 }
 
 pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
@@ -210,14 +336,11 @@ pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
 }
 
 fn actions_area(area: Rect) -> Rect {
-    let w = (area.width * 7 / 10).clamp(58, 96).min(area.width);
-    let h = 16.min(area.height);
-    let modal = ui::centered(area, w, h);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(7), Constraint::Min(0)])
-        .split(modal);
-    chunks[1]
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(modal_area(area));
+    split_menu(chunks[1]).0
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
@@ -400,4 +523,83 @@ fn workflow_lines(job: &crate::state::WorkflowJob) -> Vec<Line<'static>> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::{Branch, ReleaseBranches};
+
+    fn state() -> AppState {
+        let mut state = AppState::new();
+        state.branch = Some("feature/send-cv".into());
+        state.branches = vec![Branch {
+            name: "feature/send-cv".into(),
+            is_current: true,
+            upstream: Some("origin/feature/send-cv".into()),
+            upstream_gone: false,
+            ahead: 1,
+            behind: 0,
+            behind_main: 2,
+            last_commit_unix: None,
+        }];
+        state.branches_idx = 0;
+        state.release_branches = ReleaseBranches::new(Some("develop".into()), Some("test".into()));
+        state
+    }
+
+    fn text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The steps shown are the steps run: both come from `workflow_steps`, so
+    /// what the menu promises cannot drift from what the progress list narrates.
+    #[test]
+    fn every_step_the_flow_would_run_is_listed() {
+        let state = state();
+        for action in available_actions(&state) {
+            let shown = text(&step_lines(&state, action));
+            for step in steps_for(&state, action) {
+                assert!(
+                    shown.contains(&step),
+                    "{action:?} does not list {step:?}: {shown}"
+                );
+            }
+        }
+    }
+
+    /// A release is named after where it lands, so the steps have to name the
+    /// deploy branch rather than whatever branch happens to be checked out.
+    #[test]
+    fn the_steps_for_a_release_name_the_branch_it_lands_on() {
+        let steps = steps_for(&state(), FlowAction::ReleaseTest).join("\n");
+        assert!(steps.contains("checkout test"), "{steps}");
+        assert!(steps.contains("merge origin/feature/send-cv"), "{steps}");
+    }
+
+    /// Anything that throws work away is marked the same way, whatever it is
+    /// called: the menu should not need reading twice to spot them.
+    #[test]
+    fn destructive_actions_are_all_marked_in_red() {
+        for action in [
+            FlowAction::ResetDev,
+            FlowAction::ResetTest,
+            FlowAction::DiscardCheckout,
+            FlowAction::CleanOrphans,
+        ] {
+            assert_eq!(action_mark(action).1, Color::Red, "{action:?}");
+        }
+        for action in [FlowAction::MergeMain, FlowAction::NewFeature] {
+            assert_ne!(action_mark(action).1, Color::Red, "{action:?}");
+        }
+    }
 }

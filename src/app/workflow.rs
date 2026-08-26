@@ -177,7 +177,7 @@ fn conflict_followup_for_flow(
     }
 }
 
-pub(super) fn workflow_steps(
+pub(crate) fn workflow_steps(
     action: FlowAction,
     current: &str,
     input: Option<&str>,

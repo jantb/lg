@@ -38,9 +38,9 @@ impl FlowAction {
             Self::ReleaseTest => "Release current branch into test",
             Self::ResetDev => "Reset develop from origin/main",
             Self::ResetTest => "Reset test from origin/main",
-            Self::DiscardCheckout => "Discard current checkout and reload from remote",
+            Self::DiscardCheckout => "Discard checkout, reload from remote",
             Self::NewFeature => "Start new feature from origin/main",
-            Self::TransferDiff => "Transfer selected feature diff to new branch",
+            Self::TransferDiff => "Move selected diff to a new branch",
             Self::CleanOrphans => "Clean local branches without upstream",
         }
     }

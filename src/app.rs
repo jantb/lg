@@ -26,8 +26,8 @@ use std::{
 
 use crate::{
     config::{
-        BACKGROUND_FETCH_INTERVAL_SECS, ERROR_MSG_LIFETIME_SECS, JOB_TICK_MS, MAX_EVENTS_PER_FRAME,
-        SESSION_TICK_MS, STATUS_MSG_LIFETIME_SECS, TICK_MS,
+        ANIMATION_STEP_MS, BACKGROUND_FETCH_INTERVAL_SECS, ERROR_MSG_LIFETIME_SECS, JOB_TICK_MS,
+        MAX_EVENTS_PER_FRAME, SESSION_TICK_MS, STATUS_MSG_LIFETIME_SECS, TICK_MS,
     },
     state::AppState,
 };
@@ -50,7 +50,8 @@ pub(crate) use spawn::{
     checkout_remote_branch_async,
 };
 pub(crate) use workflow::{
-    abort_conflict_operation, run_flow_action, start_conflict_session, validate_conflict_resolution,
+    abort_conflict_operation, run_flow_action, start_conflict_session,
+    validate_conflict_resolution, workflow_steps,
 };
 
 use refresh::{
@@ -242,6 +243,11 @@ impl App {
                 SESSION_TICK_MS
             } else if self.state.any_job_running() {
                 JOB_TICK_MS
+            } else if self.state.wants_animation() {
+                // The branch-action preview animates, and at the idle rate it
+                // would be redrawn less often than its clock advances — a
+                // diagram that jumps rather than moves.
+                ANIMATION_STEP_MS
             } else {
                 TICK_MS
             };

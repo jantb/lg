@@ -1052,7 +1052,154 @@ fn branch_actions_show_transfer_diff_for_selected_feature_branch() {
     let text = render_flow_text(&state);
 
     assert!(
-        text.contains("Transfer selected feature diff to new branch"),
+        text.contains("Move selected diff to a new branch"),
         "missing transfer action: {text}"
     );
+}
+
+/// A checkout where every branch action applies, for exercising the menu.
+fn flow_menu_state() -> AppState {
+    let mut state = AppState::new();
+    state.branch = Some("feature/send-cv".into());
+    state.branches = vec![Branch {
+        name: "feature/send-cv".into(),
+        is_current: true,
+        upstream: Some("origin/feature/send-cv".into()),
+        upstream_gone: false,
+        ahead: 1,
+        behind: 0,
+        behind_main: 2,
+        last_commit_unix: None,
+    }];
+    state.branches_idx = 0;
+    state.release_branches =
+        lg::git::ReleaseBranches::new(Some("develop".into()), Some("test".into()));
+    state.modal = Modal::Flow;
+    state
+}
+
+fn flow_menu_text(state: &AppState, width: u16, height: u16) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| panel::flow::render(state, frame.area(), frame))
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    (0..buf.area.height)
+        .map(|row| {
+            (0..buf.area.width)
+                .map(|col| buf[(col, row)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// "Release" and "reset" both end in a force-push somewhere and only one throws
+/// history away, so the menu shows what the highlighted action would do rather
+/// than leaving its name to carry the whole meaning.
+#[test]
+fn the_flow_menu_previews_the_highlighted_action() {
+    let mut state = flow_menu_state();
+    state.flow_idx = FlowAction::ALL
+        .iter()
+        .position(|action| *action == FlowAction::ReleaseTest)
+        .unwrap();
+
+    let text = flow_menu_text(&state, 140, 40);
+
+    assert!(text.contains("What it does"), "{text}");
+    assert!(
+        text.contains("origin/main") && text.contains("origin/test"),
+        "the graph should name the branches it moves between: {text}"
+    );
+    assert!(
+        text.contains("merge into test"),
+        "and say it in words too: {text}"
+    );
+    assert!(
+        text.contains("merge origin/feature/send-cv"),
+        "the steps it would run belong there as well: {text}"
+    );
+}
+
+/// The graph is coloured by branch, and the same branch is the same colour
+/// wherever lg draws it — a diagram in one colour would be a diagram nobody can
+/// follow.
+#[test]
+fn the_flow_preview_is_coloured_by_branch() {
+    let mut state = flow_menu_state();
+    state.flow_idx = FlowAction::ALL
+        .iter()
+        .position(|action| *action == FlowAction::ResetTest)
+        .unwrap();
+
+    let backend = TestBackend::new(140, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| panel::flow::render(&state, frame.area(), frame))
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+
+    let mut seen = HashSet::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            let cell = &buf[(col, row)];
+            if cell
+                .symbol()
+                .chars()
+                .any(|c| "\u{25cf}\u{25c6}\u{2717}\u{25c9}".contains(c))
+            {
+                seen.insert(cell.fg);
+            }
+        }
+    }
+
+    assert!(
+        seen.contains(&Color::Magenta),
+        "main should keep its magenta: {seen:?}"
+    );
+    assert!(
+        seen.contains(&Color::Yellow),
+        "test should keep its yellow: {seen:?}"
+    );
+    assert!(
+        seen.contains(&Color::Red),
+        "a reset should draw the history it drops in red: {seen:?}"
+    );
+    assert!(
+        seen.contains(&Color::White),
+        "the travelling marker should stand out from every lane: {seen:?}"
+    );
+}
+
+#[test]
+fn the_flow_preview_animates_as_the_clock_ticks() {
+    let mut state = flow_menu_state();
+    state.flow_idx = FlowAction::ALL
+        .iter()
+        .position(|action| *action == FlowAction::ReleaseTest)
+        .unwrap();
+
+    let first = flow_menu_text(&state, 140, 40);
+    let moved = (1..40).any(|tick| {
+        state.animation_tick = tick;
+        flow_menu_text(&state, 140, 40) != first
+    });
+    assert!(moved, "the preview should be moving: {first}");
+    assert!(
+        state.wants_animation(),
+        "and the loop should be redrawing fast enough to show it"
+    );
+}
+
+/// A terminal with no room for the graph still gets the menu; the preview is
+/// what gives way, not the thing being chosen from.
+#[test]
+fn a_narrow_flow_menu_drops_the_preview_and_keeps_the_actions() {
+    let state = flow_menu_state();
+    let text = flow_menu_text(&state, 64, 24);
+
+    assert!(text.contains("Release current branch into test"), "{text}");
+    assert!(!text.contains("What it does"), "{text}");
 }
