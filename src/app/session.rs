@@ -7,7 +7,7 @@ use ratatui::crossterm::execute;
 
 use ratatui::backend::Backend;
 
-use crate::state::AppState;
+use crate::state::{AppState, Modal};
 use crate::term;
 
 use super::{App, HeadlessApp};
@@ -61,6 +61,12 @@ pub(crate) fn forward_paste(state: &mut AppState, text: &str) -> bool {
 /// here is clear up after it: the pane goes back to the diff if it was the one
 /// on screen, and the tree loses a row.
 ///
+/// Closing the session that was on screen while a flow is still stopped on a
+/// conflict puts the conflict back up. A session started from that modal is
+/// the work of resolving it, so its ending is the moment to ask again whether
+/// the flow can carry on — otherwise the flow is left waiting behind a diff
+/// with nothing to say it is there.
+///
 /// Returns what to say about it, and whether the keyboard has to be taken back
 /// off a session that is no longer there.
 pub(crate) fn pump(state: &mut AppState) -> Option<SessionEnded> {
@@ -71,10 +77,14 @@ pub(crate) fn pump(state: &mut AppState) -> Option<SessionEnded> {
         .find(|session| Some(session.id) == shown)
         .or_else(|| ended.last())?;
     let was_shown = Some(gone.id) == shown;
-    let notice = format!("the session in {} {}", gone.label, gone.notice);
     let had_keyboard = was_shown && state.session_capture;
+    let mut notice = format!("the session in {} {}", gone.label, gone.notice);
     if was_shown {
         state.show_diff();
+        if !state.conflicts.is_empty() {
+            state.modal = Modal::Conflict;
+            notice.push_str(" \u{2014} press v to continue the flow");
+        }
     }
     state.clamp();
     Some(SessionEnded {

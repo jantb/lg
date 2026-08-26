@@ -16,6 +16,7 @@ pub fn flow_release_current_with_progress(
     target_branch: &str,
     progress: &mut impl FnMut(),
 ) -> Result<String> {
+    ensure_no_conflict_in_progress()?;
     ensure_feature_branch(current_branch)?;
     progress();
     let stashed = stash_uncommitted_changes(AUTO_STASH_RELEASE)?;
@@ -36,6 +37,31 @@ pub fn flow_release_current_with_progress(
         "released {current_branch} to {target_branch} -> {}",
         release_environment(target_branch)
     ))
+}
+
+/// Refuse to reset the deploy branch over commits only this checkout has.
+///
+/// A release starts the deploy branch from its remote, which is the right
+/// starting point — and silent data loss when the local branch is ahead. That
+/// is what a resolved-but-unpushed release conflict looks like: the merge
+/// commit is sitting on the deploy branch, and resetting to the remote drops it
+/// and walks straight back into the conflict it resolved.
+fn ensure_target_matches_remote(target_branch: &str) -> Result<()> {
+    let remote_ref = format!("{DEFAULT_PUSH_REMOTE}/{target_branch}");
+    if !ref_exists(target_branch) || !ref_exists(&remote_ref) {
+        return Ok(());
+    }
+    let ahead = commits_missing_from(&remote_ref, target_branch)?;
+    if ahead == 0 {
+        return Ok(());
+    }
+    let plural = if ahead == 1 { "commit" } else { "commits" };
+    // The remedy has to work from a cold start: the followup a conflict left
+    // behind lives only as long as lg does, so this says what to do with git
+    // rather than which key would have continued the flow.
+    anyhow::bail!(
+        "{target_branch} has {ahead} {plural} that {remote_ref} does not, and releasing resets it to the remote — that would lose them.\nPush {target_branch} to keep them (they are most likely a resolved merge from a release that stopped), then release again."
+    )
 }
 
 fn release_environment(target_branch: &str) -> &str {
@@ -59,6 +85,7 @@ fn release_current_branch(
         progress();
         run(&["fetch"])?;
         progress();
+        ensure_target_matches_remote(target_branch)?;
         run(&[
             "branch",
             "-f",

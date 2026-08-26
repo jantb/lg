@@ -3864,3 +3864,285 @@ fn a_conflicted_file_is_read_from_the_repository_not_the_process_directory() {
         .expect("stage resolved conflicts");
     assert_eq!(staged, ["conflict.txt"]);
 }
+
+/// The whole round trip the loop was stuck in: the release conflicts, the
+/// conflict is resolved, `v` continues it — and running the release again
+/// finds nothing left to do. A second conflict here means the first one was
+/// never really finished.
+#[test]
+fn a_resolved_release_conflict_does_not_come_back_on_the_next_release() {
+    let dir = init_repo();
+    fs::write(dir.path().join("shared.txt"), "base\n").unwrap();
+    stage_in(dir.path(), "shared.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "origin", "main"]);
+
+    git_ok(dir.path(), &["checkout", "-b", "test"]);
+    fs::write(dir.path().join("shared.txt"), "release\n").unwrap();
+    stage_in(dir.path(), "shared.txt");
+    commit_in(dir.path(), "release side");
+    git_ok(dir.path(), &["push", "origin", "test"]);
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("shared.txt"), "main update\n").unwrap();
+    stage_in(dir.path(), "shared.txt");
+    commit_in(dir.path(), "main update");
+    git_ok(dir.path(), &["push", "origin", "main"]);
+
+    let feature = "feature/loop";
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("feature.txt"), "feature\n").unwrap();
+    stage_in(dir.path(), "feature.txt");
+    commit_in(dir.path(), "feature commit");
+    git_ok(dir.path(), &["push", "origin", feature]);
+
+    let _cwd = CwdGuard::new(dir.path());
+
+    // First run stops on the origin/main merge.
+    lg::git::flow_release_current(feature, "test").expect_err("the main merge conflicts");
+    fs::write(dir.path().join("shared.txt"), "resolved\n").unwrap();
+    lg::git::validate_conflict_resolution(release_followup(feature, "test"))
+        .expect("continue the release");
+    assert_eq!(head_branch(dir.path()), feature);
+
+    // Second run has nothing left to conflict over.
+    let summary = lg::git::flow_release_current(feature, "test")
+        .expect("the release should be clean the second time");
+    assert!(
+        summary.contains("released"),
+        "unexpected summary: {summary}"
+    );
+    assert!(
+        lg::git::conflicted_files()
+            .expect("conflicted files")
+            .is_empty(),
+        "the resolved conflict came back"
+    );
+
+    let released = git(bare.path(), &["show", "test:feature.txt"]);
+    assert!(
+        released.status.success(),
+        "the feature never reached test: {}",
+        String::from_utf8_lossy(&released.stderr)
+    );
+    let shared = git(bare.path(), &["show", "test:shared.txt"]);
+    assert_eq!(
+        String::from_utf8_lossy(&shared.stdout),
+        "resolved\n",
+        "the resolution should be what test carries"
+    );
+}
+
+/// The loop itself: a release run on top of an unfinished conflict used to
+/// reset the deploy branch to its remote, throwing the resolution away and
+/// walking into the same conflict again. It has to refuse instead, and say how
+/// to get out.
+#[test]
+fn a_release_refuses_to_run_on_top_of_an_unfinished_conflict() {
+    let dir = init_repo();
+    fs::write(dir.path().join("shared.txt"), "base\n").unwrap();
+    stage_in(dir.path(), "shared.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "origin", "main"]);
+
+    git_ok(dir.path(), &["checkout", "-b", "test"]);
+    fs::write(dir.path().join("shared.txt"), "release\n").unwrap();
+    stage_in(dir.path(), "shared.txt");
+    commit_in(dir.path(), "release side");
+    git_ok(dir.path(), &["push", "origin", "test"]);
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("shared.txt"), "main update\n").unwrap();
+    stage_in(dir.path(), "shared.txt");
+    commit_in(dir.path(), "main update");
+    git_ok(dir.path(), &["push", "origin", "main"]);
+
+    let feature = "feature/refuse";
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("feature.txt"), "feature\n").unwrap();
+    stage_in(dir.path(), "feature.txt");
+    commit_in(dir.path(), "feature commit");
+    git_ok(dir.path(), &["push", "origin", feature]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::flow_release_current(feature, "test").expect_err("the main merge conflicts");
+
+    // Resolved, but not yet continued — the state the loop happened in.
+    fs::write(dir.path().join("shared.txt"), "resolved\n").unwrap();
+    let before = git(dir.path(), &["rev-parse", "test"]);
+
+    let err = lg::git::flow_release_current(feature, "test")
+        .expect_err("a second release must not run over the resolution");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("part-way through a merge"),
+        "the refusal should say what is in the way: {message}"
+    );
+    assert!(
+        message.contains("F") && message.contains("v") && message.contains("a"),
+        "and which keys get out of it: {message}"
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&before.stdout),
+        String::from_utf8_lossy(&git(dir.path(), &["rev-parse", "test"]).stdout),
+        "the deploy branch must not have been reset under the resolution"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("shared.txt")).unwrap(),
+        "resolved\n",
+        "the resolution must survive the refusal"
+    );
+
+    // And continuing still works from there.
+    lg::git::validate_conflict_resolution(release_followup(feature, "test"))
+        .expect("continue the release after the refusal");
+    let released = git(bare.path(), &["show", "test:feature.txt"]);
+    assert!(released.status.success(), "the feature should have landed");
+}
+
+/// The other half of the loop: the conflict was resolved *and committed* — by a
+/// claude session, or by hand — so nothing is in progress any more, but the
+/// merge commit is only local. Releasing again would reset the deploy branch to
+/// its remote, drop that commit, and hit the same conflict.
+#[test]
+fn a_release_refuses_to_reset_a_deploy_branch_that_is_ahead_of_its_remote() {
+    let dir = init_repo();
+    fs::write(dir.path().join("shared.txt"), "base\n").unwrap();
+    stage_in(dir.path(), "shared.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "origin", "main"]);
+
+    git_ok(dir.path(), &["checkout", "-b", "test"]);
+    fs::write(dir.path().join("shared.txt"), "release\n").unwrap();
+    stage_in(dir.path(), "shared.txt");
+    commit_in(dir.path(), "release side");
+    git_ok(dir.path(), &["push", "origin", "test"]);
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("shared.txt"), "main update\n").unwrap();
+    stage_in(dir.path(), "shared.txt");
+    commit_in(dir.path(), "main update");
+    git_ok(dir.path(), &["push", "origin", "main"]);
+
+    let feature = "feature/committed";
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("feature.txt"), "feature\n").unwrap();
+    stage_in(dir.path(), "feature.txt");
+    commit_in(dir.path(), "feature commit");
+    git_ok(dir.path(), &["push", "origin", feature]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::flow_release_current(feature, "test").expect_err("the main merge conflicts");
+
+    // Resolved and committed on test, the way a session would leave it.
+    fs::write(dir.path().join("shared.txt"), "resolved\n").unwrap();
+    git_ok(dir.path(), &["add", "shared.txt"]);
+    commit_in(dir.path(), "resolve the main merge");
+    assert!(
+        lg::git::conflicted_files()
+            .expect("conflicted files")
+            .is_empty(),
+        "nothing should be in progress any more"
+    );
+    let resolved = git(dir.path(), &["rev-parse", "test"]);
+
+    git_ok(dir.path(), &["checkout", feature]);
+    let err = lg::git::flow_release_current(feature, "test")
+        .expect_err("a release must not reset test over the resolution");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("would lose them") && message.contains("release again"),
+        "the refusal should say what is at stake and what to do: {message}"
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&resolved.stdout),
+        String::from_utf8_lossy(&git(dir.path(), &["rev-parse", "test"]).stdout),
+        "the committed resolution must still be there"
+    );
+
+    // Continuing from there finishes the release it belongs to.
+    lg::git::validate_conflict_resolution(release_followup(feature, "test"))
+        .expect("continue the release");
+    let released = git(bare.path(), &["show", "test:feature.txt"]);
+    assert!(released.status.success(), "the feature should have landed");
+    let shared = git(bare.path(), &["show", "test:shared.txt"]);
+    assert_eq!(String::from_utf8_lossy(&shared.stdout), "resolved\n");
+}
+
+/// The bug that made the release loop: git reports its in-progress markers
+/// relative to git's own directory, and lg points git at a repository with `-C`
+/// instead of moving the process. Tested against the process directory they all
+/// read as absent, so a conflicted merge looked finished — validation skipped
+/// the commit that completes it and the push moved nothing.
+#[test]
+fn a_merge_in_progress_is_detected_from_outside_the_repository() {
+    let dir = init_repo();
+    fs::write(dir.path().join("conflict.txt"), "base\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "initial commit");
+
+    git_ok(dir.path(), &["checkout", "-b", "theirs"]);
+    fs::write(dir.path().join("conflict.txt"), "theirs\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "their side");
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("conflict.txt"), "ours\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "our side");
+
+    let merge = git(dir.path(), &["merge", "theirs"]);
+    assert!(!merge.status.success(), "the merge should have conflicted");
+
+    // The process sits somewhere else entirely, as lg's does.
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    let _cwd = CwdGuard::new(elsewhere.path());
+
+    fs::write(dir.path().join("conflict.txt"), "resolved\n").unwrap();
+    let out = lg::git::with_repo(dir.path(), || {
+        lg::git::validate_conflict_resolution(lg::git::Followup::default())
+    })
+    .expect("validate the resolution");
+
+    assert!(
+        !out.contains("no merge, rebase, or cherry-pick operation is in progress"),
+        "the merge in progress should have been found: {out}"
+    );
+    let parents = git(dir.path(), &["rev-list", "--parents", "-n", "1", "HEAD"]);
+    assert_eq!(
+        String::from_utf8_lossy(&parents.stdout)
+            .split_whitespace()
+            .count(),
+        3,
+        "validation must commit the merge, leaving a commit with two parents"
+    );
+    assert!(
+        lg::git::with_repo(dir.path(), lg::git::conflicted_files)
+            .expect("conflicted files")
+            .is_empty(),
+        "nothing should still be conflicted"
+    );
+}

@@ -173,19 +173,21 @@ pub fn validate_conflict_resolution(followup: Followup<'_>) -> Result<String> {
     Ok(out)
 }
 
-/// Merge `origin/<merge_branch>` into the checkout, when the flow got no
+/// Merge `origin/<merge_branch>` into `push_branch`, when the flow got no
 /// further than the merge before it.
 ///
 /// A release merges twice — origin/main into the deploy branch, then the
 /// feature into it — and stops at whichever conflicts first. If that was the
 /// first, the feature has not been merged at all, and continuing by pushing
-/// would release nothing while reporting success. Asking git how far behind the
-/// deploy branch still is makes one call cover both cases: it does the missing
-/// merge, or nothing when the conflict was that merge itself.
+/// would release nothing while reporting success.
 ///
-/// It only runs on `push_branch`, the branch the release is being built on.
-/// Somebody who has checked something else out has taken the flow over by hand,
-/// and merging into whatever they landed on would not be finishing it.
+/// What is left is measured against the deploy branch rather than HEAD, because
+/// by the time this runs the checkout may be anywhere: a session that committed
+/// the resolution and went back to the feature branch is the ordinary way to
+/// arrive here, not an odd one. So it checks the branch out when it has to, and
+/// the return leg puts the checkout back afterwards. Nothing happens at all when
+/// the merge is already in, which is the case where the conflict *was* the
+/// feature merge.
 fn merge_outstanding_branch(
     merge_branch: Option<&str>,
     push_branch: Option<&str>,
@@ -193,17 +195,24 @@ fn merge_outstanding_branch(
     let (Some(merge_branch), Some(push_branch)) = (merge_branch, push_branch) else {
         return Ok(None);
     };
+    let remote_ref = format!("{DEFAULT_PUSH_REMOTE}/{merge_branch}");
+    if !ref_exists(&remote_ref)
+        || !ref_exists(push_branch)
+        || commits_missing_from(push_branch, &remote_ref)? == 0
+    {
+        return Ok(None);
+    }
+
+    let mut out = String::new();
     if head_branch()
         .map(|head| head != push_branch)
         .unwrap_or(true)
     {
-        return Ok(None);
+        out.push_str(run_combined(&["checkout", push_branch])?.trim());
+        out.push('\n');
     }
-    let remote_ref = format!("{DEFAULT_PUSH_REMOTE}/{merge_branch}");
-    if !ref_exists(&remote_ref) || commits_missing_from("HEAD", &remote_ref)? == 0 {
-        return Ok(None);
-    }
-    Ok(Some(run_combined(&["merge", "--no-edit", &remote_ref])?))
+    out.push_str(run_combined(&["merge", "--no-edit", &remote_ref])?.trim());
+    Ok(Some(out))
 }
 
 fn push_followup_branch(branch: &str) -> Result<String> {

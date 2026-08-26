@@ -52,6 +52,7 @@ pub fn flow_reset_branch_from_main_with_progress(
     target_branch: &str,
     progress: &mut impl FnMut(),
 ) -> Result<String> {
+    ensure_no_conflict_in_progress()?;
     progress();
     run(&["fetch"])?;
     if current_branch != target_branch {

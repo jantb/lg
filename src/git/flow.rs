@@ -72,10 +72,44 @@ fn is_protected_branch(name: &str) -> bool {
     is_protected_branch_name(name)
 }
 
+/// Whether git is keeping `name` — `MERGE_HEAD`, `rebase-merge`, and the rest
+/// of the part-way-through markers — in this repository right now.
+///
+/// The path has to be asked for in absolute form. `--git-path` answers relative
+/// to git's own working directory, and lg points git at a repository with `-C`
+/// rather than moving the process, so a relative answer gets tested against
+/// wherever lg happens to have been started. That is almost never the
+/// repository, so every one of these came back false: a conflicted merge looked
+/// already finished, `v` skipped the commit that completes it, and `a` had
+/// nothing to abort. The release then pushed a branch that had never moved, and
+/// the same conflict came back on the next run.
 fn git_path_exists(name: &str) -> Result<bool> {
-    let out = run(&["rev-parse", "--git-path", name])?;
+    let out = run(&["rev-parse", "--path-format=absolute", "--git-path", name])?;
     let path = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    Ok(Path::new(&path).exists())
+    Ok(!path.is_empty() && Path::new(&path).exists())
+}
+
+/// Refuse to start a flow on top of a conflict that has not been settled.
+///
+/// A release resets the deploy branch to its remote before it merges anything,
+/// so running one again while a resolution is sitting unfinished in the
+/// checkout throws that work away and walks into the same conflict — which is
+/// how a release ends up looking like it cannot be done at all. The way out is
+/// to finish the conflict or abort it, and the message says which keys do that,
+/// because a flow refusing to run is exactly when they are hardest to find.
+fn ensure_no_conflict_in_progress() -> Result<()> {
+    if !merge_or_rebase_in_progress() {
+        return Ok(());
+    }
+    let files = conflicted_files().unwrap_or_default();
+    let unresolved = if files.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", files.join(", "))
+    };
+    anyhow::bail!(
+        "this checkout is part-way through a merge{unresolved}; press F to reopen it, then v to continue the flow or a to abort it"
+    )
 }
 
 fn ensure_feature_branch(branch: &str) -> Result<()> {

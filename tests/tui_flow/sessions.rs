@@ -434,6 +434,56 @@ fn sessions_are_listed_under_their_checkout_and_can_be_reopened() {
     assert!(app.state.session_capture);
 }
 
+/// Closing the session that was resolving a conflict is the end of that work,
+/// so the flow waiting on it comes back rather than being left behind a diff.
+#[test]
+fn closing_a_session_puts_an_unfinished_conflict_back_up() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state.repo_root = Some("/workspace".into());
+    app.state.conflicts = vec!["src/a.rs".into()];
+    shell_session(&mut app, "exit 0", "/workspace");
+    app.state.session_capture = true;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !app.state.sessions.is_empty() && Instant::now() < deadline {
+        app.drain_sessions();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        app.state.sessions.is_empty(),
+        "the session should have gone"
+    );
+
+    assert_eq!(
+        app.state.modal,
+        Modal::Conflict,
+        "the conflict the flow stopped on should be back"
+    );
+    let status = app.state.status.as_ref().expect("status");
+    assert!(
+        status.text.contains("press v"),
+        "the status should say how to carry on: {}",
+        status.text
+    );
+}
+
+/// Nothing to come back to means nothing pops up: closing an ordinary session
+/// leaves the diff alone.
+#[test]
+fn closing_a_session_with_no_conflict_opens_no_modal() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state.repo_root = Some("/workspace".into());
+    shell_session(&mut app, "exit 0", "/workspace");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !app.state.sessions.is_empty() && Instant::now() < deadline {
+        app.drain_sessions();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert_eq!(app.state.modal, Modal::None);
+}
+
 /// A checkout holds one session of each kind, and both get a row under it —
 /// starting a terminal must not be mistaken for the claude already there.
 #[test]
