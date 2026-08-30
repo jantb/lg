@@ -12,8 +12,8 @@ mod stream;
 mod think;
 
 pub use provider::{
-    LlmProvider, clear_saved_llm_settings, config_file_display, current_endpoint, current_model,
-    current_provider, endpoint_for_provider, env_model_active, env_provider_active,
+    LlmProvider, api_key, clear_saved_llm_settings, config_file_display, current_endpoint,
+    current_model, current_provider, endpoint_for_provider, env_model_active, env_provider_active,
     save_llm_settings,
 };
 pub use reply::parse_review_style_finding;
@@ -40,7 +40,7 @@ const REVIEW_CHAT_NUM_PREDICT: i32 = 768;
 const REVIEW_CHAT_HISTORY_TURNS: usize = 8;
 const REVIEW_STYLE_FLAG_NUM_PREDICT: i32 = 96;
 
-/// Stream tokens from the local Ollama chat endpoint, routing reasoning chunks
+/// Stream tokens from the local omlx chat endpoint, routing reasoning chunks
 /// (and any inline `<think>...</think>` content) to [`GenMsg::Thinking`], and
 /// content chunks to [`GenMsg::Output`].
 /// Ends with a [`GenMsg::Done`] or [`GenMsg::Error`].

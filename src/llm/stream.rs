@@ -10,24 +10,20 @@ use std::time::{Duration, Instant};
 use crate::config::{LLM_NUM_PREDICT, LLM_TEMPERATURE, LLM_TOP_P};
 use crate::state::GenMsg;
 
-use super::provider::{LlmProvider, current_model, current_provider, endpoint_for_provider};
+use super::provider::{
+    LlmProvider, api_key, current_model, current_provider, endpoint_for_provider,
+};
 use super::think::ThinkSplit;
 
 #[derive(Serialize)]
-struct OllamaChatRequest<'a> {
+struct ChatCompletionsRequest<'a> {
     model: &'a str,
     messages: Vec<ChatMessage>,
     stream: bool,
-    options: OllamaOptions,
-    think: bool,
-}
-
-#[derive(Serialize)]
-struct OllamaOptions {
     temperature: f32,
     top_p: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    num_predict: Option<i32>,
+    max_tokens: Option<i32>,
 }
 
 #[derive(Serialize)]
@@ -126,9 +122,11 @@ fn open_chat_stream(
         .timeout(Duration::from_secs(300))
         .build()
         .map_err(|e| format!("http client: {e}"))?;
-    client
-        .post(endpoint)
-        .json(body)
+    let mut request = client.post(endpoint).json(body);
+    if let Some(key) = api_key() {
+        request = request.bearer_auth(key);
+    }
+    request
         .send()
         .map_err(|e| format!("{} request: {e}", provider.label()))?
         .error_for_status()
@@ -173,7 +171,7 @@ impl StreamOutput {
 /// [`GenMsg::Output`], ending with exactly one [`GenMsg::Done`] or
 /// [`GenMsg::Error`].
 ///
-/// Both an `Ollama` `done` object and an SSE `[DONE]` marker end the stream;
+/// Both an NDJSON `done` object and an SSE `[DONE]` marker end the stream;
 /// so does the iterator running out. A line that is blank, is not JSON, or
 /// carries neither a chunk nor a done marker is skipped.
 fn consume_stream(
@@ -278,16 +276,13 @@ fn chat_request_body(
     messages: Vec<ChatMessage>,
     num_predict: i32,
 ) -> Result<serde_json::Value> {
-    Ok(serde_json::to_value(OllamaChatRequest {
+    Ok(serde_json::to_value(ChatCompletionsRequest {
         model,
         messages,
         stream: true,
-        options: OllamaOptions {
-            temperature: LLM_TEMPERATURE,
-            top_p: LLM_TOP_P,
-            num_predict: (num_predict > 0).then_some(num_predict),
-        },
-        think: false,
+        temperature: LLM_TEMPERATURE,
+        top_p: LLM_TOP_P,
+        max_tokens: (num_predict > 0).then_some(num_predict),
     })?)
 }
 
@@ -532,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn ollama_request_uses_native_chat_shape() {
+    fn chat_request_uses_the_openai_completions_shape() {
         let body = chat_request_body(
             "qwen-local",
             vec![ChatMessage {
@@ -545,18 +540,15 @@ mod tests {
 
         assert_eq!(body["model"], "qwen-local");
         assert_eq!(body["stream"], true);
-        assert_eq!(body["think"], false);
-        assert_eq!(body["options"]["num_predict"], 42);
-        assert_eq!(body["options"]["temperature"], LLM_TEMPERATURE);
-        assert_eq!(body["options"]["top_p"], LLM_TOP_P);
-        assert!(body.get("max_tokens").is_none());
-        assert!(body.get("enable_thinking").is_none());
-        assert!(body.get("chat_template_kwargs").is_none());
-        assert!(body.get("keep_alive").is_none());
+        assert_eq!(body["max_tokens"], 42);
+        assert_eq!(body["temperature"], LLM_TEMPERATURE);
+        assert_eq!(body["top_p"], LLM_TOP_P);
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][0]["content"], "hi");
     }
 
     #[test]
-    fn ollama_stream_reads_ndjson_chunks() {
+    fn a_reader_still_accepts_ndjson_chunks() {
         let line = r#"{"message":{"content":"hello","thinking":"plan"},"done":false}"#;
         let json = stream_json_line(line).unwrap();
         let value: serde_json::Value = serde_json::from_str(json).unwrap();
@@ -567,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_compatible_stream_reader_still_accepts_sse_deltas() {
+    fn omlx_sse_deltas_are_read_as_output() {
         let line = r#"data: {"choices":[{"delta":{"content":"hello"}}]}"#;
         let json = stream_json_line(line).unwrap();
         let value: serde_json::Value = serde_json::from_str(json).unwrap();
@@ -577,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn ollama_stream_done_reads_generation_stats() {
+    fn a_done_object_reads_generation_stats() {
         let value: serde_json::Value = serde_json::from_str(
             r#"{"done":true,"done_reason":"stop","eval_count":9,"prompt_eval_count":7,"total_duration":3000000,"eval_duration":2000000}"#,
         )

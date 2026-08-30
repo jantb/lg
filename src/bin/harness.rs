@@ -140,14 +140,25 @@ fn seed_mixed_status(dir: &Path) {
 
 // ── LLM probe ─────────────────────────────────────────────────────────────────
 
-fn ollama_server_reachable() -> bool {
+fn omlx_server_reachable() -> bool {
     let endpoint = lg::llm::current_endpoint();
-    let base = endpoint.trim_end_matches("/api/chat").trim_end_matches('/');
-    reqwest::blocking::Client::builder()
+    let base = endpoint
+        .trim_end_matches("/chat/completions")
+        .trim_end_matches('/');
+    let Some(client) = reqwest::blocking::Client::builder()
         .timeout(Duration::from_millis(500))
         .build()
         .ok()
-        .and_then(|c| c.get(format!("{base}/api/tags")).send().ok())
+    else {
+        return false;
+    };
+    let mut request = client.get(format!("{base}/models"));
+    if let Some(key) = lg::llm::api_key() {
+        request = request.bearer_auth(key);
+    }
+    request
+        .send()
+        .ok()
         .map(|r| r.status().is_success())
         .unwrap_or(false)
 }
@@ -351,7 +362,7 @@ fn main() {
     });
 
     // ── LLM (skipped if not reachable) ────────────────────────────────────────
-    if ollama_server_reachable() {
+    if omlx_server_reachable() {
         check!("llm stream_commit_message yields a final message", {
             let diff = "diff --git a/foo.rs b/foo.rs\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1 +1 @@\n-fn old() {}\n+fn new() {}";
             let (tx, rx) = std::sync::mpsc::channel();
@@ -386,7 +397,7 @@ fn main() {
     } else {
         skip!(
             "llm stream_commit_message",
-            "ollama server not reachable at configured endpoint"
+            "omlx server not reachable at configured endpoint"
         );
     }
 

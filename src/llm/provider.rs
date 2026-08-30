@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::config::{LLM_MODEL, OLLAMA_CHAT_ENDPOINT};
+use crate::config::{LLM_MODEL, OMLX_CHAT_ENDPOINT};
 
 const CONFIG_FILE_ENV: &str = "LG_CONFIG_FILE";
 const CONFIG_MODEL_KEY: &str = "llm_model";
@@ -14,53 +14,65 @@ const CONFIG_PROVIDER_KEY: &str = "llm_provider";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmProvider {
-    Ollama,
+    Omlx,
 }
 
 impl LlmProvider {
-    pub const ALL: [Self; 1] = [Self::Ollama];
+    pub const ALL: [Self; 1] = [Self::Omlx];
 
     pub fn label(self) -> &'static str {
-        "ollama"
+        "omlx"
     }
 
     fn config_value(self) -> &'static str {
-        "ollama"
+        "omlx"
     }
 
     fn from_config(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "ollama" | "ollama-server" | "ollama_server" | "llama" | "llama-server"
-            | "llama_server" | "llamacpp" | "llama.cpp" => Some(Self::Ollama),
+            "omlx" | "omlx-server" | "omlx_server" | "mlx" | "openai-compatible" => {
+                Some(Self::Omlx)
+            }
             _ => None,
         }
     }
 
     fn default_endpoint(self) -> &'static str {
-        OLLAMA_CHAT_ENDPOINT
+        OMLX_CHAT_ENDPOINT
     }
 
     fn endpoint_env(self) -> Option<String> {
-        std::env::var("LG_OLLAMA_CHAT_ENDPOINT")
-            .or_else(|_| std::env::var("LG_OLLAMA_URL"))
+        std::env::var("LG_OMLX_CHAT_ENDPOINT")
+            .or_else(|_| std::env::var("LG_OMLX_URL"))
             .ok()
             .map(|endpoint| endpoint.trim().to_string())
             .filter(|endpoint| !endpoint.is_empty())
-            .map(|endpoint| normalize_ollama_chat_endpoint(&endpoint))
+            .map(|endpoint| normalize_omlx_chat_endpoint(&endpoint))
     }
+}
+
+/// The key omlx requires on every request, when the environment names one.
+///
+/// omlx rejects an unauthenticated request outright, so a missing key surfaces
+/// as an HTTP 401 from the server rather than as a separate check here.
+pub fn api_key() -> Option<String> {
+    std::env::var("OMLX_API_KEY")
+        .ok()
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
 }
 
 pub fn current_model() -> String {
     env_model()
         .or_else(saved_model)
-        .or_else(first_available_ollama_model)
+        .or_else(first_available_omlx_model)
         .unwrap_or_else(|| LLM_MODEL.to_owned())
 }
 
 pub fn current_provider() -> LlmProvider {
     env_provider()
         .or_else(saved_provider)
-        .unwrap_or(LlmProvider::Ollama)
+        .unwrap_or(LlmProvider::Omlx)
 }
 
 pub fn current_endpoint() -> String {
@@ -73,50 +85,57 @@ pub fn endpoint_for_provider(provider: LlmProvider) -> String {
         .unwrap_or_else(|| provider.default_endpoint().to_owned())
 }
 
-fn normalize_ollama_chat_endpoint(endpoint: &str) -> String {
+/// The chat endpoint for a value that may name the server, its `/v1` root, or
+/// the completions path itself.
+fn normalize_omlx_chat_endpoint(endpoint: &str) -> String {
     let endpoint = endpoint.trim().trim_end_matches('/');
-    if endpoint.ends_with("/api/chat") {
+    if endpoint.ends_with("/chat/completions") {
         endpoint.to_string()
-    } else if endpoint.ends_with("/api") {
-        format!("{endpoint}/chat")
+    } else if endpoint.ends_with("/v1") {
+        format!("{endpoint}/chat/completions")
     } else {
-        format!("{endpoint}/api/chat")
+        format!("{endpoint}/v1/chat/completions")
     }
 }
 
-fn ollama_tags_endpoint() -> String {
+fn omlx_models_endpoint() -> String {
     let endpoint = current_endpoint();
-    let base = endpoint.trim_end_matches("/api/chat").trim_end_matches('/');
-    format!("{base}/api/tags")
+    let base = endpoint
+        .trim_end_matches("/chat/completions")
+        .trim_end_matches('/');
+    format!("{base}/models")
 }
 
 #[derive(Deserialize)]
-struct OllamaTagsResponse {
-    models: Vec<OllamaTagModel>,
+struct OmlxModelsResponse {
+    data: Vec<OmlxModel>,
 }
 
 #[derive(Deserialize)]
-struct OllamaTagModel {
-    name: String,
+struct OmlxModel {
+    id: String,
 }
 
-fn first_available_ollama_model() -> Option<String> {
+fn first_available_omlx_model() -> Option<String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_millis(500))
         .build()
         .ok()?;
-    client
-        .get(ollama_tags_endpoint())
+    let mut request = client.get(omlx_models_endpoint());
+    if let Some(key) = api_key() {
+        request = request.bearer_auth(key);
+    }
+    request
         .send()
         .ok()?
         .error_for_status()
         .ok()?
-        .json::<OllamaTagsResponse>()
+        .json::<OmlxModelsResponse>()
         .ok()?
-        .models
+        .data
         .into_iter()
-        .map(|model| model.name.trim().to_string())
-        .find(|name| !name.is_empty())
+        .map(|model| model.id.trim().to_string())
+        .find(|id| !id.is_empty())
 }
 
 pub fn env_model_active() -> bool {
@@ -251,35 +270,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn llm_provider_parses_ollama_aliases() {
+    fn llm_provider_parses_omlx_aliases() {
+        assert_eq!(LlmProvider::from_config("omlx"), Some(LlmProvider::Omlx));
         assert_eq!(
-            LlmProvider::from_config("ollama"),
-            Some(LlmProvider::Ollama)
+            LlmProvider::from_config("omlx-server"),
+            Some(LlmProvider::Omlx)
         );
         assert_eq!(
-            LlmProvider::from_config("llama-server"),
-            Some(LlmProvider::Ollama)
-        );
-        assert_eq!(
-            LlmProvider::from_config("llama.cpp"),
-            Some(LlmProvider::Ollama)
+            LlmProvider::from_config("openai-compatible"),
+            Some(LlmProvider::Omlx)
         );
         assert_eq!(LlmProvider::from_config("unsupported"), None);
     }
 
     #[test]
-    fn ollama_url_env_accepts_base_url() {
+    fn omlx_url_env_accepts_base_url() {
         assert_eq!(
-            normalize_ollama_chat_endpoint("http://localhost:11434"),
-            "http://localhost:11434/api/chat"
+            normalize_omlx_chat_endpoint("http://localhost:8000"),
+            "http://localhost:8000/v1/chat/completions"
         );
         assert_eq!(
-            normalize_ollama_chat_endpoint("http://localhost:11434/api/chat"),
-            "http://localhost:11434/api/chat"
+            normalize_omlx_chat_endpoint("http://localhost:8000/v1/chat/completions"),
+            "http://localhost:8000/v1/chat/completions"
         );
         assert_eq!(
-            normalize_ollama_chat_endpoint("http://localhost:11434/api"),
-            "http://localhost:11434/api/chat"
+            normalize_omlx_chat_endpoint("http://localhost:8000/v1"),
+            "http://localhost:8000/v1/chat/completions"
         );
     }
 }
