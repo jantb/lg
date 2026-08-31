@@ -7,6 +7,7 @@ const CODE_BG: Color = Color::Rgb(28, 31, 38);
 
 #[derive(Clone, Copy)]
 enum Syntax {
+    CSharp,
     Kotlin,
     Rust,
 }
@@ -239,6 +240,7 @@ fn language_syntax(lang: &str) -> Option<Syntax> {
     match lang.to_ascii_lowercase().as_str() {
         "rs" | "rust" => Some(Syntax::Rust),
         "kt" | "kts" | "kotlin" => Some(Syntax::Kotlin),
+        "cs" | "csx" | "csharp" | "c#" => Some(Syntax::CSharp),
         _ => None,
     }
 }
@@ -386,7 +388,7 @@ fn is_supported_source_path(path: &str) -> bool {
         std::path::Path::new(path)
             .extension()
             .and_then(|extension| extension.to_str()),
-        Some("kt" | "kts" | "java" | "md" | "rs")
+        Some("kt" | "kts" | "java" | "md" | "rs" | "cs" | "csx")
     )
 }
 
@@ -560,6 +562,75 @@ fn keyword_style(word: &str, syntax: Syntax, base: Style) -> Option<Style> {
                 | "use"
                 | "where"
                 | "while"
+        ),
+        Syntax::CSharp => matches!(
+            word,
+            "abstract"
+                | "as"
+                | "async"
+                | "await"
+                | "base"
+                | "bool"
+                | "break"
+                | "case"
+                | "catch"
+                | "class"
+                | "const"
+                | "continue"
+                | "default"
+                | "delegate"
+                | "do"
+                | "double"
+                | "else"
+                | "enum"
+                | "event"
+                | "false"
+                | "finally"
+                | "for"
+                | "foreach"
+                | "get"
+                | "if"
+                | "in"
+                | "int"
+                | "interface"
+                | "internal"
+                | "is"
+                | "lock"
+                | "long"
+                | "namespace"
+                | "new"
+                | "null"
+                | "object"
+                | "out"
+                | "override"
+                | "params"
+                | "partial"
+                | "private"
+                | "protected"
+                | "public"
+                | "readonly"
+                | "record"
+                | "ref"
+                | "return"
+                | "sealed"
+                | "set"
+                | "static"
+                | "string"
+                | "struct"
+                | "switch"
+                | "this"
+                | "throw"
+                | "true"
+                | "try"
+                | "typeof"
+                | "using"
+                | "var"
+                | "virtual"
+                | "void"
+                | "when"
+                | "where"
+                | "while"
+                | "yield"
         ),
         Syntax::Kotlin => matches!(
             word,

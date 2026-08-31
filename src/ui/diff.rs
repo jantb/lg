@@ -122,6 +122,7 @@ const DIFF_NUMBER_GUTTER: usize = SIDE_NUMBER_WIDTH * 2 + 2;
 
 #[derive(Clone, Copy)]
 enum Syntax {
+    CSharp,
     Kotlin,
     Rust,
 }
@@ -748,6 +749,8 @@ fn diff_line_syntax(line: &str) -> Option<Syntax> {
 fn path_syntax(path: &str) -> Option<Syntax> {
     if path.ends_with(".rs") {
         Some(Syntax::Rust)
+    } else if path.ends_with(".cs") || path.ends_with(".csx") {
+        Some(Syntax::CSharp)
     } else if path.ends_with(".kt") || path.ends_with(".kts") {
         Some(Syntax::Kotlin)
     } else {
@@ -908,6 +911,75 @@ fn keyword_style(word: &str, syntax: Syntax, base: Style) -> Option<Style> {
                 | "where"
                 | "while"
         ),
+        Syntax::CSharp => matches!(
+            word,
+            "abstract"
+                | "as"
+                | "async"
+                | "await"
+                | "base"
+                | "bool"
+                | "break"
+                | "case"
+                | "catch"
+                | "class"
+                | "const"
+                | "continue"
+                | "default"
+                | "delegate"
+                | "do"
+                | "double"
+                | "else"
+                | "enum"
+                | "event"
+                | "false"
+                | "finally"
+                | "for"
+                | "foreach"
+                | "get"
+                | "if"
+                | "in"
+                | "int"
+                | "interface"
+                | "internal"
+                | "is"
+                | "lock"
+                | "long"
+                | "namespace"
+                | "new"
+                | "null"
+                | "object"
+                | "out"
+                | "override"
+                | "params"
+                | "partial"
+                | "private"
+                | "protected"
+                | "public"
+                | "readonly"
+                | "record"
+                | "ref"
+                | "return"
+                | "sealed"
+                | "set"
+                | "static"
+                | "string"
+                | "struct"
+                | "switch"
+                | "this"
+                | "throw"
+                | "true"
+                | "try"
+                | "typeof"
+                | "using"
+                | "var"
+                | "virtual"
+                | "void"
+                | "when"
+                | "where"
+                | "while"
+                | "yield"
+        ),
         Syntax::Kotlin => matches!(
             word,
             "as" | "class"
@@ -933,4 +1005,39 @@ fn keyword_style(word: &str, syntax: Syntax, base: Style) -> Option<Style> {
         ),
     };
     keyword.then_some(color_style(Color::Yellow, base).add_modifier(Modifier::BOLD))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn styled_text(line: &Line<'_>, color: Color) -> String {
+        line.spans
+            .iter()
+            .filter(|span| span.style.fg == Some(color))
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn csharp_source_line_highlights_keywords_types_and_strings() {
+        let line = highlight_source_line_for_path(
+            "public async Task<Order> Load(string id) { return \"ok\"; }",
+            "src/Orders/OrderService.cs",
+        );
+
+        let keywords = styled_text(&line, Color::Yellow);
+        assert!(keywords.contains("public"), "{keywords}");
+        assert!(keywords.contains("async"), "{keywords}");
+        assert!(keywords.contains("return"), "{keywords}");
+        assert!(styled_text(&line, Color::LightCyan).contains("Task"));
+        assert!(styled_text(&line, Color::LightYellow).contains("\"ok\""));
+    }
+
+    #[test]
+    fn csharp_comment_is_dimmed() {
+        let line = highlight_source_line_for_path("var x = 1; // note", "Program.csx");
+
+        assert!(styled_text(&line, Color::DarkGray).contains("// note"));
+    }
 }
