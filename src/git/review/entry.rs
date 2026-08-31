@@ -1,6 +1,6 @@
 //! Turning a diff into the entry points worth reading first.
 
-use super::source::{infer_entry_symbol, matches_kotlin_path, source_context};
+use super::source::{infer_entry_symbol, matches_csharp_path, matches_kotlin_path, source_context};
 use super::{ReviewEntryPoint, truncate_review_text};
 
 pub(super) fn review_entry_points(diff: &str) -> Vec<ReviewEntryPoint> {
@@ -122,6 +122,8 @@ fn is_import_line(path: &str, line: &str) -> bool {
         line.starts_with("use ") || line.starts_with("extern crate ")
     } else if matches_kotlin_path(path) || path.ends_with(".java") {
         line.starts_with("import ") || line.starts_with("package ")
+    } else if matches_csharp_path(path) {
+        line.starts_with("using ") || line.starts_with("namespace ")
     } else {
         line.starts_with("import ") || line.starts_with("from ") || line.starts_with("export ")
     }
