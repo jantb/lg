@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Output;
 
+mod attrs;
 mod branches;
 mod commits;
 mod config;
@@ -18,6 +19,9 @@ mod review;
 mod status;
 mod worktree;
 
+pub use attrs::{
+    FileAttrs, SUPPRESSED_DIFF_MARKER, file_attrs, is_suppressed_diff_body, suppress_generated_diff,
+};
 pub use branches::{
     Branch, RemoteBranch, list_branches, list_remote_branches, nested_repo_branches,
     nested_repo_branches_at, nested_repo_remote_branches, nested_repo_remote_branches_at,

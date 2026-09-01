@@ -58,6 +58,20 @@ pub(super) fn review_source_context_lines(
     if !sections.is_empty() {
         let multiple = sections.len() > 1;
         for section in sections {
+            // A suppressed file has no patch to overlay, and reading it to
+            // display it would undo the suppression.
+            if crate::git::is_suppressed_diff_body(&section.body) {
+                lines.extend(fallback_source_context_lines(
+                    &section.body,
+                    &section.context,
+                    Some(&section.path),
+                    &section.notes,
+                    indent,
+                    side_by_side,
+                    viewport_width,
+                ));
+                continue;
+            }
             if let Some(mut source) = full_source_with_inline_diff(
                 cache,
                 &section.path,

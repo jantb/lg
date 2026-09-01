@@ -1,11 +1,14 @@
 use anyhow::Result;
 use std::path::Path;
 
+use super::attrs::suppress_generated_diff;
 use super::{git_command, run, run_combined};
 
 pub fn staged_diff() -> Result<String> {
     let out = run(&["diff", "--cached"])?;
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(suppress_generated_diff(&String::from_utf8_lossy(
+        &out.stdout,
+    )))
 }
 
 pub fn repo_root() -> Result<String> {
@@ -37,10 +40,10 @@ pub fn all_diffs() -> Result<String> {
         String::from_utf8_lossy(&worktree_out.stdout).into_owned(),
         ".",
     )?;
-    Ok(format!(
+    Ok(suppress_generated_diff(&format!(
         "== staged (--cached) ==\n{}\n== worktree ==\n{}",
         cached, worktree
-    ))
+    )))
 }
 
 pub fn file_diff(path: &str) -> Result<String> {
@@ -51,10 +54,10 @@ pub fn file_diff(path: &str) -> Result<String> {
         String::from_utf8_lossy(&worktree_out.stdout).into_owned(),
         path,
     )?;
-    Ok(format!(
+    Ok(suppress_generated_diff(&format!(
         "== staged (--cached) ==\n{}\n== worktree ==\n{}",
         cached, worktree
-    ))
+    )))
 }
 
 /// Aggregate staged + worktree diff for everything under a folder prefix.
@@ -71,10 +74,10 @@ pub fn folder_diff(prefix: &str) -> Result<String> {
         String::from_utf8_lossy(&worktree_out.stdout).into_owned(),
         &spec,
     )?;
-    Ok(format!(
+    Ok(suppress_generated_diff(&format!(
         "== staged (--cached) {prefix}/ ==\n{}\n== worktree {prefix}/ ==\n{}",
         cached, worktree
-    ))
+    )))
 }
 
 pub fn show_commit(sha: &str) -> Result<String> {
@@ -88,7 +91,9 @@ pub fn show_commit(sha: &str) -> Result<String> {
         &format!("--format={format}"),
         sha,
     ])?;
-    Ok(label_commit_patch(&String::from_utf8_lossy(&out.stdout)))
+    Ok(label_commit_patch(&suppress_generated_diff(
+        &String::from_utf8_lossy(&out.stdout),
+    )))
 }
 
 pub fn branch_log(reference: &str, limit: usize) -> Result<String> {

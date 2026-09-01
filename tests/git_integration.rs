@@ -4222,3 +4222,67 @@ fn syncing_again_after_a_conflict_pushes_the_branch_it_stopped_on() {
         "nothing should be left conflicted"
     );
 }
+
+/// The `apps/api/static/dist/* linguist-generated=true` shape a real
+/// `.gitattributes` uses: the bundle still shows as changed, but nothing of
+/// what it contains reaches the diff a prompt is built from.
+#[test]
+fn a_generated_file_shows_as_changed_without_its_contents() {
+    let repo = init_repo();
+    let dist = repo.path().join("apps/api/static/dist");
+    fs::create_dir_all(dist.join("sub")).expect("mkdir");
+    fs::write(
+        repo.path().join(".gitattributes"),
+        "apps/api/static/dist/** linguist-generated=true\n\
+         apps/api/static/dist/keep.js linguist-generated=false\n",
+    )
+    .expect("write .gitattributes");
+    fs::write(dist.join("app.js"), "old bundle\n").expect("write");
+    fs::write(dist.join("keep.js"), "old keep\n").expect("write");
+    fs::write(repo.path().join("real.rs"), "fn main() {}\n").expect("write");
+    git_ok(repo.path(), &["add", "-A"]);
+    git_ok(repo.path(), &["commit", "-m", "base"]);
+
+    fs::write(dist.join("app.js"), "SECRET_BUNDLE_CONTENTS\n").expect("write");
+    fs::write(dist.join("keep.js"), "hand written change\n").expect("write");
+    fs::write(repo.path().join("real.rs"), "fn main() { real(); }\n").expect("write");
+    git_ok(repo.path(), &["add", "-A"]);
+
+    let diff = lg::git::with_repo(repo.path(), lg::git::all_diffs).expect("all_diffs");
+
+    assert!(
+        diff.contains("apps/api/static/dist/app.js"),
+        "the generated file should still show as changed: {diff}"
+    );
+    assert!(
+        !diff.contains("SECRET_BUNDLE_CONTENTS"),
+        "generated contents must not reach the diff: {diff}"
+    );
+    assert!(
+        diff.contains("hand written change"),
+        "an explicit linguist-generated=false carves the file back out: {diff}"
+    );
+    assert!(
+        diff.contains("real()"),
+        "ordinary files are untouched: {diff}"
+    );
+}
+
+/// Git enforces `-diff` itself, so the check is that lg reports the file rather
+/// than dropping it once its patch is a binary stand-in.
+#[test]
+fn a_minus_diff_file_shows_as_changed_without_its_contents() {
+    let repo = init_repo();
+    fs::write(repo.path().join(".gitattributes"), "secrets.env -diff\n").expect("write");
+    fs::write(repo.path().join("secrets.env"), "TOKEN=old\n").expect("write");
+    git_ok(repo.path(), &["add", "-A"]);
+    git_ok(repo.path(), &["commit", "-m", "base"]);
+
+    fs::write(repo.path().join("secrets.env"), "TOKEN=hunter2\n").expect("write");
+    git_ok(repo.path(), &["add", "-A"]);
+
+    let diff = lg::git::with_repo(repo.path(), lg::git::all_diffs).expect("all_diffs");
+
+    assert!(diff.contains("secrets.env"), "file should show: {diff}");
+    assert!(!diff.contains("hunter2"), "contents must not reach: {diff}");
+}

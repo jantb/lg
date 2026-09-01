@@ -3,6 +3,7 @@
 use anyhow::Result;
 use std::path::Path;
 
+use crate::git::attrs::suppress_generated_diff;
 use crate::git::{git_command, run};
 
 use super::{ReviewFile, truncate_review_text};
@@ -113,7 +114,7 @@ pub(super) fn worktree_review_diff(base: &str) -> Result<String> {
         let untracked = untracked_file_diff(&path)?;
         append_review_diff_part(&mut diff, &untracked);
     }
-    Ok(diff)
+    Ok(suppress_generated_diff(&diff))
 }
 
 fn append_review_diff_part(out: &mut String, part: &str) {
