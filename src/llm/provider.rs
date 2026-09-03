@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::config::{LLM_MODEL, OMLX_CHAT_ENDPOINT};
+use crate::config::{LLM_MODEL, MTPLX_CHAT_ENDPOINT};
 
 const CONFIG_FILE_ENV: &str = "LG_CONFIG_FILE";
 const CONFIG_MODEL_KEY: &str = "llm_model";
@@ -14,49 +14,49 @@ const CONFIG_PROVIDER_KEY: &str = "llm_provider";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmProvider {
-    Omlx,
+    Mtplx,
 }
 
 impl LlmProvider {
-    pub const ALL: [Self; 1] = [Self::Omlx];
+    pub const ALL: [Self; 1] = [Self::Mtplx];
 
     pub fn label(self) -> &'static str {
-        "omlx"
+        "mtplx"
     }
 
     fn config_value(self) -> &'static str {
-        "omlx"
+        "mtplx"
     }
 
     fn from_config(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "omlx" | "omlx-server" | "omlx_server" | "mlx" | "openai-compatible" => {
-                Some(Self::Omlx)
+            "mtplx" | "mtplx-server" | "mtplx_server" | "omlx" | "mlx" | "openai-compatible" => {
+                Some(Self::Mtplx)
             }
             _ => None,
         }
     }
 
     fn default_endpoint(self) -> &'static str {
-        OMLX_CHAT_ENDPOINT
+        MTPLX_CHAT_ENDPOINT
     }
 
     fn endpoint_env(self) -> Option<String> {
-        std::env::var("LG_OMLX_CHAT_ENDPOINT")
-            .or_else(|_| std::env::var("LG_OMLX_URL"))
+        std::env::var("LG_MTPLX_CHAT_ENDPOINT")
+            .or_else(|_| std::env::var("LG_MTPLX_URL"))
             .ok()
             .map(|endpoint| endpoint.trim().to_string())
             .filter(|endpoint| !endpoint.is_empty())
-            .map(|endpoint| normalize_omlx_chat_endpoint(&endpoint))
+            .map(|endpoint| normalize_mtplx_chat_endpoint(&endpoint))
     }
 }
 
-/// The key omlx requires on every request, when the environment names one.
+/// The key mtplx requires on every request, when the environment names one.
 ///
-/// omlx rejects an unauthenticated request outright, so a missing key surfaces
+/// mtplx rejects an unauthenticated request outright, so a missing key surfaces
 /// as an HTTP 401 from the server rather than as a separate check here.
 pub fn api_key() -> Option<String> {
-    std::env::var("OMLX_API_KEY")
+    std::env::var("MTPLX_API_KEY")
         .ok()
         .map(|key| key.trim().to_string())
         .filter(|key| !key.is_empty())
@@ -65,14 +65,14 @@ pub fn api_key() -> Option<String> {
 pub fn current_model() -> String {
     env_model()
         .or_else(saved_model)
-        .or_else(first_available_omlx_model)
+        .or_else(first_available_mtplx_model)
         .unwrap_or_else(|| LLM_MODEL.to_owned())
 }
 
 pub fn current_provider() -> LlmProvider {
     env_provider()
         .or_else(saved_provider)
-        .unwrap_or(LlmProvider::Omlx)
+        .unwrap_or(LlmProvider::Mtplx)
 }
 
 pub fn current_endpoint() -> String {
@@ -87,7 +87,7 @@ pub fn endpoint_for_provider(provider: LlmProvider) -> String {
 
 /// The chat endpoint for a value that may name the server, its `/v1` root, or
 /// the completions path itself.
-fn normalize_omlx_chat_endpoint(endpoint: &str) -> String {
+fn normalize_mtplx_chat_endpoint(endpoint: &str) -> String {
     let endpoint = endpoint.trim().trim_end_matches('/');
     if endpoint.ends_with("/chat/completions") {
         endpoint.to_string()
@@ -98,7 +98,7 @@ fn normalize_omlx_chat_endpoint(endpoint: &str) -> String {
     }
 }
 
-fn omlx_models_endpoint() -> String {
+fn mtplx_models_endpoint() -> String {
     let endpoint = current_endpoint();
     let base = endpoint
         .trim_end_matches("/chat/completions")
@@ -107,21 +107,21 @@ fn omlx_models_endpoint() -> String {
 }
 
 #[derive(Deserialize)]
-struct OmlxModelsResponse {
-    data: Vec<OmlxModel>,
+struct MtplxModelsResponse {
+    data: Vec<MtplxModel>,
 }
 
 #[derive(Deserialize)]
-struct OmlxModel {
+struct MtplxModel {
     id: String,
 }
 
-fn first_available_omlx_model() -> Option<String> {
+fn first_available_mtplx_model() -> Option<String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_millis(500))
         .build()
         .ok()?;
-    let mut request = client.get(omlx_models_endpoint());
+    let mut request = client.get(mtplx_models_endpoint());
     if let Some(key) = api_key() {
         request = request.bearer_auth(key);
     }
@@ -130,7 +130,7 @@ fn first_available_omlx_model() -> Option<String> {
         .ok()?
         .error_for_status()
         .ok()?
-        .json::<OmlxModelsResponse>()
+        .json::<MtplxModelsResponse>()
         .ok()?
         .data
         .into_iter()
@@ -270,31 +270,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn llm_provider_parses_omlx_aliases() {
-        assert_eq!(LlmProvider::from_config("omlx"), Some(LlmProvider::Omlx));
+    fn llm_provider_parses_mtplx_aliases() {
+        assert_eq!(LlmProvider::from_config("mtplx"), Some(LlmProvider::Mtplx));
         assert_eq!(
-            LlmProvider::from_config("omlx-server"),
-            Some(LlmProvider::Omlx)
+            LlmProvider::from_config("mtplx-server"),
+            Some(LlmProvider::Mtplx)
         );
         assert_eq!(
             LlmProvider::from_config("openai-compatible"),
-            Some(LlmProvider::Omlx)
+            Some(LlmProvider::Mtplx)
         );
+        assert_eq!(LlmProvider::from_config("omlx"), Some(LlmProvider::Mtplx));
         assert_eq!(LlmProvider::from_config("unsupported"), None);
     }
 
     #[test]
-    fn omlx_url_env_accepts_base_url() {
+    fn mtplx_url_env_accepts_base_url() {
         assert_eq!(
-            normalize_omlx_chat_endpoint("http://localhost:8000"),
+            normalize_mtplx_chat_endpoint("http://localhost:8000"),
             "http://localhost:8000/v1/chat/completions"
         );
         assert_eq!(
-            normalize_omlx_chat_endpoint("http://localhost:8000/v1/chat/completions"),
+            normalize_mtplx_chat_endpoint("http://localhost:8000/v1/chat/completions"),
             "http://localhost:8000/v1/chat/completions"
         );
         assert_eq!(
-            normalize_omlx_chat_endpoint("http://localhost:8000/v1"),
+            normalize_mtplx_chat_endpoint("http://localhost:8000/v1"),
             "http://localhost:8000/v1/chat/completions"
         );
     }

@@ -26,21 +26,24 @@ use reply::{
     finalize, finalize_review_assist, finalize_review_chat, finalize_review_pr_text,
     finalize_review_style_flag_for_path, parse_conventions,
 };
-use stream::{ChatMessage, num_predict_for, stream_messages, stream_prompt};
+use stream::{ChatMessage, ChatTask, stream_messages, stream_prompt};
 use think::strip_think_tags;
 
-/// Generation budget for a commit message. The model streams its reasoning
-/// into the same budget as its answer, so this has to cover both.
-const COMMIT_NUM_PREDICT: i32 = 8_192;
+/// Generation budget for a commit message. Reasoning is off for this task, so
+/// the budget only has to cover the message itself.
+const COMMIT_NUM_PREDICT: i32 = 512;
 const CONVENTIONS_NUM_PREDICT: i32 = 300;
 const REVIEW_ASSIST_NUM_PREDICT: i32 = 16_000;
+/// The one task worth waiting for reasoning on: the whole point of the
+/// assisted review is the model's analysis, not a formatted answer.
+const REVIEW_ASSIST_THINKING: bool = true;
 const REVIEW_PR_NUM_PREDICT: i32 = 4_096;
 const REVIEW_CHAT_NUM_PREDICT: i32 = 768;
 /// How many of the most recent chat turns travel with a follow-up question.
 const REVIEW_CHAT_HISTORY_TURNS: usize = 8;
 const REVIEW_STYLE_FLAG_NUM_PREDICT: i32 = 96;
 
-/// Stream tokens from the local omlx chat endpoint, routing reasoning chunks
+/// Stream tokens from the local mtplx chat endpoint, routing reasoning chunks
 /// (and any inline `<think>...</think>` content) to [`GenMsg::Thinking`], and
 /// content chunks to [`GenMsg::Output`].
 /// Ends with a [`GenMsg::Done`] or [`GenMsg::Error`].
@@ -49,7 +52,7 @@ pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
     let limits = settings.clone();
     stream_prompt(
         build_commit_prompt(&diff, &settings),
-        num_predict_for(COMMIT_NUM_PREDICT),
+        ChatTask::new("lg-commit", COMMIT_NUM_PREDICT, false),
         move |raw| crate::settings::enforce_commit_limits(&finalize(raw), &limits),
         tx,
     );
@@ -65,7 +68,7 @@ pub fn suggest_repo_conventions(history: String, tx: Sender<crate::state::Settin
     std::thread::spawn(move || {
         stream_prompt(
             build_conventions_prompt(&history),
-            num_predict_for(CONVENTIONS_NUM_PREDICT),
+            ChatTask::new("lg-conventions", CONVENTIONS_NUM_PREDICT, false),
             |raw| strip_think_tags(raw).trim().to_string(),
             gen_tx,
         );
@@ -94,7 +97,11 @@ pub fn suggest_repo_conventions(history: String, tx: Sender<crate::state::Settin
 pub fn stream_review_assist(context: String, tx: Sender<GenMsg>) {
     stream_prompt(
         build_review_assist_prompt(&context, &crate::settings::load()),
-        num_predict_for(REVIEW_ASSIST_NUM_PREDICT),
+        ChatTask::new(
+            "lg-review-assist",
+            REVIEW_ASSIST_NUM_PREDICT,
+            REVIEW_ASSIST_THINKING,
+        ),
         finalize_review_assist,
         tx,
     );
@@ -104,7 +111,7 @@ pub fn stream_review_style_flag(path: String, context: String, tx: Sender<GenMsg
     let finalizer_path = path.clone();
     stream_prompt(
         build_review_style_flag_prompt(&path, &context, &crate::settings::load()),
-        num_predict_for(REVIEW_STYLE_FLAG_NUM_PREDICT),
+        ChatTask::new("lg-review-flags", REVIEW_STYLE_FLAG_NUM_PREDICT, false),
         move |raw| finalize_review_style_flag_for_path(&finalizer_path, raw),
         tx,
     );
@@ -113,7 +120,7 @@ pub fn stream_review_style_flag(path: String, context: String, tx: Sender<GenMsg
 pub fn stream_review_pr_text(context: String, tx: Sender<GenMsg>) {
     stream_prompt(
         build_review_pr_text_prompt(&context, &crate::settings::load()),
-        num_predict_for(REVIEW_PR_NUM_PREDICT),
+        ChatTask::new("lg-review-pr", REVIEW_PR_NUM_PREDICT, false),
         finalize_review_pr_text,
         tx,
     );
@@ -142,7 +149,7 @@ pub fn stream_review_chat(
     });
     stream_messages(
         messages,
-        num_predict_for(REVIEW_CHAT_NUM_PREDICT),
+        ChatTask::new("lg-review-chat", REVIEW_CHAT_NUM_PREDICT, false),
         finalize_review_chat,
         tx,
     );
@@ -154,11 +161,25 @@ mod tests {
     use crate::config::LLM_NUM_PREDICT;
 
     #[test]
-    fn commit_options_leave_room_for_reasoning() {
-        assert_eq!(COMMIT_NUM_PREDICT, 8_192);
+    fn a_commit_message_is_written_without_reasoning_first() {
+        let task = ChatTask::new("lg-commit", COMMIT_NUM_PREDICT, false);
+
+        assert!(!task.thinking);
         const { assert!(COMMIT_NUM_PREDICT > LLM_NUM_PREDICT) };
         if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
-            assert_eq!(num_predict_for(COMMIT_NUM_PREDICT), COMMIT_NUM_PREDICT);
+            assert_eq!(task.num_predict, COMMIT_NUM_PREDICT);
         }
+    }
+
+    #[test]
+    fn the_assisted_review_still_reasons_before_answering() {
+        assert!(
+            ChatTask::new(
+                "lg-review-assist",
+                REVIEW_ASSIST_NUM_PREDICT,
+                REVIEW_ASSIST_THINKING
+            )
+            .thinking
+        );
     }
 }

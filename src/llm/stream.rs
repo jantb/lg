@@ -24,6 +24,14 @@ struct ChatCompletionsRequest<'a> {
     top_p: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<i32>,
+    /// Off for the tasks that want an answer rather than deliberation: the
+    /// server then spends no tokens on reasoning it would only be stripped
+    /// back out of the reply.
+    enable_thinking: bool,
+    /// Names the server-side session, so consecutive requests for the same
+    /// task reuse the prefill of their shared prompt prefix instead of
+    /// re-reading it. Tasks are kept apart because their prefixes diverge.
+    user: &'a str,
 }
 
 #[derive(Serialize)]
@@ -45,7 +53,43 @@ pub fn num_predict_for(budget: i32) -> i32 {
         .unwrap_or(LLM_NUM_PREDICT)
 }
 
-pub fn stream_prompt<F>(prompt: String, num_predict: i32, finalizer: F, tx: Sender<GenMsg>)
+/// One task's generation settings: how much it may write, whether it should
+/// reason first, and which server-side session its prefill belongs to.
+#[derive(Clone, Copy)]
+pub struct ChatTask {
+    pub session: &'static str,
+    pub num_predict: i32,
+    pub thinking: bool,
+}
+
+impl ChatTask {
+    /// A task wanting `budget` output tokens, honouring both the
+    /// `LG_LLM_NUM_PREDICT` and `LG_LLM_THINKING` overrides.
+    pub fn new(session: &'static str, budget: i32, thinking: bool) -> Self {
+        Self {
+            session,
+            num_predict: num_predict_for(budget),
+            thinking: thinking_override().unwrap_or(thinking),
+        }
+    }
+}
+
+/// `LG_LLM_THINKING` forces reasoning on or off for every task; anything that
+/// does not read as a boolean leaves each task's own choice alone.
+fn thinking_override() -> Option<bool> {
+    match std::env::var("LG_LLM_THINKING")
+        .ok()?
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "1" | "true" | "on" | "yes" => Some(true),
+        "0" | "false" | "off" | "no" => Some(false),
+        _ => None,
+    }
+}
+
+pub fn stream_prompt<F>(prompt: String, task: ChatTask, finalizer: F, tx: Sender<GenMsg>)
 where
     F: Fn(&str) -> String,
 {
@@ -54,7 +98,7 @@ where
             role: "user",
             content: prompt,
         }],
-        num_predict,
+        task,
         finalizer,
         tx,
     );
@@ -62,10 +106,11 @@ where
 
 pub fn stream_messages(
     messages: Vec<ChatMessage>,
-    num_predict: i32,
+    task: ChatTask,
     finalizer: impl Fn(&str) -> String,
     tx: Sender<GenMsg>,
 ) {
+    let num_predict = task.num_predict;
     let start = Instant::now();
     let model = current_model();
     let provider = current_provider();
@@ -75,7 +120,7 @@ pub fn stream_messages(
         .map(|message| message.content.len())
         .sum::<usize>();
 
-    let body = match chat_request_body(&model, messages, num_predict) {
+    let body = match chat_request_body(&model, messages, task) {
         Ok(body) => body,
         Err(e) => {
             let _ = tx.send(GenMsg::Error(format!("llm request body: {e}")));
@@ -89,8 +134,9 @@ pub fn stream_messages(
     trace_line(
         &mut trace,
         &format!(
-            "# START provider={} model={model} endpoint={endpoint} num_predict={num_predict} prompt_bytes={prompt_bytes} elapsed_ms=0",
+            "# START provider={} model={model} endpoint={endpoint} num_predict={num_predict} thinking={} prompt_bytes={prompt_bytes} elapsed_ms=0",
             provider.label(),
+            task.thinking,
         ),
     );
 
@@ -274,7 +320,7 @@ fn fail(trace: &mut Option<std::fs::File>, tx: &Sender<GenMsg>, message: String)
 fn chat_request_body(
     model: &str,
     messages: Vec<ChatMessage>,
-    num_predict: i32,
+    task: ChatTask,
 ) -> Result<serde_json::Value> {
     Ok(serde_json::to_value(ChatCompletionsRequest {
         model,
@@ -282,7 +328,9 @@ fn chat_request_body(
         stream: true,
         temperature: LLM_TEMPERATURE,
         top_p: LLM_TOP_P,
-        max_tokens: (num_predict > 0).then_some(num_predict),
+        max_tokens: (task.num_predict > 0).then_some(task.num_predict),
+        enable_thinking: task.thinking,
+        user: task.session,
     })?)
 }
 
@@ -534,13 +582,19 @@ mod tests {
                 role: "user",
                 content: "hi".into(),
             }],
-            42,
+            ChatTask {
+                session: "lg-test",
+                num_predict: 42,
+                thinking: false,
+            },
         )
         .unwrap();
 
         assert_eq!(body["model"], "qwen-local");
         assert_eq!(body["stream"], true);
         assert_eq!(body["max_tokens"], 42);
+        assert_eq!(body["enable_thinking"], false);
+        assert_eq!(body["user"], "lg-test");
         assert_eq!(body["temperature"], LLM_TEMPERATURE);
         assert_eq!(body["top_p"], LLM_TOP_P);
         assert_eq!(body["messages"][0]["role"], "user");
@@ -559,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn omlx_sse_deltas_are_read_as_output() {
+    fn mtplx_sse_deltas_are_read_as_output() {
         let line = r#"data: {"choices":[{"delta":{"content":"hello"}}]}"#;
         let json = stream_json_line(line).unwrap();
         let value: serde_json::Value = serde_json::from_str(json).unwrap();

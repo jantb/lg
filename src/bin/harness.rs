@@ -140,7 +140,7 @@ fn seed_mixed_status(dir: &Path) {
 
 // ── LLM probe ─────────────────────────────────────────────────────────────────
 
-fn omlx_server_reachable() -> bool {
+fn mtplx_server_reachable() -> bool {
     let endpoint = lg::llm::current_endpoint();
     let base = endpoint
         .trim_end_matches("/chat/completions")
@@ -362,7 +362,7 @@ fn main() {
     });
 
     // ── LLM (skipped if not reachable) ────────────────────────────────────────
-    if omlx_server_reachable() {
+    if mtplx_server_reachable() {
         check!("llm stream_commit_message yields a final message", {
             let diff = "diff --git a/foo.rs b/foo.rs\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1 +1 @@\n-fn old() {}\n+fn new() {}";
             let (tx, rx) = std::sync::mpsc::channel();
@@ -397,7 +397,7 @@ fn main() {
     } else {
         skip!(
             "llm stream_commit_message",
-            "omlx server not reachable at configured endpoint"
+            "mtplx server not reachable at configured endpoint"
         );
     }
 

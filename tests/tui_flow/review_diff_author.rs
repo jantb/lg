@@ -231,11 +231,11 @@ fn author_modal_shows_error_when_terminal_is_too_small() {
 fn model_modal_picks_and_saves_model() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.llm_model = "test-model".into();
-    app.state.llm_provider = lg::llm::LlmProvider::Omlx;
+    app.state.llm_provider = lg::llm::LlmProvider::Mtplx;
 
     app.render().unwrap();
     assert!(
-        buffer_text(&app).contains("llm omlx/test-model"),
+        buffer_text(&app).contains("llm mtplx/test-model"),
         "footer should show active model"
     );
 
@@ -245,7 +245,7 @@ fn model_modal_picks_and_saves_model() {
     // Opening the modal may kick off the history scan, which locks the rows
     // until it answers; this test is about editing them afterwards.
     app.state.settings_suggest_job = None;
-    app.state.llm_provider = lg::llm::LlmProvider::Omlx;
+    app.state.llm_provider = lg::llm::LlmProvider::Mtplx;
     app.state.llm_provider_idx = 0;
     app.state.llm_model_idx = 0;
     app.state.llm_model_input = lg::config::LLM_MODEL_CHOICES[0].into();
@@ -270,7 +270,7 @@ fn model_modal_picks_and_saves_model() {
         app.state.pending_action,
         Some(PendingAction::SaveSettings {
             model: next.into(),
-            provider: lg::llm::LlmProvider::Omlx,
+            provider: lg::llm::LlmProvider::Mtplx,
             pr_language: "Norwegian".into(),
             comment_style: "terse, imperative".into(),
             commit_subject_max_chars: "50".into(),

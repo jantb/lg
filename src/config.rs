@@ -1,11 +1,11 @@
 use ratatui::style::Color;
 
-pub const OMLX_CHAT_ENDPOINT: &str = "http://localhost:8000/v1/chat/completions";
+pub const MTPLX_CHAT_ENDPOINT: &str = "http://localhost:8000/v1/chat/completions";
 pub const LLM_TEMPERATURE: f32 = 0.2;
 pub const LLM_TOP_P: f32 = 0.9;
 pub const LLM_NUM_PREDICT: i32 = 160;
-pub const LLM_MODEL: &str = "Qwen3.8-27B-oQ4e-mtp";
-pub const LLM_MODEL_CHOICES: &[&str] = &["Qwen3.8-27B-oQ4e-mtp"];
+pub const LLM_MODEL: &str = "mtplx-qwen38-27b-optimized-speed";
+pub const LLM_MODEL_CHOICES: &[&str] = &["mtplx-qwen38-27b-optimized-speed"];
 /// Languages offered for generated prose. Free text still works, so this is a
 /// shortcut for the common picks rather than a closed set.
 pub const PR_LANGUAGE_CHOICES: &[&str] = &[
