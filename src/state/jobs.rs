@@ -368,9 +368,11 @@ pub enum ConflictResolveMsg {
     /// The file was left exactly as git wrote it, because the local model was
     /// the wrong tool for it. `reason` says which way it fell short.
     Declined { path: String, reason: String },
+    /// The pass is over. `declined` carries each path with the reason it was
+    /// left alone, so the panel can say why and not only that.
     Finished {
         resolved: Vec<String>,
-        declined: Vec<String>,
+        declined: Vec<(String, String)>,
     },
 }
 

@@ -357,6 +357,17 @@ fn repo_settings_dir() -> Result<PathBuf> {
     Ok(settings_base_dir()?.join(checkout_slug(&checkout_root()?)))
 }
 
+/// Where the local model's conflict attempts are written down: every prompt,
+/// every answer, and what was made of it. Sits beside the per-repo settings
+/// so it is found where the rest of lg's state is.
+pub fn conflict_resolve_log_path() -> Result<PathBuf> {
+    let base = settings_base_dir()?;
+    Ok(base
+        .parent()
+        .map_or_else(|| base.clone(), Path::to_path_buf)
+        .join("conflict-resolve.log"))
+}
+
 fn settings_base_dir() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os(SETTINGS_DIR_ENV)
         && !dir.is_empty()

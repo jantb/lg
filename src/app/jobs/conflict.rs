@@ -61,7 +61,7 @@ impl App {
     /// does not work out, and stopping here to ask would spend the time it
     /// saved. The files it did settle stay unstaged and on the list, so they
     /// can be read before `v` commits them.
-    fn finish_conflict_resolve(&mut self, resolved: Vec<String>, declined: Vec<String>) {
+    fn finish_conflict_resolve(&mut self, resolved: Vec<String>, declined: Vec<(String, String)>) {
         let mut log = String::new();
         if !resolved.is_empty() {
             log.push_str("Resolved by the local model (review before validating):\n");
@@ -77,9 +77,15 @@ impl App {
                 "Left for {}:\n",
                 self.state.preferred_agent.label()
             ));
-            for path in &declined {
-                log.push_str(&format!("- {path}\n"));
+            for (path, reason) in &declined {
+                log.push_str(&format!("- {path}: {reason}\n"));
             }
+        }
+        if let Ok(path) = crate::settings::conflict_resolve_log_path() {
+            if !log.is_empty() {
+                log.push('\n');
+            }
+            log.push_str(&format!("Prompts and answers are in {}", path.display()));
         }
         self.state.conflict_log = log;
 

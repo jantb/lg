@@ -40,6 +40,72 @@ impl ConflictHunk {
     pub fn resolution_budget_lines(&self) -> usize {
         line_count(&self.ours) + line_count(&self.theirs) + RESOLUTION_SLACK_LINES
     }
+
+    /// Put back the indentation a model tends to drop.
+    ///
+    /// Models asked for "only the merged lines" reliably return them flush
+    /// left, and a YAML or Python line spliced back in at column zero is a
+    /// broken file. Two cases are safe to repair without guessing: an answer
+    /// that is one side of the conflict word for word once leading whitespace
+    /// is ignored is that side, and comes back exactly as git wrote it; an
+    /// answer with less indentation than every line of both sides is shifted
+    /// right by the indent the sides share. Anything else is left alone.
+    pub fn restore_indent(&self, answer: &str) -> String {
+        for side in [&self.ours, &self.theirs] {
+            if same_lines_ignoring_indent(side, answer) {
+                return side.clone();
+            }
+        }
+        let Some(shared) = shared_indent(&self.ours).and_then(|ours| {
+            shared_indent(&self.theirs).map(|theirs| {
+                if ours.len() <= theirs.len() {
+                    ours
+                } else {
+                    theirs
+                }
+            })
+        }) else {
+            return answer.to_string();
+        };
+        if shared.is_empty() {
+            return answer.to_string();
+        }
+        let Some(given) = shared_indent(answer) else {
+            return answer.to_string();
+        };
+        if given.len() >= shared.len() {
+            return answer.to_string();
+        }
+        answer
+            .split_inclusive('\n')
+            .map(|line| {
+                if line.trim().is_empty() {
+                    line.to_string()
+                } else {
+                    format!("{shared}{line}")
+                }
+            })
+            .collect()
+    }
+}
+
+/// Whether two texts are the same lines, once leading whitespace is ignored.
+fn same_lines_ignoring_indent(a: &str, b: &str) -> bool {
+    let a: Vec<&str> = a.lines().map(str::trim_start).collect();
+    let b: Vec<&str> = b.lines().map(str::trim_start).collect();
+    !a.is_empty() && a == b
+}
+
+/// The leading whitespace every non-blank line of `text` begins with, or
+/// `None` when there are no such lines.
+fn shared_indent(text: &str) -> Option<&str> {
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| &line[..line.len() - line.trim_start().len()])
+        .reduce(|a, b| {
+            let common = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
+            &a[..common]
+        })
 }
 
 /// How many lines beyond both sides put together a resolution may run to.
@@ -257,6 +323,55 @@ pub fn marker_line(marker: char) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tag_hunk() -> ConflictHunk {
+        ConflictHunk {
+            ours_label: "HEAD".to_string(),
+            ours: "      tag: \"sha-0e337ed\"\n".to_string(),
+            base: None,
+            theirs: "      tag: \"sha-1685629\"\n".to_string(),
+            theirs_label: "origin/main".to_string(),
+        }
+    }
+
+    /// The model picked their tag but handed it back flush left. Spliced into
+    /// the YAML as is, that would move `tag` out of its mapping.
+    #[test]
+    fn an_answer_that_is_one_side_flush_left_comes_back_as_that_side() {
+        let hunk = tag_hunk();
+        assert_eq!(hunk.restore_indent("tag: \"sha-1685629\"\n"), hunk.theirs);
+        assert_eq!(hunk.restore_indent("tag: \"sha-0e337ed\"\n"), hunk.ours);
+    }
+
+    #[test]
+    fn an_answer_that_kept_its_indent_is_left_alone() {
+        let hunk = tag_hunk();
+        assert_eq!(hunk.restore_indent(&hunk.theirs), hunk.theirs);
+    }
+
+    #[test]
+    fn a_merged_answer_with_less_indent_than_both_sides_is_shifted_to_theirs() {
+        let hunk = ConflictHunk {
+            ours_label: String::new(),
+            ours: "    a();\n".to_string(),
+            base: None,
+            theirs: "    b();\n".to_string(),
+            theirs_label: String::new(),
+        };
+        assert_eq!(hunk.restore_indent("a();\nb();\n"), "    a();\n    b();\n");
+    }
+
+    #[test]
+    fn an_answer_is_not_reindented_when_the_sides_are_flush_left() {
+        let hunk = ConflictHunk {
+            ours_label: String::new(),
+            ours: "a\n".to_string(),
+            base: None,
+            theirs: "b\n".to_string(),
+            theirs_label: String::new(),
+        };
+        assert_eq!(hunk.restore_indent("a\nb\n"), "a\nb\n");
+    }
 
     const MERGE_STYLE: &str = "\
 fn main() {

@@ -158,6 +158,7 @@ const LAYERED_LANGUAGE_EXTENSIONS: [&str; 2] = [".kt", ".java"];
 pub fn build_conflict_hunk_prompt(
     path: &str,
     hunk: &crate::git::ConflictHunk,
+    sides: &crate::git::ConflictSides,
     before: &str,
     after: &str,
 ) -> String {
@@ -172,9 +173,21 @@ pub fn build_conflict_hunk_prompt(
          do not merge them into something neither side wrote.\n\
          - Do not invent code, imports, or text that appears on neither side.\n\
          - Do not touch anything outside the conflicted region.\n\
+         - When both sides replaced the same single value — a version, an image tag, \
+         a hash, a timestamp, a generated number — keep the value from the side whose \
+         commit is newer. The commits are listed below.\n\
          - If the two sides make incompatible decisions, or resolving this needs \
          knowledge that is not shown, reply with exactly: {GIVE_UP_PHRASE}\n"
     );
+    if sides.ours.is_some() || sides.theirs.is_some() {
+        prompt.push_str("\nWhere each side comes from (last commit touching this file):\n");
+        if let Some(commit) = &sides.ours {
+            prompt.push_str(&format!("- our side: {}\n", commit.describe()));
+        }
+        if let Some(commit) = &sides.theirs {
+            prompt.push_str(&format!("- their side: {}\n", commit.describe()));
+        }
+    }
     if !before.trim().is_empty() {
         prompt.push_str(&format!("\nLines before the conflict:\n{before}"));
         if !before.ends_with('\n') {
@@ -362,6 +375,49 @@ mod tests {
         assert!(prompt.contains("business rule orchestration are allowed"));
     }
 
+    fn no_sides() -> crate::git::ConflictSides {
+        crate::git::ConflictSides {
+            ours: None,
+            theirs: None,
+        }
+    }
+
+    /// Two CI commits that each bumped the same image tag is the commonest
+    /// conflict there is, and the text alone cannot say which tag to keep. The
+    /// commits can, so they travel with the hunk.
+    #[test]
+    fn a_conflict_prompt_says_which_commit_each_side_came_from() {
+        let hunk = crate::git::ConflictHunk {
+            ours_label: "HEAD".to_string(),
+            ours: "tag: sha-0e337ed\n".to_string(),
+            base: None,
+            theirs: "tag: sha-1685629\n".to_string(),
+            theirs_label: "origin/main".to_string(),
+        };
+        let sides = crate::git::ConflictSides {
+            ours: Some(crate::git::ConflictSideCommit {
+                hash: "0ac40f2".to_string(),
+                author: "github-actions[bot]".to_string(),
+                date: "2026-09-04T15:38:20Z".to_string(),
+                subject: "chore: deploy sha-0e337ed".to_string(),
+            }),
+            theirs: Some(crate::git::ConflictSideCommit {
+                hash: "9a64534".to_string(),
+                author: "github-actions[bot]".to_string(),
+                date: "2026-09-05T03:15:00Z".to_string(),
+                subject: "chore: deploy sha-1685629".to_string(),
+            }),
+        };
+
+        let prompt = build_conflict_hunk_prompt(".halvnais/app.yaml", &hunk, &sides, "", "");
+
+        assert!(prompt.contains("our side: 0ac40f2"));
+        assert!(prompt.contains("2026-09-04T15:38:20Z"));
+        assert!(prompt.contains("their side: 9a64534"));
+        assert!(prompt.contains("chore: deploy sha-1685629"));
+        assert!(prompt.contains("whose commit is newer"));
+    }
+
     #[test]
     fn a_conflict_prompt_shows_both_sides_without_showing_a_marker() {
         let hunk = crate::git::ConflictHunk {
@@ -372,7 +428,8 @@ mod tests {
             theirs_label: "origin/main".to_string(),
         };
 
-        let prompt = build_conflict_hunk_prompt("src/app.rs", &hunk, "fn main() {\n", "}\n");
+        let prompt =
+            build_conflict_hunk_prompt("src/app.rs", &hunk, &no_sides(), "fn main() {\n", "}\n");
 
         assert!(prompt.contains("src/app.rs"));
         assert!(prompt.contains("Our side (HEAD)"));
@@ -397,7 +454,7 @@ mod tests {
             theirs_label: String::new(),
         };
 
-        let prompt = build_conflict_hunk_prompt("doc.md", &hunk, "", "");
+        let prompt = build_conflict_hunk_prompt("doc.md", &hunk, &no_sides(), "", "");
 
         assert!(prompt.contains("Common ancestor:\nb"));
         assert!(prompt.contains("Our side (ours)"));

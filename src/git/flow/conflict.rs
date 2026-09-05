@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crate::config::DEFAULT_PUSH_REMOTE;
 
-use super::super::{head_branch, run, run_combined, stage};
+use super::super::{head_branch, run, run_combined, run_in_dir, stage};
 use super::*;
 
 mod hunks;
@@ -26,6 +26,85 @@ pub fn conflicted_files() -> Result<Vec<String>> {
         }
     }
     Ok(files)
+}
+
+/// The commit one side of a conflict last touched a file in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictSideCommit {
+    pub hash: String,
+    pub author: String,
+    /// Committer date, ISO 8601, so two sides can be put in order.
+    pub date: String,
+    pub subject: String,
+}
+
+impl ConflictSideCommit {
+    /// One line a reader or a model can take in at a glance.
+    pub fn describe(&self) -> String {
+        format!(
+            "{} ({}, {}): {}",
+            self.hash, self.author, self.date, self.subject
+        )
+    }
+}
+
+/// Where each side of a conflicted file came from: the last commit on each head
+/// that touched it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictSides {
+    pub ours: Option<ConflictSideCommit>,
+    pub theirs: Option<ConflictSideCommit>,
+}
+
+/// The heads git keeps while an operation is stopped on a conflict, in the
+/// order the operations are checked elsewhere in this module.
+const THEIR_HEADS: [&str; 4] = [
+    "REBASE_HEAD",
+    "CHERRY_PICK_HEAD",
+    "MERGE_HEAD",
+    "REVERT_HEAD",
+];
+
+/// Look up which commit each side of a conflict brought `path` from.
+///
+/// Both sides of a hunk are often the same kind of change — a version, a tag,
+/// a generated value — and the text alone cannot say which one to keep. The
+/// commits can: who made them, when, and what they said they were doing. This
+/// is read from `root` rather than the process working directory because the
+/// resolver runs on its own thread against a repository it was handed.
+pub fn conflict_sides(root: &Path, path: &str) -> ConflictSides {
+    let theirs = THEIR_HEADS
+        .iter()
+        .find(|head| run_in_dir(root, &["rev-parse", "--verify", "-q", head]).is_ok())
+        .and_then(|head| last_commit_touching(root, head, path));
+    ConflictSides {
+        ours: last_commit_touching(root, "HEAD", path),
+        theirs,
+    }
+}
+
+fn last_commit_touching(root: &Path, head: &str, path: &str) -> Option<ConflictSideCommit> {
+    let out = run_in_dir(
+        root,
+        &[
+            "log",
+            "-1",
+            "--format=%h%x1f%an%x1f%cI%x1f%s",
+            head,
+            "--",
+            path,
+        ],
+    )
+    .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut fields = text.trim_end_matches('\n').split('\x1f');
+    let commit = ConflictSideCommit {
+        hash: fields.next()?.to_string(),
+        author: fields.next()?.to_string(),
+        date: fields.next()?.to_string(),
+        subject: fields.next()?.to_string(),
+    };
+    (!commit.hash.is_empty()).then_some(commit)
 }
 
 pub fn stage_resolved_conflicts() -> Result<Vec<String>> {
