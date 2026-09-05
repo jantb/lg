@@ -1183,7 +1183,7 @@ fn the_flow_preview_animates_as_the_clock_ticks() {
 
     let first = flow_menu_text(&state, 140, 40);
     let moved = (1..40).any(|tick| {
-        state.animation_tick = tick;
+        state.animation_ms = tick * 120;
         flow_menu_text(&state, 140, 40) != first
     });
     assert!(moved, "the preview should be moving: {first}");

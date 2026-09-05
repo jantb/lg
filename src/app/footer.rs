@@ -242,20 +242,7 @@ fn llm_phase_suffix(state: &AppState) -> Option<String> {
         return None;
     }
     let phase = crate::llm::phase()?;
-    Some(format!(
-        " \u{b7} {} {}",
-        phase.label(),
-        compact_duration(phase.elapsed())
-    ))
-}
-
-fn compact_duration(elapsed: std::time::Duration) -> String {
-    let secs = elapsed.as_secs();
-    if secs >= 60 {
-        format!("{}m{:02}s", secs / 60, secs % 60)
-    } else {
-        format!("{:.1}s", elapsed.as_secs_f64())
-    }
+    Some(format!(" \u{b7} {}", phase.describe()))
 }
 
 /// Throughput from the last request the server measured, prefill first. The two
@@ -450,11 +437,23 @@ mod tests {
             "prefill"
         );
         assert_eq!(
-            crate::llm::LlmPhase::Decode(Duration::from_secs(3)).label(),
+            crate::llm::LlmPhase::Decode {
+                elapsed: Duration::from_secs(3),
+                tokens: 0
+            }
+            .label(),
             "decode"
         );
-        assert_eq!(compact_duration(Duration::from_millis(3_240)), "3.2s");
-        assert_eq!(compact_duration(Duration::from_secs(64)), "1m04s");
+        assert!(
+            crate::llm::LlmPhase::Prefill(Duration::from_millis(3_240))
+                .describe()
+                .contains("3.2s")
+        );
+        assert!(
+            crate::llm::LlmPhase::Prefill(Duration::from_secs(64))
+                .describe()
+                .contains("1m04s")
+        );
     }
 
     /// The footer and the help overlay ask the same question about which pane is

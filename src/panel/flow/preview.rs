@@ -12,6 +12,7 @@ use ratatui::text::{Line, Span};
 
 use crate::config::BRANCH_MAIN;
 use crate::state::{AppState, FlowAction, FlowRun};
+use crate::ui::palette;
 
 /// Dashes drawn between two commits on a lane.
 const DASHES: usize = 2;
@@ -167,18 +168,23 @@ impl Preview {
     /// leg of the step in progress, and while the flow is busy with a step the
     /// picture does not draw — stashing, fetching, checking out — it waits at
     /// the end of the last leg that finished.
+    #[cfg(test)]
     fn marker(&self, progress: Progress, tick: usize) -> Option<(usize, usize)> {
+        let (route, moving) = self.route(progress);
+        let at = if moving { tick % route.len().max(1) } else { 0 };
+        route.get(at).copied()
+    }
+
+    /// The cells the marker travels for this progress, and whether it is
+    /// travelling them or waiting on the single cell returned.
+    fn route(&self, progress: Progress) -> (Vec<(usize, usize)>, bool) {
         let step = match progress {
-            Progress::Menu => {
-                let route = self.path();
-                return route.get(tick % route.len().max(1)).copied();
-            }
+            Progress::Menu => return (self.path(), true),
             Progress::Step(step) => step,
         };
         let legs = self.legs();
         if let Some(idx) = self.moves.iter().position(|mv| mv.step == Some(step)) {
-            let leg = &legs[idx];
-            return leg.get(tick % leg.len().max(1)).copied();
+            return (legs[idx].clone(), true);
         }
         let done = self
             .moves
@@ -187,12 +193,46 @@ impl Preview {
             .filter(|(_, mv)| mv.step.is_some_and(|at| at < step))
             .map(|(idx, _)| idx)
             .next_back();
-        match done {
+        let waiting = match done {
             Some(idx) => legs[idx].last().copied(),
             // Nothing drawn has happened yet, so the marker waits where the
             // route starts rather than pretending to be further on.
             None => legs.first().and_then(|leg| leg.first()).copied(),
+        };
+        (waiting.into_iter().collect(), false)
+    }
+
+    /// The marker and the glow it leaves behind, at this reading of the
+    /// animation clock. The head is first at full intensity; each cell behind
+    /// it is dimmer, and the dimming is continuous in time, so the tail fades
+    /// between frames even though the head can only ever sit on whole cells.
+    /// That is what lets a character grid read as motion rather than as a dot
+    /// hopping from square to square.
+    fn trail(&self, progress: Progress, clock_ms: u64) -> Vec<((usize, usize), f64)> {
+        let (route, moving) = self.route(progress);
+        if route.is_empty() {
+            return Vec::new();
         }
+        if !moving {
+            return vec![(route[0], 1.0)];
+        }
+        let position = clock_ms as f64 / MARKER_CELL_MS as f64;
+        let head = position.floor() as usize;
+        let within = position - position.floor();
+        let mut cells = vec![(route[head % route.len()], 1.0)];
+        // In the menu the route loops, so the tail wraps with it; on a leg
+        // of a real run it would trail out of the previous leg, which is not
+        // where the flow has been, so it is cut at the start.
+        let wraps = matches!(progress, Progress::Menu);
+        for back in 1..=TRAIL_CELLS {
+            if !wraps && back > head {
+                break;
+            }
+            let idx = (head + route.len() - back % route.len()) % route.len();
+            let intensity = 1.0 - (within + back as f64) / (TRAIL_CELLS as f64 + 1.0);
+            cells.push((route[idx], intensity));
+        }
+        cells
     }
 
     /// Commits each lane is drawn with: one per move, plus a tail so the lanes
@@ -487,7 +527,13 @@ fn grid(preview: &Preview, progress: Progress) -> Vec<Vec<Cell>> {
     grid
 }
 
-/// The diagram as lines, with the marker where `progress` and `tick` put it.
+/// How long the marker rests on each cell of its route.
+pub(super) const MARKER_CELL_MS: u64 = 120;
+/// How many cells of glow the marker leaves behind it.
+const TRAIL_CELLS: usize = 5;
+
+/// The diagram as lines, with the marker where `progress` and the animation
+/// clock (`clock_ms`) put it.
 ///
 /// `width` is what the pane can show; a diagram that would not fit is dropped
 /// rather than drawn cut in half, since half a graph says the wrong thing.
@@ -495,7 +541,7 @@ pub(super) fn lines(
     state: &AppState,
     run: &FlowRun,
     progress: Progress,
-    tick: usize,
+    clock_ms: u64,
     width: u16,
 ) -> Vec<Line<'static>> {
     let Some(preview) = preview(state, run) else {
@@ -520,7 +566,7 @@ pub(super) fn lines(
     }
 
     let cells = grid(&preview, progress);
-    let marker = preview.marker(progress, tick);
+    let trail = preview.trail(progress, clock_ms);
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(cells.len() + 2);
     for (row, cols) in cells.iter().enumerate() {
@@ -535,14 +581,29 @@ pub(super) fn lines(
             spans.push(Span::raw(" ".repeat(label_width + 1)));
         }
         for (col, cell) in cols.iter().enumerate() {
-            let here = marker == Some((row, col));
-            let (glyph, style) = if here {
-                (
-                    '\u{25c9}',
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                )
+            let glow = trail
+                .iter()
+                .find(|(at, _)| *at == (row, col))
+                .map(|(_, intensity)| *intensity);
+            let (glyph, style) = if let Some(intensity) = glow {
+                if intensity >= 1.0 {
+                    (
+                        '\u{25c9}',
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    // The tail keeps the route's own glyph and only lights
+                    // it, from near-white just behind the head down to the
+                    // resting accent where it rejoins the diagram.
+                    (
+                        cell.glyph,
+                        Style::default()
+                            .fg(palette::glow(intensity))
+                            .add_modifier(Modifier::BOLD),
+                    )
+                }
             } else {
                 let mut style = Style::default().fg(cell.color);
                 if cell.dim {
@@ -709,7 +770,7 @@ mod tests {
                     &state,
                     &run(&state, FlowAction::MergeMain),
                     Progress::Menu,
-                    tick,
+                    tick * MARKER_CELL_MS,
                     80,
                 ))
             })
@@ -881,5 +942,45 @@ mod tests {
         assert_eq!(branch_color(&state, "test"), Color::Yellow);
         assert_eq!(branch_color(&state, "origin/develop"), Color::Cyan);
         assert_eq!(branch_color(&state, "feature/parser"), Color::Green);
+    }
+
+    #[test]
+    fn the_marker_leaves_a_tail_that_fades_between_frames() {
+        let state = state_with_deploy_branches();
+        let preview = preview(&state, &run(&state, FlowAction::MergeMain)).expect("preview");
+        let at_cell = preview.trail(Progress::Menu, 10 * MARKER_CELL_MS);
+        let later = preview.trail(Progress::Menu, 10 * MARKER_CELL_MS + MARKER_CELL_MS / 2);
+
+        assert_eq!(
+            at_cell[0],
+            (preview.marker(Progress::Menu, 10).unwrap(), 1.0)
+        );
+        assert_eq!(
+            at_cell[0].0, later[0].0,
+            "the head rests on one cell for a step"
+        );
+        assert!(at_cell.len() > 1, "the head should have a tail");
+        for (before, after) in at_cell.iter().skip(1).zip(later.iter().skip(1)) {
+            assert_eq!(before.0, after.0);
+            assert!(
+                after.1 < before.1,
+                "the tail should dim as the step wears on, not hold and jump"
+            );
+        }
+    }
+
+    /// The tail shows where the run has been, and before the first cell of a
+    /// leg it has been nowhere on that leg.
+    #[test]
+    fn a_running_leg_has_no_tail_behind_its_start() {
+        let state = state_with_deploy_branches();
+        let preview = preview(&state, &run(&state, FlowAction::MergeMain)).expect("preview");
+        let first = preview
+            .moves
+            .iter()
+            .filter_map(|mv| mv.step)
+            .min()
+            .expect("a drawn step");
+        assert_eq!(preview.trail(Progress::Step(first), 0).len(), 1);
     }
 }

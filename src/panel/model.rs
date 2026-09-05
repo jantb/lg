@@ -81,12 +81,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     ];
 
     if scanning {
-        let spinner = SPINNER_FRAMES[state
-            .settings_suggest_job
-            .as_ref()
-            .map(|job| job.spinner)
-            .unwrap_or(0)
-            % SPINNER_FRAMES.len()];
+        let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
         lines.push(Line::from(vec![Span::styled(
             format!("  {spinner} reading this checkout's history to derive settings\u{2026}"),
             Style::default().fg(Color::Cyan),

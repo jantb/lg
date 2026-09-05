@@ -44,8 +44,14 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 
     let (msg_view, msg_cursor, title_text, editable) = match &state.generation {
         Some(g) => {
-            let spinner = SPINNER_FRAMES[g.spinner % SPINNER_FRAMES.len()];
-            let title = format!("Commit message  {spinner} generating\u{2026}  (Esc=cancel)");
+            let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
+            // What the model is doing, how long it has been at it, and how
+            // fast: a wait of a minute on a local model is bearable when the
+            // reader can see it moving.
+            let progress = crate::llm::progress()
+                .map(|p| format!(" \u{b7} {p}"))
+                .unwrap_or_default();
+            let title = format!("Commit message  {spinner} generating\u{2026}{progress}  (Esc=cancel)");
             (g.output.clone(), g.output.chars().count(), title, false)
         }
         None => (

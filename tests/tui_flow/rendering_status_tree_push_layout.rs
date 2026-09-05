@@ -1222,6 +1222,8 @@ fn flow_modal_renders_running_workflow_steps() {
         flow: None,
     });
 
+    // The marker's frame follows the animation clock, not the job.
+    state.animation_tick = 1;
     let backend = TestBackend::new(90, 20);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal

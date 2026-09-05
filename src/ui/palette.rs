@@ -59,6 +59,17 @@ pub fn breathe(dim: (u8, u8, u8), bright: (u8, u8, u8), clock_ms: u64, period_ms
     lerp(dim, bright, wave(clock_ms, period_ms))
 }
 
+/// How bright a glowing thing is drawn at `intensity`, 0 to 1: the resting
+/// accent at nothing, through the bright accent, to white at full.
+pub fn glow(intensity: f64) -> Color {
+    let intensity = intensity.clamp(0.0, 1.0);
+    if intensity < 0.5 {
+        lerp(ACCENT_DIM_RGB, ACCENT_BRIGHT_RGB, intensity * 2.0)
+    } else {
+        lerp(ACCENT_BRIGHT_RGB, (255, 255, 255), (intensity - 0.5) * 2.0)
+    }
+}
+
 /// The accent shade at this point of the animation clock, in milliseconds.
 pub fn pulse(clock_ms: u64) -> Color {
     breathe(ACCENT_DIM_RGB, ACCENT_BRIGHT_RGB, clock_ms, PULSE_PERIOD_MS)

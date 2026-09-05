@@ -21,7 +21,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 
     let diverged = state.branch_diverged_from_remote();
     let text = if let Some(job) = &state.push_job {
-        let spinner = SPINNER_FRAMES[job.spinner % SPINNER_FRAMES.len()];
+        let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
         vec![
             Line::from(""),
             Line::from(vec![

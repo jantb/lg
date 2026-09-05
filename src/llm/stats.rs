@@ -75,29 +75,76 @@ impl GenStats {
 pub enum LlmPhase {
     /// Sent, nothing back yet: the server is still reading the prompt.
     Prefill(Duration),
-    /// Tokens are arriving.
-    Decode(Duration),
+    /// Tokens are arriving: how long for, and how many so far.
+    Decode { elapsed: Duration, tokens: u64 },
 }
 
 impl LlmPhase {
     pub fn label(self) -> &'static str {
         match self {
             Self::Prefill(_) => "prefill",
-            Self::Decode(_) => "decode",
+            Self::Decode { .. } => "decode",
         }
     }
 
     pub fn elapsed(self) -> Duration {
         match self {
-            Self::Prefill(elapsed) | Self::Decode(elapsed) => elapsed,
+            Self::Prefill(elapsed) | Self::Decode { elapsed, .. } => elapsed,
         }
     }
+
+    /// Tokens per second so far, measured by lg from the chunks it has seen
+    /// rather than by the server. Streams deliver roughly one token per
+    /// chunk, so it is close, and it is available while the answer is still
+    /// being written, which the server's own figure is not. `None` until
+    /// decoding has run long enough for the figure to mean something.
+    pub fn live_tps(self) -> Option<f64> {
+        match self {
+            Self::Decode { elapsed, tokens } if elapsed >= Duration::from_millis(500) => {
+                Some(tokens as f64 / elapsed.as_secs_f64())
+            }
+            _ => None,
+        }
+    }
+
+    /// The phase as a reader wants it: what is happening, for how long, and
+    /// while decoding, how fast.
+    pub fn describe(self) -> String {
+        let mut text = format!("{} {}", self.label(), compact_duration(self.elapsed()));
+        if let Some(tps) = self.live_tps() {
+            text.push_str(&format!(" \u{b7} {tps:.1} tok/s"));
+        }
+        text
+    }
+}
+
+/// A duration short enough to glance at.
+pub fn compact_duration(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs >= 60 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{:.1}s", elapsed.as_secs_f64())
+    }
+}
+
+/// One line about the request in flight and the one before it: the live phase
+/// with its running speed, then the last request's measured prefill and
+/// decode rates for comparison. `None` when nothing is in flight.
+pub fn progress() -> Option<String> {
+    let mut text = phase()?.describe();
+    if let Some(rates) = last_stats().and_then(|stats| stats.rates()) {
+        text.push_str(&format!(" \u{b7} last {rates}"));
+    }
+    Some(text)
 }
 
 struct InFlight {
     id: u64,
     started: Instant,
     first_token: Option<Instant>,
+    /// Chunks seen so far, standing in for tokens.
+    tokens: u64,
 }
 
 #[derive(Default)]
@@ -123,15 +170,16 @@ impl Registry {
             id,
             started,
             first_token: None,
+            tokens: 0,
         });
         id
     }
 
-    fn note_first_token(&mut self, id: u64, at: Instant) {
-        if let Some(entry) = self.in_flight.iter_mut().find(|entry| entry.id == id)
-            && entry.first_token.is_none()
-        {
-            entry.first_token = Some(at);
+    /// One more chunk has arrived; the first also ends the prefill phase.
+    fn note_token(&mut self, id: u64, at: Instant) {
+        if let Some(entry) = self.in_flight.iter_mut().find(|entry| entry.id == id) {
+            entry.first_token.get_or_insert(at);
+            entry.tokens += 1;
         }
     }
 
@@ -150,7 +198,10 @@ impl Registry {
     fn phase_at(&self, now: Instant) -> Option<LlmPhase> {
         let oldest = self.in_flight.iter().min_by_key(|entry| entry.started)?;
         Some(match oldest.first_token {
-            Some(at) => LlmPhase::Decode(now.saturating_duration_since(at)),
+            Some(at) => LlmPhase::Decode {
+                elapsed: now.saturating_duration_since(at),
+                tokens: oldest.tokens,
+            },
             None => LlmPhase::Prefill(now.saturating_duration_since(oldest.started)),
         })
     }
@@ -172,7 +223,6 @@ fn registry() -> MutexGuard<'static, Registry> {
 pub(super) struct Tracked {
     id: u64,
     stats: Option<GenStats>,
-    first_token_noted: bool,
 }
 
 impl Tracked {
@@ -180,18 +230,13 @@ impl Tracked {
         Self {
             id: registry().begin(Instant::now()),
             stats: None,
-            first_token_noted: false,
         }
     }
 
-    /// The prompt has been read and the answer has started. Only the first
-    /// call does anything; the rest of the stream costs no lock.
-    pub(super) fn note_first_token(&mut self) {
-        if self.first_token_noted {
-            return;
-        }
-        self.first_token_noted = true;
-        registry().note_first_token(self.id, Instant::now());
+    /// A chunk of the answer has arrived. The first one ends the prefill
+    /// phase; every one counts towards the live decode rate.
+    pub(super) fn note_token(&mut self) {
+        registry().note_token(self.id, Instant::now());
     }
 
     /// What the server said this request cost, reported when the request
@@ -269,7 +314,7 @@ mod tests {
         let mut registry = Registry::new();
         let start = Instant::now();
         let id = registry.begin(start);
-        registry.note_first_token(id, start + Duration::from_secs(4));
+        registry.note_token(id, start + Duration::from_secs(4));
 
         let phase = registry.phase_at(start + Duration::from_secs(9)).unwrap();
 
@@ -300,7 +345,7 @@ mod tests {
         let start = Instant::now();
         let first = registry.begin(start);
         registry.begin(start + Duration::from_secs(1));
-        registry.note_first_token(first, start + Duration::from_secs(2));
+        registry.note_token(first, start + Duration::from_secs(2));
 
         assert_eq!(
             registry
@@ -324,6 +369,27 @@ mod tests {
             registry.last.as_ref().unwrap().decode_tps,
             16.9,
             "a request the server sent no counters for must not blank the readout"
+        );
+    }
+
+    #[test]
+    fn the_live_rate_counts_chunks_over_decode_time() {
+        let mut registry = Registry::new();
+        let start = Instant::now();
+        let id = registry.begin(start);
+        for i in 0..=40 {
+            registry.note_token(id, start + Duration::from_millis(1_000 + i * 100));
+        }
+        // 41 chunks, the first at 1.0s, read at 5.0s: four seconds of decode.
+        let phase = registry.phase_at(start + Duration::from_secs(5)).unwrap();
+        let tps = phase.live_tps().expect("decoding long enough to measure");
+        assert!((tps - 10.25).abs() < 0.01, "{tps}");
+        assert!(phase.describe().contains("tok/s"), "{}", phase.describe());
+        assert!(
+            LlmPhase::Prefill(Duration::from_secs(2))
+                .live_tps()
+                .is_none(),
+            "nothing has been decoded yet"
         );
     }
 }

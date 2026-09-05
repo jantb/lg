@@ -293,13 +293,13 @@ fn consume_stream(
         end.absorb(&v);
 
         if let Some(t) = stream_thinking_chunk(&v) {
-            tracked.note_first_token();
+            tracked.note_token();
             if output.feed_thinking(t, tx).is_err() {
                 return;
             }
         }
         if let Some(c) = stream_output_chunk(&v) {
-            tracked.note_first_token();
+            tracked.note_token();
             if output.feed(c, tx).is_err() {
                 return;
             }

@@ -176,7 +176,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             state,
             &run,
             preview::Progress::Menu,
-            state.animation_tick,
+            state.animation_ms,
             area.width.saturating_sub(2),
         );
         lines.extend(step_lines(&run));
@@ -213,7 +213,7 @@ fn render_running(
         None => (modal, None),
     };
 
-    let spinner = SPINNER_FRAMES[job.spinner % SPINNER_FRAMES.len()];
+    let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
     let mut text = vec![
         Line::from(""),
         Line::from(vec![
@@ -236,7 +236,7 @@ fn render_running(
                 .add_modifier(Modifier::DIM),
         )));
     } else {
-        text.extend(workflow_lines(job));
+        text.extend(workflow_lines(job, state.animation_tick));
     }
     frame.render_widget(
         Paragraph::new(text).block(ui::bordered("Branch Actions")),
@@ -252,7 +252,7 @@ fn render_running(
             // No progress reported yet means the first step is the one running,
             // which is what the step list beside it shows too.
             preview::Progress::Step(job.current_step.unwrap_or(0)),
-            state.animation_tick,
+            state.animation_ms,
             area.width.saturating_sub(2),
         );
         frame.render_widget(
@@ -545,9 +545,9 @@ fn selected_branch_line(state: &AppState) -> String {
     }
 }
 
-fn workflow_lines(job: &crate::state::WorkflowJob) -> Vec<Line<'static>> {
+fn workflow_lines(job: &crate::state::WorkflowJob, tick: usize) -> Vec<Line<'static>> {
     let current = job.current_step.unwrap_or(0);
-    let frame = match job.spinner % 4 {
+    let frame = match tick % 4 {
         0 => "|",
         1 => "/",
         2 => "-",

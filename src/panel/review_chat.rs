@@ -38,8 +38,8 @@ fn render_contents(state: &AppState, area: Rect, frame: &mut Frame) {
         .split(area);
 
     let running = state.review_chat_job.is_some();
-    let title = if let Some(job) = &state.review_chat_job {
-        let spinner = SPINNER_FRAMES[job.spinner % SPINNER_FRAMES.len()];
+    let title = if running {
+        let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
         format!("Review chat  {spinner} asking LLM")
     } else {
         "Review chat".to_string()
