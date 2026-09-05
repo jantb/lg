@@ -8,6 +8,10 @@ use crate::config::DEFAULT_PUSH_REMOTE;
 use super::super::{head_branch, run, run_combined, stage};
 use super::*;
 
+mod hunks;
+
+pub use hunks::{ConflictHunk, ConflictedFile, holds_conflict_marker, marker_line};
+
 pub fn conflicted_files() -> Result<Vec<String>> {
     let out = run(&["status", "--porcelain"])?;
     let text = String::from_utf8_lossy(&out.stdout);
@@ -61,14 +65,22 @@ fn has_conflict_markers(text: &str) -> bool {
     false
 }
 
-/// Whether `line` is one of git's seven-character conflict markers. Git writes
-/// exactly seven, followed by end of line or a space and the side's label, so a
-/// longer run of the same character is a heading rule rather than a marker.
+/// The side label on one of git's seven-character conflict markers, or `None`
+/// when `line` is not one. Git writes exactly seven characters, followed by end
+/// of line or a space and the side's label, so a longer run of the same
+/// character is a heading rule rather than a marker.
+fn marker_label(line: &str, marker: char) -> Option<&str> {
+    let rest = line.strip_prefix(&marker.to_string().repeat(CONFLICT_MARKER_WIDTH))?;
+    if rest.is_empty() {
+        Some("")
+    } else {
+        rest.strip_prefix(' ').map(str::trim)
+    }
+}
+
+/// Whether `line` is one of git's conflict markers, whatever it labels.
 fn is_marker(line: &str, marker: char) -> bool {
-    let Some(rest) = line.strip_prefix(&marker.to_string().repeat(CONFLICT_MARKER_WIDTH)) else {
-        return false;
-    };
-    rest.is_empty() || rest.starts_with(' ')
+    marker_label(line, marker).is_some()
 }
 
 /// How many characters git repeats in a conflict marker.

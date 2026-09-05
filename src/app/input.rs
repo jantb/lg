@@ -456,6 +456,10 @@ fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> {
             panel::flow::handle_key(host.state_mut(), k)?;
             return Ok(());
         }
+        Modal::Agent => {
+            panel::agent::handle_key(host.state_mut(), k)?;
+            return Ok(());
+        }
         Modal::Conflict => {
             panel::conflict::handle_key(host.state_mut(), k)?;
             return Ok(());

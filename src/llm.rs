@@ -11,6 +11,7 @@ mod reply;
 mod stream;
 mod think;
 
+pub use prompt::GIVE_UP_PHRASE;
 pub use provider::{
     LlmProvider, api_key, clear_saved_llm_settings, config_file_display, current_endpoint,
     current_model, current_provider, endpoint_for_provider, env_model_active, env_provider_active,
@@ -19,12 +20,13 @@ pub use provider::{
 pub use reply::parse_review_style_finding;
 
 use prompt::{
-    build_commit_prompt, build_conventions_prompt, build_review_assist_prompt,
-    build_review_chat_system_prompt, build_review_pr_text_prompt, build_review_style_flag_prompt,
+    build_commit_prompt, build_conflict_hunk_prompt, build_conventions_prompt,
+    build_review_assist_prompt, build_review_chat_system_prompt, build_review_pr_text_prompt,
+    build_review_style_flag_prompt,
 };
 use reply::{
-    finalize, finalize_review_assist, finalize_review_chat, finalize_review_pr_text,
-    finalize_review_style_flag_for_path, parse_conventions,
+    finalize, finalize_conflict_hunk, finalize_review_assist, finalize_review_chat,
+    finalize_review_pr_text, finalize_review_style_flag_for_path, parse_conventions,
 };
 use stream::{ChatMessage, ChatTask, stream_messages, stream_prompt};
 use think::strip_think_tags;
@@ -42,6 +44,10 @@ const REVIEW_CHAT_NUM_PREDICT: i32 = 768;
 /// How many of the most recent chat turns travel with a follow-up question.
 const REVIEW_CHAT_HISTORY_TURNS: usize = 8;
 const REVIEW_STYLE_FLAG_NUM_PREDICT: i32 = 96;
+/// Enough for a conflict the local model is allowed to try at all: both sides
+/// of one hunk and a little joining. A budget large enough for a whole file
+/// would only buy a longer wrong answer.
+const CONFLICT_HUNK_NUM_PREDICT: i32 = 1_024;
 
 /// Stream tokens from the local mtplx chat endpoint, routing reasoning chunks
 /// (and any inline `<think>...</think>` content) to [`GenMsg::Thinking`], and
@@ -122,6 +128,27 @@ pub fn stream_review_pr_text(context: String, tx: Sender<GenMsg>) {
         build_review_pr_text_prompt(&context, &crate::settings::load()),
         ChatTask::new("lg-review-pr", REVIEW_PR_NUM_PREDICT, false),
         finalize_review_pr_text,
+        tx,
+    );
+}
+
+/// Ask for the merged lines that replace one conflict, and report them on `tx`
+/// as an ordinary generation.
+///
+/// Reasoning is off: the answer is other people's code put back together, and
+/// a model that deliberates about it spends its budget arguing rather than
+/// merging. A conflict that needs the arguing is one to hand to claude instead.
+pub fn stream_conflict_hunk(
+    path: String,
+    hunk: crate::git::ConflictHunk,
+    before: String,
+    after: String,
+    tx: Sender<GenMsg>,
+) {
+    stream_prompt(
+        build_conflict_hunk_prompt(&path, &hunk, &before, &after),
+        ChatTask::new("lg-conflict", CONFLICT_HUNK_NUM_PREDICT, false),
+        finalize_conflict_hunk,
         tx,
     );
 }

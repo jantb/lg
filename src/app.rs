@@ -33,6 +33,7 @@ use crate::{
 };
 
 mod actions;
+mod conflict_assist;
 mod footer;
 mod header;
 mod input;
@@ -45,6 +46,7 @@ mod session;
 mod spawn;
 mod workflow;
 
+pub(crate) use conflict_assist::spawn_conflict_resolve;
 pub(crate) use spawn::{
     checkout_branch_async, checkout_nested_branch_async, checkout_nested_remote_branch_async,
     checkout_remote_branch_async,
@@ -222,6 +224,7 @@ impl App {
             self.drain_review_assist();
             self.drain_review_pr_text();
             self.drain_review_flag_job();
+            self.drain_conflict_resolve_job();
             self.drain_review_chat();
             self.drain_push_job()?;
             self.drain_checkout_job()?;

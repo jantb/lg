@@ -104,6 +104,7 @@ fn draw(frame: &mut Frame, state: &AppState) {
         Modal::Model => panel::model::render(state, area, frame),
         Modal::Help => panel::help::render(state, area, frame),
         Modal::Flow => panel::flow::render(state, area, frame),
+        Modal::Agent => panel::agent::render(state, area, frame),
         Modal::Conflict => panel::conflict::render(state, area, frame),
         Modal::DeleteBranch => panel::delete_branch::render(state, area, frame),
         Modal::Worktree => panel::worktree::render(state, area, frame),

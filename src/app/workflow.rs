@@ -309,13 +309,17 @@ pub(crate) fn validate_conflict_resolution(state: &mut AppState) {
     state.set_status("validating conflict resolution\u{2026}", false);
 }
 
-/// Hand the conflict to a claude session in the checkout it happened in.
+/// Hand the conflict to an agent session in the checkout it happened in.
 ///
 /// Resolving a merge is reading two versions of a file and deciding what the
 /// result should be, which is work lg deliberately does not do itself — so this
 /// starts something that can, in the checkout the conflict is in, opening on
 /// the files git could not merge. Nothing is settled by it: the flow is still
 /// waiting, and `F` comes back here to finish it with `v`.
+///
+/// Which agent is whichever one was last started from the workspace picker: a
+/// conflict is the same work as everything else in the checkout, so it goes to
+/// the same tool.
 pub(crate) fn start_conflict_session(state: &mut AppState, sandboxed: bool) {
     let Some(path) = state.repo_root.clone() else {
         state.set_status("no repository for a session", true);
@@ -325,11 +329,11 @@ pub(crate) fn start_conflict_session(state: &mut AppState, sandboxed: bool) {
         .branch
         .clone()
         .unwrap_or_else(|| checkout_name(&path).to_string());
-    let kind = crate::session::SessionKind::Claude;
+    let kind = state.preferred_agent;
 
     state.modal = Modal::None;
-    // One claude per checkout: a session already open here is the one that
-    // should hear about the conflict, and it cannot be told twice.
+    // One of each agent per checkout: a session already open here is the one
+    // that should hear about the conflict, and it cannot be told twice.
     if let Some(id) = state
         .sessions
         .for_dir_kind(std::path::Path::new(&path), kind)
@@ -337,26 +341,44 @@ pub(crate) fn start_conflict_session(state: &mut AppState, sandboxed: bool) {
         state.show_session(id);
         state.session_capture = true;
         state.set_status(
-            "the session here is already running \u{2014} tell it about the conflict yourself",
+            format!(
+                "the {} here is already running \u{2014} tell it about the conflict yourself",
+                kind.label()
+            ),
             false,
         );
         return;
     }
 
+    let prompt = conflict_prompt(
+        &state.unresolved_conflicts(),
+        &sorted(&state.conflict_resolved),
+    );
     state.pending_action = Some(crate::state::PendingAction::StartSession {
         path,
         label,
         sandboxed,
         kind,
-        prompt: Some(conflict_prompt(&state.conflicts)),
+        prompt: Some(prompt),
     });
+}
+
+fn sorted(paths: &std::collections::HashSet<String>) -> Vec<String> {
+    let mut paths: Vec<String> = paths.iter().cloned().collect();
+    paths.sort();
+    paths
 }
 
 /// What the session opens on. It names the files rather than describing the
 /// conflict, because the files are the part lg knows and the rest is on disk.
 /// Committing is left open on purpose: validation settles the merge either way,
 /// and a session told not to commit would only be told wrong.
-fn conflict_prompt(conflicts: &[String]) -> String {
+///
+/// Files the local model already settled are named too, and named as done. A
+/// session that is not told about them re-resolves work that is already on
+/// disk; one that is told they are conflicted goes looking for markers that are
+/// no longer there.
+fn conflict_prompt(conflicts: &[String], already_resolved: &[String]) -> String {
     let mut prompt = String::from(
         "Resolve the git merge conflict in this repository. Edit each file so the \
          conflict markers are gone and the result is right; staging or committing \
@@ -365,6 +387,17 @@ fn conflict_prompt(conflicts: &[String]) -> String {
     if !conflicts.is_empty() {
         prompt.push_str("\n\nGit reports these files as conflicted:\n");
         for path in conflicts {
+            prompt.push_str("- ");
+            prompt.push_str(path);
+            prompt.push('\n');
+        }
+    }
+    if !already_resolved.is_empty() {
+        prompt.push_str(
+            "\nA local model already merged these files and wrote them back, so they hold \
+             no conflict markers. Leave them alone unless you find a mistake in one:\n",
+        );
+        for path in already_resolved {
             prompt.push_str("- ");
             prompt.push_str(path);
             prompt.push('\n');

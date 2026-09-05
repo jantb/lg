@@ -161,7 +161,7 @@ mod tests {
                     ("m", "land worktree"),
                     ("M", "sync main"),
                     ("b", "branch home"),
-                    ("s", "claude session"),
+                    ("s", "agent session"),
                     ("t", "terminal"),
                     ("x", "close session"),
                     ("o", "open IDE"),

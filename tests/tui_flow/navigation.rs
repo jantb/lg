@@ -235,6 +235,106 @@ fn conflict_modal_enter_opens_selected_conflicted_file() {
     );
 }
 
+/// The point of trying locally: what the model settled stays on the list to be
+/// read, and only what is left over reaches claude.
+#[test]
+fn the_claude_fallback_is_told_which_conflicts_are_still_open() {
+    let mut state = AppState::new();
+    state.modal = Modal::Conflict;
+    state.repo_root = Some("/tmp/checkout".into());
+    state.conflicts = vec!["src/easy.rs".into(), "src/hard.rs".into()];
+    state.conflict_resolved.insert("src/easy.rs".into());
+
+    panel::conflict::handle_key(&mut state, key(KeyCode::Char('c'))).unwrap();
+
+    let Some(PendingAction::StartSession { prompt, .. }) = state.pending_action else {
+        panic!("c starts a session: {:?}", state.pending_action);
+    };
+    let prompt = prompt.expect("the session opens on the conflict");
+    let conflicted = prompt
+        .split("already merged")
+        .next()
+        .expect("the list of what is still conflicted");
+    assert!(
+        conflicted.contains("src/hard.rs"),
+        "claude has to be told what is left: {prompt}"
+    );
+    assert!(
+        !conflicted.contains("src/easy.rs"),
+        "a file the local model settled is not still conflicted: {prompt}"
+    );
+    assert!(
+        prompt.contains("src/easy.rs"),
+        "claude still has to know the file was touched: {prompt}"
+    );
+}
+
+/// A conflict is the same work as everything else in the checkout, so it goes
+/// to whichever agent was last started rather than always to claude.
+#[test]
+fn a_conflict_goes_to_the_agent_that_was_last_started() {
+    let mut state = AppState::new();
+    state.modal = Modal::Conflict;
+    state.repo_root = Some("/tmp/checkout".into());
+    state.conflicts = vec!["src/a.rs".into()];
+    state.preferred_agent = SessionKind::Pi;
+
+    panel::conflict::handle_key(&mut state, key(KeyCode::Char('c'))).unwrap();
+
+    assert!(
+        matches!(
+            state.pending_action,
+            Some(PendingAction::StartSession {
+                kind: SessionKind::Pi,
+                ..
+            })
+        ),
+        "{:?}",
+        state.pending_action
+    );
+}
+
+#[test]
+fn a_conflict_with_no_repository_behind_it_starts_no_local_pass() {
+    let mut state = AppState::new();
+    state.modal = Modal::Conflict;
+    state.conflicts = vec!["src/a.rs".into()];
+
+    panel::conflict::handle_key(&mut state, key(KeyCode::Char('l'))).unwrap();
+
+    assert!(state.conflict_resolve_job.is_none());
+    assert!(state.status.as_ref().is_some_and(|status| status.is_error));
+}
+
+/// The local pass rewrites the files underneath the modal, so finishing the
+/// merge or throwing it away has to wait for it.
+#[test]
+fn a_running_local_pass_holds_off_validating_and_aborting() {
+    for pressed in ['v', 'a', 'c', 'l'] {
+        let mut state = AppState::new();
+        state.modal = Modal::Conflict;
+        state.repo_root = Some("/tmp/checkout".into());
+        state.conflicts = vec!["src/a.rs".into()];
+        let (_tx, rx) = mpsc::channel();
+        state.conflict_resolve_job = Some(ConflictResolveJob {
+            rx,
+            handle: None,
+            spinner: 0,
+            active_path: Some("src/a.rs".into()),
+            completed: 0,
+            total: 1,
+        });
+
+        panel::conflict::handle_key(&mut state, key(KeyCode::Char(pressed))).unwrap();
+
+        assert!(
+            state.pending_action.is_none() && state.workflow_job.is_none(),
+            "{pressed} must wait for the local pass to finish"
+        );
+        assert_eq!(state.modal, Modal::Conflict, "{pressed} left the modal");
+    }
+}
+
 #[test]
 fn files_panel_o_opens_selected_source_file() {
     let mut state = make_state_with_files();

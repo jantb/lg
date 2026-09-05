@@ -38,10 +38,11 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from(
-            "Resolve the conflict outside lg or with c, then press v to validate and continue.",
-        ),
-        Line::from("Committing the resolution yourself is fine; v continues either way."),
+        Line::from(format!(
+            "Resolve the conflict outside lg, with l or with c ({}), then press v to continue.",
+            state.preferred_agent.label()
+        )),
+        local_pass_line(state),
     ];
     frame.render_widget(
         Paragraph::new(header).block(ui::bordered("Conflict")),
@@ -56,7 +57,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let items: Vec<ListItem> = state
         .conflicts
         .iter()
-        .map(|path| ListItem::new(Line::from(path.as_str())))
+        .map(|path| ListItem::new(conflict_row(state, path)))
         .collect();
     let list = List::new(items)
         .block(ui::bordered("Files"))
@@ -77,9 +78,16 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     frame.render_stateful_widget(list, body[0], &mut list_state);
 
     let detail = if let Some(path) = state.conflicts.get(state.conflict_idx) {
-        let mut text = format!(
-            "{path}\n\nlg will not edit conflict contents. Resolve the file in your editor or with git, then press v."
-        );
+        let mut text = if state.conflict_resolved.contains(path) {
+            format!(
+                "{path}\n\nThe local model settled every conflict in this file and wrote it back. Nothing is staged yet \u{2014} open it with o and read the merge before pressing v."
+            )
+        } else {
+            format!(
+                "{path}\n\nlg has not touched this file. Resolve it in your editor, with l, or with c ({}), then press v.",
+                state.preferred_agent.label()
+            )
+        };
         if !state.conflict_log.trim().is_empty() {
             text.push_str("\n\nLast message:\n");
             text.push_str(&state.conflict_log);
@@ -107,8 +115,10 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             Span::raw(" validate resolved/staged/merged state"),
         ]),
         Line::from(vec![
+            Span::styled("l", Style::default().fg(Color::LightGreen)),
+            Span::raw(" try the local model, then claude  "),
             Span::styled("c", Style::default().fg(Color::LightGreen)),
-            Span::raw(" resolve with claude  "),
+            Span::raw(format!(" {}  ", state.preferred_agent.label())),
             Span::styled("a", Style::default().fg(Color::Red)),
             Span::raw(" abort  "),
             Span::styled("Esc", Style::default().fg(Color::Gray)),
@@ -121,6 +131,47 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         Paragraph::new(controls).block(Block::default().borders(Borders::ALL)),
         chunks[2],
     );
+}
+
+/// The header's third line: what the local pass is doing, or what it did, or
+/// the reminder that committing by hand is fine when it has not run.
+fn local_pass_line(state: &AppState) -> Line<'static> {
+    if let Some(job) = state.conflict_resolve_job.as_ref() {
+        let progress = format!("local model: {}/{} file(s)", job.completed, job.total);
+        let detail = job
+            .active_path
+            .as_deref()
+            .map(|path| format!(" \u{2014} {path}"))
+            .unwrap_or_default();
+        return Line::from(Span::styled(
+            format!("{progress}{detail}"),
+            Style::default().fg(Color::LightGreen),
+        ));
+    }
+    if state.conflict_resolved.is_empty() {
+        return Line::from("Committing the resolution yourself is fine; v continues either way.");
+    }
+    Line::from(Span::styled(
+        format!(
+            "{} file(s) resolved by the local model \u{2014} read them before v.",
+            state.conflict_resolved.len()
+        ),
+        Style::default().fg(Color::LightGreen),
+    ))
+}
+
+/// One row of the file list, marked when the local model has already settled
+/// it. The mark is what separates a file waiting to be read from one waiting
+/// to be resolved; both are still conflicted as far as git is concerned.
+fn conflict_row(state: &AppState, path: &str) -> Line<'static> {
+    if state.conflict_resolved.contains(path) {
+        Line::from(vec![
+            Span::styled("\u{2713} ", Style::default().fg(Color::LightGreen)),
+            Span::raw(path.to_string()),
+        ])
+    } else {
+        Line::from(format!("  {path}"))
+    }
 }
 
 pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
@@ -154,6 +205,20 @@ fn files_area(area: Rect) -> Rect {
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     state.conflict_idx = clamp_index(state.conflict_idx, state.conflicts.len()).unwrap_or(0);
+    // The local pass is rewriting these files. Reading them is fine; settling,
+    // aborting or starting a second resolver on top of it is not.
+    if state.conflict_resolve_job.is_some()
+        && matches!(
+            key.code,
+            KeyCode::Char('c' | 'C' | 'v' | 'V' | 'a' | 'A' | 'l' | 'L')
+        )
+    {
+        state.set_status(
+            "the local model is still working \u{2014} wait, or press Esc to stop it",
+            false,
+        );
+        return Ok(());
+    }
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
             state.conflict_idx = state
@@ -171,12 +236,23 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.set_status("no conflicted file selected", false);
             }
         }
+        KeyCode::Char('l') | KeyCode::Char('L') => app::spawn_conflict_resolve(state),
         KeyCode::Char('c') => app::start_conflict_session(state, true),
         KeyCode::Char('C') => app::start_conflict_session(state, false),
         KeyCode::Char('v') | KeyCode::Char('V') => app::validate_conflict_resolution(state),
         KeyCode::Char('a') | KeyCode::Char('A') => app::abort_conflict_operation(state),
         KeyCode::Esc => {
-            state.modal = crate::state::Modal::None;
+            // Esc stops LLM work everywhere else in lg, and a local pass
+            // halfway through the files is exactly what someone hitting Esc
+            // here means to stop. The modal stays up: the conflict is still
+            // unresolved, and closing it would hide that.
+            if state.conflict_resolve_job.is_some() {
+                if let Some(message) = state.cancel_llm_jobs() {
+                    state.set_status(message, false);
+                }
+            } else {
+                state.modal = crate::state::Modal::None;
+            }
         }
         _ => {}
     }

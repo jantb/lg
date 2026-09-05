@@ -6,9 +6,9 @@ pub use lg::{
     panel,
     session::SessionKind,
     state::{
-        AppState, AuthorField, BranchView, DiffViewMode, FlowAction, FlowRun, Modal, Pane,
-        PendingAction, ReleaseStatusJob, RepoTarget, ReviewChatRole, ReviewStyleFinding,
-        ReviewStyleSeverity, TreeKind, WorkflowJob, build_tree_rows,
+        AppState, AuthorField, BranchView, ConflictResolveJob, DiffViewMode, FlowAction, FlowRun,
+        Modal, Pane, PendingAction, ReleaseStatusJob, RepoTarget, ReviewChatRole,
+        ReviewStyleFinding, ReviewStyleSeverity, TreeKind, WorkflowJob, build_tree_rows,
     },
 };
 pub use ratatui::{

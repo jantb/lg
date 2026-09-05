@@ -146,6 +146,72 @@ pub fn review_style_file_role(path: &str) -> &'static str {
     }
 }
 
+/// What the local model is asked to do about one conflict: write the merged
+/// lines for that region and nothing else.
+///
+/// The hunk goes in as labelled sides rather than as the markers git wrote,
+/// because the answer has to come back without markers in it and showing the
+/// model a set is the surest way to get one echoed. `GIVE_UP_PHRASE` is offered
+/// on purpose: a model that says it cannot do this is worth far more than one
+/// that guesses, because saying so is what hands the conflict to claude.
+pub fn build_conflict_hunk_prompt(
+    path: &str,
+    hunk: &crate::git::ConflictHunk,
+    before: &str,
+    after: &str,
+) -> String {
+    let mut prompt = format!(
+        "Resolve one git merge conflict in {path}.\n\n\
+         Output only the merged lines that replace the conflicted region.\n\
+         Rules:\n\
+         - No explanation, no commentary, no code fences, no conflict markers.\n\
+         - Keep the file's language, indentation, and surrounding style.\n\
+         - When the two sides change different things, keep both.\n\
+         - When they change the same thing, keep the version that subsumes the other; \
+         do not merge them into something neither side wrote.\n\
+         - Do not invent code, imports, or text that appears on neither side.\n\
+         - Do not touch anything outside the conflicted region.\n\
+         - If the two sides make incompatible decisions, or resolving this needs \
+         knowledge that is not shown, reply with exactly: {GIVE_UP_PHRASE}\n"
+    );
+    if !before.trim().is_empty() {
+        prompt.push_str(&format!("\nLines before the conflict:\n{before}"));
+        if !before.ends_with('\n') {
+            prompt.push('\n');
+        }
+    }
+    prompt.push_str(&format!(
+        "\nOur side ({}):\n{}",
+        label_or(&hunk.ours_label, "ours"),
+        hunk.ours
+    ));
+    if let Some(base) = &hunk.base {
+        prompt.push_str(&format!("\nCommon ancestor:\n{base}"));
+    }
+    prompt.push_str(&format!(
+        "\nTheir side ({}):\n{}",
+        label_or(&hunk.theirs_label, "theirs"),
+        hunk.theirs
+    ));
+    if !after.trim().is_empty() {
+        prompt.push_str(&format!("\nLines after the conflict:\n{after}"));
+        if !after.ends_with('\n') {
+            prompt.push('\n');
+        }
+    }
+    prompt.push_str("\nMerged lines:\n");
+    prompt
+}
+
+/// What the model says when it will not answer, and what the resolver reads as
+/// a request to hand the conflict on.
+pub const GIVE_UP_PHRASE: &str = "CANNOT RESOLVE";
+
+fn label_or<'a>(label: &'a str, fallback: &'a str) -> &'a str {
+    let label = label.trim();
+    if label.is_empty() { fallback } else { label }
+}
+
 pub fn build_conventions_prompt(history: &str) -> String {
     let history: String = history.chars().take(8_000).collect();
     format!(
@@ -254,6 +320,48 @@ mod tests {
         assert!(prompt.contains("File role: service-layer"));
         assert!(prompt.contains("Treat the File role below as authoritative"));
         assert!(prompt.contains("business rule orchestration are allowed"));
+    }
+
+    #[test]
+    fn a_conflict_prompt_shows_both_sides_without_showing_a_marker() {
+        let hunk = crate::git::ConflictHunk {
+            ours_label: "HEAD".to_string(),
+            ours: "let timeout = 30;\n".to_string(),
+            base: None,
+            theirs: "let retries = 3;\n".to_string(),
+            theirs_label: "origin/main".to_string(),
+        };
+
+        let prompt = build_conflict_hunk_prompt("src/app.rs", &hunk, "fn main() {\n", "}\n");
+
+        assert!(prompt.contains("src/app.rs"));
+        assert!(prompt.contains("Our side (HEAD)"));
+        assert!(prompt.contains("let timeout = 30;"));
+        assert!(prompt.contains("Their side (origin/main)"));
+        assert!(prompt.contains("let retries = 3;"));
+        assert!(prompt.contains("fn main() {"));
+        assert!(prompt.contains(GIVE_UP_PHRASE));
+        assert!(
+            !crate::git::holds_conflict_marker(&prompt),
+            "a marker in the prompt is a marker the model will echo back"
+        );
+    }
+
+    #[test]
+    fn a_diff3_conflict_prompt_carries_the_common_ancestor() {
+        let hunk = crate::git::ConflictHunk {
+            ours_label: String::new(),
+            ours: "a\n".to_string(),
+            base: Some("b\n".to_string()),
+            theirs: "c\n".to_string(),
+            theirs_label: String::new(),
+        };
+
+        let prompt = build_conflict_hunk_prompt("doc.md", &hunk, "", "");
+
+        assert!(prompt.contains("Common ancestor:\nb"));
+        assert!(prompt.contains("Our side (ours)"));
+        assert!(prompt.contains("Their side (theirs)"));
     }
 
     #[test]

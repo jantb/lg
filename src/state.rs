@@ -169,6 +169,7 @@ pub struct AppState {
     pub review_pr_job: Option<ReviewAssistJob>,
     pub review_flag_job: Option<ReviewFlagJob>,
     pub review_chat_job: Option<ReviewChatJob>,
+    pub conflict_resolve_job: Option<ConflictResolveJob>,
     pub workflow_job: Option<WorkflowJob>,
     pub deferred_threads: Vec<JoinHandle<()>>,
 
@@ -183,11 +184,23 @@ pub struct AppState {
     pub flow_input: Option<FlowAction>,
     pub flow_text: String,
 
+    /// Which agent `s` starts and which one a conflict is handed to. It
+    /// follows the last one picked, so running the same agent again is the
+    /// same two keystrokes rather than a hunt down the list.
+    pub preferred_agent: crate::session::SessionKind,
+    pub agent_pick_idx: usize,
+    pub agent_pick_sandboxed: bool,
+
     pub conflicts: Vec<String>,
     pub conflict_idx: usize,
     pub conflict_scroll_offset: usize,
     pub conflict_log: String,
     pub conflict_followup: Option<ConflictFollowup>,
+    /// Files the local model settled in this conflict. They are still
+    /// conflicted as far as git is concerned — nothing is staged until `v` —
+    /// so this is what tells the panel which ones are waiting to be read
+    /// rather than waiting to be resolved.
+    pub conflict_resolved: std::collections::HashSet<String>,
 
     pub delete_branch_target: String,
     pub delete_branch_local: bool,
@@ -341,6 +354,7 @@ impl AppState {
             review_pr_job: None,
             review_flag_job: None,
             review_chat_job: None,
+            conflict_resolve_job: None,
             workflow_job: None,
             deferred_threads: Vec::new(),
 
@@ -355,11 +369,16 @@ impl AppState {
             flow_input: None,
             flow_text: String::new(),
 
+            preferred_agent: crate::session::SessionKind::Claude,
+            agent_pick_idx: 0,
+            agent_pick_sandboxed: true,
+
             conflicts: Vec::new(),
             conflict_idx: 0,
             conflict_scroll_offset: 0,
             conflict_log: String::new(),
             conflict_followup: None,
+            conflict_resolved: std::collections::HashSet::new(),
 
             delete_branch_target: String::new(),
             delete_branch_local: true,

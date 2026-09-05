@@ -1,6 +1,6 @@
 //! The workspace pane: every checkout, its sessions, and the deployment status.
 
-use ratatui::{Frame, layout::Rect, style::Color, widgets::Paragraph};
+use ratatui::{Frame, layout::Rect, style::Color};
 
 use crate::{
     app,
@@ -16,7 +16,8 @@ mod tree;
 
 pub(crate) use actions::{
     activate_selected_repository_row, close_nested_repo_detail, reload_nested_repo_detail,
-    selected_linked_worktree, selected_session,
+    selected_checkout_label, selected_linked_worktree, selected_session,
+    start_session_for_selection,
 };
 pub(crate) use draw::{nested_repo_scroll_offset, sync_scroll_offset};
 pub(crate) use tree::{nested_repo_tree_len, select_nested_repo_tree_row};
@@ -24,11 +25,10 @@ pub(crate) use tree::{nested_repo_tree_len, select_nested_repo_tree_row};
 use actions::{
     bring_selected_worktree_home, close_selected_session, land_selected_worktree,
     load_nested_repo_detail, open_new_worktree_form, remove_selected_worktree,
-    selected_repository_project_path, show_session_row, start_session_for_selection,
-    sync_selected_worktree,
+    selected_repository_project_path, show_session_row, sync_selected_worktree,
 };
-use draw::{render_deployment_status, render_nested_repositories};
-use tree::{NestedRepoTreeRow, move_selection, root_repo_selected, selected_tree_row};
+use draw::render_nested_repositories;
+use tree::{NestedRepoTreeRow, move_selection, selected_tree_row};
 
 /// Borders plus the branch line plus the `main` row. Deploy branches add one
 /// row each, and a checkout does not have to have both.
@@ -36,24 +36,16 @@ const DEPLOYMENT_STATUS_BASE_HEIGHT: u16 = 4;
 const MIN_REPOSITORY_TREE_WITH_DEPLOYMENT: u16 = 6;
 const ACTIVE_REPOSITORY_BG: Color = Color::Rgb(24, 54, 34);
 
+/// Draw the checkouts and what is running in them.
+///
+/// Always the tree, even for a lone project with nothing nested under it. The
+/// tree is the only place a session can be started or returned to, and a
+/// checkout on its own needs that as much as a workspace of ten does — it used
+/// to be replaced here by the deployment box, which left the one project case
+/// with no way to reach a session at all. The deployment box is still shown,
+/// underneath, whenever the pane is tall enough for both.
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
-    // Workspace mode is built around this tree, so it is always drawn there —
-    // even for a lone checkout, which is where a session gets started from.
-    if !state.git_panes_visible()
-        || !state.nested_repositories.is_empty()
-        || !root_repo_selected(state)
-        || state.has_linked_worktrees()
-    {
-        render_nested_repositories(state, area, frame, focused);
-        return;
-    }
-
-    if !state.flow_available() {
-        frame.render_widget(Paragraph::new(""), area);
-        return;
-    }
-
-    render_deployment_status(state, area, frame);
+    render_nested_repositories(state, area, frame, focused);
 }
 
 pub fn handle_key(
@@ -120,8 +112,8 @@ pub fn handle_key(
             }
         }
         KeyCode::Char('n') => open_new_worktree_form(state),
-        KeyCode::Char('s') => start_session_for_selection(state, SessionKind::Claude, true),
-        KeyCode::Char('S') => start_session_for_selection(state, SessionKind::Claude, false),
+        KeyCode::Char('s') => state.open_agent_picker(true),
+        KeyCode::Char('S') => state.open_agent_picker(false),
         KeyCode::Char('t') => start_session_for_selection(state, SessionKind::Terminal, true),
         KeyCode::Char('T') => start_session_for_selection(state, SessionKind::Terminal, false),
         KeyCode::Char('D') => remove_selected_worktree(state),

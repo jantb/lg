@@ -4,6 +4,7 @@ use std::thread::JoinHandle;
 
 use crate::state::{BackgroundJob, GenMsg, Modal, ReviewAssistJob};
 
+mod conflict;
 mod drain;
 mod review;
 mod start;
@@ -111,8 +112,7 @@ fn open_conflict_modal_if_needed(state: &mut crate::state::AppState, log: String
     if conflicts.is_empty() {
         return false;
     }
-    state.conflicts = conflicts;
-    state.conflict_idx = 0;
+    state.set_conflicts(conflicts);
     state.conflict_log = log;
     state.modal = Modal::Conflict;
     state.set_status("conflicts detected", true);

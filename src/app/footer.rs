@@ -26,6 +26,7 @@ fn modal_section(modal: Modal) -> Option<&'static str> {
         Modal::Model => "Settings",
         Modal::Help => "Help overlay",
         Modal::Flow => "Branch actions",
+        Modal::Agent => "Agent picker",
         Modal::Conflict => "Conflict",
         Modal::DeleteBranch => "Delete branch",
         Modal::Worktree => "New worktree",

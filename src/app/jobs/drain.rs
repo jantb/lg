@@ -389,8 +389,7 @@ impl App {
                 }
                 WorkflowMsg::Error(e) => {
                     let conflicts = crate::git::conflicted_files().unwrap_or_default();
-                    self.state.conflicts = conflicts;
-                    self.state.conflict_idx = 0;
+                    self.state.set_conflicts(conflicts);
                     if !self.state.conflicts.is_empty() {
                         self.state.conflict_log = e.clone();
                         self.state.modal = Modal::Conflict;

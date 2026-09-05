@@ -31,10 +31,51 @@ impl AppState {
     pub fn settle_conflict(&mut self, validated: bool) {
         let followup = self.conflict_followup.take();
         self.conflicts.clear();
+        self.conflict_resolved.clear();
         self.modal = Modal::None;
         if validated && let Some(resume) = followup.and_then(|followup| followup.resume) {
             self.pending_action = Some(*resume);
         }
+    }
+
+    /// Put the conflicted files git reports on screen, forgetting what an
+    /// earlier conflict's local pass had settled. A file resolved during the
+    /// last conflict says nothing about a file of the same name in this one.
+    pub fn set_conflicts(&mut self, conflicts: Vec<String>) {
+        self.conflicts = conflicts;
+        self.conflict_idx = 0;
+        self.conflict_scroll_offset = 0;
+        self.conflict_resolved.clear();
+    }
+
+    /// Open the picker that says which agent to start in the selected checkout.
+    ///
+    /// `sandboxed` is carried on the state rather than asked again on the way
+    /// out: `s` and `S` differ only in that, and having chosen it once the
+    /// picker is about the agent and nothing else.
+    pub fn open_agent_picker(&mut self, sandboxed: bool) {
+        self.agent_pick_sandboxed = sandboxed;
+        self.agent_pick_idx = crate::session::SessionKind::AGENTS
+            .iter()
+            .position(|kind| *kind == self.preferred_agent)
+            .unwrap_or(0);
+        self.modal = Modal::Agent;
+    }
+
+    /// The agent the picker has landed on.
+    pub fn picked_agent(&self) -> crate::session::SessionKind {
+        let agents = crate::session::SessionKind::AGENTS;
+        agents[self.agent_pick_idx.min(agents.len() - 1)]
+    }
+
+    /// The conflicted files the local model has not settled — what is left for
+    /// somebody to read.
+    pub fn unresolved_conflicts(&self) -> Vec<String> {
+        self.conflicts
+            .iter()
+            .filter(|path| !self.conflict_resolved.contains(*path))
+            .cloned()
+            .collect()
     }
 }
 
@@ -54,6 +95,8 @@ pub enum Modal {
     Model,
     Help,
     Flow,
+    /// Which coding agent to start in the selected checkout.
+    Agent,
     Conflict,
     DeleteBranch,
     Worktree,

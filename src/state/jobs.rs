@@ -79,6 +79,7 @@ impl_background_job! {
     ReviewAssistJob => GenMsg,
     ReviewFlagJob => ReviewFlagMsg,
     ReviewChatJob => GenMsg,
+    ConflictResolveJob => ConflictResolveMsg,
     WorkflowJob => WorkflowMsg,
 }
 
@@ -342,6 +343,35 @@ pub struct ReviewChatJob {
     pub handle: Option<JoinHandle<()>>,
     pub output: String,
     pub spinner: usize,
+}
+
+/// How one pass of the local model over the conflicted files is going.
+#[derive(Debug)]
+pub enum ConflictResolveMsg {
+    Started {
+        path: String,
+        index: usize,
+        total: usize,
+    },
+    /// The file was written back with every conflict in it settled.
+    Resolved { path: String, hunks: usize },
+    /// The file was left exactly as git wrote it, because the local model was
+    /// the wrong tool for it. `reason` says which way it fell short.
+    Declined { path: String, reason: String },
+    Finished {
+        resolved: Vec<String>,
+        declined: Vec<String>,
+    },
+}
+
+#[derive(Debug)]
+pub struct ConflictResolveJob {
+    pub rx: Receiver<ConflictResolveMsg>,
+    pub handle: Option<JoinHandle<()>>,
+    pub spinner: usize,
+    pub active_path: Option<String>,
+    pub completed: usize,
+    pub total: usize,
 }
 
 #[derive(Debug)]

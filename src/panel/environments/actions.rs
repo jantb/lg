@@ -43,7 +43,7 @@ pub(crate) fn activate_selected_repository_row(state: &mut AppState) -> bool {
 /// Start a session of `kind` in the selected checkout, or show the one already
 /// running there. One session of each kind per checkout, so this is also how
 /// you get back to a session you left.
-pub(super) fn start_session_for_selection(
+pub(crate) fn start_session_for_selection(
     state: &mut AppState,
     kind: crate::session::SessionKind,
     sandboxed: bool,
@@ -67,6 +67,12 @@ pub(super) fn start_session_for_selection(
         kind,
         prompt: None,
     });
+}
+
+/// What to call the checkout the tree has selected, for a prompt that has to
+/// say where a session is about to land.
+pub(crate) fn selected_checkout_label(state: &AppState) -> Option<String> {
+    selected_checkout(state).map(|(_, label)| label)
 }
 
 /// The checkout a row stands for: where it is, and what to call it.

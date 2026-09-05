@@ -56,6 +56,7 @@ impl AppState {
             review_pr_job,
             review_flag_job,
             review_chat_job,
+            conflict_resolve_job,
             workflow_job,
         );
         handles
@@ -79,6 +80,7 @@ impl AppState {
             || self.review_pr_job.is_some()
             || self.review_flag_job.is_some()
             || self.review_chat_job.is_some()
+            || self.conflict_resolve_job.is_some()
             || self.workflow_job.is_some()
     }
 
@@ -118,6 +120,8 @@ impl AppState {
             Some("writing PR text")
         } else if self.review_chat_job.is_some() {
             Some("chatting")
+        } else if self.conflict_resolve_job.is_some() {
+            Some("resolving conflicts")
         } else if self.workflow_job.is_some() {
             Some("running branch action")
         } else {
@@ -212,6 +216,10 @@ impl AppState {
     pub fn cancel_llm_jobs(&mut self) -> Option<&'static str> {
         let mut cancelled = None;
 
+        if let Some(mut job) = self.conflict_resolve_job.take() {
+            self.defer_thread_join(job.handle.take());
+            cancelled = Some("local conflict resolution cancelled");
+        }
         if let Some(mut job) = self.review_chat_job.take() {
             self.defer_thread_join(job.handle.take());
             cancelled = Some("review chat cancelled");
@@ -250,6 +258,7 @@ impl AppState {
             || self.review_pr_job.is_some()
             || self.review_flag_job.is_some()
             || self.review_chat_job.is_some()
+            || self.conflict_resolve_job.is_some()
             || self.generation.is_some()
     }
 

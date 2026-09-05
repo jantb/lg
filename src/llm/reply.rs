@@ -114,6 +114,35 @@ pub fn finalize_review_pr_text(raw: &str) -> String {
         .collect()
 }
 
+/// The merged lines the model wrote, with everything it wrapped them in taken
+/// off: reasoning, a code fence, and the blank lines around them.
+///
+/// Indentation inside the block is left exactly as it came, because it is the
+/// answer rather than formatting around it.
+pub fn finalize_conflict_hunk(raw: &str) -> String {
+    let cleaned = strip_think_tags(raw);
+    let mut lines: Vec<&str> = cleaned.lines().collect();
+    while lines.first().is_some_and(|line| line.trim().is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    if lines
+        .first()
+        .is_some_and(|line| line.trim_start().starts_with("```"))
+        && lines.last().is_some_and(|line| line.trim() == "```")
+    {
+        lines.remove(0);
+        lines.pop();
+    }
+    let mut out = lines.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
 pub fn finalize_review_style_flag_for_path(path: &str, raw: &str) -> String {
     let cleaned = strip_think_tags(raw);
     let mut finding = parse_review_style_finding(&cleaned);
@@ -288,6 +317,33 @@ mod tests {
         let cleaned = strip_think_tags(raw);
         let finding = parse_review_style_finding(&cleaned);
         format_review_style_finding(&finding)
+    }
+
+    #[test]
+    fn a_conflict_resolution_keeps_its_indentation_and_loses_its_wrapping() {
+        let raw = "<think>both sides add a field</think>\n\n```rust\n    let a = 1;\n        let b = 2;\n```\n\n";
+
+        assert_eq!(
+            finalize_conflict_hunk(raw),
+            "    let a = 1;\n        let b = 2;\n"
+        );
+    }
+
+    #[test]
+    fn a_conflict_resolution_that_is_only_a_fence_ends_up_empty() {
+        assert_eq!(finalize_conflict_hunk("\n\n"), "");
+    }
+
+    /// A resolution that deletes both sides is a real answer, and the splice
+    /// needs it to stay empty rather than becoming a blank line.
+    #[test]
+    fn a_conflict_resolution_that_deletes_everything_stays_empty() {
+        assert_eq!(finalize_conflict_hunk("<think>drop it</think>"), "");
+    }
+
+    #[test]
+    fn a_conflict_resolution_without_a_fence_is_taken_as_written() {
+        assert_eq!(finalize_conflict_hunk("CANNOT RESOLVE"), "CANNOT RESOLVE\n");
     }
 
     #[test]

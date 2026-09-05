@@ -201,12 +201,12 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "s",
-                help: "Start or show a sandboxed claude here",
-                footer: Some(("s", "claude session")),
+                help: "Pick a sandboxed agent to start here",
+                footer: Some(("s", "agent session")),
             },
             Binding {
                 key: "S",
-                help: "claude without the sandbox, in auto mode",
+                help: "The same picker, without the sandbox",
                 footer: None,
             },
             Binding {
@@ -743,6 +743,34 @@ pub const SECTIONS: &[Section] = &[
         footer_order: &[],
     },
     Section {
+        title: "Agent picker",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "j/k",
+                help: "Move between claude, codex and pi",
+                footer: Some(("j/k", "select")),
+            },
+            Binding {
+                key: "Enter",
+                help: "Start the highlighted agent here",
+                footer: Some(("Enter", "start")),
+            },
+            Binding {
+                key: "c / x / p",
+                help: "Start claude / codex / pi outright",
+                footer: Some(("c/x/p", "claude/codex/pi")),
+            },
+            Binding {
+                key: "Esc",
+                help: "Cancel",
+                footer: Some(("Esc", "cancel")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
         title: "Conflict",
         pane: None,
         bindings: &[
@@ -757,9 +785,14 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("o/Enter", "open")),
             },
             Binding {
+                key: "l",
+                help: "Try the local model, then claude on the rest",
+                footer: Some(("l", "local")),
+            },
+            Binding {
                 key: "c",
-                help: "Hand the conflict to a sandboxed claude here",
-                footer: Some(("c", "claude")),
+                help: "Hand it to a sandboxed agent here",
+                footer: Some(("c", "agent")),
             },
             Binding {
                 key: "C",
@@ -973,6 +1006,12 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         prefix: "Commit ",
         tone: Tone::Caution,
         order: &["y", "n / Esc"],
+    },
+    ModalFooter {
+        section: "Agent picker",
+        prefix: "Start agent ",
+        tone: Tone::Normal,
+        order: &["j/k", "Enter", "c / x / p", "Esc"],
     },
     ModalFooter {
         section: "Push modal",

@@ -1,7 +1,5 @@
 //! Which panes are on screen, which one has focus, and what the main pane shows.
 
-use std::path::Path;
-
 use super::{AppState, Modal, TreeRow, build_tree_rows};
 
 /// Which shape lg is in. Git mode is the full git view; workspace mode trades
@@ -169,14 +167,18 @@ impl AppState {
         self.worktrees.len() > 1
     }
 
+    /// Whether the workspace pane has anything to show.
+    ///
+    /// A checkout is enough. The pane lists every checkout and the sessions
+    /// running in them, and starting a session is something it alone can do —
+    /// so hiding it from a lone project, as this once did when there were no
+    /// deploy branches and nothing nested, left that project with no way to
+    /// open an agent or a terminal at all.
     pub fn environments_visible(&self) -> bool {
-        self.flow_available()
+        self.repo_root.is_some()
+            || self.workspace_root.is_some()
             || !self.nested_repositories.is_empty()
             || self.has_linked_worktrees()
-            || match (self.workspace_root.as_deref(), self.repo_root.as_deref()) {
-                (Some(workspace), Some(repo)) => Path::new(workspace) != Path::new(repo),
-                _ => false,
-            }
     }
 
     /// Whether something on screen is animating and so wants redrawing at the

@@ -25,6 +25,14 @@ use super::{
     ACTIVE_REPOSITORY_BG, DEPLOYMENT_STATUS_BASE_HEIGHT, MIN_REPOSITORY_TREE_WITH_DEPLOYMENT,
 };
 
+/// Height to keep for the tree when the deployment box is shown under it: the
+/// rows it has plus its border, capped so a long tree still leaves room, and
+/// floored at one visible row.
+fn tree_height_for(rows: usize) -> u16 {
+    let wanted = u16::try_from(rows).unwrap_or(u16::MAX).saturating_add(2);
+    wanted.clamp(3, MIN_REPOSITORY_TREE_WITH_DEPLOYMENT)
+}
+
 /// Height the deployment box needs in this checkout: only the deploy branches
 /// that exist get a row.
 pub(super) fn deployment_status_height(state: &AppState) -> u16 {
@@ -88,12 +96,17 @@ pub(super) fn render_nested_repositories(
     frame: &mut Frame,
     focused: bool,
 ) {
+    let rows = nested_repo_tree_rows(state);
     let deployment_height = deployment_status_height(state);
-    let show_deployment = state.flow_available()
-        && area.height >= deployment_height + MIN_REPOSITORY_TREE_WITH_DEPLOYMENT;
+    // What the tree needs before the deployment box may have the rest: its
+    // rows and its border, but never more than a screenful of them. A lone
+    // checkout is one row, and holding six back for it is what used to leave
+    // no room for the deployment box in a short pane.
+    let tree_min = tree_height_for(rows.len());
+    let show_deployment = state.flow_available() && area.height >= deployment_height + tree_min;
     let (tree_area, deployment_area) = if show_deployment {
         let chunks = Layout::vertical([
-            Constraint::Min(MIN_REPOSITORY_TREE_WITH_DEPLOYMENT),
+            Constraint::Min(tree_min),
             Constraint::Length(deployment_height),
         ])
         .split(area);
@@ -101,7 +114,6 @@ pub(super) fn render_nested_repositories(
     } else {
         (area, None)
     };
-    let rows = nested_repo_tree_rows(state);
     let len = rows.len();
     let selected_idx = clamp_index(state.nested_repo_tree_idx, len);
     let title = repositories_title(state);

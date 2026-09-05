@@ -104,6 +104,74 @@ fn status_panel_shows_active_generation() {
     );
 }
 
+/// A project on its own is still a checkout you start sessions in. The pane
+/// used to be hidden outright for one, which left nowhere to press s.
+#[test]
+fn a_lone_project_still_gets_the_workspace_pane() {
+    let mut state = AppState::new();
+    state.repo_root = Some("/workspace".into());
+
+    assert!(
+        state.environments_visible(),
+        "a single checkout has sessions to list and start"
+    );
+}
+
+/// And the pane shows the tree rather than only the deployment box, so the
+/// checkout and whatever is running in it can be selected.
+#[test]
+fn a_lone_project_lists_its_checkout_and_its_sessions() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.branch = Some("main".into());
+    add_flow_branches(&mut state);
+    let spawn = lg::term::Spawn {
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), "sleep 30".into()],
+        cwd: std::env::temp_dir(),
+        env: Vec::new(),
+        env_remove: Vec::new(),
+    };
+    state
+        .sessions
+        .start_with(
+            lg::session::SessionSpec {
+                label: "main".into(),
+                cwd: "/workspace".into(),
+                sandboxed: false,
+                kind: SessionKind::Codex,
+                prompt: None,
+            },
+            &spawn,
+            (24, 80),
+        )
+        .expect("start session");
+
+    let backend = TestBackend::new(90, 14);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::environments::render(&state, frame.area(), frame, true);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(text.contains("workspace"), "the checkout row: {text}");
+    assert!(text.contains("codex"), "the session running in it: {text}");
+    assert!(
+        text.contains("Deployment Status"),
+        "and the deployment box still fits underneath: {text}"
+    );
+}
+
 #[test]
 fn current_branch_panel_renders_environment_history() {
     let mut state = AppState::new();
@@ -121,7 +189,7 @@ fn current_branch_panel_renders_environment_history() {
         }),
     };
 
-    let backend = TestBackend::new(90, 8);
+    let backend = TestBackend::new(90, 10);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|frame| {
@@ -265,7 +333,7 @@ fn current_branch_panel_shows_deployment_status_loading() {
         branch: "feature/loading".into(),
     });
 
-    let backend = TestBackend::new(90, 8);
+    let backend = TestBackend::new(90, 10);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|frame| {
@@ -796,6 +864,7 @@ fn s_asks_for_a_sandboxed_session_in_the_selected_worktree() {
 
     panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
     panel::environments::handle_key(&mut state, key(KeyCode::Char('s'))).unwrap();
+    panel::agent::handle_key(&mut state, key(KeyCode::Char('c'))).unwrap();
 
     assert_eq!(
         state.pending_action,
@@ -811,6 +880,7 @@ fn s_asks_for_a_sandboxed_session_in_the_selected_worktree() {
     // Shift asks for the same session without the sandbox.
     state.pending_action = None;
     panel::environments::handle_key(&mut state, key(KeyCode::Char('S'))).unwrap();
+    panel::agent::handle_key(&mut state, key(KeyCode::Char('c'))).unwrap();
     assert_eq!(
         state.pending_action,
         Some(PendingAction::StartSession {
@@ -821,6 +891,38 @@ fn s_asks_for_a_sandboxed_session_in_the_selected_worktree() {
             prompt: None,
         })
     );
+}
+
+/// Every agent lands in the same checkout the picker was opened on, and a
+/// checkout can hold one of each at once.
+#[test]
+fn each_agent_starts_in_the_checkout_the_picker_was_opened_on() {
+    for (pressed, expected) in [
+        ('c', SessionKind::Claude),
+        ('x', SessionKind::Codex),
+        ('p', SessionKind::Pi),
+    ] {
+        let mut state = AppState::new();
+        state.workspace_root = Some("/workspace".into());
+        state.repo_root = Some("/workspace".into());
+        state.branch = Some("main".into());
+
+        panel::environments::handle_key(&mut state, key(KeyCode::Char('s'))).unwrap();
+        panel::agent::handle_key(&mut state, key(KeyCode::Char(pressed))).unwrap();
+
+        assert_eq!(
+            state.pending_action,
+            Some(PendingAction::StartSession {
+                path: "/workspace".into(),
+                label: "main".into(),
+                sandboxed: true,
+                kind: expected,
+                prompt: None,
+            }),
+            "{pressed} should start {}",
+            expected.label()
+        );
+    }
 }
 
 /// The terminal keys are the session keys with a different program on the end:
@@ -874,6 +976,7 @@ fn a_session_on_the_root_row_uses_the_checked_out_branch_as_its_name() {
     state.branch = Some("main".into());
 
     panel::environments::handle_key(&mut state, key(KeyCode::Char('s'))).unwrap();
+    panel::agent::handle_key(&mut state, key(KeyCode::Char('c'))).unwrap();
 
     assert_eq!(
         state.pending_action,
@@ -1258,6 +1361,41 @@ fn conflict_modal_asks_user_to_resolve_externally() {
     assert!(!text.contains("ours/theirs/both"), "{text}");
     assert!(!text.contains("LLM"), "{text}");
     assert!(!text.contains("stage + continue"), "{text}");
+}
+
+#[test]
+fn the_conflict_modal_separates_files_to_read_from_files_to_resolve() {
+    let mut state = AppState::new();
+    state.modal = Modal::Conflict;
+    state.conflicts = vec!["src/easy.rs".into(), "src/hard.rs".into()];
+    state.conflict_resolved.insert("src/easy.rs".into());
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::conflict::render(&state, frame.area(), frame);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
+
+    assert!(text.contains("src/easy.rs"), "{text}");
+    assert!(text.contains("src/hard.rs"), "{text}");
+    assert!(
+        text.contains("resolved by the local model"),
+        "the modal has to say a file was rewritten before v commits it: {text}"
+    );
+    assert!(
+        text.contains('l'),
+        "the local pass has to be offered somewhere: {text}"
+    );
 }
 
 // ── Tree building ─────────────────────────────────────────────────────────────

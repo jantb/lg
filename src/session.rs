@@ -1,10 +1,11 @@
 //! Terminal sessions lg keeps alive — one of each kind per checkout.
 //!
 //! A session is a program running on a pseudo terminal in one worktree, plus
-//! the parsed screen it has drawn so far. Two kinds are on offer: claude, and
-//! the user's own shell. Sessions keep running and keep being read while lg
-//! shows something else, so several checkouts can be worked on at once and
-//! switched between.
+//! the parsed screen it has drawn so far. Two sorts are on offer: a coding
+//! agent — claude, codex or pi — and the user's own shell. Sessions keep
+//! running and keep being read while lg shows something else, so several
+//! checkouts can be worked on at once and switched between, and one checkout
+//! can hold every kind at the same time.
 
 use anyhow::Result;
 use std::fs::OpenOptions;
@@ -44,25 +45,53 @@ pub enum SessionStatus {
 
 /// Which program a session runs.
 ///
-/// Both kinds are the same thing to lg — a program on a pseudo terminal in one
-/// checkout — and differ only in what is started and how much it says about
-/// itself. claude reports what it is doing through hooks; a shell reports
-/// nothing, so its dot stays green unless something it runs puts a question on
-/// screen.
+/// Every kind is the same thing to lg — a program on a pseudo terminal in one
+/// checkout — and they differ only in what is started and how much each says
+/// about itself. claude reports what it is doing through hooks; the others
+/// report nothing, so their dot stays green unless something they run puts a
+/// question on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SessionKind {
     Claude,
-    /// The user's login shell, for the commands claude is the wrong tool for.
+    Codex,
+    Pi,
+    /// The user's login shell, for the commands an agent is the wrong tool for.
     Terminal,
 }
 
 impl SessionKind {
+    /// The coding agents, in the order the picker offers them.
+    pub const AGENTS: [Self; 3] = [Self::Claude, Self::Codex, Self::Pi];
+
     /// What this kind is called in the UI: the pane title, the tree row, and
-    /// the footer that says where the keyboard is pointing.
+    /// the footer that says where the keyboard is pointing. It is also the
+    /// program's name, which is the point — a row saying `codex` is saying
+    /// which binary is running there.
     pub fn label(self) -> &'static str {
         match self {
             Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Pi => "pi",
             Self::Terminal => "terminal",
+        }
+    }
+
+    /// Whether this kind is a coding agent rather than a plain shell. An agent
+    /// takes a starting prompt and is what lg hands a conflict to; a shell
+    /// takes neither, because the person typing at it supplies both.
+    pub fn is_agent(self) -> bool {
+        !matches!(self, Self::Terminal)
+    }
+
+    /// The letter that picks this agent outright in the picker. Not the
+    /// initial in every case: `p` is pull and `c` is commit before either
+    /// reaches a pane, so codex answers to the `x` in its name.
+    pub fn pick_key(self) -> char {
+        match self {
+            Self::Claude => 'c',
+            Self::Codex => 'x',
+            Self::Pi => 'p',
+            Self::Terminal => 't',
         }
     }
 }
@@ -531,6 +560,14 @@ impl Sessions {
         }
         match spec.kind {
             SessionKind::Claude => self.start_claude(spec, size),
+            SessionKind::Codex => {
+                let spawn = codex_spawn(&spec.cwd, spec.sandboxed, spec.prompt.as_deref());
+                self.start_with(spec, &spawn, size)
+            }
+            SessionKind::Pi => {
+                let spawn = pi_spawn(&spec.cwd, spec.sandboxed, spec.prompt.as_deref());
+                self.start_with(spec, &spawn, size)
+            }
             SessionKind::Terminal => {
                 let spawn = shell_spawn(&spec.cwd, spec.sandboxed);
                 self.start_with(spec, &spawn, size)
@@ -656,8 +693,40 @@ impl Sessions {
     }
 }
 
-/// The permission mode an unsandboxed session runs under.
+/// The permission mode an unsandboxed claude session runs under.
 const AUTO_PERMISSION_MODE: &str = "auto";
+
+/// The sandbox an unsandboxed codex session confines itself to: it may work in
+/// the checkout without stopping to ask, and asks before reaching outside it.
+/// As far as claude's auto mode goes, in the vocabulary codex has.
+const CODEX_WORKSPACE_SANDBOX: &str = "workspace-write";
+
+/// How to launch `program` in `cwd`: directly, or wrapped in terrarium when the
+/// session is sandboxed, which confines the process to that worktree.
+///
+/// The returned args already end with terrarium's `--`, so everything a caller
+/// appends is the program's own argument either way.
+fn confined(cwd: &Path, sandboxed: bool, program: &str) -> (String, Vec<String>) {
+    if !sandboxed {
+        return (program.to_string(), Vec::new());
+    }
+    (
+        "terrarium".to_string(),
+        vec![
+            "run".to_string(),
+            "--project".to_string(),
+            cwd.to_string_lossy().into_owned(),
+            "--".to_string(),
+            program.to_string(),
+        ],
+    )
+}
+
+/// The prompt an agent opens on, when it is worth passing at all. A blank one
+/// is not: it would reach the agent as an empty first turn.
+fn opening_prompt(prompt: Option<&str>) -> Option<&str> {
+    prompt.map(str::trim).filter(|prompt| !prompt.is_empty())
+}
 
 /// How to launch claude in `cwd`. Sandboxed sessions go through terrarium,
 /// which confines the process to that worktree. An unsandboxed one runs in
@@ -680,33 +749,71 @@ pub fn claude_spawn(
     // terrarium resolves the project path before looking up its profile, so the
     // path handed to it has to be resolved too.
     let cwd = &crate::terrarium::resolve(cwd);
-    let (program, mut args) = if sandboxed {
-        (
-            "terrarium".to_string(),
-            vec![
-                "run".to_string(),
-                "--project".to_string(),
-                cwd.to_string_lossy().into_owned(),
-                "--".to_string(),
-                "claude".to_string(),
-            ],
-        )
-    } else {
-        (
-            "claude".to_string(),
-            vec![
-                "--permission-mode".to_string(),
-                AUTO_PERMISSION_MODE.to_string(),
-            ],
-        )
-    };
-    // Last, so it lands after the `--` a sandboxed session goes through: these
-    // are claude's arguments, not terrarium's.
+    let (program, mut args) = confined(cwd, sandboxed, "claude");
+    if !sandboxed {
+        args.push("--permission-mode".to_string());
+        args.push(AUTO_PERMISSION_MODE.to_string());
+    }
+    // After the `--` a sandboxed session goes through: these are claude's
+    // arguments, not terrarium's.
     if let Some(settings) = settings {
         args.push("--settings".to_string());
         args.push(settings.to_string_lossy().into_owned());
     }
-    if let Some(prompt) = prompt.map(str::trim).filter(|prompt| !prompt.is_empty()) {
+    if let Some(prompt) = opening_prompt(prompt) {
+        args.push(prompt.to_string());
+    }
+    Spawn {
+        program,
+        args,
+        cwd: cwd.to_path_buf(),
+        env: session_env(),
+        env_remove: nested_claude_markers(),
+    }
+}
+
+/// How to launch codex in `cwd`.
+///
+/// Sandboxed, terrarium is already holding the process to this checkout, and
+/// codex's own sandbox would be a second one nested inside it — which is both
+/// redundant and the case its bypass flag documents itself as being for.
+/// Unsandboxed, nothing else is confining it, so codex confines itself to the
+/// checkout: free rein inside, a question before it reaches outside.
+///
+/// `prompt` is what the session opens on, and goes last as codex's optional
+/// positional prompt.
+pub fn codex_spawn(cwd: &Path, sandboxed: bool, prompt: Option<&str>) -> Spawn {
+    let cwd = &crate::terrarium::resolve(cwd);
+    let (program, mut args) = confined(cwd, sandboxed, "codex");
+    if sandboxed {
+        args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+    } else {
+        args.push("--sandbox".to_string());
+        args.push(CODEX_WORKSPACE_SANDBOX.to_string());
+    }
+    if let Some(prompt) = opening_prompt(prompt) {
+        args.push(prompt.to_string());
+    }
+    Spawn {
+        program,
+        args,
+        cwd: cwd.to_path_buf(),
+        env: session_env(),
+        env_remove: nested_claude_markers(),
+    }
+}
+
+/// How to launch pi in `cwd`. It has no sandbox of its own to ask for, so a
+/// sandboxed session is terrarium's doing and an unsandboxed one runs as pi
+/// would from a shell.
+///
+/// The prompt goes after `--`, which is how pi is told the rest is a message
+/// rather than flags — without it a prompt opening with a dash is read as one.
+pub fn pi_spawn(cwd: &Path, sandboxed: bool, prompt: Option<&str>) -> Spawn {
+    let cwd = &crate::terrarium::resolve(cwd);
+    let (program, mut args) = confined(cwd, sandboxed, "pi");
+    if let Some(prompt) = opening_prompt(prompt) {
+        args.push("--".to_string());
         args.push(prompt.to_string());
     }
     Spawn {
@@ -735,21 +842,7 @@ pub fn shell_spawn(cwd: &Path, sandboxed: bool) -> Spawn {
     // terrarium resolves the project path before looking up its profile, so the
     // path handed to it has to be resolved too.
     let cwd = &crate::terrarium::resolve(cwd);
-    let shell = login_shell();
-    let (program, args) = if sandboxed {
-        (
-            "terrarium".to_string(),
-            vec![
-                "run".to_string(),
-                "--project".to_string(),
-                cwd.to_string_lossy().into_owned(),
-                "--".to_string(),
-                shell,
-            ],
-        )
-    } else {
-        (shell, Vec::new())
-    };
+    let (program, args) = confined(cwd, sandboxed, &login_shell());
     Spawn {
         program,
         args,
@@ -874,6 +967,126 @@ mod tests {
                 "/dev/lg/.git/lg/sessions/dev-lg/settings.json"
             ]
         );
+    }
+
+    /// Sandboxed, terrarium is the confinement, so codex's own sandbox — which
+    /// would be nested inside it — is turned off rather than stacked.
+    #[test]
+    fn a_sandboxed_codex_leaves_the_confining_to_terrarium() {
+        let spawn = codex_spawn(Path::new("/dev/lg.worktrees/feat-x"), true, None);
+        assert_eq!(spawn.program, "terrarium");
+        assert_eq!(
+            spawn.args,
+            [
+                "run",
+                "--project",
+                "/dev/lg.worktrees/feat-x",
+                "--",
+                "codex",
+                "--dangerously-bypass-approvals-and-sandbox",
+            ]
+        );
+        assert_eq!(spawn.cwd, Path::new("/dev/lg.worktrees/feat-x"));
+    }
+
+    /// With nothing else holding it, codex holds itself to the checkout — as
+    /// far as claude's auto mode goes here.
+    #[test]
+    fn an_unsandboxed_codex_confines_itself_to_the_checkout() {
+        let spawn = codex_spawn(Path::new("/dev/lg"), false, None);
+        assert_eq!(spawn.program, "codex");
+        assert_eq!(spawn.args, ["--sandbox", "workspace-write"]);
+        assert_eq!(spawn.cwd, Path::new("/dev/lg"));
+    }
+
+    #[test]
+    fn a_sandboxed_pi_goes_through_terrarium_too() {
+        let spawn = pi_spawn(Path::new("/dev/lg.worktrees/feat-x"), true, None);
+        assert_eq!(spawn.program, "terrarium");
+        assert_eq!(
+            spawn.args,
+            ["run", "--project", "/dev/lg.worktrees/feat-x", "--", "pi"]
+        );
+    }
+
+    #[test]
+    fn an_unsandboxed_pi_runs_with_nothing_added() {
+        let spawn = pi_spawn(Path::new("/dev/lg"), false, None);
+        assert_eq!(spawn.program, "pi");
+        assert!(spawn.args.is_empty(), "pi has no mode to ask for");
+    }
+
+    /// Every agent opens on the conflict lg hands it, and the prompt has to
+    /// arrive as the first turn rather than as a flag — which is why pi's goes
+    /// behind a `--`, since a prompt can start with a dash.
+    #[test]
+    fn every_agent_opens_on_the_prompt_it_is_given() {
+        const PROMPT: &str = "- resolve the merge conflict";
+
+        assert_eq!(
+            claude_spawn(Path::new("/dev/lg"), false, None, Some(PROMPT))
+                .args
+                .last()
+                .map(String::as_str),
+            Some(PROMPT)
+        );
+        assert_eq!(
+            codex_spawn(Path::new("/dev/lg"), false, Some(PROMPT))
+                .args
+                .last()
+                .map(String::as_str),
+            Some(PROMPT)
+        );
+
+        let pi = pi_spawn(Path::new("/dev/lg"), false, Some(PROMPT));
+        assert_eq!(pi.args, ["--", PROMPT]);
+    }
+
+    #[test]
+    fn a_blank_prompt_reaches_no_agent_as_an_empty_first_turn() {
+        assert!(
+            codex_spawn(Path::new("/dev/lg"), false, Some("   "))
+                .args
+                .iter()
+                .all(|arg| arg.starts_with('-') || arg == "workspace-write")
+        );
+        assert!(
+            pi_spawn(Path::new("/dev/lg"), false, Some("   "))
+                .args
+                .is_empty()
+        );
+    }
+
+    /// One of each per checkout, so a worktree can be running claude, codex, pi
+    /// and a shell at the same time without any of them replacing another.
+    #[test]
+    fn a_checkout_holds_one_session_of_every_kind_at_once() {
+        let mut sessions = Sessions::default();
+        for (id, kind) in [
+            SessionKind::Claude,
+            SessionKind::Codex,
+            SessionKind::Pi,
+            SessionKind::Terminal,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            sessions.items.push(fake_of(id as u64, "/dev/lg", kind));
+        }
+
+        for kind in [
+            SessionKind::Claude,
+            SessionKind::Codex,
+            SessionKind::Pi,
+            SessionKind::Terminal,
+        ] {
+            assert!(
+                sessions.for_dir_kind(Path::new("/dev/lg"), kind).is_some(),
+                "{} should have its own session here",
+                kind.label()
+            );
+        }
+        assert_eq!(sessions.for_dir(Path::new("/dev/lg")).count(), 4);
     }
 
     /// The sandbox is what a worktree session is for, and it has to hold for a

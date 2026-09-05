@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod author;
 pub mod branches;
 pub mod commit;

@@ -25,8 +25,9 @@ pub use branch::{
     flow_transfer_diff_to_feature_branch_with_progress,
 };
 pub use conflict::{
-    Followup, abort_in_progress_operation, abort_in_progress_operation_with_cleanup,
-    abort_in_progress_operation_with_return, conflicted_files, stage_resolved_conflicts,
+    ConflictHunk, ConflictedFile, Followup, abort_in_progress_operation,
+    abort_in_progress_operation_with_cleanup, abort_in_progress_operation_with_return,
+    conflicted_files, holds_conflict_marker, marker_line, stage_resolved_conflicts,
     validate_conflict_resolution,
 };
 pub use merge_main::{
