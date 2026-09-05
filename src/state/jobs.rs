@@ -91,7 +91,17 @@ pub enum GenMsg {
     /// closing think tag arrived with no opening one. Consumers drop whatever
     /// they have accumulated and start over.
     Reset,
-    Done(String),
+    /// The finished answer, with what the server said it cost.
+    ///
+    /// The stats travel with the answer rather than ahead of it because a
+    /// consumer polls this channel in batches: sent separately, the stats and
+    /// the answer they describe can land on different passes, and the pass that
+    /// takes delivery of the answer is the one that has to know whether it was
+    /// cut off.
+    Done {
+        text: String,
+        stats: crate::llm::GenStats,
+    },
     Error(String),
 }
 

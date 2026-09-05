@@ -374,7 +374,7 @@ fn main() {
             let mut err: Option<String> = None;
             while let Ok(msg) = rx.recv() {
                 match msg {
-                    lg::state::GenMsg::Done(m) => {
+                    lg::state::GenMsg::Done { text: m, .. } => {
                         final_msg = Some(m);
                         break;
                     }

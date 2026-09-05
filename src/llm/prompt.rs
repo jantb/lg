@@ -4,27 +4,6 @@ use crate::settings::RepoSettings;
 
 use super::diff::{diff_excerpt, summarize_diff};
 
-const REVIEW_REPO_STYLE_GUIDE: &str = "\
-Established repo style:
-- Kotlin/Spring, but immutable code by default: prefer val, immutable collections, data-class .copy(), focused functions, and pure helper functions.
-- Constructor injection only. Inject narrow interfaces/services, not broad infrastructure.
-- Controllers stay thin: auth, validation, DTO assembly, ResponseEntity. Business decisions go in service-layer files/classes whose path or name contains Service, or in explicit hub flow code.
-- Treat business rules in controllers, adapters, Kafka consumers/listeners, repositories, DTOs, configuration, or other non-Service/non-flow files as a style issue unless the shown code only delegates or translates data.
-- Flow start state construction may call repositories/services to load initial data before the flow begins. Once a flow has started, later state constructors/steps should stay pure; flag direct repository/service calls there.
-- Domain IDs use inline value classes like UserId, MembershipId; wrap raw primitives at repository boundaries.
-- Names should describe domain intent and behavior. Flag vague, misleading, or overly generic names and suggest a concrete replacement.
-- Use sealed interfaces/classes for variants with different data; enums only for simple tags.
-- JSON uses the shared configuredJson; avoid Jackson in app code except generated/Spring/Avro internals.
-- Time uses kotlinx.datetime; java.time only at interop edges.
-- Logging uses private val log by Logger(), not direct LoggerFactory.
-- Outbound HTTP uses Ktor CIO adapters. Each external system gets one adapter.
-- Persistence is PostgreSQL via Exposed + Flyway.
-- Kafka/outbound side effects from flows go through the outbox, not direct Kafka publishing.
-- Tests prefer real small fakes over mocks. Use Mockk only when a fake is impractical; never Mockito.
-- Integration tests use @SpringBootTest + TestConfiguration + Testcontainers.
-- Do not edit generated code under target/generated-sources.
-- Run the repo formatter/lint before declaring work done; linter wins on formatting.";
-
 pub fn build_commit_prompt(diff: &str, settings: &RepoSettings) -> String {
     format!(
         "{}{}\n\nDiff excerpt:\n{}\n",
@@ -51,9 +30,10 @@ pub fn build_review_assist_prompt(context: &str, settings: &RepoSettings) -> Str
          Review the change against the established repo style below and call out concrete violations.\n\
          Output 6-12 substantive bullets or short sections. Avoid padding. Do not invent files\n\
          or behavior not shown. Do not use code fences.\n\n\
-         {REVIEW_REPO_STYLE_GUIDE}\n\n\
+         {}\n\n\
          {}\n\
          Selected review subtree:\n{context}",
+        settings.review_style.trim_end(),
         crate::settings::language_instruction(settings)
     )
 }
@@ -69,9 +49,10 @@ pub fn build_review_chat_system_prompt(context: &str, settings: &RepoSettings) -
          names, and line numbers from the context. If the context is insufficient, say what is\n\
          missing instead of guessing. Review answers against the\n\
          established repo style below and call out concrete violations.\n\n\
-         {REVIEW_REPO_STYLE_GUIDE}\n\n\
+         {}\n\n\
          {}\n\
          Review context:\n{context}",
+        settings.review_style.trim_end(),
         crate::settings::language_instruction(settings)
     )
 }
@@ -124,18 +105,35 @@ pub fn build_review_style_flag_prompt(
          only flag direct repository/service calls in later states or steps after the flow has started.\n\n\
          Treat the File role below as authoritative. For service-layer or flow files, repository/service calls\n\
          and business rule orchestration are allowed by layer placement; do not flag them merely as\n\
-         non-Service/non-flow violations. Return OK for that concern unless another concrete style rule is violated.\n\n\
+         non-Service/non-flow violations. Return OK for that concern unless another concrete style rule is violated.\n\
+         A role of unclassified means this codebase does not use those layers at all: never flag layer\n\
+         placement for such a file, and apply only rules that are about the code itself.\n\n\
          For naming issues, include a concrete rename suggestion in the reason.\n\n\
-         {REVIEW_REPO_STYLE_GUIDE}\n\n\
+         {}\n\n\
          {}\n\
          File: {path}\n\
          File role: {file_role}\n\
          Review context:\n{context}",
+        settings.review_style.trim_end(),
         crate::settings::language_instruction(settings)
     )
 }
 
+/// Where a file sits in a layered codebase, as far as its path gives that away.
+///
+/// Service and flow are Kotlin/Spring layering, which is what the built-in
+/// guide describes, so the third answer is only ever given about a file written
+/// in that language. Anything else is unclassified: reporting every Rust or Go
+/// file as "non-service/non-flow" told the model that business logic in it was
+/// a violation by placement, and that is a verdict about a convention the
+/// checkout does not use.
 pub fn review_style_file_role(path: &str) -> &'static str {
+    if !LAYERED_LANGUAGE_EXTENSIONS
+        .iter()
+        .any(|extension| path.ends_with(extension))
+    {
+        return "unclassified";
+    }
     let lower = path.to_ascii_lowercase();
     if lower.contains("service") {
         "service-layer"
@@ -145,6 +143,9 @@ pub fn review_style_file_role(path: &str) -> &'static str {
         "non-service/non-flow"
     }
 }
+
+/// The languages the built-in guide's layering vocabulary is about.
+const LAYERED_LANGUAGE_EXTENSIONS: [&str; 2] = [".kt", ".java"];
 
 /// What the local model is asked to do about one conflict: write the merged
 /// lines for that region and nothing else.
@@ -307,6 +308,45 @@ mod tests {
         assert!(prompt.contains("File: src/main/kotlin/App.kt"));
         assert!(prompt.contains("File role: non-service/non-flow"));
         assert!(prompt.contains("updates controller logic"));
+    }
+
+    /// The style guide travels with the checkout, so a repo that wrote its own
+    /// is measured against that and never against the built-in one.
+    #[test]
+    fn the_review_prompts_use_this_checkouts_own_style_guide() {
+        let settings = RepoSettings {
+            review_style: "- Rust 2024, no unwrap outside tests.".to_string(),
+            ..RepoSettings::default()
+        };
+
+        for prompt in [
+            build_review_assist_prompt("ctx", &settings),
+            build_review_chat_system_prompt("ctx", &settings),
+            build_review_style_flag_prompt("src/lib.rs", "ctx", &settings),
+        ] {
+            assert!(prompt.contains("no unwrap outside tests"), "{prompt}");
+            assert!(
+                !prompt.contains("never Mockito"),
+                "the built-in guide leaked into a checkout that replaced it"
+            );
+        }
+    }
+
+    /// Service and flow are Kotlin/Spring layering. Telling the model that a
+    /// Rust file is "non-service/non-flow" reads as a verdict about where its
+    /// logic lives, under a convention the checkout does not use.
+    #[test]
+    fn a_file_outside_the_guides_languages_is_not_given_a_layer() {
+        assert_eq!(review_style_file_role("src/app/actions.rs"), "unclassified");
+        assert_eq!(review_style_file_role("cmd/server/main.go"), "unclassified");
+        assert_eq!(
+            review_style_file_role("src/main/kotlin/BalanceService.kt"),
+            "service-layer"
+        );
+        assert_eq!(
+            review_style_file_role("src/main/java/Controller.java"),
+            "non-service/non-flow"
+        );
     }
 
     #[test]

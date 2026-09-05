@@ -33,6 +33,7 @@ fn save_settings(
         ),
         commit_body_max_lines: parse_limit(commit_body_max_lines, current.commit_body_max_lines),
         commit_prompt: current.commit_prompt,
+        review_style: current.review_style,
     })
 }
 
@@ -245,25 +246,18 @@ impl App {
                         .set_status(format!("settings reset failed: {err}"), true),
                 }
             }
-            PendingAction::EditCommitPrompt => match crate::settings::ensure_commit_prompt_file() {
-                Ok(path) => {
-                    let path = path.to_string_lossy().into_owned();
-                    match crate::git::open_file_in_ide(&path) {
-                        Ok(status) => {
-                            // The editor opens beside the modal, which stays up so the
-                            // rest of the settings are still there to save afterwards.
-                            super::spawn::load_repo_settings_into_state(&mut self.state);
-                            self.state.set_status(status, false);
-                        }
-                        Err(err) => self
-                            .state
-                            .set_status(format!("commit prompt open failed: {err}"), true),
-                    }
-                }
-                Err(err) => self
-                    .state
-                    .set_status(format!("commit prompt open failed: {err}"), true),
-            },
+            PendingAction::EditCommitPrompt => {
+                self.edit_settings_file(
+                    "commit prompt",
+                    crate::settings::ensure_commit_prompt_file(),
+                );
+            }
+            PendingAction::EditReviewStyle => {
+                self.edit_settings_file(
+                    "review style",
+                    crate::settings::ensure_review_style_file(),
+                );
+            }
             PendingAction::StageAll => {
                 spawn_operation(&mut self.state, "staging", OperationKind::Index, || {
                     crate::git::stage_all()?;
@@ -535,6 +529,27 @@ impl App {
 }
 
 impl App {
+    /// Open one of this checkout's editable settings files in the IDE.
+    ///
+    /// The editor opens beside the modal, which stays up so the rest of the
+    /// settings are still there to save afterwards; the file is re-read on the
+    /// way so the modal's "custom" markers reflect what was just written.
+    fn edit_settings_file(&mut self, what: &str, path: anyhow::Result<std::path::PathBuf>) {
+        let opened = path.and_then(|path| {
+            let path = path.to_string_lossy().into_owned();
+            crate::git::open_file_in_ide(&path)
+        });
+        match opened {
+            Ok(status) => {
+                super::spawn::load_repo_settings_into_state(&mut self.state);
+                self.state.set_status(status, false);
+            }
+            Err(err) => self
+                .state
+                .set_status(format!("{what} open failed: {err}"), true),
+        }
+    }
+
     /// Move lg off a checkout that is about to be removed, so the panels are
     /// not left pointing at a directory that no longer exists. The main
     /// worktree is where every repository has one.

@@ -71,12 +71,24 @@ fn drain_review_stream(
                     assists.insert(job.node_id.clone(), String::new());
                 }
             }
-            GenMsg::Done(final_msg) => {
+            GenMsg::Done {
+                text: final_msg,
+                stats,
+            } => {
+                let truncated = stats.truncated;
+                let final_msg = mark_if_truncated(final_msg, truncated);
                 if let Some(mut job) = slot.take() {
                     handle = job.handle.take();
                     assists.insert(job.node_id, final_msg);
                 }
-                status = Some((ready.to_string(), false));
+                status = Some((
+                    if truncated {
+                        format!("{ready} \u{2014} cut off at the token budget")
+                    } else {
+                        ready.to_string()
+                    },
+                    truncated,
+                ));
             }
             GenMsg::Error(error) => {
                 if let Some(mut job) = slot.take() {
@@ -90,6 +102,18 @@ fn drain_review_stream(
     join_worker(handle);
     tick_spinner(slot);
     status
+}
+
+/// Say in the text itself that an answer was cut off.
+///
+/// The status line that says so expires; the answer stays on screen and gets
+/// copied into a PR description, so the one place the notice cannot be missed
+/// is the answer.
+pub(super) fn mark_if_truncated(text: String, truncated: bool) -> String {
+    if !truncated || text.trim().is_empty() {
+        return text;
+    }
+    format!("{}\n\n{}", text.trim_end(), crate::llm::TRUNCATED_NOTE)
 }
 
 fn join_worker(handle: Option<JoinHandle<()>>) {
@@ -117,4 +141,32 @@ fn open_conflict_modal_if_needed(state: &mut crate::state::AppState, log: String
     state.modal = Modal::Conflict;
     state.set_status("conflicts detected", true);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A status line expires; an answer stays on screen and gets pasted into a
+    /// pull request. An answer the server stopped at the budget reads exactly
+    /// like one that finished, so the notice belongs in the answer itself.
+    #[test]
+    fn a_cut_off_answer_says_so_in_its_own_text() {
+        let marked = mark_if_truncated("## Summary\n- did a thing".to_string(), true);
+
+        assert!(marked.starts_with("## Summary\n- did a thing"));
+        assert!(marked.contains(crate::llm::TRUNCATED_NOTE), "{marked}");
+    }
+
+    #[test]
+    fn a_complete_answer_is_left_exactly_as_it_came() {
+        let text = "## Summary\n- did a thing".to_string();
+
+        assert_eq!(mark_if_truncated(text.clone(), false), text);
+    }
+
+    #[test]
+    fn there_is_nothing_to_mark_on_an_empty_answer() {
+        assert_eq!(mark_if_truncated(String::new(), true), "");
+    }
 }

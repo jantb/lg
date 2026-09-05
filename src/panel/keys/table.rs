@@ -942,6 +942,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: None,
             },
             Binding {
+                key: "Ctrl+R",
+                help: "Edit this checkout's review style guide",
+                footer: None,
+            },
+            Binding {
                 key: "Ctrl+U",
                 help: "Reset saved settings to defaults",
                 footer: Some(("Ctrl+U", "reset")),

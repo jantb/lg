@@ -110,6 +110,8 @@ impl AppState {
             Some("loading commits")
         } else if self.diff_job.is_some() {
             Some("loading diff")
+        } else if self.settings_suggest_job.is_some() {
+            Some("reading conventions")
         } else if self.review_job.is_some() {
             Some("reviewing")
         } else if self.review_assist_job.is_some() {
@@ -149,6 +151,7 @@ impl AppState {
                     Some("saving settings")
                 }
                 Some(PendingAction::EditCommitPrompt) => Some("opening commit prompt"),
+                Some(PendingAction::EditReviewStyle) => Some("opening review style"),
                 Some(PendingAction::StageAll | PendingAction::StagePath(_)) => Some("staging"),
                 Some(PendingAction::UnstageAll | PendingAction::UnstagePath(_)) => {
                     Some("unstaging")
@@ -237,6 +240,10 @@ impl AppState {
             self.defer_thread_join(job.handle.take());
             cancelled = Some("explanation cancelled");
         }
+        if let Some(mut job) = self.settings_suggest_job.take() {
+            self.defer_thread_join(job.handle.take());
+            cancelled = Some("convention scan cancelled");
+        }
         if let Some(mut job) = self.review_job.take() {
             self.defer_thread_join(job.handle.take());
             // Otherwise the pane keeps claiming it is still building the review.
@@ -253,7 +260,8 @@ impl AppState {
 
     /// True when [`cancel_llm_jobs`] would stop something.
     pub fn llm_job_running(&self) -> bool {
-        self.review_job.is_some()
+        self.settings_suggest_job.is_some()
+            || self.review_job.is_some()
             || self.review_assist_job.is_some()
             || self.review_pr_job.is_some()
             || self.review_flag_job.is_some()

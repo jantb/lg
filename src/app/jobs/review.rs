@@ -253,7 +253,11 @@ impl App {
                         job.output.clear();
                     }
                 }
-                GenMsg::Done(final_msg) => {
+                GenMsg::Done {
+                    text: final_msg,
+                    stats,
+                } => {
+                    let truncated = stats.truncated;
                     if let Some(job) = self.state.review_chat_job.as_mut() {
                         handle = job.handle.take();
                     }
@@ -262,10 +266,17 @@ impl App {
                         .review_chat_messages
                         .push(crate::state::ReviewChatMessage {
                             role: crate::state::ReviewChatRole::Assistant,
-                            content: final_msg,
+                            content: super::mark_if_truncated(final_msg, truncated),
                         });
                     self.state.review_chat_scroll = u16::MAX;
-                    self.state.set_status("review chat ready", false);
+                    self.state.set_status(
+                        if truncated {
+                            "review chat answer cut off at the token budget"
+                        } else {
+                            "review chat ready"
+                        },
+                        truncated,
+                    );
                 }
                 GenMsg::Error(error) => {
                     if let Some(job) = self.state.review_chat_job.as_mut() {

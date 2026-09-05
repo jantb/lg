@@ -4,8 +4,8 @@ use crate::state::{
 };
 
 const REVIEW_PR_NODE_ID: &str = crate::git::REVIEW_PR_TEXT_NODE_ID;
-const MAX_REVIEW_ASSIST_CONTEXT_BYTES: usize = 32_000;
-const MAX_REVIEW_CHAT_CONTEXT_BYTES: usize = 32_000;
+/// A single file's review nodes, which is a far smaller thing than a branch, so
+/// this stays fixed while the branch-wide budgets follow the setting.
 const MAX_REVIEW_FLAG_CONTEXT_BYTES: usize = 14_000;
 const MAX_REVIEW_ASSIST_OVERVIEW_LINES: usize = 96;
 
@@ -272,19 +272,19 @@ fn review_chat_context(state: &AppState) -> Option<String> {
     push_limited_line(
         &mut out,
         "Full assisted review against main. Use this as the source of truth.",
-        MAX_REVIEW_CHAT_CONTEXT_BYTES,
+        crate::config::review_context_bytes(),
     );
-    push_limited_line(&mut out, "", MAX_REVIEW_CHAT_CONTEXT_BYTES);
+    push_limited_line(&mut out, "", crate::config::review_context_bytes());
     for line in report.lines() {
-        if out.len() >= MAX_REVIEW_CHAT_CONTEXT_BYTES {
+        if out.len() >= crate::config::review_context_bytes() {
             push_limited_line(
                 &mut out,
                 "... full review context truncated ...",
-                MAX_REVIEW_CHAT_CONTEXT_BYTES,
+                crate::config::review_context_bytes(),
             );
             break;
         }
-        push_limited_line(&mut out, line, MAX_REVIEW_CHAT_CONTEXT_BYTES);
+        push_limited_line(&mut out, line, crate::config::review_context_bytes());
     }
     Some(out)
 }
@@ -319,7 +319,14 @@ fn review_style_flag_file(
     let mut error = None;
     for msg in rx {
         match msg {
-            crate::state::GenMsg::Done(output) => final_msg = Some(output),
+            // A style verdict is three short lines. One cut off at the budget
+            // has lost the part that matters, and reporting it as an error is
+            // what stops a half-read `severity:` line being taken for a
+            // finding.
+            crate::state::GenMsg::Done { stats, .. } if stats.truncated => {
+                error = Some("the style verdict was cut off at the token budget".to_string());
+            }
+            crate::state::GenMsg::Done { text, .. } => final_msg = Some(text),
             crate::state::GenMsg::Error(message) => error = Some(message),
             crate::state::GenMsg::Thinking(chunk) => thinking.push_str(&chunk),
             crate::state::GenMsg::Output(_) => {}
@@ -389,7 +396,7 @@ fn push_review_overview(out: &mut String, report: &str) {
 }
 
 fn push_review_node_context(out: &mut String, node: &crate::git::ReviewNode) -> bool {
-    if out.len() >= MAX_REVIEW_ASSIST_CONTEXT_BYTES {
+    if out.len() >= crate::config::review_context_bytes() {
         return false;
     }
     let indent = "  ".repeat(node.depth as usize);
@@ -535,7 +542,7 @@ fn review_node_in_subtree(
 }
 
 fn push_line(out: &mut String, line: &str) {
-    push_limited_line(out, line, MAX_REVIEW_ASSIST_CONTEXT_BYTES);
+    push_limited_line(out, line, crate::config::review_context_bytes());
 }
 
 fn push_limited_line(out: &mut String, line: &str, max_bytes: usize) {

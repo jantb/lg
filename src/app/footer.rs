@@ -231,6 +231,38 @@ fn modal_spans(
     spans
 }
 
+/// What the model server is doing, for as long as it is doing it.
+///
+/// A spinner says work is happening; it does not say whether the server is
+/// still reading a long prompt or already writing the answer. Those are minutes
+/// apart on a local model, and telling them apart is the difference between
+/// waiting and wondering whether anything is wrong.
+fn llm_phase_suffix() -> Option<String> {
+    let phase = crate::llm::phase()?;
+    Some(format!(
+        " \u{b7} {} {}",
+        phase.label(),
+        compact_duration(phase.elapsed())
+    ))
+}
+
+fn compact_duration(elapsed: std::time::Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs >= 60 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{:.1}s", elapsed.as_secs_f64())
+    }
+}
+
+/// Throughput from the last request the server measured, prefill first. The two
+/// rates differ by roughly an order of magnitude, so which is which is never in
+/// doubt once both are shown.
+fn throughput_text(stats: &crate::llm::GenStats) -> Option<String> {
+    (stats.prefill_tps > 0.0 || stats.decode_tps > 0.0)
+        .then(|| format!("{:.0}/{:.1} tok/s", stats.prefill_tps, stats.decode_tps))
+}
+
 fn status_text(state: &AppState) -> (String, Color) {
     match (&state.status, state.activity_label()) {
         (Some(status), Some(label)) if !status.is_error => {
@@ -241,7 +273,7 @@ fn status_text(state: &AppState) -> (String, Color) {
                 None if status.text.starts_with(label) => format!("{spinner} {}", status.text),
                 None => format!("{spinner} {label}: {}", status.text),
             };
-            (text, Color::Cyan)
+            (text + &llm_phase_suffix().unwrap_or_default(), Color::Cyan)
         }
         (Some(status), _) => {
             let icon = if status.is_error {
@@ -261,18 +293,37 @@ fn status_text(state: &AppState) -> (String, Color) {
         (None, Some(label)) => {
             let spinner = crate::state::SPINNER_FRAMES
                 [state.animation_tick % crate::state::SPINNER_FRAMES.len()];
-            (format!("{spinner} {label}\u{2026}"), Color::Cyan)
+            (
+                format!("{spinner} {label}\u{2026}") + &llm_phase_suffix().unwrap_or_default(),
+                Color::Cyan,
+            )
         }
         (None, None) => (
-            format!(
-                "llm {}/{} \u{2022} {}",
-                state.llm_provider.label(),
-                compact_model(&state.llm_model),
-                state.branch.as_deref().unwrap_or("no branch")
-            ),
+            idle_text(state, crate::llm::last_stats().as_ref()),
             Color::DarkGray,
         ),
     }
+}
+
+/// The resting line: which model is answering, how fast it last did, and where
+/// the checkout is.
+fn idle_text(state: &AppState, stats: Option<&crate::llm::GenStats>) -> String {
+    // The model that answered, not the one that was asked for. A server is free
+    // to serve whatever it has loaded whichever name it was sent, so the
+    // configured name is a request and this is the fact.
+    let model = stats
+        .and_then(|stats| stats.served_model.clone())
+        .unwrap_or_else(|| state.llm_model.clone());
+    let throughput = stats
+        .and_then(throughput_text)
+        .map(|rates| format!("{rates} \u{2022} "))
+        .unwrap_or_default();
+    format!(
+        "llm {}/{} \u{2022} {throughput}{}",
+        state.llm_provider.label(),
+        compact_model(&model),
+        state.branch.as_deref().unwrap_or("no branch")
+    )
 }
 
 fn compact_model(model: &str) -> String {
@@ -291,6 +342,7 @@ fn compact_model(model: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     /// Every modal lg can open has a footer, and every key that footer prints is
     /// a binding the help documents.
@@ -338,6 +390,69 @@ mod tests {
             modal_section(Modal::None).is_none(),
             "no modal is open, so there is no modal footer"
         );
+    }
+
+    fn stats(served: &str, prefill: f64, decode: f64) -> crate::llm::GenStats {
+        crate::llm::GenStats {
+            served_model: Some(served.to_string()),
+            prefill_tps: prefill,
+            decode_tps: decode,
+            ..crate::llm::GenStats::default()
+        }
+    }
+
+    /// A server serves whatever it has loaded, whichever name it was sent, so
+    /// the configured name is a request and the answered name is the fact.
+    /// Naming the wrong one made the footer confidently wrong about which model
+    /// had just written a commit message.
+    #[test]
+    fn the_footer_names_the_model_that_answered() {
+        let mut state = AppState::new();
+        state.llm_model = "asked-for".to_string();
+
+        let text = idle_text(&state, Some(&stats("actually-served", 125.0, 16.9)));
+
+        assert!(text.contains("actually-served"), "{text}");
+        assert!(!text.contains("asked-for"), "{text}");
+    }
+
+    /// Until something has been generated there is nothing to correct it with,
+    /// so the configured name is the best answer available.
+    #[test]
+    fn the_footer_falls_back_to_the_configured_model() {
+        let mut state = AppState::new();
+        state.llm_model = "asked-for".to_string();
+
+        assert!(idle_text(&state, None).contains("asked-for"));
+    }
+
+    #[test]
+    fn the_footer_reports_both_throughput_rates_once_they_are_known() {
+        let state = AppState::new();
+
+        let text = idle_text(&state, Some(&stats("m", 125.0, 16.9)));
+
+        assert!(text.contains("125/16.9 tok/s"), "{text}");
+        assert!(
+            !idle_text(&state, None).contains("tok/s"),
+            "nothing has been measured yet"
+        );
+    }
+
+    /// Prefill and decode are minutes apart on a local model, and a spinner
+    /// alone cannot say which of them the wait is.
+    #[test]
+    fn the_two_phases_read_differently() {
+        assert_eq!(
+            crate::llm::LlmPhase::Prefill(Duration::from_secs(3)).label(),
+            "prefill"
+        );
+        assert_eq!(
+            crate::llm::LlmPhase::Decode(Duration::from_secs(3)).label(),
+            "decode"
+        );
+        assert_eq!(compact_duration(Duration::from_millis(3_240)), "3.2s");
+        assert_eq!(compact_duration(Duration::from_secs(64)), "1m04s");
     }
 
     /// The footer and the help overlay ask the same question about which pane is

@@ -9,11 +9,12 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::config::COMMIT_PROMPT_PREFIX;
+use crate::config::{COMMIT_PROMPT_PREFIX, REVIEW_STYLE_GUIDE};
 
 const SETTINGS_DIR_ENV: &str = "LG_SETTINGS_DIR";
 const SETTINGS_FILE: &str = "settings";
 const COMMIT_PROMPT_FILE: &str = "commit-prompt.txt";
+const REVIEW_STYLE_FILE: &str = "review-style.md";
 const KEY_PR_LANGUAGE: &str = "pr_language";
 const KEY_COMMIT_SUBJECT_MAX_CHARS: &str = "commit_subject_max_chars";
 const KEY_COMMIT_BODY_MAX_LINES: &str = "commit_body_max_lines";
@@ -38,6 +39,14 @@ pub struct RepoSettings {
     /// Prompt prefix used to generate commit messages. Defaults to the built-in
     /// prefix; an edited `commit-prompt.txt` replaces it verbatim.
     pub commit_prompt: String,
+    /// The style guide the review tasks measure a change against. Defaults to
+    /// the built-in one; an edited `review-style.md` replaces it verbatim.
+    ///
+    /// This is per checkout rather than global because a style guide is about
+    /// one codebase: the rules that catch a real problem in a Kotlin service
+    /// are noise in a Rust binary, and a model told to apply them anyway
+    /// reports the noise.
+    pub review_style: String,
 }
 
 impl Default for RepoSettings {
@@ -48,6 +57,7 @@ impl Default for RepoSettings {
             commit_subject_max_chars: DEFAULT_COMMIT_SUBJECT_MAX_CHARS,
             commit_body_max_lines: DEFAULT_COMMIT_BODY_MAX_LINES,
             commit_prompt: COMMIT_PROMPT_PREFIX.to_string(),
+            review_style: REVIEW_STYLE_GUIDE.to_string(),
         }
     }
 }
@@ -55,6 +65,10 @@ impl Default for RepoSettings {
 impl RepoSettings {
     pub fn commit_prompt_is_custom(&self) -> bool {
         self.commit_prompt != COMMIT_PROMPT_PREFIX
+    }
+
+    pub fn review_style_is_custom(&self) -> bool {
+        self.review_style != REVIEW_STYLE_GUIDE
     }
 }
 
@@ -88,7 +102,7 @@ pub fn save(settings: &RepoSettings) -> Result<()> {
 /// Removes this checkout's saved settings, returning it to the defaults.
 pub fn clear() -> Result<()> {
     let dir = repo_settings_dir()?;
-    for file in [SETTINGS_FILE, COMMIT_PROMPT_FILE] {
+    for file in [SETTINGS_FILE, COMMIT_PROMPT_FILE, REVIEW_STYLE_FILE] {
         let path = dir.join(file);
         if path.exists() {
             fs::remove_file(&path)
@@ -108,12 +122,21 @@ pub fn settings_dir_display() -> String {
 /// and returns the path, so an editor always opens a file with real content to
 /// edit rather than an empty buffer.
 pub fn ensure_commit_prompt_file() -> Result<PathBuf> {
+    ensure_seeded_file(COMMIT_PROMPT_FILE, COMMIT_PROMPT_PREFIX)
+}
+
+/// The same for the review style guide, so editing it starts from the built-in
+/// text rather than from a blank page nobody would know how to fill.
+pub fn ensure_review_style_file() -> Result<PathBuf> {
+    ensure_seeded_file(REVIEW_STYLE_FILE, REVIEW_STYLE_GUIDE)
+}
+
+fn ensure_seeded_file(name: &str, seed: &str) -> Result<PathBuf> {
     let dir = repo_settings_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    let path = dir.join(COMMIT_PROMPT_FILE);
+    let path = dir.join(name);
     if !path.exists() {
-        fs::write(&path, COMMIT_PROMPT_PREFIX)
-            .with_context(|| format!("failed to write {}", path.display()))?;
+        fs::write(&path, seed).with_context(|| format!("failed to write {}", path.display()))?;
     }
     Ok(path)
 }
@@ -249,17 +272,34 @@ fn trim_blank_edges<'a, 'b>(lines: &'b [&'a str]) -> &'b [&'a str] {
 
 fn load_from_dir(dir: &Path) -> RepoSettings {
     let text = fs::read_to_string(dir.join(SETTINGS_FILE)).unwrap_or_default();
-    let prompt = fs::read_to_string(dir.join(COMMIT_PROMPT_FILE))
-        .ok()
-        .map(|prompt| prompt.trim_end().to_string())
-        .filter(|prompt| !prompt.trim().is_empty());
-    parse_settings(&text, prompt)
+    parse_settings(
+        &text,
+        read_override(dir, COMMIT_PROMPT_FILE),
+        read_override(dir, REVIEW_STYLE_FILE),
+    )
 }
 
-fn parse_settings(text: &str, commit_prompt: Option<String>) -> RepoSettings {
+/// A file that replaces a built-in text, or `None` when there is nothing usable
+/// in it. A blank file is a file somebody emptied, not a style guide of no
+/// rules, so it falls back rather than silently disarming the review.
+fn read_override(dir: &Path, name: &str) -> Option<String> {
+    fs::read_to_string(dir.join(name))
+        .ok()
+        .map(|text| text.trim_end().to_string())
+        .filter(|text| !text.trim().is_empty())
+}
+
+fn parse_settings(
+    text: &str,
+    commit_prompt: Option<String>,
+    review_style: Option<String>,
+) -> RepoSettings {
     let mut settings = RepoSettings::default();
     if let Some(prompt) = commit_prompt {
         settings.commit_prompt = prompt;
+    }
+    if let Some(style) = review_style {
+        settings.review_style = style;
     }
     for line in text.lines() {
         let line = line.trim();
@@ -392,6 +432,7 @@ mod tests {
             commit_subject_max_chars: 50,
             commit_body_max_lines: 3,
             commit_prompt: COMMIT_PROMPT_PREFIX.to_string(),
+            review_style: REVIEW_STYLE_GUIDE.to_string(),
         };
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join(SETTINGS_FILE), render_settings(&settings)).unwrap();
@@ -405,6 +446,45 @@ mod tests {
         let settings = load_from_dir(dir.path());
         assert_eq!(settings.commit_prompt, "Custom prompt.");
         assert!(settings.commit_prompt_is_custom());
+    }
+
+    /// The review features were written against one team's Kotlin/Spring
+    /// codebase. A checkout that is not that gets to say so, rather than having
+    /// its Rust measured against rules about Mockito and Jackson.
+    #[test]
+    fn review_style_file_overrides_the_built_in_guide() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(REVIEW_STYLE_FILE),
+            "- Rust 2024, no unwrap outside tests.\n",
+        )
+        .unwrap();
+
+        let settings = load_from_dir(dir.path());
+
+        assert_eq!(
+            settings.review_style,
+            "- Rust 2024, no unwrap outside tests."
+        );
+        assert!(settings.review_style_is_custom());
+    }
+
+    #[test]
+    fn a_checkout_with_no_review_style_file_keeps_the_built_in_guide() {
+        let settings = load_from_dir(tempfile::tempdir().unwrap().path());
+
+        assert_eq!(settings.review_style, REVIEW_STYLE_GUIDE);
+        assert!(!settings.review_style_is_custom());
+    }
+
+    /// An emptied file is a file somebody emptied, not a style guide with no
+    /// rules in it.
+    #[test]
+    fn blank_review_style_file_falls_back_to_the_built_in_guide() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(REVIEW_STYLE_FILE), "  \n\n").unwrap();
+
+        assert_eq!(load_from_dir(dir.path()).review_style, REVIEW_STYLE_GUIDE);
     }
 
     #[test]
@@ -422,6 +502,7 @@ mod tests {
         let settings = parse_settings(
             "commit_subject_max_chars=abc\nnonsense\npr_language=\n",
             None,
+            None,
         );
         assert_eq!(settings, RepoSettings::default());
     }
@@ -430,6 +511,7 @@ mod tests {
     fn zero_limits_are_honored_as_unlimited() {
         let settings = parse_settings(
             "commit_subject_max_chars=0\ncommit_body_max_lines=0\n",
+            None,
             None,
         );
         assert_eq!(settings.commit_subject_max_chars, 0);

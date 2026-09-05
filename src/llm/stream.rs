@@ -13,6 +13,7 @@ use crate::state::GenMsg;
 use super::provider::{
     LlmProvider, api_key, current_model, current_provider, endpoint_for_provider,
 };
+use super::stats::{GenStats, Tracked};
 use super::think::ThinkSplit;
 
 #[derive(Serialize)]
@@ -32,6 +33,16 @@ struct ChatCompletionsRequest<'a> {
     /// task reuse the prefill of their shared prompt prefix instead of
     /// re-reading it. Tasks are kept apart because their prefixes diverge.
     user: &'a str,
+    /// Asks for the counters the server would otherwise keep to itself. Without
+    /// this the stream ends at `[DONE]` with no token counts, no throughput,
+    /// and — the one that matters — no way to tell an answer that finished from
+    /// one that ran out of budget.
+    stream_options: StreamOptions,
+}
+
+#[derive(Serialize)]
+struct StreamOptions {
+    include_usage: bool,
 }
 
 #[derive(Serialize)]
@@ -131,6 +142,10 @@ pub fn stream_messages(
     let mut trace = std::env::var_os("LG_LLM_TRACE")
         .and_then(|path| OpenOptions::new().create(true).append(true).open(path).ok());
 
+    // Held for the whole request: dropping it is what takes the request back
+    // out of the throughput readout, however this returns.
+    let mut tracked = Tracked::new();
+
     trace_line(
         &mut trace,
         &format!(
@@ -154,6 +169,7 @@ pub fn stream_messages(
         &tx,
         &mut trace,
         start,
+        &mut tracked,
     );
 }
 
@@ -226,8 +242,10 @@ fn consume_stream(
     tx: &Sender<GenMsg>,
     trace: &mut Option<std::fs::File>,
     start: Instant,
+    tracked: &mut Tracked,
 ) {
     let mut output = StreamOutput::default();
+    let mut end = StreamEnd::default();
 
     for line in lines {
         let line = match line {
@@ -244,13 +262,7 @@ fn consume_stream(
         trace_event(trace, start, &output, &line);
         if stream_sse_done_line(&line) {
             output.flush(tx);
-            send_done(
-                trace,
-                &finalizer,
-                &output,
-                DoneStats::untimed("sse_done"),
-                tx,
-            );
+            send_done(trace, &finalizer, &output, end, "sse_done", tracked, tx);
             return;
         }
         let Some(json_line) = stream_json_line(&line) else {
@@ -259,20 +271,25 @@ fn consume_stream(
         let Ok(v) = serde_json::from_str::<serde_json::Value>(json_line) else {
             continue;
         };
+        end.absorb(&v);
 
-        if let Some(t) = stream_thinking_chunk(&v)
-            && output.feed_thinking(t, tx).is_err()
-        {
-            return;
+        if let Some(t) = stream_thinking_chunk(&v) {
+            tracked.note_first_token();
+            if output.feed_thinking(t, tx).is_err() {
+                return;
+            }
         }
-        if let Some(c) = stream_output_chunk(&v)
-            && output.feed(c, tx).is_err()
-        {
-            return;
+        if let Some(c) = stream_output_chunk(&v) {
+            tracked.note_first_token();
+            if output.feed(c, tx).is_err() {
+                return;
+            }
         }
-        if let Some(done) = stream_done_stats(&v) {
+        // An Ollama-shaped stream ends on its own object rather than on a
+        // marker line, and nothing follows it.
+        if v.get("done").and_then(|done| done.as_bool()) == Some(true) {
             output.flush(tx);
-            send_done(trace, &finalizer, &output, done, tx);
+            send_done(trace, &finalizer, &output, end, "done", tracked, tx);
             return;
         }
     }
@@ -281,7 +298,9 @@ fn consume_stream(
         trace,
         &finalizer,
         &output,
-        DoneStats::untimed("loop_exhausted"),
+        end,
+        "loop_exhausted",
+        tracked,
         tx,
     );
 }
@@ -331,6 +350,9 @@ fn chat_request_body(
         max_tokens: (task.num_predict > 0).then_some(task.num_predict),
         enable_thinking: task.thinking,
         user: task.session,
+        stream_options: StreamOptions {
+            include_usage: true,
+        },
     })?)
 }
 
@@ -365,71 +387,153 @@ fn stream_output_chunk(v: &serde_json::Value) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
-struct DoneStats {
-    reason: String,
-    eval_count: u64,
-    prompt_eval_count: u64,
-    total_ms: u64,
-    eval_ms: u64,
+/// The counters a response carries, wherever in the stream they turn up.
+///
+/// An OpenAI-shaped stream reports the reason it stopped on the last content
+/// chunk and its token counts on a separate usage chunk after it; an
+/// Ollama-shaped one puts both in one `done` object. Either way what arrived is
+/// folded in here, and whatever was collected by the time the stream ends is
+/// what gets reported.
+#[derive(Default)]
+struct StreamEnd {
+    reason: Option<String>,
+    stats: Option<GenStats>,
 }
 
-impl DoneStats {
-    /// Stats for an end the server sent no generation counters with.
-    fn untimed(reason: &str) -> Self {
-        Self {
-            reason: reason.to_string(),
-            eval_count: 0,
-            prompt_eval_count: 0,
-            total_ms: 0,
-            eval_ms: 0,
+impl StreamEnd {
+    fn absorb(&mut self, v: &serde_json::Value) {
+        if let Some(reason) = stream_finish_reason(v) {
+            self.reason = Some(reason.to_string());
         }
+        if let Some(stats) = stream_usage_stats(v).or_else(|| stream_done_stats(v)) {
+            self.stats = Some(stats);
+        }
+    }
+
+    /// The reason the stream ended and the stats to report with it.
+    ///
+    /// `truncated` is settled here rather than at either parse site, because
+    /// the reason and the counters can arrive on different chunks and neither
+    /// one alone knows the answer.
+    fn resolve(self, fallback_reason: &str) -> (String, GenStats) {
+        let reason = self.reason.unwrap_or_else(|| fallback_reason.to_string());
+        let mut stats = self.stats.unwrap_or_default();
+        stats.truncated = reason == "length";
+        (reason, stats)
     }
 }
 
-fn stream_done_stats(v: &serde_json::Value) -> Option<DoneStats> {
-    (v.get("done").and_then(|done| done.as_bool()) == Some(true)).then(|| DoneStats {
-        reason: v
-            .get("done_reason")
-            .and_then(|reason| reason.as_str())
-            .unwrap_or("done")
-            .to_string(),
-        eval_count: json_u64(v, "eval_count"),
-        prompt_eval_count: json_u64(v, "prompt_eval_count"),
-        total_ms: nanos_to_ms(json_u64(v, "total_duration")),
-        eval_ms: nanos_to_ms(json_u64(v, "eval_duration")),
+fn stream_finish_reason(v: &serde_json::Value) -> Option<&str> {
+    v.pointer("/choices/0/finish_reason")
+        .or_else(|| v.get("done_reason"))
+        .and_then(|reason| reason.as_str())
+        .filter(|reason| !reason.is_empty())
+}
+
+/// The counters an OpenAI-shaped stream reports on its final usage chunk. Only
+/// sent when the request asked for them, which is why every request does.
+fn stream_usage_stats(v: &serde_json::Value) -> Option<GenStats> {
+    let usage = v.get("usage").filter(|usage| !usage.is_null())?;
+    let timings = v.get("timings");
+    // mtplx reports the same two rates twice, under its own names as well as
+    // the llama.cpp ones. Either will do; taking both means neither spelling
+    // has to be the one the server happens to use.
+    let server = v.get("mtplx_stats");
+    Some(GenStats {
+        prompt_tokens: json_u64(usage, "prompt_tokens"),
+        cached_tokens: usage
+            .pointer("/prompt_tokens_details/cached_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+        completion_tokens: json_u64(usage, "completion_tokens"),
+        prefill_tps: json_rate(timings, "prompt_per_second")
+            .or_else(|| json_rate(server, "prefill_tok_s"))
+            .unwrap_or(0.0),
+        decode_tps: json_rate(timings, "predicted_per_second")
+            .or_else(|| json_rate(server, "decode_tok_s"))
+            .unwrap_or(0.0),
+        truncated: false,
+        served_model: served_model(v),
     })
+}
+
+/// The counters an Ollama-shaped stream reports in its `done` object.
+fn stream_done_stats(v: &serde_json::Value) -> Option<GenStats> {
+    (v.get("done").and_then(|done| done.as_bool()) == Some(true)).then(|| {
+        let prompt_tokens = json_u64(v, "prompt_eval_count");
+        let completion_tokens = json_u64(v, "eval_count");
+        GenStats {
+            prompt_tokens,
+            cached_tokens: 0,
+            completion_tokens,
+            prefill_tps: rate(prompt_tokens, json_u64(v, "prompt_eval_duration")),
+            decode_tps: rate(completion_tokens, json_u64(v, "eval_duration")),
+            truncated: false,
+            served_model: served_model(v),
+        }
+    })
+}
+
+fn served_model(v: &serde_json::Value) -> Option<String> {
+    v.get("model")
+        .and_then(|model| model.as_str())
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_owned)
 }
 
 fn json_u64(v: &serde_json::Value, key: &str) -> u64 {
     v.get(key).and_then(|value| value.as_u64()).unwrap_or(0)
 }
 
-fn nanos_to_ms(nanos: u64) -> u64 {
-    nanos / 1_000_000
+/// A rate the server stated, ignoring anything that is not a usable number.
+fn json_rate(v: Option<&serde_json::Value>, key: &str) -> Option<f64> {
+    v?.get(key)
+        .and_then(serde_json::Value::as_f64)
+        .filter(|rate| rate.is_finite() && *rate > 0.0)
 }
 
+/// Tokens per second over a span given in nanoseconds.
+fn rate(tokens: u64, nanos: u64) -> f64 {
+    if nanos == 0 {
+        return 0.0;
+    }
+    tokens as f64 * 1_000_000_000.0 / nanos as f64
+}
+
+/// Report the end of a stream: the stats first, so a consumer can judge the
+/// answer before it takes delivery of it, and then the answer itself.
 fn send_done(
     trace: &mut Option<std::fs::File>,
     finalizer: &dyn Fn(&str) -> String,
     output: &StreamOutput,
-    stats: DoneStats,
+    end: StreamEnd,
+    fallback_reason: &str,
+    tracked: &mut Tracked,
     tx: &Sender<GenMsg>,
 ) {
     let final_output = finalizer(&output.text);
+    let (reason, stats) = end.resolve(fallback_reason);
     if let Some(f) = trace.as_mut() {
         let _ = writeln!(
             f,
-            "# DONE done_reason={} eval_count={} prompt_eval_count={} total_duration_ms={} eval_duration_ms={} think_bytes={} out_bytes={} final_output={final_output:?}",
-            stats.reason,
-            stats.eval_count,
-            stats.prompt_eval_count,
-            stats.total_ms,
-            stats.eval_ms,
+            "# DONE finish_reason={reason} truncated={} prompt_tokens={} cached_tokens={} completion_tokens={} prefill_tps={:.1} decode_tps={:.1} served_model={:?} think_bytes={} out_bytes={} final_output={final_output:?}",
+            stats.truncated,
+            stats.prompt_tokens,
+            stats.cached_tokens,
+            stats.completion_tokens,
+            stats.prefill_tps,
+            stats.decode_tps,
+            stats.served_model,
             output.think_bytes,
             output.out_bytes,
         );
     }
-    let _ = tx.send(GenMsg::Done(final_output));
+    tracked.report(stats.clone());
+    let _ = tx.send(GenMsg::Done {
+        text: final_output,
+        stats,
+    });
 }
 
 #[cfg(test)]
@@ -447,9 +551,20 @@ mod tests {
             &tx,
             &mut None,
             Instant::now(),
+            &mut Tracked::new(),
         );
         drop(tx);
         rx.iter().collect()
+    }
+
+    fn drive_stats(lines: Vec<std::io::Result<String>>) -> GenStats {
+        drive(lines)
+            .into_iter()
+            .find_map(|msg| match msg {
+                GenMsg::Done { stats, .. } => Some(stats),
+                _ => None,
+            })
+            .expect("a stream reports what it cost")
     }
 
     #[test]
@@ -462,7 +577,7 @@ mod tests {
 
         assert!(matches!(&msgs[0], GenMsg::Output(s) if s == "feat: "));
         assert!(matches!(&msgs[1], GenMsg::Output(s) if s == "add a thing"));
-        assert!(matches!(&msgs[2], GenMsg::Done(s) if s == "feat: add a thing"));
+        assert!(matches!(&msgs[2], GenMsg::Done { text: s, .. } if s == "feat: add a thing"));
         assert_eq!(msgs.len(), 3);
     }
 
@@ -473,7 +588,7 @@ mod tests {
         )]);
 
         assert!(matches!(&msgs[0], GenMsg::Output(s) if s == "only this"));
-        assert!(matches!(&msgs[1], GenMsg::Done(s) if s == "only this"));
+        assert!(matches!(&msgs[1], GenMsg::Done { text: s, .. } if s == "only this"));
         assert_eq!(msgs.len(), 2);
     }
 
@@ -487,7 +602,7 @@ mod tests {
 
         assert!(matches!(&msgs[0], GenMsg::Output(s) if s == "answer"));
         assert!(matches!(&msgs[1], GenMsg::Output(s) if s == "<thi"));
-        assert!(matches!(&msgs[2], GenMsg::Done(s) if s == "answer<thi"));
+        assert!(matches!(&msgs[2], GenMsg::Done { text: s, .. } if s == "answer<thi"));
         assert_eq!(msgs.len(), 3);
     }
 
@@ -500,7 +615,7 @@ mod tests {
         ]);
 
         assert!(matches!(&msgs[0], GenMsg::Output(s) if s == "kept"));
-        assert!(matches!(&msgs[1], GenMsg::Done(s) if s == "kept"));
+        assert!(matches!(&msgs[1], GenMsg::Done { text: s, .. } if s == "kept"));
         assert_eq!(msgs.len(), 2);
     }
 
@@ -515,7 +630,7 @@ mod tests {
         assert!(matches!(&msgs[0], GenMsg::Output(s) if s == "answer"));
         assert!(matches!(&msgs[1], GenMsg::Thinking(s) if s == "hmm"));
         assert!(matches!(&msgs[2], GenMsg::Output(s) if s == " done"));
-        assert!(matches!(&msgs[3], GenMsg::Done(s) if s == "answer done"));
+        assert!(matches!(&msgs[3], GenMsg::Done { text: s, .. } if s == "answer done"));
     }
 
     #[test]
@@ -528,7 +643,7 @@ mod tests {
 
         assert!(matches!(&msgs[0], GenMsg::Thinking(s) if s == "weighing it"));
         assert!(matches!(&msgs[1], GenMsg::Output(s) if s == "the answer"));
-        assert!(matches!(&msgs[2], GenMsg::Done(s) if s == "the answer"));
+        assert!(matches!(&msgs[2], GenMsg::Done { text: s, .. } if s == "the answer"));
     }
 
     #[test]
@@ -544,7 +659,7 @@ mod tests {
         ]);
 
         assert!(matches!(&msgs[0], GenMsg::Output(s) if s == "survived"));
-        assert!(matches!(&msgs[1], GenMsg::Done(s) if s == "survived"));
+        assert!(matches!(&msgs[1], GenMsg::Done { text: s, .. } if s == "survived"));
         assert_eq!(msgs.len(), 2);
     }
 
@@ -571,7 +686,7 @@ mod tests {
 
         assert!(matches!(&msgs[0], GenMsg::Output(s) if s == "draft answer"));
         assert!(matches!(&msgs[1], GenMsg::Reset));
-        assert!(matches!(&msgs[3], GenMsg::Done(s) if s == "real answer"));
+        assert!(matches!(&msgs[3], GenMsg::Done { text: s, .. } if s == "real answer"));
     }
 
     #[test]
@@ -624,16 +739,102 @@ mod tests {
 
     #[test]
     fn a_done_object_reads_generation_stats() {
-        let value: serde_json::Value = serde_json::from_str(
-            r#"{"done":true,"done_reason":"stop","eval_count":9,"prompt_eval_count":7,"total_duration":3000000,"eval_duration":2000000}"#,
+        let stats = drive_stats(vec![Ok(r#"{"done":true,"done_reason":"stop","model":"local","eval_count":10,"prompt_eval_count":8,"eval_duration":2000000000,"prompt_eval_duration":1000000000}"#.to_string())]);
+
+        assert_eq!(stats.prompt_tokens, 8);
+        assert_eq!(stats.completion_tokens, 10);
+        assert_eq!(stats.prefill_tps, 8.0);
+        assert_eq!(stats.decode_tps, 5.0);
+        assert_eq!(stats.served_model.as_deref(), Some("local"));
+        assert!(!stats.truncated);
+    }
+
+    /// The shape mtplx actually sends: the counters ride a final usage chunk
+    /// after the last content, and the stream then ends on the marker line.
+    /// Reading only an Ollama-style `done` object left every one of these at
+    /// zero.
+    #[test]
+    fn a_usage_chunk_reports_prefill_and_decode_throughput() {
+        let stats = drive_stats(vec![
+            Ok(r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#.to_string()),
+            Ok(
+                r#"data: {"model":"mtplx-qwen","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1417,"completion_tokens":412,"prompt_tokens_details":{"cached_tokens":1280}},"timings":{"prompt_per_second":125.0,"predicted_per_second":16.9}}"#
+                    .to_string(),
+            ),
+            Ok("data: [DONE]".to_string()),
+        ]);
+
+        assert_eq!(stats.prompt_tokens, 1417);
+        assert_eq!(stats.cached_tokens, 1280);
+        assert_eq!(stats.completion_tokens, 412);
+        assert_eq!(stats.prefill_tps, 125.0);
+        assert_eq!(stats.decode_tps, 16.9);
+        assert_eq!(stats.served_model.as_deref(), Some("mtplx-qwen"));
+        assert!(!stats.truncated);
+    }
+
+    /// The one stat a caller acts on rather than draws. An answer that stopped
+    /// because it ran out of budget is not an answer, and only the server can
+    /// say which of the two it was.
+    #[test]
+    fn an_answer_cut_off_at_the_budget_is_reported_as_truncated() {
+        let stats = drive_stats(vec![
+            Ok(r#"data: {"choices":[{"delta":{"content":"half a mer"}}]}"#.to_string()),
+            Ok(
+                r#"data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":40,"completion_tokens":1024}}"#
+                    .to_string(),
+            ),
+            Ok("data: [DONE]".to_string()),
+        ]);
+
+        assert!(stats.truncated);
+    }
+
+    /// mtplx spells the same two rates under its own names as well; a server
+    /// that sends only those is read just the same.
+    #[test]
+    fn throughput_is_read_from_the_server_specific_names_too() {
+        let stats = drive_stats(vec![
+            Ok(
+                r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":4},"mtplx_stats":{"prefill_tok_s":48.9,"decode_tok_s":25.5}}"#
+                    .to_string(),
+            ),
+            Ok("data: [DONE]".to_string()),
+        ]);
+
+        assert_eq!(stats.prefill_tps, 48.9);
+        assert_eq!(stats.decode_tps, 25.5);
+    }
+
+    #[test]
+    fn a_stream_that_reports_nothing_still_ends_with_stats() {
+        let stats = drive_stats(vec![Ok(
+            r#"{"message":{"content":"only this"}}"#.to_string()
+        )]);
+
+        assert!(!stats.is_measured(), "there was nothing to measure");
+        assert!(!stats.truncated, "silence is not a truncation");
+    }
+
+    #[test]
+    fn every_request_asks_for_the_counters_it_needs() {
+        let body = chat_request_body(
+            "qwen-local",
+            vec![ChatMessage {
+                role: "user",
+                content: "hi".into(),
+            }],
+            ChatTask {
+                session: "lg-test",
+                num_predict: 42,
+                thinking: false,
+            },
         )
         .unwrap();
-        let stats = stream_done_stats(&value).unwrap();
 
-        assert_eq!(stats.reason, "stop");
-        assert_eq!(stats.eval_count, 9);
-        assert_eq!(stats.prompt_eval_count, 7);
-        assert_eq!(stats.total_ms, 3);
-        assert_eq!(stats.eval_ms, 2);
+        assert_eq!(
+            body["stream_options"]["include_usage"], true,
+            "without this the server sends no usage chunk at all"
+        );
     }
 }

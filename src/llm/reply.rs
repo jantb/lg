@@ -163,7 +163,13 @@ fn format_review_style_finding(finding: &ReviewStyleFinding) -> String {
 }
 
 fn suppress_layer_misclassification(path: &str, finding: &mut ReviewStyleFinding) {
-    if !matches!(review_style_file_role(path), "service-layer" | "flow") {
+    // A layer complaint is wrong about a service or flow file, which is allowed
+    // to hold business rules, and equally wrong about a file whose layering lg
+    // cannot read at all — there is no layer for it to be in the wrong one of.
+    if !matches!(
+        review_style_file_role(path),
+        "service-layer" | "flow" | "unclassified"
+    ) {
         return;
     }
     if !matches!(

@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use crate::config::{LLM_MODEL, MTPLX_CHAT_ENDPOINT};
@@ -116,26 +117,66 @@ struct MtplxModel {
     id: String,
 }
 
-fn first_available_mtplx_model() -> Option<String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(500))
+/// The models the server said it serves, once anyone has asked it.
+///
+/// Asking costs a round trip, and [`current_model`] runs on the way into every
+/// request as well as at startup — so the answer is fetched once, off the path
+/// that needs it, and read from here afterwards. A reader that arrives before
+/// the fetch lands gets an empty list rather than a stall.
+static MODELS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn models() -> MutexGuard<'static, Vec<String>> {
+    MODELS.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+/// What the server says it serves. Empty until [`prime_models`] has answered,
+/// and never blocks.
+pub fn available_models() -> Vec<String> {
+    models().clone()
+}
+
+/// Ask the server what it serves and remember the answer. Blocks, so it belongs
+/// on a thread of its own; [`prime_models_async`] is the usual way in.
+pub fn prime_models() {
+    let fetched = fetch_models();
+    if !fetched.is_empty() {
+        *models() = fetched;
+    }
+}
+
+pub fn prime_models_async() {
+    std::thread::spawn(prime_models);
+}
+
+fn fetch_models() -> Vec<String> {
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(1_500))
         .build()
-        .ok()?;
+    else {
+        return Vec::new();
+    };
     let mut request = client.get(mtplx_models_endpoint());
     if let Some(key) = api_key() {
         request = request.bearer_auth(key);
     }
     request
         .send()
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .json::<MtplxModelsResponse>()
-        .ok()?
-        .data
-        .into_iter()
-        .map(|model| model.id.trim().to_string())
-        .find(|id| !id.is_empty())
+        .ok()
+        .and_then(|response| response.error_for_status().ok())
+        .and_then(|response| response.json::<MtplxModelsResponse>().ok())
+        .map(|response| {
+            response
+                .data
+                .into_iter()
+                .map(|model| model.id.trim().to_string())
+                .filter(|id| !id.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn first_available_mtplx_model() -> Option<String> {
+    models().first().cloned()
 }
 
 pub fn env_model_active() -> bool {

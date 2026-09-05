@@ -48,6 +48,35 @@ Examples:
 Staged changes:
 
 ";
+/// The style guide the review tasks measure a change against, when a checkout
+/// has not written one of its own.
+///
+/// It describes one team's Kotlin/Spring codebase, which is what these features
+/// were built for. It is the default rather than the rule: a checkout drops a
+/// `review-style.md` next to its commit prompt and that replaces this verbatim,
+/// because telling a model to check Rust for Mockito usage is worse than
+/// telling it nothing.
+pub const REVIEW_STYLE_GUIDE: &str = "\
+Established repo style:
+- Kotlin/Spring, but immutable code by default: prefer val, immutable collections, data-class .copy(), focused functions, and pure helper functions.
+- Constructor injection only. Inject narrow interfaces/services, not broad infrastructure.
+- Controllers stay thin: auth, validation, DTO assembly, ResponseEntity. Business decisions go in service-layer files/classes whose path or name contains Service, or in explicit hub flow code.
+- Treat business rules in controllers, adapters, Kafka consumers/listeners, repositories, DTOs, configuration, or other non-Service/non-flow files as a style issue unless the shown code only delegates or translates data.
+- Flow start state construction may call repositories/services to load initial data before the flow begins. Once a flow has started, later state constructors/steps should stay pure; flag direct repository/service calls there.
+- Domain IDs use inline value classes like UserId, MembershipId; wrap raw primitives at repository boundaries.
+- Names should describe domain intent and behavior. Flag vague, misleading, or overly generic names and suggest a concrete replacement.
+- Use sealed interfaces/classes for variants with different data; enums only for simple tags.
+- JSON uses the shared configuredJson; avoid Jackson in app code except generated/Spring/Avro internals.
+- Time uses kotlinx.datetime; java.time only at interop edges.
+- Logging uses private val log by Logger(), not direct LoggerFactory.
+- Outbound HTTP uses Ktor CIO adapters. Each external system gets one adapter.
+- Persistence is PostgreSQL via Exposed + Flyway.
+- Kafka/outbound side effects from flows go through the outbox, not direct Kafka publishing.
+- Tests prefer real small fakes over mocks. Use Mockk only when a fake is impractical; never Mockito.
+- Integration tests use @SpringBootTest + TestConfiguration + Testcontainers.
+- Do not edit generated code under target/generated-sources.
+- Run the repo formatter/lint before declaring work done; linter wins on formatting.";
+
 pub const DEFAULT_PUSH_REMOTE: &str = "origin";
 pub const BRANCH_MAIN: &str = "main";
 pub const BRANCH_DEV: &str = "develop";
@@ -109,5 +138,28 @@ pub const JOB_TICK_MS: u64 = 80;
 pub const MAX_EVENTS_PER_FRAME: usize = 64;
 pub const BACKGROUND_FETCH_INTERVAL_SECS: u64 = 300;
 pub const COMMIT_LIST_LIMIT: usize = 200;
+
+/// How much context one review task may send.
+///
+/// Bigger is not free. Prefill runs about an order of magnitude faster than
+/// decode, but it is still seconds per thousand tokens on a local model, and
+/// every byte of it is paid before the first token of the answer appears. This
+/// sits well under what the model can hold on purpose: the limit worth tuning
+/// is the wait, not the window.
+///
+/// `LG_LLM_CONTEXT_BYTES` moves it, for a checkout whose diffs need more room
+/// or a machine that reads them faster.
+pub const DEFAULT_REVIEW_CONTEXT_BYTES: usize = 48_000;
+
+/// The context budget in force, honouring `LG_LLM_CONTEXT_BYTES`. A value that
+/// does not parse, or is too small to hold anything useful, leaves the default
+/// alone rather than crippling the review.
+pub fn review_context_bytes() -> usize {
+    std::env::var("LG_LLM_CONTEXT_BYTES")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|bytes| *bytes >= 4_000)
+        .unwrap_or(DEFAULT_REVIEW_CONTEXT_BYTES)
+}
 pub const LEFT_COLUMN_WIDTH: u16 = 64;
 pub const DIFF_PAGE: u16 = 20;

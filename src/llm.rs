@@ -8,16 +8,26 @@ mod diff;
 mod prompt;
 mod provider;
 mod reply;
+mod stats;
 mod stream;
 mod think;
 
 pub use prompt::GIVE_UP_PHRASE;
 pub use provider::{
-    LlmProvider, api_key, clear_saved_llm_settings, config_file_display, current_endpoint,
-    current_model, current_provider, endpoint_for_provider, env_model_active, env_provider_active,
-    save_llm_settings,
+    LlmProvider, api_key, available_models, clear_saved_llm_settings, config_file_display,
+    current_endpoint, current_model, current_provider, endpoint_for_provider, env_model_active,
+    env_provider_active, prime_models_async, save_llm_settings,
 };
 pub use reply::parse_review_style_finding;
+
+/// What an answer says when the server stopped it at the budget rather than at
+/// the end.
+///
+/// An answer that was cut off reads exactly like one that finished, so anything
+/// a person will act on says so in the text itself rather than only in a status
+/// line that has since expired.
+pub const TRUNCATED_NOTE: &str = "\u{2026} [cut off at the token budget]";
+pub use stats::{GenStats, LlmPhase, last_stats, phase};
 
 use prompt::{
     build_commit_prompt, build_conflict_hunk_prompt, build_conventions_prompt,
@@ -86,7 +96,7 @@ pub fn suggest_repo_conventions(history: String, tx: Sender<crate::state::Settin
         match msg {
             GenMsg::Output(chunk) => output.push_str(&chunk),
             GenMsg::Reset => output.clear(),
-            GenMsg::Done(text) => output = text,
+            GenMsg::Done { text, .. } => output = text,
             GenMsg::Error(message) => error = Some(message),
             _ => {}
         }

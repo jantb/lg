@@ -114,6 +114,10 @@ pub struct AppState {
     pub llm_model: String,
     pub llm_model_input: String,
     pub llm_model_idx: usize,
+    /// Models the server said it serves, so the picker offers what will
+    /// actually answer rather than a list compiled into lg. Empty until the
+    /// server has been asked.
+    pub llm_model_choices: Vec<String>,
     pub llm_provider: crate::llm::LlmProvider,
     pub llm_provider_idx: usize,
     pub llm_config_path: String,
@@ -134,6 +138,7 @@ pub struct AppState {
     pub settings_subject_max_input: String,
     pub settings_body_lines_input: String,
     pub settings_prompt_is_custom: bool,
+    pub settings_review_style_is_custom: bool,
     pub settings_dir: String,
     pub repo_root: Option<String>,
     pub workspace_root: Option<String>,
@@ -307,6 +312,7 @@ impl AppState {
             llm_model: crate::llm::current_model(),
             llm_model_input: String::new(),
             llm_model_idx: 0,
+            llm_model_choices: Vec::new(),
             llm_provider: crate::llm::current_provider(),
             llm_provider_idx: 0,
             llm_config_path: crate::llm::config_file_display(),
@@ -321,6 +327,7 @@ impl AppState {
             settings_subject_max_input: String::new(),
             settings_body_lines_input: String::new(),
             settings_prompt_is_custom: false,
+            settings_review_style_is_custom: false,
             settings_dir: String::new(),
             repo_root: None,
             workspace_root: None,

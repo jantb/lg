@@ -427,13 +427,29 @@ impl App {
                         g.output.clear();
                     }
                 }
-                GenMsg::Done(final_msg) => {
+                GenMsg::Done {
+                    text: final_msg,
+                    stats,
+                } => {
+                    let truncated = stats.truncated;
                     if let Some(mut g) = self.state.generation.take() {
                         handle = g.handle.take();
                     }
                     self.state.commit_message = final_msg;
                     self.state.commit_cursor = self.state.commit_message.chars().count();
-                    self.state.set_status("message generated", false);
+                    // A message that ran out of budget goes in the editable
+                    // field either way — it is a draft, and half a draft is
+                    // still a starting point. It is reported as an error so it
+                    // lingers, because the one way to commit a truncated
+                    // message is not to notice it was truncated.
+                    if truncated {
+                        self.state.set_status(
+                            "message generated but cut off at the token budget \u{2014} finish it before committing",
+                            true,
+                        );
+                    } else {
+                        self.state.set_status("message generated", false);
+                    }
                 }
                 GenMsg::Error(e) => {
                     if let Some(mut g) = self.state.generation.take() {

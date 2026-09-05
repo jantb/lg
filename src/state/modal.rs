@@ -288,6 +288,7 @@ pub enum PendingAction {
     },
     ClearSettings,
     EditCommitPrompt,
+    EditReviewStyle,
     StageAll,
     UnstageAll,
     StagePath(String),

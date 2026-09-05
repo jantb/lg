@@ -195,7 +195,9 @@ pub(super) fn open_author_modal(state: &mut AppState) {
 pub(super) fn open_model_modal(state: &mut AppState) {
     state.llm_model = crate::llm::current_model();
     state.llm_model_input = state.llm_model.clone();
-    state.llm_model_idx = crate::config::LLM_MODEL_CHOICES
+    state.llm_model_choices = crate::llm::available_models();
+    state.llm_model_idx = state
+        .llm_model_choices
         .iter()
         .position(|model| *model == state.llm_model_input)
         .unwrap_or(0);
@@ -239,6 +241,7 @@ pub(crate) fn suggest_repo_settings_if_unset(state: &mut AppState) {
 pub(crate) fn load_repo_settings_into_state(state: &mut AppState) {
     let settings = crate::settings::load();
     state.settings_prompt_is_custom = settings.commit_prompt_is_custom();
+    state.settings_review_style_is_custom = settings.review_style_is_custom();
     state.settings_pr_language_input = settings.pr_language;
     state.settings_comment_style_input = settings.comment_style;
     state.settings_subject_max_input = settings.commit_subject_max_chars.to_string();

@@ -9,7 +9,6 @@ use ratatui::{
 };
 
 use crate::{
-    config::LLM_MODEL_CHOICES,
     state::{AppState, Modal, PendingAction, SPINNER_FRAMES, SettingsField, SettingsMode},
     ui,
 };
@@ -148,6 +147,18 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 Style::default().fg(Color::Gray),
             ),
         ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Review style  ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                if state.settings_review_style_is_custom {
+                    "custom (Ctrl+R to edit)"
+                } else {
+                    "built-in default (Ctrl+R to edit)"
+                },
+                Style::default().fg(Color::Gray),
+            ),
+        ]),
         save_line(state),
         Line::from(""),
     ]);
@@ -212,6 +223,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             ("Enter", Color::Green, "open/save"),
             ("Ctrl+S", Color::Green, "save"),
             ("Ctrl+E", Color::Cyan, "prompt"),
+            ("Ctrl+R", Color::Cyan, "review style"),
             ("Ctrl+U", Color::Red, "reset"),
             ("Esc", Color::Gray, "cancel"),
         ]
@@ -337,7 +349,9 @@ fn save_line(state: &AppState) -> Line<'static> {
 
 fn hint_for(state: &AppState) -> &'static str {
     match state.settings_field {
-        SettingsField::Model => "Enter to pick from the list or type a value.",
+        SettingsField::Model => {
+            "Enter to pick from the models this server reports, or type a value."
+        }
         SettingsField::PrLanguage => {
             "Language for generated commit messages, PR text, and review prose."
         }
@@ -366,6 +380,13 @@ fn choice_index(state: &AppState) -> Option<usize> {
 fn field_choices(state: &AppState) -> Vec<String> {
     match state.settings_field {
         SettingsField::CommentStyle => state.settings_comment_style_choices.clone(),
+        // What the server says it serves, so the list is the models that will
+        // actually answer. It falls back to the compiled-in name only while
+        // the server has not been reached, which is also the only time that
+        // name is the best guess available.
+        SettingsField::Model if !state.llm_model_choices.is_empty() => {
+            state.llm_model_choices.clone()
+        }
         field => field
             .choices()
             .iter()
@@ -420,6 +441,11 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     // rows, so nothing but closing the modal is accepted yet.
     if state.settings_suggest_job.is_some() {
         if key.code == KeyCode::Esc {
+            // Closing the modal used to leave the scan running with nothing on
+            // screen saying so. Esc means stop, so it stops.
+            if let Some(message) = state.cancel_llm_jobs() {
+                state.set_status(message, false);
+            }
             state.modal = Modal::None;
         }
         return Ok(());
@@ -427,6 +453,9 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Char('e') if ctrl => {
             state.pending_action = Some(PendingAction::EditCommitPrompt);
+        }
+        KeyCode::Char('r') if ctrl => {
+            state.pending_action = Some(PendingAction::EditReviewStyle);
         }
         KeyCode::Char('u') if ctrl => {
             state.pending_action = Some(PendingAction::ClearSettings);
@@ -575,7 +604,7 @@ fn push_limit_digit(input: &mut String, digit: char) {
 }
 
 fn sync_selection_to_input(state: &mut AppState) {
-    if let Some(idx) = LLM_MODEL_CHOICES
+    if let Some(idx) = field_choices(state)
         .iter()
         .position(|model| *model == state.llm_model_input)
     {
