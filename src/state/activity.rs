@@ -91,6 +91,25 @@ impl AppState {
         self.operation_job.as_ref()?.step.as_deref()
     }
 
+    /// Whether the activity the footer names is a request to the model server,
+    /// as opposed to git work that happens to overlap one. The server's phase
+    /// readout is only meaningful next to the former.
+    pub fn activity_is_llm(&self) -> bool {
+        self.activity_label().is_some_and(|label| {
+            matches!(
+                label,
+                "generating"
+                    | "reading conventions"
+                    | "reviewing"
+                    | "explaining"
+                    | "flagging style"
+                    | "writing PR text"
+                    | "chatting"
+                    | "resolving conflicts"
+            )
+        })
+    }
+
     pub fn activity_label(&self) -> Option<&'static str> {
         if self.generation.is_some() {
             Some("generating")
@@ -240,9 +259,8 @@ impl AppState {
             self.defer_thread_join(job.handle.take());
             cancelled = Some("explanation cancelled");
         }
-        if let Some(mut job) = self.settings_suggest_job.take() {
-            self.defer_thread_join(job.handle.take());
-            cancelled = Some("convention scan cancelled");
+        if let Some(message) = self.cancel_settings_suggest() {
+            cancelled = Some(message);
         }
         if let Some(mut job) = self.review_job.take() {
             self.defer_thread_join(job.handle.take());
@@ -256,6 +274,14 @@ impl AppState {
         }
 
         cancelled
+    }
+
+    /// Stop the convention scan alone. Closing the settings modal must not take
+    /// a review or a commit message down with it.
+    pub fn cancel_settings_suggest(&mut self) -> Option<&'static str> {
+        let mut job = self.settings_suggest_job.take()?;
+        self.defer_thread_join(job.handle.take());
+        Some("convention scan cancelled")
     }
 
     /// True when [`cancel_llm_jobs`] would stop something.

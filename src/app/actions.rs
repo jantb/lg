@@ -23,6 +23,9 @@ fn save_settings(
     commit_body_max_lines: &str,
 ) -> Result<()> {
     crate::llm::save_llm_settings(model, provider)?;
+    // The footer names the model that last answered over the one configured.
+    // That was right until now; the next answer will come from this one.
+    crate::llm::forget_last_stats();
     let current = crate::settings::load();
     crate::settings::save(&crate::settings::RepoSettings {
         pr_language: pr_language.trim().to_string(),

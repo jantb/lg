@@ -2049,16 +2049,16 @@ fn review_chat_docked_renders_markdown_conversation() {
     app.state.review_chat_height = Some(18);
     app.state
         .review_chat_messages
-        .push(lg::state::ReviewChatMessage {
-            role: ReviewChatRole::User,
-            content: "find weaknesses".into(),
-        });
+        .push(lg::state::ReviewChatMessage::new(
+            ReviewChatRole::User,
+            "find weaknesses",
+        ));
     app.state
         .review_chat_messages
-        .push(lg::state::ReviewChatMessage {
-            role: ReviewChatRole::Assistant,
-            content: "- **Risk** in `src/lib.rs:2` needs test coverage.".into(),
-        });
+        .push(lg::state::ReviewChatMessage::new(
+            ReviewChatRole::Assistant,
+            "- **Risk** in `src/lib.rs:2` needs test coverage.",
+        ));
 
     app.render().unwrap();
 
@@ -2105,10 +2105,10 @@ fn review_chat_docks_under_review_context() {
     });
     app.state
         .review_chat_messages
-        .push(lg::state::ReviewChatMessage {
-            role: ReviewChatRole::User,
-            content: "why this change?".into(),
-        });
+        .push(lg::state::ReviewChatMessage::new(
+            ReviewChatRole::User,
+            "why this change?",
+        ));
 
     app.render().unwrap();
 
@@ -2141,10 +2141,10 @@ fn review_chat_mouse_scrolls_and_resizes_when_docked() {
     for idx in 0..12 {
         app.state
             .review_chat_messages
-            .push(lg::state::ReviewChatMessage {
-                role: ReviewChatRole::Assistant,
-                content: format!("chat line {idx}"),
-            });
+            .push(lg::state::ReviewChatMessage::new(
+                ReviewChatRole::Assistant,
+                format!("chat line {idx}"),
+            ));
     }
 
     app.render().unwrap();

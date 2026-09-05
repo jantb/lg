@@ -294,6 +294,23 @@ pub fn rendered_line_count(state: &AppState) -> usize {
     if state.diff_text.is_empty() {
         return state.diff_line_count as usize;
     }
+    let key = crate::state::DiffRowCountKey {
+        text_version: state.diff_text_version,
+        viewport_width: state.diff_viewport_width,
+        view_mode: state.diff_view_mode,
+        log_view: matches!(state.diff_source, DiffSource::Branch(_)),
+    };
+    if let Some((cached_key, count)) = state.diff_row_count_cache.get()
+        && cached_key == key
+    {
+        return count;
+    }
+    let count = count_rendered_lines(state);
+    state.diff_row_count_cache.set(Some((key, count)));
+    count
+}
+
+fn count_rendered_lines(state: &AppState) -> usize {
     if matches!(state.diff_source, DiffSource::Branch(_)) {
         return wrapped_line_count(
             log_render_lines(&state.diff_text),

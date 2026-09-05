@@ -13,12 +13,23 @@
 //! ```
 
 use std::sync::mpsc::channel;
+use std::sync::{Mutex, MutexGuard};
+
+/// The server keeps one session per task, and refuses a request for a session
+/// that is already in flight. Both tests here use the commit session, so they
+/// take turns rather than run in parallel.
+static SERVER: Mutex<()> = Mutex::new(());
+
+fn take_turn() -> MutexGuard<'static, ()> {
+    SERVER.lock().unwrap_or_else(|err| err.into_inner())
+}
 
 use lg::state::GenMsg;
 
 #[test]
 #[ignore = "needs a model server on the configured endpoint"]
 fn a_real_request_comes_back_with_prefill_and_decode_throughput() {
+    let _turn = take_turn();
     let (tx, rx) = channel();
     std::thread::spawn(move || {
         lg::llm::stream_commit_message(
@@ -61,6 +72,7 @@ fn a_real_request_comes_back_with_prefill_and_decode_throughput() {
 #[test]
 #[ignore = "needs a model server on the configured endpoint"]
 fn a_second_request_for_the_same_task_reuses_its_prefill() {
+    let _turn = take_turn();
     let diff = format!(
         "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n{}",
         "+new line\n".repeat(200)

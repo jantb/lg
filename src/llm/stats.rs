@@ -37,6 +37,37 @@ impl GenStats {
     pub fn is_measured(&self) -> bool {
         self.prefill_tps > 0.0 || self.decode_tps > 0.0 || self.completion_tokens > 0
     }
+
+    /// Both rates as one figure, prefill first. They differ by roughly an
+    /// order of magnitude, so which is which is never in doubt once both are
+    /// shown. `None` when the server reported neither.
+    pub fn rates(&self) -> Option<String> {
+        (self.prefill_tps > 0.0 || self.decode_tps > 0.0)
+            .then(|| format!("{:.0}/{:.1} tok/s", self.prefill_tps, self.decode_tps))
+    }
+
+    /// The request in one line, for a status message: what went in, how much
+    /// of it was already cached, what came out, and how fast both halves ran.
+    /// `None` when the server measured nothing worth printing.
+    pub fn summary(&self) -> Option<String> {
+        if !self.is_measured() {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if self.prompt_tokens > 0 {
+            let cached = if self.cached_tokens > 0 {
+                format!(" ({} cached)", self.cached_tokens)
+            } else {
+                String::new()
+            };
+            parts.push(format!("{} in{cached}", self.prompt_tokens));
+        }
+        if self.completion_tokens > 0 {
+            parts.push(format!("{} out", self.completion_tokens));
+        }
+        parts.extend(self.rates());
+        Some(parts.join(" \u{b7} "))
+    }
 }
 
 /// What the server is doing for a request that has not finished yet.
@@ -141,6 +172,7 @@ fn registry() -> MutexGuard<'static, Registry> {
 pub(super) struct Tracked {
     id: u64,
     stats: Option<GenStats>,
+    first_token_noted: bool,
 }
 
 impl Tracked {
@@ -148,11 +180,17 @@ impl Tracked {
         Self {
             id: registry().begin(Instant::now()),
             stats: None,
+            first_token_noted: false,
         }
     }
 
-    /// The prompt has been read and the answer has started.
-    pub(super) fn note_first_token(&self) {
+    /// The prompt has been read and the answer has started. Only the first
+    /// call does anything; the rest of the stream costs no lock.
+    pub(super) fn note_first_token(&mut self) {
+        if self.first_token_noted {
+            return;
+        }
+        self.first_token_noted = true;
         registry().note_first_token(self.id, Instant::now());
     }
 
@@ -179,6 +217,12 @@ pub fn last_stats() -> Option<GenStats> {
     registry().last.clone()
 }
 
+/// Drop the last request's numbers. They name the model that answered, and
+/// once a different one has been chosen that name is a fact about the past.
+pub fn forget_last_stats() {
+    registry().last = None;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +233,23 @@ mod tests {
             decode_tps,
             ..GenStats::default()
         }
+    }
+
+    #[test]
+    fn a_summary_names_what_went_in_what_came_out_and_how_fast() {
+        let stats = GenStats {
+            prompt_tokens: 1456,
+            cached_tokens: 1455,
+            completion_tokens: 10,
+            prefill_tps: 13319.2,
+            decode_tps: 30.9,
+            ..GenStats::default()
+        };
+        let text = stats.summary().unwrap();
+        for needle in ["1456", "1455", "10", "13319", "30.9"] {
+            assert!(text.contains(needle), "{text} lacks {needle}");
+        }
+        assert!(GenStats::default().summary().is_none());
     }
 
     #[test]

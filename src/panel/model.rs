@@ -443,7 +443,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         if key.code == KeyCode::Esc {
             // Closing the modal used to leave the scan running with nothing on
             // screen saying so. Esc means stop, so it stops.
-            if let Some(message) = state.cancel_llm_jobs() {
+            if let Some(message) = state.cancel_settings_suggest() {
                 state.set_status(message, false);
             }
             state.modal = Modal::None;

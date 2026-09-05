@@ -448,7 +448,11 @@ impl App {
                             true,
                         );
                     } else {
-                        self.state.set_status("message generated", false);
+                        let status = match stats.summary() {
+                            Some(summary) => format!("message generated \u{b7} {summary}"),
+                            None => "message generated".to_string(),
+                        };
+                        self.state.set_status(status, false);
                     }
                 }
                 GenMsg::Error(e) => {

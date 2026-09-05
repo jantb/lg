@@ -266,7 +266,8 @@ impl App {
                         .review_chat_messages
                         .push(crate::state::ReviewChatMessage {
                             role: crate::state::ReviewChatRole::Assistant,
-                            content: super::mark_if_truncated(final_msg, truncated),
+                            content: final_msg,
+                            note: truncated.then(|| crate::llm::TRUNCATED_NOTE.to_string()),
                         });
                     self.state.review_chat_scroll = u16::MAX;
                     self.state.set_status(
@@ -287,7 +288,8 @@ impl App {
                         .review_chat_messages
                         .push(crate::state::ReviewChatMessage {
                             role: crate::state::ReviewChatRole::Assistant,
-                            content: format!("llm error: {error}"),
+                            content: String::new(),
+                            note: Some(format!("llm error: {error}")),
                         });
                     self.state.review_chat_scroll = u16::MAX;
                     self.state.set_status(error, true);

@@ -109,6 +109,12 @@ fn conversation_lines(state: &AppState, width: u16) -> Vec<Line<'static>> {
 
     for message in &state.review_chat_messages {
         push_message_lines(&mut lines, message.role, &message.content, width);
+        if let Some(note) = &message.note {
+            lines.push(Line::from(Span::styled(
+                format!("  {note}"),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
     }
     if let Some(job) = &state.review_chat_job {
         let text = if job.output.trim().is_empty() {
@@ -229,10 +235,10 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             state.review_chat_cursor = 0;
             state
                 .review_chat_messages
-                .push(crate::state::ReviewChatMessage {
-                    role: ReviewChatRole::User,
-                    content: prompt.clone(),
-                });
+                .push(crate::state::ReviewChatMessage::new(
+                    ReviewChatRole::User,
+                    prompt.clone(),
+                ));
             state.pending_action = Some(PendingAction::ReviewChat(prompt));
         }
         KeyCode::Char('a') if ctrl && !running => {

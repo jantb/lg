@@ -57,11 +57,21 @@ pub enum DiffViewMode {
     SideBySide,
 }
 
+/// Everything the rendered row count of the diff pane depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffRowCountKey {
+    pub text_version: u64,
+    pub viewport_width: u16,
+    pub view_mode: DiffViewMode,
+    pub log_view: bool,
+}
+
 impl AppState {
     /// Replace the main pane's text and keep the line count in step. Scrolling
     /// is bounded by that count, so the two must not drift apart.
     pub fn set_diff_text(&mut self, text: String) {
         self.diff_text = text;
+        self.diff_text_version = self.diff_text_version.wrapping_add(1);
         self.diff_line_count = self.diff_text.lines().count().min(u16::MAX as usize) as u16;
     }
 

@@ -27,7 +27,8 @@ pub use reply::parse_review_style_finding;
 /// a person will act on says so in the text itself rather than only in a status
 /// line that has since expired.
 pub const TRUNCATED_NOTE: &str = "\u{2026} [cut off at the token budget]";
-pub use stats::{GenStats, LlmPhase, last_stats, phase};
+pub use stats::{GenStats, LlmPhase, forget_last_stats, last_stats, phase};
+pub use stream::error_means_unreachable;
 
 use prompt::{
     build_commit_prompt, build_conflict_hunk_prompt, build_conventions_prompt,
@@ -96,6 +97,11 @@ pub fn suggest_repo_conventions(history: String, tx: Sender<crate::state::Settin
         match msg {
             GenMsg::Output(chunk) => output.push_str(&chunk),
             GenMsg::Reset => output.clear(),
+            // A shape cut off mid-line still parses as a shape, and would be
+            // offered as the house style with nothing saying it is half of one.
+            GenMsg::Done { stats, .. } if stats.truncated => {
+                error = Some("conventions answer cut off at the token budget".to_string());
+            }
             GenMsg::Done { text, .. } => output = text,
             GenMsg::Error(message) => error = Some(message),
             _ => {}
@@ -174,7 +180,13 @@ pub fn stream_review_chat(
         content: build_review_chat_system_prompt(&context, &crate::settings::load()),
     }];
     let window = history.len().saturating_sub(REVIEW_CHAT_HISTORY_TURNS);
-    for message in history.into_iter().skip(window) {
+    // A turn with nothing said — a failed request, shown in the chat as a
+    // note — is not part of the conversation the model had.
+    for message in history
+        .into_iter()
+        .skip(window)
+        .filter(|message| !message.content.trim().is_empty())
+    {
         messages.push(ChatMessage {
             role: message.role.as_chat_role(),
             content: message.content,

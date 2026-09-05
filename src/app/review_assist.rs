@@ -58,7 +58,7 @@ pub(super) fn spawn_assisted_review(state: &mut AppState) {
     if let Some(mut job) = state.review_chat_job.take() {
         state.defer_thread_join(job.handle.take());
     }
-    state.diff_text = "building assisted review against main...".to_string();
+    state.set_diff_text("building assisted review against main...".to_string());
     state.diff_line_count = 1;
     state.set_status("building review...", false);
 }

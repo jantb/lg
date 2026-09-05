@@ -193,6 +193,11 @@ pub(super) fn open_author_modal(state: &mut AppState) {
 }
 
 pub(super) fn open_model_modal(state: &mut AppState) {
+    // The list may still be empty if the server was down when lg started;
+    // opening the modal is the moment a fresh answer is wanted.
+    if crate::llm::available_models().is_empty() {
+        crate::llm::prime_models_async();
+    }
     state.llm_model = crate::llm::current_model();
     state.llm_model_input = state.llm_model.clone();
     state.llm_model_choices = crate::llm::available_models();

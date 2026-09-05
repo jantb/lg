@@ -376,7 +376,23 @@ impl ReviewChatRole {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewChatMessage {
     pub role: ReviewChatRole,
+    /// What was said. This, and only this, is replayed to the model as
+    /// history on later turns.
     pub content: String,
+    /// Something lg has to say about the message — that it was cut off, that
+    /// the request failed. Shown under it, never sent: the model must not be
+    /// handed a note about its own answer as if it had written it.
+    pub note: Option<String>,
+}
+
+impl ReviewChatMessage {
+    pub fn new(role: ReviewChatRole, content: impl Into<String>) -> Self {
+        Self {
+            role,
+            content: content.into(),
+            note: None,
+        }
+    }
 }
 
 impl AppState {

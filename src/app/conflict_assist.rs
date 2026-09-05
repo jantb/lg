@@ -306,10 +306,14 @@ fn ask_local_model(
         }
     }
     match (text, error) {
-        // Every error the streaming layer raises is about reaching the server
-        // or reading from it, never about the merge, so it says nothing about
-        // this file that would not be just as true of the next one.
-        (_, Some(message)) => Err(Decline::Unavailable(message)),
+        // A server that could not be reached will not be reached for the next
+        // file either. A server that answered and turned this request down —
+        // a prompt too large, a session still busy — says nothing about the
+        // next one, so only this file is declined.
+        (_, Some(message)) if crate::llm::error_means_unreachable(&message) => {
+            Err(Decline::Unavailable(message))
+        }
+        (_, Some(message)) => Err(Decline::Refused(message)),
         (Some(text), None) => Ok(Answer { text, truncated }),
         (None, None) => Err(Decline::Refused(
             "the local model answered nothing".to_string(),

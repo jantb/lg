@@ -190,9 +190,21 @@ fn open_chat_stream(
     }
     request
         .send()
-        .map_err(|e| format!("{} request: {e}", provider.label()))?
+        .map_err(|e| format!("{} {UNREACHABLE}: {e}", provider.label()))?
         .error_for_status()
         .map_err(|e| format!("{} status: {e}", provider.label()))
+}
+
+/// The word every "could not reach the server" error carries, so that a
+/// consumer can tell it from a server that answered with a refusal.
+const UNREACHABLE: &str = "unreachable";
+
+/// Whether a [`GenMsg::Error`] message means the server could not be reached
+/// at all — a refused connection, a timeout — as opposed to a server that was
+/// reached and turned the request down. The first says nothing else will get
+/// through either; the second says nothing about the next request.
+pub fn error_means_unreachable(message: &str) -> bool {
+    message.contains(&format!(" {UNREACHABLE}: "))
 }
 
 /// The output accumulated from one response stream, and the byte counts the
@@ -271,6 +283,13 @@ fn consume_stream(
         let Ok(v) = serde_json::from_str::<serde_json::Value>(json_line) else {
             continue;
         };
+        // A server that has already sent its 200 can only refuse from inside
+        // the stream. Such a chunk carries no answer, and treating it as the
+        // end of one would report an empty message as generated.
+        if let Some(message) = stream_error(&v) {
+            fail(trace, tx, format!("llm server: {message}"));
+            return;
+        }
         end.absorb(&v);
 
         if let Some(t) = stream_thinking_chunk(&v) {
@@ -368,6 +387,23 @@ fn stream_json_line(line: &str) -> Option<&str> {
     } else {
         trimmed.starts_with('{').then_some(trimmed)
     }
+}
+
+/// The message of an error the server reported inside the stream, in either
+/// the OpenAI shape (an `error` object, with `finish_reason: "error"` on the
+/// choice) or the Ollama shape (a bare `error` string).
+fn stream_error(v: &serde_json::Value) -> Option<String> {
+    let error = v.get("error").filter(|error| !error.is_null())?;
+    let message = error
+        .as_str()
+        .or_else(|| error.get("message").and_then(|message| message.as_str()))
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_owned);
+    Some(message.unwrap_or_else(|| {
+        stream_finish_reason(v)
+            .map_or_else(|| "request failed".to_string(), |reason| reason.to_string())
+    }))
 }
 
 fn stream_thinking_chunk(v: &serde_json::Value) -> Option<&str> {
@@ -674,6 +710,41 @@ mod tests {
         assert!(matches!(&msgs[0], GenMsg::Output(s) if s == "partial"));
         assert!(matches!(&msgs[1], GenMsg::Error(s) if s == "stream read: socket closed"));
         assert_eq!(msgs.len(), 2);
+    }
+
+    /// mtplx refuses a request whose session is already busy from inside an
+    /// otherwise successful stream: one chunk, no content, an `error` object.
+    /// Reading that as the end of an answer left an empty commit message on
+    /// screen under a status saying it had been generated.
+    #[test]
+    fn an_error_chunk_ends_the_stream_as_an_error() {
+        let msgs = drive(vec![Ok(
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"error"}],"error":{"message":"session lg-commit is already in flight","type":"conflict_error"}}"#.to_string(),
+        )]);
+
+        assert_eq!(msgs.len(), 1);
+        assert!(
+            matches!(&msgs[0], GenMsg::Error(s) if s.contains("session lg-commit is already in flight")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn only_a_connection_failure_reads_as_unreachable() {
+        assert!(error_means_unreachable(&format!(
+            "mtplx {UNREACHABLE}: error sending request"
+        )));
+        assert!(!error_means_unreachable("mtplx status: HTTP 413"));
+        assert!(!error_means_unreachable(
+            "llm server: session lg-conflict is already in flight"
+        ));
+    }
+
+    #[test]
+    fn a_bare_error_string_is_reported_too() {
+        let msgs = drive(vec![Ok(r#"{"error":"model not found"}"#.to_string())]);
+
+        assert!(matches!(&msgs[0], GenMsg::Error(s) if s.contains("model not found")));
     }
 
     #[test]

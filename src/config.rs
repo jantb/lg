@@ -155,11 +155,16 @@ pub const DEFAULT_REVIEW_CONTEXT_BYTES: usize = 48_000;
 /// does not parse, or is too small to hold anything useful, leaves the default
 /// alone rather than crippling the review.
 pub fn review_context_bytes() -> usize {
-    std::env::var("LG_LLM_CONTEXT_BYTES")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<usize>().ok())
-        .filter(|bytes| *bytes >= 4_000)
-        .unwrap_or(DEFAULT_REVIEW_CONTEXT_BYTES)
+    // Read once: the builders ask for it per line of context, and the
+    // environment does not change under a running process.
+    static BYTES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *BYTES.get_or_init(|| {
+        std::env::var("LG_LLM_CONTEXT_BYTES")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .filter(|bytes| *bytes >= 4_000)
+            .unwrap_or(DEFAULT_REVIEW_CONTEXT_BYTES)
+    })
 }
 pub const LEFT_COLUMN_WIDTH: u16 = 64;
 pub const DIFF_PAGE: u16 = 20;

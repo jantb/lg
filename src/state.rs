@@ -81,6 +81,13 @@ pub struct AppState {
     pub session_capture: bool,
 
     pub diff_text: String,
+    /// Bumped whenever `diff_text` is replaced, so caches keyed on the text
+    /// can tell a new text from the old one without hashing it.
+    pub diff_text_version: u64,
+    /// The row count of the last diff rendered, with what it was rendered
+    /// from. Counting rows means highlighting and wrapping the whole diff,
+    /// and it is asked for several times a frame.
+    pub diff_row_count_cache: std::cell::Cell<Option<(DiffRowCountKey, usize)>>,
     pub diff_offset: u16,
     pub diff_source: DiffSource,
     pub diff_view_mode: DiffViewMode,
@@ -279,6 +286,8 @@ impl AppState {
             session_capture: false,
 
             diff_text: String::new(),
+            diff_text_version: 0,
+            diff_row_count_cache: std::cell::Cell::new(None),
             diff_offset: 0,
             diff_source: DiffSource::None,
             diff_view_mode: DiffViewMode::SideBySide,

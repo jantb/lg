@@ -237,7 +237,10 @@ fn modal_spans(
 /// still reading a long prompt or already writing the answer. Those are minutes
 /// apart on a local model, and telling them apart is the difference between
 /// waiting and wondering whether anything is wrong.
-fn llm_phase_suffix() -> Option<String> {
+fn llm_phase_suffix(state: &AppState) -> Option<String> {
+    if !state.activity_is_llm() {
+        return None;
+    }
     let phase = crate::llm::phase()?;
     Some(format!(
         " \u{b7} {} {}",
@@ -259,8 +262,7 @@ fn compact_duration(elapsed: std::time::Duration) -> String {
 /// rates differ by roughly an order of magnitude, so which is which is never in
 /// doubt once both are shown.
 fn throughput_text(stats: &crate::llm::GenStats) -> Option<String> {
-    (stats.prefill_tps > 0.0 || stats.decode_tps > 0.0)
-        .then(|| format!("{:.0}/{:.1} tok/s", stats.prefill_tps, stats.decode_tps))
+    stats.rates()
 }
 
 fn status_text(state: &AppState) -> (String, Color) {
@@ -273,7 +275,10 @@ fn status_text(state: &AppState) -> (String, Color) {
                 None if status.text.starts_with(label) => format!("{spinner} {}", status.text),
                 None => format!("{spinner} {label}: {}", status.text),
             };
-            (text + &llm_phase_suffix().unwrap_or_default(), Color::Cyan)
+            (
+                text + &llm_phase_suffix(state).unwrap_or_default(),
+                Color::Cyan,
+            )
         }
         (Some(status), _) => {
             let icon = if status.is_error {
@@ -294,7 +299,7 @@ fn status_text(state: &AppState) -> (String, Color) {
             let spinner = crate::state::SPINNER_FRAMES
                 [state.animation_tick % crate::state::SPINNER_FRAMES.len()];
             (
-                format!("{spinner} {label}\u{2026}") + &llm_phase_suffix().unwrap_or_default(),
+                format!("{spinner} {label}\u{2026}") + &llm_phase_suffix(state).unwrap_or_default(),
                 Color::Cyan,
             )
         }

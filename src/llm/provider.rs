@@ -175,7 +175,17 @@ fn fetch_models() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The first model the server serves, for a checkout that has not named one.
+///
+/// Read from the cache when the startup fetch has landed; asked for directly
+/// when it has not, because the alternative is a request for a model name the
+/// server may never have heard of. The wait is bounded by the fetch timeout,
+/// and a server that is down fails the request that follows anyway.
 fn first_available_mtplx_model() -> Option<String> {
+    if let Some(model) = models().first().cloned() {
+        return Some(model);
+    }
+    prime_models();
     models().first().cloned()
 }
 
