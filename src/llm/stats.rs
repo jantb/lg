@@ -79,8 +79,13 @@ pub enum LlmPhase {
         elapsed: Duration,
         prompt_bytes: usize,
     },
-    /// Tokens are arriving: how long for, and how many so far.
-    Decode { elapsed: Duration, tokens: u64 },
+    /// Tokens are arriving: how long for, how many so far, and whether that
+    /// count is the server's own or lg's count of chunks standing in for it.
+    Decode {
+        elapsed: Duration,
+        tokens: u64,
+        counted: bool,
+    },
 }
 
 impl LlmPhase {
@@ -97,51 +102,74 @@ impl LlmPhase {
         }
     }
 
-    /// Tokens per second so far, measured by lg rather than by the server, so
-    /// it is available while the request is still running, which the
-    /// server's own figure is not. Decoding counts the chunks that have
-    /// arrived, roughly one token each. Prefill has nothing to count, so it
-    /// is estimated from the prompt's size at `BYTES_PER_TOKEN` and marked
-    /// as an estimate. `None` until the phase has run long enough for the
-    /// figure to mean something.
+    /// Decode tokens per second so far, timed by lg so that it is available
+    /// while the request is still running, which the server's own figure is
+    /// not. The token count is the server's where it reports progress
+    /// mid-stream; otherwise it is the number of chunks that have arrived,
+    /// which undercounts a server that commits several tokens per chunk, and
+    /// the figure is marked as an estimate. Prefill has no rate: nothing comes
+    /// back until it is over, and dividing the whole prompt by the time waited
+    /// so far only ever counts down from a number that means nothing. `None`
+    /// until decode has run long enough for the figure to settle.
     pub fn live_tps(self) -> Option<LiveRate> {
-        if self.elapsed() < Duration::from_millis(500) {
+        let Self::Decode {
+            elapsed,
+            tokens,
+            counted,
+        } = self
+        else {
+            return None;
+        };
+        if elapsed < Duration::from_millis(500) {
             return None;
         }
-        let secs = self.elapsed().as_secs_f64();
-        Some(match self {
-            Self::Decode { tokens, .. } => LiveRate {
-                tps: tokens as f64 / secs,
-                estimated: false,
-            },
-            Self::Prefill { prompt_bytes, .. } => LiveRate {
-                tps: prompt_bytes as f64 / BYTES_PER_TOKEN / secs,
-                estimated: true,
-            },
+        Some(LiveRate {
+            tps: tokens as f64 / elapsed.as_secs_f64(),
+            estimated: counted,
         })
     }
 
     /// The phase as a reader wants it: what is happening, for how long, and
-    /// how fast.
+    /// either how big the prompt being read is or how fast the answer comes.
     pub fn describe(self) -> String {
         let mut text = format!("{} {}", self.label(), compact_duration(self.elapsed()));
-        if let Some(rate) = self.live_tps() {
-            text.push_str(&format!(" \u{b7} {rate}"));
+        match self {
+            Self::Prefill { prompt_bytes, .. } if prompt_bytes > 0 => {
+                text.push_str(&format!(
+                    " \u{b7} ~{} tok",
+                    compact_count((prompt_bytes as f64 / BYTES_PER_TOKEN) as u64)
+                ));
+            }
+            _ => {
+                if let Some(rate) = self.live_tps() {
+                    text.push_str(&format!(" \u{b7} {rate}"));
+                }
+            }
         }
         text
     }
 }
 
 /// How many bytes of prompt one token stands for, on average, for English
-/// text and code. Rough, and said to be: the estimate is for watching the
-/// prefill move, not for comparing servers.
-const BYTES_PER_TOKEN: f64 = 4.0;
+/// text and code. Rough, and said to be: the estimate is for a sense of how
+/// much the server has to read, not for comparing servers.
+const BYTES_PER_TOKEN: f64 = 3.5;
 
-/// A throughput lg measured itself while a request runs.
+/// A count short enough to glance at: `820`, `3.1k`.
+fn compact_count(n: u64) -> String {
+    if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+/// A throughput lg timed itself while a request runs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LiveRate {
     pub tps: f64,
-    /// Whether the token count behind it was estimated rather than counted.
+    /// Whether the token count behind it was lg counting chunks rather than
+    /// the server saying how many tokens it had committed.
     pub estimated: bool,
 }
 
@@ -184,7 +212,9 @@ struct InFlight {
     prompt_bytes: usize,
     first_token: Option<Instant>,
     /// Chunks seen so far, standing in for tokens.
-    tokens: u64,
+    chunks: u64,
+    /// Tokens committed so far, when the server says mid-stream.
+    server_tokens: Option<u64>,
 }
 
 #[derive(Default)]
@@ -211,7 +241,8 @@ impl Registry {
             started,
             prompt_bytes,
             first_token: None,
-            tokens: 0,
+            chunks: 0,
+            server_tokens: None,
         });
         id
     }
@@ -220,7 +251,16 @@ impl Registry {
     fn note_token(&mut self, id: u64, at: Instant) {
         if let Some(entry) = self.in_flight.iter_mut().find(|entry| entry.id == id) {
             entry.first_token.get_or_insert(at);
-            entry.tokens += 1;
+            entry.chunks += 1;
+        }
+    }
+
+    /// The server has said how many tokens it has committed so far. That
+    /// also means decoding has begun, whether or not any text has arrived.
+    fn note_progress(&mut self, id: u64, tokens: u64, at: Instant) {
+        if let Some(entry) = self.in_flight.iter_mut().find(|entry| entry.id == id) {
+            entry.first_token.get_or_insert(at);
+            entry.server_tokens = Some(tokens);
         }
     }
 
@@ -241,7 +281,8 @@ impl Registry {
         Some(match oldest.first_token {
             Some(at) => LlmPhase::Decode {
                 elapsed: now.saturating_duration_since(at),
-                tokens: oldest.tokens,
+                tokens: oldest.server_tokens.unwrap_or(oldest.chunks),
+                counted: oldest.server_tokens.is_none(),
             },
             None => LlmPhase::Prefill {
                 elapsed: now.saturating_duration_since(oldest.started),
@@ -282,6 +323,11 @@ impl Tracked {
     /// phase; every one counts towards the live decode rate.
     pub(super) fn note_token(&mut self) {
         registry().note_token(self.id, Instant::now());
+    }
+
+    /// The server reported how many tokens it has committed so far.
+    pub(super) fn note_progress(&mut self, tokens: u64) {
+        registry().note_progress(self.id, tokens, Instant::now());
     }
 
     /// What the server said this request cost, reported when the request
@@ -429,16 +475,46 @@ mod tests {
         let phase = registry.phase_at(start + Duration::from_secs(5)).unwrap();
         let rate = phase.live_tps().expect("decoding long enough to measure");
         assert!((rate.tps - 10.25).abs() < 0.01, "{rate}");
-        assert!(!rate.estimated, "decoded chunks are counted, not guessed");
-        assert!(phase.describe().contains("tok/s"), "{}", phase.describe());
         assert!(
-            LlmPhase::Prefill {
-                elapsed: Duration::from_secs(2),
-                prompt_bytes: 8_000
-            }
-            .live_tps()
-            .is_some_and(|rate| rate.estimated && (rate.tps - 1_000.0).abs() < 1.0),
-            "prefill speed is estimated from the prompt's size"
+            rate.estimated,
+            "chunks stand in for tokens, so the rate is a guess"
         );
+        assert!(phase.describe().contains("~"), "{}", phase.describe());
+        assert!(phase.describe().contains("tok/s"), "{}", phase.describe());
+    }
+
+    /// A server that commits several tokens per chunk, as mtplx does when
+    /// speculating, would read at half speed if chunks were counted. Its
+    /// own running count is taken over the chunks whenever it reports one.
+    #[test]
+    fn the_servers_running_count_beats_counting_chunks() {
+        let mut registry = Registry::new();
+        let start = Instant::now();
+        let id = registry.begin(start, 4_000);
+        for i in 0..=40 {
+            registry.note_token(id, start + Duration::from_millis(1_000 + i * 100));
+        }
+        registry.note_progress(id, 82, start + Duration::from_secs(5));
+
+        let phase = registry.phase_at(start + Duration::from_secs(5)).unwrap();
+        let rate = phase.live_tps().unwrap();
+        assert!((rate.tps - 20.5).abs() < 0.01, "{rate}");
+        assert!(!rate.estimated, "the server's count is a measurement");
+        assert!(!phase.describe().contains('~'), "{}", phase.describe());
+    }
+
+    /// Nothing comes back while the prompt is being read, so there is no rate
+    /// to show: dividing the prompt by the time waited would start absurdly
+    /// high and count down. The size of the prompt is what there is to say.
+    #[test]
+    fn prefill_shows_the_prompt_size_rather_than_a_rate() {
+        let phase = LlmPhase::Prefill {
+            elapsed: Duration::from_secs(2),
+            prompt_bytes: 12_203,
+        };
+        assert!(phase.live_tps().is_none());
+        let text = phase.describe();
+        assert!(!text.contains("tok/s"), "{text}");
+        assert!(text.contains("~3.5k tok"), "{text}");
     }
 }

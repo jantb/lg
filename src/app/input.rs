@@ -410,6 +410,9 @@ fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> {
     if k.kind == KeyEventKind::Release {
         return Ok(());
     }
+    // A selection is screen cells, and a key is about to move what is under
+    // them; it has either been copied by now or was not wanted.
+    host.state_mut().selection = None;
     // A session holding the keyboard sees everything, Ctrl-C included —
     // interrupting the program inside it matters more than quitting lg, which
     // Ctrl-] then q still does.
@@ -701,7 +704,11 @@ fn dispatch_mouse<H: AppHost>(host: &mut H, m: MouseEvent) -> Result<()> {
             state.column_drag_active = false;
             state.row_drag_active = None;
             state.review_chat_drag_active = false;
+            state.selection = state.selection.take().and_then(ui::TextSelection::release);
             return Ok(());
+        }
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+            host.state_mut().selection = None;
         }
         _ => {}
     }
@@ -729,6 +736,8 @@ fn dispatch_mouse<H: AppHost>(host: &mut H, m: MouseEvent) -> Result<()> {
 
             if let Some(pane) = mouse::pane_at(&rects, m.column, m.row) {
                 let commit_ref_before = selected_commit_ref(host.state());
+                host.state_mut().selection = mouse::pane_rect_at(&rects, m.column, m.row)
+                    .and_then(|pane| ui::TextSelection::start(pane, m.column, m.row));
                 host.state_mut().focus = pane;
                 mouse::select_mouse_row(host.state_mut(), pane, &rects, m.row);
                 if !matches!(pane, Pane::Main) {
@@ -749,6 +758,15 @@ fn dispatch_mouse<H: AppHost>(host: &mut H, m: MouseEvent) -> Result<()> {
                     m.row,
                     show_environments,
                 );
+                return Ok(());
+            }
+            if let Some(selection) = host
+                .state_mut()
+                .selection
+                .as_mut()
+                .filter(|selection| selection.dragging)
+            {
+                selection.extend(m.column, m.row);
                 return Ok(());
             }
         }

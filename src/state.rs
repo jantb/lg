@@ -194,6 +194,8 @@ pub struct AppState {
     pub column_drag_active: bool,
     pub left_panel_heights: Option<crate::ui::LeftPanelHeights>,
     pub row_drag_active: Option<(usize, usize)>,
+    /// Text being selected with the mouse, or just selected and not yet copied.
+    pub selection: Option<crate::ui::TextSelection>,
 
     pub flow_idx: usize,
     pub flow_scroll_offset: usize,
@@ -384,6 +386,7 @@ impl AppState {
             column_drag_active: false,
             left_panel_heights: None,
             row_drag_active: None,
+            selection: None,
 
             flow_idx: 0,
             flow_scroll_offset: 0,

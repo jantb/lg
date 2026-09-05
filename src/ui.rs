@@ -3,6 +3,7 @@ mod diff;
 mod layout;
 mod log;
 pub mod palette;
+mod selection;
 
 pub use chrome::{bordered, framed, framed_with_activity};
 pub use diff::{
@@ -18,3 +19,4 @@ pub use layout::{
     split_workspace_layout,
 };
 pub use log::highlight_log_line;
+pub use selection::TextSelection;

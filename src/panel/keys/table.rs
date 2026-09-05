@@ -574,8 +574,13 @@ pub const SECTIONS: &[Section] = &[
                 footer: None,
             },
             Binding {
+                key: "drag",
+                help: "Select text in one pane and copy it",
+                footer: None,
+            },
+            Binding {
                 key: "Shift+drag",
-                help: "Select text (terminal native)",
+                help: "Select text across panes (terminal native)",
                 footer: None,
             },
             Binding {

@@ -16,8 +16,10 @@ where
     pub fn render(&mut self) -> Result<()> {
         let area = terminal_area(self.terminal.size()?);
         prepare(&mut self.state, area);
-        let state = &self.state;
-        self.terminal.draw(|frame| draw(frame, state))?;
+        let mut selected = None;
+        self.terminal
+            .draw(|frame| selected = draw(frame, &self.state))?;
+        copy_selection(&mut self.state, selected);
         Ok(())
     }
 }
@@ -26,10 +28,30 @@ impl App {
     pub(super) fn render(&mut self) -> Result<()> {
         let area = terminal_area(self.terminal.size()?);
         prepare(&mut self.state, area);
-        let state = &self.state;
-        self.terminal.draw(|frame| draw(frame, state))?;
+        let mut selected = None;
+        self.terminal
+            .draw(|frame| selected = draw(frame, &self.state))?;
+        copy_selection(&mut self.state, selected);
         Ok(())
     }
+}
+
+/// Hand a finished selection's text to the clipboard. It has to wait for a
+/// frame in which nothing else is pending, and stays highlighted meanwhile.
+fn copy_selection(state: &mut AppState, text: Option<String>) {
+    let Some(text) = text else {
+        return;
+    };
+    if state.pending_action.is_some() {
+        return;
+    }
+    if let Some(selection) = state.selection.as_mut() {
+        selection.copy_requested = false;
+    }
+    state.pending_action = Some(crate::state::PendingAction::CopyToClipboard {
+        label: "selection".into(),
+        text,
+    });
 }
 
 fn terminal_area(size: ratatui::layout::Size) -> Rect {
@@ -73,7 +95,9 @@ fn prepare(state: &mut AppState, area: Rect) {
     resize_focused_session(state, rects.main);
 }
 
-fn draw(frame: &mut Frame, state: &AppState) {
+/// Draw one frame. Returns the text of a selection whose copy is due, read
+/// off the frame just drawn, since the cells are the only place it exists.
+fn draw(frame: &mut Frame, state: &AppState) -> Option<String> {
     let area = frame.area();
     let rects = layout_for(state, area);
     let focused_pane = state.focus;
@@ -95,6 +119,13 @@ fn draw(frame: &mut Frame, state: &AppState) {
 
     footer::draw(frame, rects.footer, state);
 
+    let selected = state.selection.map(|selection| {
+        selection.highlight(frame.buffer_mut());
+        selection
+            .copy_requested
+            .then(|| selection.text(frame.buffer_mut()))
+    });
+
     match state.modal {
         Modal::None => {}
         Modal::Commit => panel::commit::render(state, area, frame),
@@ -111,6 +142,7 @@ fn draw(frame: &mut Frame, state: &AppState) {
         Modal::ConfirmDestructive => panel::confirm::render(state, area, frame),
         Modal::ReviewChat => {}
     }
+    selected.flatten()
 }
 
 /// Keep the program's window the same size as the pane it is drawn in. The

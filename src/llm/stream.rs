@@ -292,6 +292,9 @@ fn consume_stream(
         }
         end.absorb(&v);
 
+        if let Some(tokens) = stream_progress_tokens(&v) {
+            tracked.note_progress(tokens);
+        }
         if let Some(t) = stream_thinking_chunk(&v) {
             tracked.note_token();
             if output.feed_thinking(t, tx).is_err() {
@@ -404,6 +407,15 @@ fn stream_error(v: &serde_json::Value) -> Option<String> {
         stream_finish_reason(v)
             .map_or_else(|| "request failed".to_string(), |reason| reason.to_string())
     }))
+}
+
+/// How many tokens the server has committed so far, from the progress chunks
+/// mtplx interleaves with the content. A server that speculates commits
+/// several tokens per chunk, so this is the count the live decode rate wants
+/// and the chunk count is only what stands in for it.
+fn stream_progress_tokens(v: &serde_json::Value) -> Option<u64> {
+    v.pointer("/mtplx_progress/completion_tokens")
+        .and_then(serde_json::Value::as_u64)
 }
 
 fn stream_thinking_chunk(v: &serde_json::Value) -> Option<&str> {

@@ -587,3 +587,84 @@ fn a_jump_in_the_commits_pane_skips_the_graph_rows() {
     let landed = &app.state.commits[app.state.commits_idx];
     assert!(!landed.is_graph_row(), "G must land on a real commit row");
 }
+
+/// The terminal's own selection runs straight across the split view, so a drag
+/// over the diff picks up the lists beside it. lg's clips it to the pane the
+/// drag started in and copies what was selected when the button is let go.
+#[test]
+fn dragging_across_the_diff_copies_that_pane_and_nothing_beside_it() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state = make_state_with_files();
+    app.state.diff_text = "alpha beta gamma\ndelta epsilon zeta\neta theta iota\n".into();
+    app.state.diff_line_count = 3;
+    app.render().unwrap();
+    let rects = lg::ui::split_layout_with_sizes(
+        Rect::new(0, 0, 100, 30),
+        app.state.environments_visible(),
+        app.state.left_column_width,
+        app.state.left_panel_heights,
+    );
+    let text = buffer_text(&app);
+    assert!(text.contains("alpha beta gamma"), "{text}");
+
+    // From the first diff row to the second, first dragging out through the
+    // lists beside the pane and then off the right edge of the screen.
+    let top = rects.main.y + 1;
+    app.send_mouse(left_click(rects.main.x + 1, top)).unwrap();
+    app.send_mouse(left_drag(2, top + 1)).unwrap();
+    app.send_mouse(left_drag(99, top + 1)).unwrap();
+    app.send_mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 99,
+        row: top + 1,
+        modifiers: KeyModifiers::NONE,
+    })
+    .unwrap();
+
+    let Some(PendingAction::CopyToClipboard { text, .. }) = app.state.pending_action.take() else {
+        panic!(
+            "letting go of a drag copies it: {:?}",
+            app.state.pending_action
+        );
+    };
+    assert!(text.starts_with("alpha beta gamma"), "{text:?}");
+    assert!(text.ends_with("delta epsilon zeta"), "{text:?}");
+    for name in app.state.files.iter().map(|file| file.path.as_str()) {
+        assert!(!text.contains(name), "picked up the files pane: {text:?}");
+    }
+}
+
+/// A click that does not move is a click, not an empty copy.
+#[test]
+fn a_plain_click_in_the_diff_copies_nothing() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state = make_state_with_files();
+    app.state.diff_text = "alpha\n".into();
+    app.state.diff_line_count = 1;
+    app.render().unwrap();
+    let rects = lg::ui::split_layout_with_sizes(
+        Rect::new(0, 0, 100, 30),
+        app.state.environments_visible(),
+        app.state.left_column_width,
+        app.state.left_panel_heights,
+    );
+    let (column, row) = (rects.main.x + 2, rects.main.y + 1);
+    app.send_mouse(left_click(column, row)).unwrap();
+    app.send_mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+    .unwrap();
+
+    assert!(
+        !matches!(
+            app.state.pending_action,
+            Some(PendingAction::CopyToClipboard { .. })
+        ),
+        "{:?}",
+        app.state.pending_action
+    );
+    assert!(app.state.selection.is_none());
+}

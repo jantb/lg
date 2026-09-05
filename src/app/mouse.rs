@@ -112,6 +112,20 @@ fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
         && row < rect.y.saturating_add(rect.height)
 }
 
+/// The pane rectangle under a cell, for a selection to stay inside.
+pub(super) fn pane_rect_at(rects: &ui::LayoutRects, column: u16, row: u16) -> Option<Rect> {
+    [
+        rects.status,
+        rects.environments,
+        rects.files,
+        rects.branches,
+        rects.commits,
+        rects.main,
+    ]
+    .into_iter()
+    .find(|rect| rect_contains(*rect, column, row))
+}
+
 pub(super) fn pane_at(rects: &ui::LayoutRects, column: u16, row: u16) -> Option<Pane> {
     [
         (Pane::Status, rects.status),

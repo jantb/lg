@@ -443,7 +443,8 @@ mod tests {
         assert_eq!(
             crate::llm::LlmPhase::Decode {
                 elapsed: Duration::from_secs(3),
-                tokens: 0
+                tokens: 0,
+                counted: true
             }
             .label(),
             "decode"
