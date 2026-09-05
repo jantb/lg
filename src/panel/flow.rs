@@ -45,8 +45,8 @@ pub(crate) fn available_actions(state: &AppState) -> Vec<FlowAction> {
 /// wider than a menu alone would be — and every layout below is measured from
 /// it, so it has one home.
 fn modal_area(area: Rect) -> Rect {
-    let w = (area.width * 9 / 10).clamp(58, 132).min(area.width);
-    let h = (area.height * 4 / 5).clamp(14, 30).min(area.height);
+    let w = (area.width * 9 / 10).clamp(58, 180).min(area.width);
+    let h = (area.height * 4 / 5).clamp(14, 44).min(area.height);
     ui::centered(area, w, h)
 }
 

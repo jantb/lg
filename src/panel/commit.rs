@@ -25,10 +25,16 @@ struct VisualLine {
     len: usize,
 }
 
+/// The modal's footprint: most of the screen. A commit message is written
+/// here and the diff it describes is read beside it, and both want room.
+fn modal_area(area: Rect) -> Rect {
+    let w = (area.width * 92 / 100).clamp(60, 180).min(area.width);
+    let h = (area.height * 9 / 10).clamp(14, 60).min(area.height);
+    ui::centered(area, w, h)
+}
+
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
-    let w = (area.width * 8 / 10).clamp(60, 120).min(area.width);
-    let h = (area.height * 3 / 4).clamp(14, 34).min(area.height);
-    let modal = ui::centered(area, w, h);
+    let modal = modal_area(area);
 
     frame.render_widget(Clear, modal);
 
@@ -172,10 +178,8 @@ pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
     );
 }
 
-pub(crate) fn editor_body_area(area: Rect) -> Rect {
-    let w = (area.width * 8 / 10).clamp(60, 120).min(area.width);
-    let h = (area.height * 3 / 4).clamp(14, 34).min(area.height);
-    let modal = ui::centered(area, w, h);
+pub fn editor_body_area(area: Rect) -> Rect {
+    let modal = modal_area(area);
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])

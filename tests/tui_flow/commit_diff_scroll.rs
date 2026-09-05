@@ -85,7 +85,14 @@ fn commit_input_mouse_click_places_cursor() {
     state.commit_message = "one\ntwo".into();
 
     let area = ratatui::layout::Rect::new(0, 0, 100, 30);
-    assert!(panel::commit::place_cursor_at(&mut state, area, 12, 6));
+    // One column into the second line: after the "t" of "two".
+    let body = panel::commit::editor_body_area(area);
+    assert!(panel::commit::place_cursor_at(
+        &mut state,
+        area,
+        body.x + 1,
+        body.y + 1
+    ));
 
     assert_eq!(state.commit_cursor, 5);
 }
@@ -127,7 +134,11 @@ fn commit_modal_uses_terminal_cursor_for_multiline_message() {
         !all_text.contains('\u{2588}'),
         "commit input should not render a block character as the cursor"
     );
-    app.terminal.backend_mut().assert_cursor_position((14, 6));
+    // At the end of "two", on the second line of the editor.
+    let body = panel::commit::editor_body_area(ratatui::layout::Rect::new(0, 0, 100, 30));
+    app.terminal
+        .backend_mut()
+        .assert_cursor_position((body.x + 3, body.y + 1));
 }
 
 #[test]
@@ -156,7 +167,11 @@ fn commit_modal_scrolls_to_cursor_for_long_multiline_message() {
         !all_text.contains("line-00"),
         "oldest message line should scroll out of the editor viewport"
     );
-    app.terminal.backend_mut().assert_cursor_position((18, 23));
+    // At the end of "line-39", on the editor's last line.
+    let body = panel::commit::editor_body_area(ratatui::layout::Rect::new(0, 0, 100, 30));
+    app.terminal
+        .backend_mut()
+        .assert_cursor_position((body.x + 7, body.y + body.height - 1));
 }
 
 // ── Diff scroll clamping ──────────────────────────────────────────────────────

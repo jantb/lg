@@ -1142,13 +1142,16 @@ fn the_flow_preview_is_coloured_by_branch() {
     let buf = terminal.backend().buffer().clone();
 
     let mut seen = HashSet::new();
+    let mut marker = HashSet::new();
     for row in 0..buf.area.height {
         for col in 0..buf.area.width {
             let cell = &buf[(col, row)];
-            if cell
+            if cell.symbol().contains('\u{25c9}') {
+                marker.insert(cell.fg);
+            } else if cell
                 .symbol()
                 .chars()
-                .any(|c| "\u{25cf}\u{25c6}\u{2717}\u{25c9}".contains(c))
+                .any(|c| "\u{25cf}\u{25c6}\u{2717}".contains(c))
             {
                 seen.insert(cell.fg);
             }
@@ -1156,20 +1159,20 @@ fn the_flow_preview_is_coloured_by_branch() {
     }
 
     assert!(
-        seen.contains(&Color::Magenta),
-        "main should keep its magenta: {seen:?}"
+        seen.contains(&lg::ui::palette::LANE_MAIN),
+        "main should keep its colour: {seen:?}"
     );
     assert!(
-        seen.contains(&Color::Yellow),
-        "test should keep its yellow: {seen:?}"
+        seen.contains(&lg::ui::palette::LANE_TEST),
+        "test should keep its colour: {seen:?}"
     );
     assert!(
-        seen.contains(&Color::Red),
+        seen.contains(&lg::ui::palette::LANE_LOST),
         "a reset should draw the history it drops in red: {seen:?}"
     );
     assert!(
-        seen.contains(&Color::White),
-        "the travelling marker should stand out from every lane: {seen:?}"
+        !marker.is_empty() && marker.is_disjoint(&seen),
+        "the travelling marker should stand out from every lane: {marker:?} vs {seen:?}"
     );
 }
 

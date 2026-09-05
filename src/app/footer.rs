@@ -433,7 +433,11 @@ mod tests {
     #[test]
     fn the_two_phases_read_differently() {
         assert_eq!(
-            crate::llm::LlmPhase::Prefill(Duration::from_secs(3)).label(),
+            crate::llm::LlmPhase::Prefill {
+                elapsed: Duration::from_secs(3),
+                prompt_bytes: 0
+            }
+            .label(),
             "prefill"
         );
         assert_eq!(
@@ -445,14 +449,20 @@ mod tests {
             "decode"
         );
         assert!(
-            crate::llm::LlmPhase::Prefill(Duration::from_millis(3_240))
-                .describe()
-                .contains("3.2s")
+            crate::llm::LlmPhase::Prefill {
+                elapsed: Duration::from_millis(3_240),
+                prompt_bytes: 0
+            }
+            .describe()
+            .contains("3.2s")
         );
         assert!(
-            crate::llm::LlmPhase::Prefill(Duration::from_secs(64))
-                .describe()
-                .contains("1m04s")
+            crate::llm::LlmPhase::Prefill {
+                elapsed: Duration::from_secs(64),
+                prompt_bytes: 0
+            }
+            .describe()
+            .contains("1m04s")
         );
     }
 

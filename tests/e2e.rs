@@ -202,3 +202,16 @@ fn unknown_argument_is_reported_instead_of_silently_launching() {
     assert!(stderr.contains("unrecognized argument"), "got: {stderr}");
     assert!(stderr.contains("Usage:"), "got: {stderr}");
 }
+
+#[test]
+fn a_directory_with_no_repositories_is_refused_with_a_reason() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = lg_bin(&[], dir.path());
+
+    assert!(!out.status.success(), "nothing here for lg to show");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no repositories found"),
+        "the reason must be said: {stderr}"
+    );
+}

@@ -14,11 +14,12 @@ use crate::config::BRANCH_MAIN;
 use crate::state::{AppState, FlowAction, FlowRun};
 use crate::ui::palette;
 
-/// Dashes drawn between two commits on a lane.
-const DASHES: usize = 2;
-
-/// Columns one commit takes, itself plus the dashes after it.
-const STRIDE: usize = DASHES + 1;
+/// Fewest columns one commit takes, itself plus the dashes after it. The
+/// diagram is drawn at this scale when the pane is tight, and stretched up
+/// to `MAX_STRIDE` when there is room: a bigger picture is easier to read
+/// and gives the marker a longer road to travel.
+const MIN_STRIDE: usize = 3;
+const MAX_STRIDE: usize = 8;
 
 /// Commits drawn past the last one a move lands on, so every lane runs on
 /// afterwards instead of stopping dead at the merge.
@@ -66,6 +67,8 @@ pub(super) struct Preview {
     caption: String,
     /// The steps the flow runs, the same list the progress pane narrates from.
     steps: Vec<String>,
+    /// Columns one commit takes on a track, see `MIN_STRIDE`.
+    stride: usize,
 }
 
 /// Whether the picture is being drawn for the menu or for a run.
@@ -85,17 +88,17 @@ pub(super) enum Progress {
 fn branch_color(state: &AppState, name: &str) -> Color {
     let bare = name.strip_prefix("origin/").unwrap_or(name);
     if bare == BRANCH_MAIN {
-        return Color::Magenta;
+        return palette::LANE_MAIN;
     }
     for (env, color) in [
-        (crate::git::ReleaseEnv::Dev, Color::Cyan),
-        (crate::git::ReleaseEnv::Test, Color::Yellow),
+        (crate::git::ReleaseEnv::Dev, palette::LANE_DEV),
+        (crate::git::ReleaseEnv::Test, palette::LANE_TEST),
     ] {
         if state.release_branch(env) == Some(bare) {
             return color;
         }
     }
-    Color::Green
+    palette::LANE_FEATURE
 }
 
 impl Preview {
@@ -105,6 +108,21 @@ impl Preview {
             moves: Vec::new(),
             caption: caption.into(),
             steps,
+            stride: MIN_STRIDE,
+        }
+    }
+
+    /// Stretch the diagram to the widest scale that still fits `width` beside
+    /// labels `label_width` wide. Never narrower than `MIN_STRIDE`, so a pane
+    /// too small for even that is reported by `grid_cols` overrunning it.
+    fn fit(&mut self, label_width: usize, width: u16) {
+        self.stride = MIN_STRIDE;
+        for stride in (MIN_STRIDE..=MAX_STRIDE).rev() {
+            self.stride = stride;
+            let needed = label_width + 1 + self.grid_cols();
+            if u16::try_from(needed).unwrap_or(u16::MAX) <= width {
+                break;
+            }
         }
     }
 
@@ -202,12 +220,16 @@ impl Preview {
         (waiting.into_iter().collect(), false)
     }
 
-    /// The marker and the glow it leaves behind, at this reading of the
-    /// animation clock. The head is first at full intensity; each cell behind
-    /// it is dimmer, and the dimming is continuous in time, so the tail fades
-    /// between frames even though the head can only ever sit on whole cells.
-    /// That is what lets a character grid read as motion rather than as a dot
-    /// hopping from square to square.
+    /// The marker and its glow, at this reading of the animation clock: each
+    /// lit cell of the route with how brightly, the head first at full.
+    ///
+    /// The marker's true position is a fraction of the way along the route,
+    /// and every intensity is a continuous function of the distance from it.
+    /// The cell ahead brightens as the marker approaches, the cell it is on
+    /// holds full, and each cell behind dims with distance. So between two
+    /// frames nothing jumps: the light slides from one cell into the next
+    /// even though the glyphs can only sit on whole cells, and that sliding
+    /// is what a character grid has to offer for motion.
     fn trail(&self, progress: Progress, clock_ms: u64) -> Vec<((usize, usize), f64)> {
         let (route, moving) = self.route(progress);
         if route.is_empty() {
@@ -219,16 +241,20 @@ impl Preview {
         let position = clock_ms as f64 / MARKER_CELL_MS as f64;
         let head = position.floor() as usize;
         let within = position - position.floor();
-        let mut cells = vec![(route[head % route.len()], 1.0)];
-        // In the menu the route loops, so the tail wraps with it; on a leg
-        // of a real run it would trail out of the previous leg, which is not
-        // where the flow has been, so it is cut at the start.
+        let len = route.len();
+        let mut cells = vec![(route[head % len], 1.0)];
+        // In the menu the route loops, so the glow wraps with it; on a leg
+        // of a real run it would spill into the legs on either side, which
+        // are not where the flow is, so it is cut at both ends.
         let wraps = matches!(progress, Progress::Menu);
+        if wraps || head + 1 < len {
+            cells.push((route[(head + 1) % len], within));
+        }
         for back in 1..=TRAIL_CELLS {
             if !wraps && back > head {
                 break;
             }
-            let idx = (head + route.len() - back % route.len()) % route.len();
+            let idx = (head + len - back % len) % len;
             let intensity = 1.0 - (within + back as f64) / (TRAIL_CELLS as f64 + 1.0);
             cells.push((route[idx], intensity));
         }
@@ -242,8 +268,8 @@ impl Preview {
     }
 
     /// Column of commit `slot` on a lane's track.
-    fn column(slot: usize) -> usize {
-        slot * STRIDE
+    fn column(&self, slot: usize) -> usize {
+        slot * self.stride
     }
 
     /// Grid row a lane's track sits on. Lanes are spaced out so the connectors
@@ -257,7 +283,7 @@ impl Preview {
     }
 
     fn grid_cols(&self) -> usize {
-        Self::column(self.commits().saturating_sub(1)) + 1
+        self.column(self.commits().saturating_sub(1)) + 1
     }
 
     /// The route the marker walks, one leg per move, in the order the flow runs
@@ -270,7 +296,7 @@ impl Preview {
             .iter()
             .enumerate()
             .map(|(idx, mv)| {
-                let col = Self::column(idx + 1);
+                let col = self.column(idx + 1);
                 let to_row = Self::row(mv.to);
                 let Some(from) = mv.from else {
                     // Nothing arrives; the lane itself is what goes, so the
@@ -445,7 +471,7 @@ fn grid(preview: &Preview, progress: Progress) -> Vec<Vec<Cell>> {
         let track = &mut grid[Preview::row(idx)];
         for (col, cell) in track.iter_mut().enumerate() {
             *cell = Cell {
-                glyph: if col % STRIDE == 0 {
+                glyph: if col % preview.stride == 0 {
                     '\u{25cf}'
                 } else {
                     '\u{2500}'
@@ -457,23 +483,31 @@ fn grid(preview: &Preview, progress: Progress) -> Vec<Vec<Cell>> {
     }
 
     for (idx, mv) in preview.moves.iter().enumerate() {
-        let col = Preview::column(idx + 1);
+        let col = preview.column(idx + 1);
         let to_row = Preview::row(mv.to);
         let reached = preview.reached(mv, progress);
         let color = if reached {
             preview.lanes[mv.to].color
         } else {
-            Color::DarkGray
+            palette::LANE_PENDING
         };
         // History is only struck out once the flow has actually thrown it away.
-        let lost_color = if reached { Color::Red } else { Color::DarkGray };
+        let lost_color = if reached {
+            palette::LANE_LOST
+        } else {
+            palette::LANE_PENDING
+        };
 
         let Some(from) = mv.from else {
             // A lane that is only deleted: the whole of it goes, so the whole
             // of it is struck out rather than a stretch of it.
             for (lost, cell) in grid[to_row].iter_mut().enumerate() {
                 *cell = Cell {
-                    glyph: if lost % STRIDE == 0 { '\u{2717}' } else { ' ' },
+                    glyph: if lost % preview.stride == 0 {
+                        '\u{2717}'
+                    } else {
+                        ' '
+                    },
                     color: lost_color,
                     dim: true,
                 };
@@ -483,7 +517,7 @@ fn grid(preview: &Preview, progress: Progress) -> Vec<Vec<Cell>> {
 
         if mv.discards {
             // Everything the destination had before this point is what goes.
-            for lost in (0..col).step_by(STRIDE) {
+            for lost in (0..col).step_by(preview.stride) {
                 grid[to_row][lost] = Cell {
                     glyph: '\u{2717}',
                     color: lost_color,
@@ -511,7 +545,7 @@ fn grid(preview: &Preview, progress: Progress) -> Vec<Vec<Cell>> {
                 color: if reached {
                     preview.lanes[from].color
                 } else {
-                    Color::DarkGray
+                    palette::LANE_PENDING
                 },
                 dim: !reached,
             };
@@ -528,9 +562,9 @@ fn grid(preview: &Preview, progress: Progress) -> Vec<Vec<Cell>> {
 }
 
 /// How long the marker rests on each cell of its route.
-pub(super) const MARKER_CELL_MS: u64 = 120;
+pub(super) const MARKER_CELL_MS: u64 = 90;
 /// How many cells of glow the marker leaves behind it.
-const TRAIL_CELLS: usize = 5;
+const TRAIL_CELLS: usize = 7;
 
 /// The diagram as lines, with the marker where `progress` and the animation
 /// clock (`clock_ms`) put it.
@@ -544,7 +578,7 @@ pub(super) fn lines(
     clock_ms: u64,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let Some(preview) = preview(state, run) else {
+    let Some(mut preview) = preview(state, run) else {
         return Vec::new();
     };
     let labels: Vec<String> = preview
@@ -557,11 +591,12 @@ pub(super) fn lines(
         .map(|label| label.chars().count())
         .max()
         .unwrap_or(0);
+    preview.fit(label_width, width);
     let needed = label_width + 1 + preview.grid_cols();
     if u16::try_from(needed).unwrap_or(u16::MAX) > width {
         return vec![Line::from(Span::styled(
             preview.caption,
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(palette::TEXT_IDLE),
         ))];
     }
 
@@ -586,24 +621,26 @@ pub(super) fn lines(
                 .find(|(at, _)| *at == (row, col))
                 .map(|(_, intensity)| *intensity);
             let (glyph, style) = if let Some(intensity) = glow {
-                if intensity >= 1.0 {
-                    (
-                        '\u{25c9}',
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD),
-                    )
+                // The marker's own glyph goes wherever the light is more
+                // than half on, which is the head and, from halfway through
+                // a step, the cell it is sliding into. Everything else keeps
+                // the route's glyph and is only lit, from near-white just
+                // behind the head down to the resting accent where the glow
+                // rejoins the diagram.
+                let glyph = if intensity >= 0.5 {
+                    '\u{25c9}'
                 } else {
-                    // The tail keeps the route's own glyph and only lights
-                    // it, from near-white just behind the head down to the
-                    // resting accent where it rejoins the diagram.
-                    (
-                        cell.glyph,
-                        Style::default()
-                            .fg(palette::glow(intensity))
-                            .add_modifier(Modifier::BOLD),
-                    )
-                }
+                    cell.glyph
+                };
+                let color = if intensity >= 1.0 {
+                    palette::glow(0.8 + 0.2 * palette::breath(clock_ms, 700))
+                } else {
+                    palette::glow(intensity)
+                };
+                (
+                    glyph,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                )
             } else {
                 let mut style = Style::default().fg(cell.color);
                 if cell.dim {
@@ -619,7 +656,7 @@ pub(super) fn lines(
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         preview.caption,
-        Style::default().fg(Color::Gray),
+        Style::default().fg(palette::TEXT_IDLE),
     )));
     lines
 }
@@ -924,11 +961,11 @@ mod tests {
             "the reset should show what it will drop"
         );
         assert!(
-            waiting.iter().all(|color| *color == Color::DarkGray),
+            waiting.iter().all(|color| *color == palette::LANE_PENDING),
             "nothing is lost yet, so nothing should be red: {waiting:?}"
         );
         assert!(
-            done.contains(&Color::Red),
+            done.contains(&palette::LANE_LOST),
             "the history the reset just dropped should be red: {done:?}"
         );
     }
@@ -938,32 +975,49 @@ mod tests {
     #[test]
     fn branches_keep_their_colours() {
         let state = state_with_deploy_branches();
-        assert_eq!(branch_color(&state, "origin/main"), Color::Magenta);
-        assert_eq!(branch_color(&state, "test"), Color::Yellow);
-        assert_eq!(branch_color(&state, "origin/develop"), Color::Cyan);
-        assert_eq!(branch_color(&state, "feature/parser"), Color::Green);
+        assert_eq!(branch_color(&state, "origin/main"), palette::LANE_MAIN);
+        assert_eq!(branch_color(&state, "test"), palette::LANE_TEST);
+        assert_eq!(branch_color(&state, "origin/develop"), palette::LANE_DEV);
+        assert_eq!(
+            branch_color(&state, "feature/parser"),
+            palette::LANE_FEATURE
+        );
     }
 
     #[test]
-    fn the_marker_leaves_a_tail_that_fades_between_frames() {
+    fn the_glow_slides_between_frames_instead_of_jumping() {
         let state = state_with_deploy_branches();
         let preview = preview(&state, &run(&state, FlowAction::MergeMain)).expect("preview");
         let at_cell = preview.trail(Progress::Menu, 10 * MARKER_CELL_MS);
         let later = preview.trail(Progress::Menu, 10 * MARKER_CELL_MS + MARKER_CELL_MS / 2);
+        let head = preview.marker(Progress::Menu, 10).unwrap();
+        let next = preview.marker(Progress::Menu, 11).unwrap();
+        let intensity = |cells: &[((usize, usize), f64)], at| {
+            cells
+                .iter()
+                .find(|(cell, _)| *cell == at)
+                .map(|(_, intensity)| *intensity)
+                .unwrap_or(0.0)
+        };
 
-        assert_eq!(
-            at_cell[0],
-            (preview.marker(Progress::Menu, 10).unwrap(), 1.0)
+        assert_eq!(at_cell[0], (head, 1.0), "the head leads at full");
+        assert_eq!(intensity(&later, head), 1.0, "and holds for the step");
+        assert!(
+            intensity(&later, next) > intensity(&at_cell, next),
+            "the cell ahead should brighten as the marker approaches"
         );
-        assert_eq!(
-            at_cell[0].0, later[0].0,
-            "the head rests on one cell for a step"
-        );
-        assert!(at_cell.len() > 1, "the head should have a tail");
-        for (before, after) in at_cell.iter().skip(1).zip(later.iter().skip(1)) {
-            assert_eq!(before.0, after.0);
+        // Only cells the route passes once: one it crosses twice is lit by
+        // whichever pass is brighter, which is not what is measured here.
+        let route = preview.path();
+        let passed_once = |cell: &(usize, usize)| route.iter().filter(|c| *c == cell).count() == 1;
+        let tail: Vec<_> = at_cell
+            .iter()
+            .filter(|(cell, _)| *cell != head && *cell != next && passed_once(cell))
+            .collect();
+        assert!(!tail.is_empty(), "the head should have a tail");
+        for (cell, before) in tail {
             assert!(
-                after.1 < before.1,
+                intensity(&later, *cell) < *before,
                 "the tail should dim as the step wears on, not hold and jump"
             );
         }
@@ -981,6 +1035,29 @@ mod tests {
             .filter_map(|mv| mv.step)
             .min()
             .expect("a drawn step");
-        assert_eq!(preview.trail(Progress::Step(first), 0).len(), 1);
+        let legs = preview.legs();
+        let start = legs[0][0];
+        let ahead = legs[0][1];
+        for (cell, _) in preview.trail(Progress::Step(first), 0) {
+            assert!(
+                cell == start || cell == ahead,
+                "{cell:?} is behind the start of the leg"
+            );
+        }
+    }
+
+    #[test]
+    fn the_diagram_grows_into_the_room_it_is_given() {
+        let state = state_with_deploy_branches();
+        let mut preview = preview(&state, &run(&state, FlowAction::MergeMain)).expect("preview");
+        preview.fit(10, 200);
+        let wide = preview.grid_cols();
+        preview.fit(10, 25);
+        let narrow = preview.grid_cols();
+        assert!(wide > narrow, "a wide pane should get a bigger picture");
+        assert!(
+            u16::try_from(10 + 1 + narrow).unwrap() <= 25,
+            "and a narrow one should still fit"
+        );
     }
 }

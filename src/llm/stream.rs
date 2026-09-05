@@ -144,7 +144,7 @@ pub fn stream_messages(
 
     // Held for the whole request: dropping it is what takes the request back
     // out of the throughput readout, however this returns.
-    let mut tracked = Tracked::new();
+    let mut tracked = Tracked::new(prompt_bytes);
 
     trace_line(
         &mut trace,
@@ -587,7 +587,7 @@ mod tests {
             &tx,
             &mut None,
             Instant::now(),
-            &mut Tracked::new(),
+            &mut Tracked::new(0),
         );
         drop(tx);
         rx.iter().collect()

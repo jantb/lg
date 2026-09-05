@@ -883,7 +883,12 @@ mod tests {
         state.modal = Modal::Commit;
         state.commit_message = "one\ntwo".into();
 
-        assert!(handle_modal_mouse(&mut state, area, &left_click(12, 6)));
+        // One column into the second line, which places the cursor after
+        // the first character of "two".
+        let body = crate::panel::commit::editor_body_area(area);
+        let click = left_click(body.x + 1, body.y + 1);
+
+        assert!(handle_modal_mouse(&mut state, area, &click));
 
         assert_eq!(state.commit_cursor, 5);
     }

@@ -69,14 +69,20 @@ pub(super) fn render_deployment_status(state: &AppState, area: Rect, frame: &mut
     lines.push(env_line(
         BRANCH_MAIN,
         state.current_branch_releases.main.as_ref(),
-        Color::Magenta,
+        crate::ui::palette::LANE_MAIN,
         state.animation_tick,
         release_status_loading(state),
     ));
     for (env, branch) in release_envs(state) {
         let (status, color) = match env {
-            ReleaseEnv::Dev => (state.current_branch_releases.develop.as_ref(), Color::Cyan),
-            ReleaseEnv::Test => (state.current_branch_releases.test.as_ref(), Color::Yellow),
+            ReleaseEnv::Dev => (
+                state.current_branch_releases.develop.as_ref(),
+                crate::ui::palette::LANE_DEV,
+            ),
+            ReleaseEnv::Test => (
+                state.current_branch_releases.test.as_ref(),
+                crate::ui::palette::LANE_TEST,
+            ),
         };
         lines.push(env_line(
             &branch,

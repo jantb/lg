@@ -59,6 +59,24 @@ pub fn breathe(dim: (u8, u8, u8), bright: (u8, u8, u8), clock_ms: u64, period_ms
     lerp(dim, bright, wave(clock_ms, period_ms))
 }
 
+/// The lanes of the branch-action diagram, one colour per kind of branch. They
+/// match the deployment block's hues, saturated enough to read as distinct
+/// lanes against the tinted modal.
+pub const LANE_MAIN: Color = Color::Rgb(214, 134, 255);
+pub const LANE_DEV: Color = ACCENT;
+pub const LANE_TEST: Color = Color::Rgb(247, 201, 92);
+pub const LANE_FEATURE: Color = Color::Rgb(126, 224, 142);
+/// A move the running flow has not reached yet.
+pub const LANE_PENDING: Color = FRAME_IDLE;
+/// History a move throws away.
+pub const LANE_LOST: Color = Color::Rgb(240, 96, 96);
+
+/// Where in a breath of `period_ms` the clock is, 0 at rest rising to 1 and
+/// back, for callers that mix their own colours.
+pub fn breath(clock_ms: u64, period_ms: u64) -> f64 {
+    wave(clock_ms, period_ms)
+}
+
 /// How bright a glowing thing is drawn at `intensity`, 0 to 1: the resting
 /// accent at nothing, through the bright accent, to white at full.
 pub fn glow(intensity: f64) -> Color {

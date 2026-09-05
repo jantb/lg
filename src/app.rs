@@ -58,7 +58,7 @@ pub(crate) use workflow::{
 
 use refresh::{
     build_refresh_snapshot, prime_branches, prime_files, should_refresh_for_fs_event,
-    startup_repo_root, watch_repo,
+    startup_roots, watch_repo,
 };
 use review_assist::{
     spawn_assisted_review, spawn_review_assist, spawn_review_chat, spawn_review_pr_text,
@@ -164,14 +164,11 @@ where
 
 impl App {
     pub fn new() -> Result<Self> {
-        if !crate::git::is_repo() {
-            anyhow::bail!("not a git repository (or any parent up to mount point)");
-        }
-
         // Pin git to the repository root up front: every command then runs
         // against a directory lg chose, not whichever one the process happens
         // to sit in, which is what lets checkouts be switched underneath.
-        let repo_root = startup_repo_root()?;
+        let roots = startup_roots()?;
+        let repo_root = roots.repo;
         crate::git::set_active_repo(&repo_root);
 
         let (file_watcher, file_events) = watch_repo(&repo_root)?;
@@ -208,6 +205,9 @@ impl App {
             session_keyboard: false,
             keys_can_disambiguate,
         };
+        app.state.workspace_root = roots
+            .workspace
+            .map(|workspace| workspace.to_string_lossy().into_owned());
         prime_branches(&mut app.state);
         prime_files(&mut app.state);
         app.start_refresh(true);

@@ -214,11 +214,42 @@ pub(super) fn watch_repo(
 }
 
 /// The checkout lg starts in: the repository around the working directory.
-pub(super) fn startup_repo_root() -> Result<PathBuf> {
+/// Where lg starts: the checkout to run git in, and the workspace it sits in
+/// when that is a different directory.
+///
+/// Started inside a repository, that repository is the checkout and there is
+/// no separate workspace. Started in a directory that only holds repositories
+/// — a folder of projects — the directory is the workspace and the first
+/// repository in it is the checkout, so the tree of repositories is there to
+/// pick another from. A directory with neither is an error.
+pub(super) fn startup_roots() -> Result<StartupRoots> {
     let cwd = std::env::current_dir().context("resolve current directory")?;
-    Ok(crate::git::repo_root()
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| cwd))
+    if crate::git::is_repo() {
+        let repo = crate::git::repo_root().map(PathBuf::from).unwrap_or(cwd);
+        return Ok(StartupRoots {
+            workspace: None,
+            repo,
+        });
+    }
+    let nested = crate::git::nested_repositories_at(&cwd)
+        .with_context(|| format!("scan {} for repositories", cwd.display()))?;
+    let Some(first) = nested.first() else {
+        anyhow::bail!(
+            "not a git repository, and no repositories found under {}",
+            cwd.display()
+        );
+    };
+    Ok(StartupRoots {
+        repo: cwd.join(&first.path),
+        workspace: Some(cwd),
+    })
+}
+
+pub(super) struct StartupRoots {
+    /// The directory holding the repositories, when lg was started in one.
+    pub workspace: Option<PathBuf>,
+    /// The checkout git commands run in.
+    pub repo: PathBuf,
 }
 
 fn git_metadata_dirs(cwd: &Path) -> Vec<PathBuf> {

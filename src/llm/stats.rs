@@ -73,8 +73,12 @@ impl GenStats {
 /// What the server is doing for a request that has not finished yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmPhase {
-    /// Sent, nothing back yet: the server is still reading the prompt.
-    Prefill(Duration),
+    /// Sent, nothing back yet: the server is still reading the prompt, which
+    /// was this many bytes long.
+    Prefill {
+        elapsed: Duration,
+        prompt_bytes: usize,
+    },
     /// Tokens are arriving: how long for, and how many so far.
     Decode { elapsed: Duration, tokens: u64 },
 }
@@ -82,39 +86,72 @@ pub enum LlmPhase {
 impl LlmPhase {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Prefill(_) => "prefill",
+            Self::Prefill { .. } => "prefill",
             Self::Decode { .. } => "decode",
         }
     }
 
     pub fn elapsed(self) -> Duration {
         match self {
-            Self::Prefill(elapsed) | Self::Decode { elapsed, .. } => elapsed,
+            Self::Prefill { elapsed, .. } | Self::Decode { elapsed, .. } => elapsed,
         }
     }
 
-    /// Tokens per second so far, measured by lg from the chunks it has seen
-    /// rather than by the server. Streams deliver roughly one token per
-    /// chunk, so it is close, and it is available while the answer is still
-    /// being written, which the server's own figure is not. `None` until
-    /// decoding has run long enough for the figure to mean something.
-    pub fn live_tps(self) -> Option<f64> {
-        match self {
-            Self::Decode { elapsed, tokens } if elapsed >= Duration::from_millis(500) => {
-                Some(tokens as f64 / elapsed.as_secs_f64())
-            }
-            _ => None,
+    /// Tokens per second so far, measured by lg rather than by the server, so
+    /// it is available while the request is still running, which the
+    /// server's own figure is not. Decoding counts the chunks that have
+    /// arrived, roughly one token each. Prefill has nothing to count, so it
+    /// is estimated from the prompt's size at `BYTES_PER_TOKEN` and marked
+    /// as an estimate. `None` until the phase has run long enough for the
+    /// figure to mean something.
+    pub fn live_tps(self) -> Option<LiveRate> {
+        if self.elapsed() < Duration::from_millis(500) {
+            return None;
         }
+        let secs = self.elapsed().as_secs_f64();
+        Some(match self {
+            Self::Decode { tokens, .. } => LiveRate {
+                tps: tokens as f64 / secs,
+                estimated: false,
+            },
+            Self::Prefill { prompt_bytes, .. } => LiveRate {
+                tps: prompt_bytes as f64 / BYTES_PER_TOKEN / secs,
+                estimated: true,
+            },
+        })
     }
 
     /// The phase as a reader wants it: what is happening, for how long, and
-    /// while decoding, how fast.
+    /// how fast.
     pub fn describe(self) -> String {
         let mut text = format!("{} {}", self.label(), compact_duration(self.elapsed()));
-        if let Some(tps) = self.live_tps() {
-            text.push_str(&format!(" \u{b7} {tps:.1} tok/s"));
+        if let Some(rate) = self.live_tps() {
+            text.push_str(&format!(" \u{b7} {rate}"));
         }
         text
+    }
+}
+
+/// How many bytes of prompt one token stands for, on average, for English
+/// text and code. Rough, and said to be: the estimate is for watching the
+/// prefill move, not for comparing servers.
+const BYTES_PER_TOKEN: f64 = 4.0;
+
+/// A throughput lg measured itself while a request runs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LiveRate {
+    pub tps: f64,
+    /// Whether the token count behind it was estimated rather than counted.
+    pub estimated: bool,
+}
+
+impl std::fmt::Display for LiveRate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.estimated {
+            write!(f, "~{:.0} tok/s", self.tps)
+        } else {
+            write!(f, "{:.1} tok/s", self.tps)
+        }
     }
 }
 
@@ -142,6 +179,9 @@ pub fn progress() -> Option<String> {
 struct InFlight {
     id: u64,
     started: Instant,
+    /// How long the prompt was, for estimating prefill speed before the
+    /// server has said anything.
+    prompt_bytes: usize,
     first_token: Option<Instant>,
     /// Chunks seen so far, standing in for tokens.
     tokens: u64,
@@ -163,12 +203,13 @@ impl Registry {
         }
     }
 
-    fn begin(&mut self, started: Instant) -> u64 {
+    fn begin(&mut self, started: Instant, prompt_bytes: usize) -> u64 {
         self.next_id = self.next_id.wrapping_add(1);
         let id = self.next_id;
         self.in_flight.push(InFlight {
             id,
             started,
+            prompt_bytes,
             first_token: None,
             tokens: 0,
         });
@@ -202,7 +243,10 @@ impl Registry {
                 elapsed: now.saturating_duration_since(at),
                 tokens: oldest.tokens,
             },
-            None => LlmPhase::Prefill(now.saturating_duration_since(oldest.started)),
+            None => LlmPhase::Prefill {
+                elapsed: now.saturating_duration_since(oldest.started),
+                prompt_bytes: oldest.prompt_bytes,
+            },
         })
     }
 }
@@ -226,9 +270,10 @@ pub(super) struct Tracked {
 }
 
 impl Tracked {
-    pub(super) fn new() -> Self {
+    /// Register a request whose prompt is `prompt_bytes` long.
+    pub(super) fn new(prompt_bytes: usize) -> Self {
         Self {
-            id: registry().begin(Instant::now()),
+            id: registry().begin(Instant::now(), prompt_bytes),
             stats: None,
         }
     }
@@ -301,7 +346,7 @@ mod tests {
     fn a_request_with_nothing_back_yet_reads_as_prefill() {
         let mut registry = Registry::new();
         let start = Instant::now();
-        registry.begin(start);
+        registry.begin(start, 4_000);
 
         let phase = registry.phase_at(start + Duration::from_secs(3)).unwrap();
 
@@ -313,7 +358,7 @@ mod tests {
     fn the_first_token_moves_a_request_into_decode() {
         let mut registry = Registry::new();
         let start = Instant::now();
-        let id = registry.begin(start);
+        let id = registry.begin(start, 4_000);
         registry.note_token(id, start + Duration::from_secs(4));
 
         let phase = registry.phase_at(start + Duration::from_secs(9)).unwrap();
@@ -330,7 +375,7 @@ mod tests {
     fn a_finished_request_is_no_longer_in_flight() {
         let mut registry = Registry::new();
         let start = Instant::now();
-        let id = registry.begin(start);
+        let id = registry.begin(start, 4_000);
         registry.finish(id, Some(measured(16.9)));
 
         assert!(registry.phase_at(start).is_none());
@@ -343,8 +388,8 @@ mod tests {
     fn the_longest_running_request_is_the_one_reported() {
         let mut registry = Registry::new();
         let start = Instant::now();
-        let first = registry.begin(start);
-        registry.begin(start + Duration::from_secs(1));
+        let first = registry.begin(start, 4_000);
+        registry.begin(start + Duration::from_secs(1), 4_000);
         registry.note_token(first, start + Duration::from_secs(2));
 
         assert_eq!(
@@ -359,10 +404,10 @@ mod tests {
     #[test]
     fn an_unmeasured_end_leaves_the_last_numbers_alone() {
         let mut registry = Registry::new();
-        let kept = registry.begin(Instant::now());
+        let kept = registry.begin(Instant::now(), 4_000);
         registry.finish(kept, Some(measured(16.9)));
 
-        let bare = registry.begin(Instant::now());
+        let bare = registry.begin(Instant::now(), 4_000);
         registry.finish(bare, Some(GenStats::default()));
 
         assert_eq!(
@@ -376,20 +421,24 @@ mod tests {
     fn the_live_rate_counts_chunks_over_decode_time() {
         let mut registry = Registry::new();
         let start = Instant::now();
-        let id = registry.begin(start);
+        let id = registry.begin(start, 4_000);
         for i in 0..=40 {
             registry.note_token(id, start + Duration::from_millis(1_000 + i * 100));
         }
         // 41 chunks, the first at 1.0s, read at 5.0s: four seconds of decode.
         let phase = registry.phase_at(start + Duration::from_secs(5)).unwrap();
-        let tps = phase.live_tps().expect("decoding long enough to measure");
-        assert!((tps - 10.25).abs() < 0.01, "{tps}");
+        let rate = phase.live_tps().expect("decoding long enough to measure");
+        assert!((rate.tps - 10.25).abs() < 0.01, "{rate}");
+        assert!(!rate.estimated, "decoded chunks are counted, not guessed");
         assert!(phase.describe().contains("tok/s"), "{}", phase.describe());
         assert!(
-            LlmPhase::Prefill(Duration::from_secs(2))
-                .live_tps()
-                .is_none(),
-            "nothing has been decoded yet"
+            LlmPhase::Prefill {
+                elapsed: Duration::from_secs(2),
+                prompt_bytes: 8_000
+            }
+            .live_tps()
+            .is_some_and(|rate| rate.estimated && (rate.tps - 1_000.0).abs() < 1.0),
+            "prefill speed is estimated from the prompt's size"
         );
     }
 }
