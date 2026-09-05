@@ -245,7 +245,11 @@ impl App {
             return Ok(());
         };
         join_worker(job.handle.take());
-        self.state.modal = Modal::None;
+        // A push started with P runs behind no modal; whatever the user opened
+        // in the meantime (Shift-F's flow modal, say) is theirs to close.
+        if matches!(self.state.modal, Modal::Push) {
+            self.state.modal = Modal::None;
+        }
         self.state.current_branch_releases_ref = None;
         match msg {
             PushMsg::Done(s) => self.state.set_status(s, false),
