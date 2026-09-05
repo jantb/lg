@@ -135,7 +135,10 @@ pub(super) fn render_nested_repositories(
             NestedRepoTreeRow::Session { id } => match state.sessions.get(*id) {
                 Some(session) => {
                     let shown = state.session_view() == Some(*id);
-                    repository_list_item(session_line(session, row_width, shown), shown)
+                    repository_list_item(
+                        session_line(session, row_width, shown, state.animation_tick),
+                        shown,
+                    )
                 }
                 None => ListItem::new(Line::from("")),
             },
@@ -174,11 +177,7 @@ pub(super) fn render_nested_repositories(
     let mut list_state = scroll::list_state(focused.then_some(selected_idx).flatten(), offset);
     let list = List::new(items)
         .block(block)
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(crate::ui::palette::selection())
         .highlight_symbol("\u{203a} ");
     frame.render_stateful_widget(list, tree_area, &mut list_state);
     if let Some(area) = deployment_area {
@@ -325,10 +324,28 @@ fn activity_word(activity: crate::session::SessionActivity) -> Option<&'static s
 
 /// A session under its checkout: whether it is running, what it is doing, and
 /// whether it has said something since it was last looked at.
-fn session_line(session: &crate::session::Session, row_width: usize, shown: bool) -> Line<'static> {
+///
+/// A session blocked on a question is the one state that should interrupt
+/// whoever is looking elsewhere, so its dot blinks on the animation clock. The
+/// others hold still; a screen full of blinking dots would say nothing.
+fn session_line(
+    session: &crate::session::Session,
+    row_width: usize,
+    shown: bool,
+    tick: usize,
+) -> Line<'static> {
     let (glyph, glyph_color) = match &session.status {
         crate::session::SessionStatus::Ended(_) => ("\u{25cb} ", Color::DarkGray),
-        crate::session::SessionStatus::Running => ("\u{25cf} ", activity_color(session.activity())),
+        crate::session::SessionStatus::Running => {
+            let activity = session.activity();
+            let blocked = activity == crate::session::SessionActivity::NeedsInput;
+            let glyph = if blocked && !crate::ui::palette::blink_on(tick) {
+                "\u{25cb} "
+            } else {
+                "\u{25cf} "
+            };
+            (glyph, activity_color(activity))
+        }
     };
     // The dot says what it is doing; the word repeats it for anyone the colour
     // alone does not reach, and the caret still marks output nobody has read.

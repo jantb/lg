@@ -5,6 +5,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders},
 };
 
+use super::palette;
 use crate::{config::BORDER_COLOR, state::SPINNER_FRAMES};
 
 /// A block with the default border color and the given title.
@@ -35,25 +36,25 @@ pub fn framed_with_activity<'a>(
     tick: usize,
     active: bool,
 ) -> Block<'a> {
+    // A running job pulses the whole frame, not only the marker in the title:
+    // the border is the biggest thing a panel has, so it is what the eye reads
+    // as "busy" from across the screen. Idle, the frame holds one accent shade.
     let (border_color, title_style) = if focused {
+        let border = if active {
+            palette::pulse(tick)
+        } else {
+            palette::ACCENT
+        };
         (
-            if active {
-                Style::default()
-                    .fg(Color::LightCyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            },
+            Style::default().fg(border).add_modifier(Modifier::BOLD),
             Style::default()
-                .fg(Color::Cyan)
+                .fg(palette::ACCENT)
                 .add_modifier(Modifier::BOLD),
         )
     } else {
         (
-            Style::default().fg(Color::DarkGray),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(palette::FRAME_IDLE),
+            Style::default().fg(palette::TEXT_IDLE),
         )
     };
 
@@ -128,6 +129,33 @@ mod tests {
             title_row(1, true),
             "a running job still shows progress"
         );
+    }
+
+    /// The colour of the top-left corner, which is border and nothing else.
+    fn corner_color(tick: usize, focused: bool, active: bool) -> Option<Color> {
+        let area = Rect::new(0, 0, 24, 3);
+        let mut buf = Buffer::empty(area);
+        framed_with_activity(1, "Status", focused, None, tick, active).render(area, &mut buf);
+        buf[(0, 0)].style().fg
+    }
+
+    #[test]
+    fn a_busy_focused_frame_pulses_and_an_idle_one_holds() {
+        let idle = corner_color(0, true, false);
+        for tick in 1..16 {
+            assert_eq!(idle, corner_color(tick, true, false), "idle frame moved");
+        }
+        assert!(
+            (1..16).any(|tick| corner_color(tick, true, true) != corner_color(0, true, true)),
+            "a frame with work in it must visibly pulse"
+        );
+    }
+
+    #[test]
+    fn focus_is_told_apart_from_idle_by_colour() {
+        assert_ne!(corner_color(0, true, false), corner_color(0, false, false));
+        // Work in an unfocused panel does not make it move.
+        assert_eq!(corner_color(0, false, true), corner_color(3, false, true));
     }
 
     #[test]

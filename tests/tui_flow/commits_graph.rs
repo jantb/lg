@@ -484,7 +484,7 @@ fn commits_panel_highlights_selected_merge_connector() {
         let cell = &buf[(connector_start + offset as u16, 1)];
         assert_eq!(cell.symbol(), *symbol);
         assert_eq!(cell.fg, Color::White);
-        assert_eq!(cell.bg, Color::DarkGray);
+        assert_eq!(cell.bg, lg::ui::palette::SELECTION_BG);
     }
 }
 
@@ -528,7 +528,7 @@ fn commits_panel_highlights_selected_side_commit() {
         .expect("selected commit marker");
 
     let marker = &buf[(marker_col, 2)];
-    assert_eq!(marker.bg, Color::DarkGray);
+    assert_eq!(marker.bg, lg::ui::palette::SELECTION_BG);
 }
 
 #[test]
@@ -612,7 +612,7 @@ fn commits_panel_highlights_selected_row_without_shifting_columns() {
         .iter()
         .find(|cell| cell.symbol() == "\u{25ef}")
         .expect("selected graph marker");
-    assert_eq!(marker.bg, Color::DarkGray);
+    assert_eq!(marker.bg, lg::ui::palette::SELECTION_BG);
 }
 
 #[test]

@@ -61,11 +61,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         .collect();
     let list = List::new(items)
         .block(ui::bordered("Files"))
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(crate::ui::palette::selection())
         .highlight_symbol("\u{203a} ");
     let selected_idx = clamp_index(state.conflict_idx, state.conflicts.len());
     let offset = scroll::selection_scroll_offset(

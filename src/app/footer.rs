@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::panel::keys::{self, Section, Tone};
 use crate::state::{AppState, DiffSource, Modal, Pane};
+use crate::ui::palette;
 
 /// The section this pane's footer is built from.
 fn footer_section(state: &AppState) -> Option<&'static Section> {
@@ -37,7 +38,7 @@ fn modal_section(modal: Modal) -> Option<&'static str> {
 
 fn tone_color(tone: Tone) -> Color {
     match tone {
-        Tone::Normal => Color::Cyan,
+        Tone::Normal => palette::ACCENT,
         Tone::Caution => Color::Yellow,
         Tone::Danger => Color::Red,
     }
@@ -74,7 +75,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
         modal => modal_footer_spans(state, modal).unwrap_or_default(),
     };
 
-    let (right_text, right_color) = status_text(state);
+    let (right_text, right_style) = status_text(state);
     // Never let a long status swallow the whole bar; the shortcut hints must stay readable.
     let status_budget = (area.width as usize).div_ceil(2).max(1);
     let right_width = right_text.chars().count().min(status_budget) as u16;
@@ -87,8 +88,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     );
 
     frame.render_widget(
-        Paragraph::new(Span::styled(right_text, Style::default().fg(right_color)))
-            .alignment(Alignment::Right),
+        Paragraph::new(Span::styled(right_text, right_style)).alignment(Alignment::Right),
         chunks[1],
     );
 }
@@ -113,7 +113,7 @@ fn session_spans(state: &AppState) -> Vec<Span<'static>> {
     } else {
         (
             "Session ".to_string(),
-            Color::Cyan,
+            palette::ACCENT,
             &[
                 ("i", "type into it"),
                 ("x", "close"),
@@ -140,7 +140,7 @@ fn default_spans(state: &AppState) -> Vec<Span<'static>> {
     let mut spans = vec![Span::styled(
         format!("[{n}] {name} "),
         Style::default()
-            .fg(Color::Cyan)
+            .fg(palette::ACCENT)
             .add_modifier(Modifier::BOLD),
     )];
     for (idx, (key, label)) in pairs.iter().enumerate() {
@@ -265,7 +265,11 @@ fn throughput_text(stats: &crate::llm::GenStats) -> Option<String> {
     stats.rates()
 }
 
-fn status_text(state: &AppState) -> (String, Color) {
+/// The status line and how loudly to draw it. A result that has just landed is
+/// drawn brighter than one that has been sitting there, so the change itself is
+/// what catches the eye; the palette decides how long that lasts.
+fn status_text(state: &AppState) -> (String, Style) {
+    let accent = Style::default().fg(palette::ACCENT);
     match (&state.status, state.activity_label()) {
         (Some(status), Some(label)) if !status.is_error => {
             let spinner = crate::state::SPINNER_FRAMES
@@ -275,10 +279,7 @@ fn status_text(state: &AppState) -> (String, Color) {
                 None if status.text.starts_with(label) => format!("{spinner} {}", status.text),
                 None => format!("{spinner} {label}: {}", status.text),
             };
-            (
-                text + &llm_phase_suffix(state).unwrap_or_default(),
-                Color::Cyan,
-            )
+            (text + &llm_phase_suffix(state).unwrap_or_default(), accent)
         }
         (Some(status), _) => {
             let icon = if status.is_error {
@@ -288,11 +289,7 @@ fn status_text(state: &AppState) -> (String, Color) {
             };
             (
                 format!("{icon} {}", status.text),
-                if status.is_error {
-                    Color::Red
-                } else {
-                    Color::Green
-                },
+                palette::status_style(status.age_ms(), status.is_error),
             )
         }
         (None, Some(label)) => {
@@ -300,12 +297,12 @@ fn status_text(state: &AppState) -> (String, Color) {
                 [state.animation_tick % crate::state::SPINNER_FRAMES.len()];
             (
                 format!("{spinner} {label}\u{2026}") + &llm_phase_suffix(state).unwrap_or_default(),
-                Color::Cyan,
+                accent,
             )
         }
         (None, None) => (
             idle_text(state, crate::llm::last_stats().as_ref()),
-            Color::DarkGray,
+            Style::default().fg(Color::DarkGray),
         ),
     }
 }

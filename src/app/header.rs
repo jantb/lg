@@ -52,7 +52,7 @@ fn project_line(state: &AppState) -> Line<'static> {
         Span::styled(
             name,
             Style::default()
-                .fg(Color::Cyan)
+                .fg(crate::ui::palette::ACCENT)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("  ", Style::default().fg(Color::DarkGray)),

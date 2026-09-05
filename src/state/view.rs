@@ -194,11 +194,18 @@ impl AppState {
     /// Whether something on screen is animating and so wants redrawing at the
     /// animation clock's rate rather than the idle one.
     ///
-    /// Only the branch-action menu does: its preview draws a marker travelling
-    /// the route the flow would take, and a picture redrawn slower than it
-    /// moves reads as a stutter rather than a motion.
+    /// The branch-action menu does: its preview draws a marker travelling the
+    /// route the flow would take, and a picture redrawn slower than it moves
+    /// reads as a stutter rather than a motion. So does a status message that
+    /// is still settling or flashing, and a session blocked on a question,
+    /// whose dot blinks until somebody looks at it. Jobs are not listed here:
+    /// they already poll at their own faster rate.
     pub fn wants_animation(&self) -> bool {
-        self.modal == Modal::Flow && self.workflow_job.is_none()
+        (self.modal == Modal::Flow && self.workflow_job.is_none())
+            || self.status.as_ref().is_some_and(|status| {
+                crate::ui::palette::status_animating(status.age_ms(), status.is_error)
+            })
+            || self.sessions.activity_counts().0 > 0
     }
 
     /// Which set of keys the main pane is listening for right now.

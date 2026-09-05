@@ -2,6 +2,7 @@ mod chrome;
 mod diff;
 mod layout;
 mod log;
+pub mod palette;
 
 pub use chrome::{bordered, framed, framed_with_activity};
 pub use diff::{

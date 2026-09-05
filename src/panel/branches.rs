@@ -53,11 +53,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
 
     let list = List::new(items)
         .block(block)
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(crate::ui::palette::selection())
         .highlight_symbol("\u{203a} ");
 
     let offset = visible_scroll_offset(state, area);

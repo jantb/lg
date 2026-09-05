@@ -259,10 +259,7 @@ fn selected_span(span: Span<'static>, selected: bool) -> Span<'static> {
 
 fn hash_style(selected: bool) -> Style {
     if selected {
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD)
+        crate::ui::palette::selection().fg(Color::White)
     } else {
         Style::default().fg(Color::DarkGray)
     }
@@ -270,7 +267,7 @@ fn hash_style(selected: bool) -> Style {
 
 fn selected_style(style: Style, selected: bool) -> Style {
     if selected {
-        style.bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+        style.patch(crate::ui::palette::selection())
     } else {
         style
     }

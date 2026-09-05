@@ -157,11 +157,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         .collect();
     let list = List::new(items)
         .block(ui::bordered("Branch Actions"))
-        .highlight_style(
-            Style::default()
-                .bg(SELECTED_ACTION_BG)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(crate::ui::palette::selection())
         .highlight_symbol("\u{203a} ");
     let offset = scroll::selection_scroll_offset(
         selected_idx,
@@ -329,10 +325,6 @@ fn steps_for(run: &FlowRun) -> Vec<String> {
         run.target.as_deref(),
     )
 }
-
-/// Background of the highlighted action. The same green the workspace pane uses
-/// for the active checkout, so "this is the one" reads the same everywhere.
-const SELECTED_ACTION_BG: Color = Color::Rgb(24, 54, 34);
 
 /// The menu on the left and the preview on the right, or the whole width for
 /// the menu when there is not enough of it to show both.

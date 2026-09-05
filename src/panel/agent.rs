@@ -47,11 +47,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let title = title(state);
     let list = List::new(items)
         .block(ui::bordered(&title))
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(crate::ui::palette::selection())
         .highlight_symbol("\u{203a} ");
     let mut list_state = scroll::list_state(Some(state.agent_pick_idx.min(rows - 1)), 0);
 

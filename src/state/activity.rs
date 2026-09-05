@@ -15,6 +15,13 @@ pub struct StatusMsg {
     pub at: DateTime<Utc>,
 }
 
+impl StatusMsg {
+    /// How long ago the message was set, in milliseconds, never negative.
+    pub fn age_ms(&self) -> i64 {
+        (Utc::now() - self.at).num_milliseconds().max(0)
+    }
+}
+
 impl AppState {
     /// Advance the animation clock if a step's worth of time has passed. Called
     /// once per frame, so the check is what keeps a spinner at one speed whether
