@@ -435,7 +435,8 @@ mod tests {
         assert_eq!(
             crate::llm::LlmPhase::Prefill {
                 elapsed: Duration::from_secs(3),
-                prompt_bytes: 0
+                prompt_bytes: 0,
+                expected: None
             }
             .label(),
             "prefill"
@@ -452,7 +453,8 @@ mod tests {
         assert!(
             crate::llm::LlmPhase::Prefill {
                 elapsed: Duration::from_millis(3_240),
-                prompt_bytes: 0
+                prompt_bytes: 0,
+                expected: None
             }
             .describe()
             .contains("3.2s")
@@ -460,7 +462,8 @@ mod tests {
         assert!(
             crate::llm::LlmPhase::Prefill {
                 elapsed: Duration::from_secs(64),
-                prompt_bytes: 0
+                prompt_bytes: 0,
+                expected: None
             }
             .describe()
             .contains("1m04s")

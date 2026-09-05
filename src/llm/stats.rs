@@ -78,6 +78,10 @@ pub enum LlmPhase {
     Prefill {
         elapsed: Duration,
         prompt_bytes: usize,
+        /// How long reading it should take, judged by the speed the server
+        /// read the previous prompt at. `None` before any request has been
+        /// measured.
+        expected: Option<Duration>,
     },
     /// Tokens are arriving: how long for, how many so far, and whether that
     /// count is the server's own or lg's count of chunks standing in for it.
@@ -134,7 +138,18 @@ impl LlmPhase {
     pub fn describe(self) -> String {
         let mut text = format!("{} {}", self.label(), compact_duration(self.elapsed()));
         match self {
-            Self::Prefill { prompt_bytes, .. } if prompt_bytes > 0 => {
+            Self::Prefill {
+                elapsed,
+                prompt_bytes,
+                expected,
+            } if prompt_bytes > 0 => {
+                if let Some(expected) = expected {
+                    text.push_str(&format!(
+                        "/~{} {}",
+                        compact_duration(expected),
+                        progress_bar(elapsed.as_secs_f64() / expected.as_secs_f64())
+                    ));
+                }
                 text.push_str(&format!(
                     " \u{b7} ~{} tok",
                     compact_count((prompt_bytes as f64 / BYTES_PER_TOKEN) as u64)
@@ -154,6 +169,28 @@ impl LlmPhase {
 /// text and code. Rough, and said to be: the estimate is for a sense of how
 /// much the server has to read, not for comparing servers.
 const BYTES_PER_TOKEN: f64 = 3.5;
+
+/// How long reading a prompt of `prompt_bytes` should take at `tps` tokens
+/// per second, the rate the server last read at. Both halves are estimates,
+/// so the answer is too; it is for knowing whether to wait or get coffee.
+fn expected_prefill(prompt_bytes: usize, tps: f64) -> Option<Duration> {
+    (prompt_bytes > 0 && tps > 0.0)
+        .then(|| Duration::from_secs_f64(prompt_bytes as f64 / BYTES_PER_TOKEN / tps))
+}
+
+/// A bar `fraction` of the way full, ten cells wide. Past the end it stays
+/// full rather than overflowing: the estimate was wrong, and the elapsed
+/// figure beside it says by how much.
+fn progress_bar(fraction: f64) -> String {
+    const WIDTH: usize = 10;
+    let filled = ((fraction.clamp(0.0, 1.0) * WIDTH as f64).round() as usize).min(WIDTH);
+    let mut bar = String::with_capacity(WIDTH * 3 + 2);
+    bar.push('[');
+    bar.extend(std::iter::repeat_n('\u{2588}', filled));
+    bar.extend(std::iter::repeat_n('\u{2591}', WIDTH - filled));
+    bar.push(']');
+    bar
+}
 
 /// A count short enough to glance at: `820`, `3.1k`.
 fn compact_count(n: u64) -> String {
@@ -287,6 +324,10 @@ impl Registry {
             None => LlmPhase::Prefill {
                 elapsed: now.saturating_duration_since(oldest.started),
                 prompt_bytes: oldest.prompt_bytes,
+                expected: self
+                    .last
+                    .as_ref()
+                    .and_then(|last| expected_prefill(oldest.prompt_bytes, last.prefill_tps)),
             },
         })
     }
@@ -511,10 +552,58 @@ mod tests {
         let phase = LlmPhase::Prefill {
             elapsed: Duration::from_secs(2),
             prompt_bytes: 12_203,
+            expected: None,
         };
         assert!(phase.live_tps().is_none());
         let text = phase.describe();
         assert!(!text.contains("tok/s"), "{text}");
         assert!(text.contains("~3.5k tok"), "{text}");
+        assert!(
+            !text.contains('['),
+            "no bar without a previous rate: {text}"
+        );
+    }
+
+    /// Once one request has been measured, the next prompt's read time can be
+    /// guessed from its size, and the wait shown as a bar filling up.
+    #[test]
+    fn a_previous_prefill_rate_turns_the_wait_into_a_progress_bar() {
+        let mut registry = Registry::new();
+        let start = Instant::now();
+        let first = registry.begin(start, 4_000);
+        registry.finish(
+            first,
+            Some(GenStats {
+                prefill_tps: 100.0,
+                ..measured(20.0)
+            }),
+        );
+
+        // 3_500 bytes is ~1_000 tokens, ten seconds at 100 tok/s.
+        registry.begin(start, 3_500);
+        let phase = registry.phase_at(start + Duration::from_secs(5)).unwrap();
+        let LlmPhase::Prefill { expected, .. } = phase else {
+            panic!("{phase:?}");
+        };
+        assert_eq!(expected, Some(Duration::from_secs(10)));
+        let text = phase.describe();
+        assert!(text.contains("5.0s/~10.0s"), "{text}");
+        assert!(
+            text.contains(
+                "[\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}]"
+            ),
+            "half way: {text}"
+        );
+
+        let late = registry
+            .phase_at(start + Duration::from_secs(30))
+            .unwrap()
+            .describe();
+        assert!(
+            late.contains(
+                "[\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}]"
+            ),
+            "an overrun bar stays full rather than overflowing: {late}"
+        );
     }
 }

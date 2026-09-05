@@ -57,7 +57,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             let progress = crate::llm::progress()
                 .map(|p| format!(" \u{b7} {p}"))
                 .unwrap_or_default();
-            let title = format!("Commit message  {spinner} generating\u{2026}{progress}  (Esc=cancel)");
+            let title = format!(
+                "Commit message  {spinner} generating\u{2026}{progress}  (Ctrl+R=restart  Esc=cancel)"
+            );
             (g.output.clone(), g.output.chars().count(), title, false)
         }
         None => (
@@ -451,13 +453,15 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.pending_action = Some(PendingAction::Commit);
             }
         }
+        // Regenerating mid-generation starts over rather than doing nothing:
+        // a reader who can see the answer going wrong should not have to
+        // cancel first.
         KeyCode::Char('r') if ctrl => {
-            if !generating {
-                state.commit_message.clear();
-                state.commit_cursor = 0;
-                state.set_status("generating\u{2026}", false);
-                state.pending_action = Some(PendingAction::GenerateMessage);
-            }
+            state.cancel_generation();
+            state.commit_message.clear();
+            state.commit_cursor = 0;
+            state.set_status("generating\u{2026}", false);
+            state.pending_action = Some(PendingAction::GenerateMessage);
         }
         KeyCode::Char('u') if ctrl => {
             if !generating {
@@ -565,6 +569,24 @@ mod tests {
         .unwrap();
         assert!(state.push_after_commit);
         assert_eq!(state.pending_action, Some(PendingAction::Commit));
+    }
+
+    /// A message going wrong is visible while it is still being written, so
+    /// asking for another one must not wait for the first to finish.
+    #[test]
+    fn ctrl_r_restarts_a_generation_already_running() {
+        let mut state = AppState::default();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        state.start_generation(rx, std::thread::spawn(|| {}));
+
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+
+        assert!(state.generation.is_none(), "the old generation is dropped");
+        assert_eq!(state.pending_action, Some(PendingAction::GenerateMessage));
     }
 
     #[test]
