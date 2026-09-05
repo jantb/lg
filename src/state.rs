@@ -159,10 +159,15 @@ pub struct AppState {
     pub confirm: Option<ConfirmPrompt>,
     pub push_after_commit: bool,
     pub should_quit: bool,
+    /// The animation clock in whole steps of `ANIMATION_STEP_MS`, for things
+    /// that move frame by frame: spinners, a travelling marker, a blink.
     pub animation_tick: usize,
-    /// When `animation_tick` last advanced. Animation runs on this clock, not
+    /// The animation clock in milliseconds, for things that move continuously:
+    /// a pulsing frame, a fading status line. Animation runs on this clock, not
     /// on the frame rate.
-    animation_stepped_at: Instant,
+    pub animation_ms: u64,
+    /// When the animation clock started.
+    animation_started: Instant,
 
     pub generation: Option<Generation>,
     pub push_job: Option<PushJob>,
@@ -351,7 +356,8 @@ impl AppState {
             push_after_commit: false,
             should_quit: false,
             animation_tick: 0,
-            animation_stepped_at: Instant::now(),
+            animation_ms: 0,
+            animation_started: Instant::now(),
 
             generation: None,
             push_job: None,

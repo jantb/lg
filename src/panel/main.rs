@@ -39,7 +39,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
 /// Workspace mode with nothing running yet: say how to start something rather
 /// than showing an empty frame.
 fn render_no_session(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
-    let block = ui::framed_with_activity(0, "Session", focused, None, state.animation_tick, false);
+    let block = ui::framed_with_activity(0, "Session", focused, None, state.animation_ms, false);
     let lines = vec![
         ratatui::text::Line::from(""),
         ratatui::text::Line::from("  No session yet."),
@@ -70,7 +70,7 @@ fn render_session(
         &title,
         focused,
         None,
-        state.animation_tick,
+        state.animation_ms,
         session.attention,
     );
     let inner = block.inner(area);
@@ -109,7 +109,7 @@ fn render_main_content(state: &AppState, area: Rect, frame: &mut Frame, focused:
         title,
         focused,
         None,
-        state.animation_tick,
+        state.animation_ms,
         state.activity_label().is_some(),
     );
 

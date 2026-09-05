@@ -31,22 +31,37 @@ pub const TEXT_IDLE: Color = Color::Rgb(150, 156, 168);
 /// (authors, graph pipes, branch names) survive on top of it.
 pub const SELECTION_BG: Color = Color::Rgb(24, 64, 86);
 
-/// One pulse, trough to peak and back. Indexed by the animation tick, so at
-/// `ANIMATION_STEP_MS` a full pulse takes just under a second.
-const PULSE: [Color; 8] = [
-    ACCENT_DIM,
-    ACCENT_DIM,
-    ACCENT,
-    ACCENT_BRIGHT,
-    ACCENT_BRIGHT,
-    ACCENT,
-    ACCENT_DIM,
-    ACCENT_DIM,
-];
+/// How long one pulse takes, trough to peak and back.
+pub const PULSE_PERIOD_MS: u64 = 1_000;
 
-/// The accent shade for this tick of a pulse.
-pub fn pulse(tick: usize) -> Color {
-    PULSE[tick % PULSE.len()]
+/// A colour part of the way from `from` to `to`; `t` runs from 0 to 1.
+fn lerp(from: (u8, u8, u8), to: (u8, u8, u8), t: f64) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |a: u8, b: u8| (f64::from(a) + (f64::from(b) - f64::from(a)) * t).round() as u8;
+    Color::Rgb(mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2))
+}
+
+/// Where in a cycle of `period_ms` the clock is, as 0 at the trough rising
+/// smoothly to 1 at the peak and back. Cosine rather than a triangle wave, so
+/// the turn at either end is soft.
+fn wave(clock_ms: u64, period_ms: u64) -> f64 {
+    let phase = (clock_ms % period_ms) as f64 / period_ms as f64;
+    0.5 - 0.5 * (phase * std::f64::consts::TAU).cos()
+}
+
+const ACCENT_DIM_RGB: (u8, u8, u8) = (44, 122, 142);
+const ACCENT_BRIGHT_RGB: (u8, u8, u8) = (170, 240, 255);
+
+/// A colour breathing between `dim` and `bright` once every `period_ms`, read
+/// at this point of the animation clock. Continuous in time, so it is as
+/// smooth as the frame rate allows.
+pub fn breathe(dim: (u8, u8, u8), bright: (u8, u8, u8), clock_ms: u64, period_ms: u64) -> Color {
+    lerp(dim, bright, wave(clock_ms, period_ms))
+}
+
+/// The accent shade at this point of the animation clock, in milliseconds.
+pub fn pulse(clock_ms: u64) -> Color {
+    breathe(ACCENT_DIM_RGB, ACCENT_BRIGHT_RGB, clock_ms, PULSE_PERIOD_MS)
 }
 
 /// Whether a blink is in its "on" half. Slower than the pulse: a blink is an
@@ -56,36 +71,51 @@ pub fn blink_on(tick: usize) -> bool {
 }
 
 /// How long a fresh status message stays bright before settling.
-pub const STATUS_SETTLE_MS: i64 = 400;
+pub const STATUS_SETTLE_MS: i64 = 600;
 /// How long a new error flashes before holding steady.
 pub const ERROR_FLASH_MS: i64 = 2_000;
 /// One half of an error flash.
 const ERROR_FLASH_HALF_MS: i64 = 250;
 
+const SUCCESS_FRESH_RGB: (u8, u8, u8) = (190, 255, 190);
+const SUCCESS_REST_RGB: (u8, u8, u8) = (90, 200, 110);
+const ERROR_BRIGHT_RGB: (u8, u8, u8) = (255, 95, 95);
+const ERROR_DIM_RGB: (u8, u8, u8) = (140, 40, 40);
+
 /// How a status message of this age should look: `is_error` decides the hue,
 /// the age decides how much attention it still asks for.
 ///
-/// A success arrives bright and settles to its resting green, so the eye
-/// catches the change without being held. An error flashes for a couple of
-/// seconds and then holds, because it stays on screen for half a minute and
-/// nobody should have to watch it blink for that long.
+/// A success arrives bright and fades to its resting green, so the eye catches
+/// the change without being held. An error throbs between bright and dim for a
+/// couple of seconds and then holds, because it stays on screen for half a
+/// minute and nobody should have to watch it blink for that long. Both are
+/// continuous in time rather than stepped, so they look smooth at any frame
+/// rate.
 pub fn status_style(age_ms: i64, is_error: bool) -> Style {
+    let age_ms = age_ms.max(0) as u64;
     if is_error {
-        let flashing = age_ms < ERROR_FLASH_MS;
-        let on = !flashing || (age_ms / ERROR_FLASH_HALF_MS) % 2 == 0;
-        if on {
-            Style::default()
-                .fg(Color::LightRed)
-                .add_modifier(Modifier::BOLD)
+        let color = if age_ms < ERROR_FLASH_MS as u64 {
+            // Start bright: the wave is at its trough at zero, so the age is
+            // offset by half a flash to begin at the peak.
+            let period = 2 * ERROR_FLASH_HALF_MS as u64;
+            lerp(
+                ERROR_DIM_RGB,
+                ERROR_BRIGHT_RGB,
+                wave(age_ms + period / 2, period),
+            )
         } else {
-            Style::default().fg(Color::Rgb(140, 40, 40))
-        }
-    } else if age_ms < STATUS_SETTLE_MS {
-        Style::default()
-            .fg(Color::LightGreen)
-            .add_modifier(Modifier::BOLD)
+            let (r, g, b) = ERROR_BRIGHT_RGB;
+            Color::Rgb(r, g, b)
+        };
+        Style::default().fg(color).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Green)
+        let t = age_ms as f64 / STATUS_SETTLE_MS as f64;
+        let style = Style::default().fg(lerp(SUCCESS_FRESH_RGB, SUCCESS_REST_RGB, t));
+        if age_ms < STATUS_SETTLE_MS as u64 {
+            style.add_modifier(Modifier::BOLD)
+        } else {
+            style
+        }
     }
 }
 
@@ -113,11 +143,28 @@ mod tests {
 
     #[test]
     fn a_pulse_returns_to_where_it_started() {
-        assert_eq!(pulse(0), pulse(PULSE.len()));
+        assert_eq!(pulse(0), pulse(PULSE_PERIOD_MS));
         assert!(
-            (0..PULSE.len()).any(|tick| pulse(tick) != pulse(0)),
+            (0..PULSE_PERIOD_MS).any(|ms| pulse(ms) != pulse(0)),
             "a pulse that never changes is not a pulse"
         );
+    }
+
+    #[test]
+    fn a_pulse_moves_in_small_steps() {
+        // Drawn every few milliseconds, neighbouring frames must differ by at
+        // most a shade or two, or the fade reads as a flicker.
+        let channels = |c: Color| match c {
+            Color::Rgb(r, g, b) => [r, g, b],
+            other => panic!("pulse must be a true colour, got {other:?}"),
+        };
+        for ms in (0..PULSE_PERIOD_MS).step_by(8) {
+            let a = channels(pulse(ms));
+            let b = channels(pulse(ms + 8));
+            for (x, y) in a.iter().zip(b.iter()) {
+                assert!(x.abs_diff(*y) <= 4, "jump of {} at {ms}ms", x.abs_diff(*y));
+            }
+        }
     }
 
     #[test]

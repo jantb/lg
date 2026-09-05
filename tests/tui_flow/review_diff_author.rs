@@ -1422,7 +1422,8 @@ fn review_panel_marks_active_style_analysis_separately() {
         "active style analysis should have its own background"
     );
 
-    app.state.animation_tick = 6;
+    app.state
+        .skip_animation(std::time::Duration::from_millis(720));
     app.render().unwrap();
     let pulsed_bg = app
         .terminal

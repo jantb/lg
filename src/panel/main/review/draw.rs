@@ -21,14 +21,11 @@ use super::*;
 const SUSPICIOUS_REVIEW_BG: Color = Color::Rgb(78, 57, 18);
 const OK_REVIEW_STYLE_BG: Color = Color::Rgb(24, 54, 34);
 const FAIL_REVIEW_STYLE_BG: Color = Color::Rgb(70, 24, 28);
-const ACTIVE_REVIEW_STYLE_PULSE: [Color; 6] = [
-    Color::Rgb(22, 46, 56),
-    Color::Rgb(26, 62, 76),
-    Color::Rgb(34, 82, 96),
-    Color::Rgb(42, 106, 120),
-    Color::Rgb(34, 82, 96),
-    Color::Rgb(26, 62, 76),
-];
+/// The background behind a path being flagged breathes between these two,
+/// trough and peak, once per `ACTIVE_REVIEW_PULSE_MS`.
+const ACTIVE_REVIEW_STYLE_DIM: (u8, u8, u8) = (22, 46, 56);
+const ACTIVE_REVIEW_STYLE_BRIGHT: (u8, u8, u8) = (42, 106, 120);
+const ACTIVE_REVIEW_PULSE_MS: u64 = 1_440;
 
 pub(in crate::panel::main) fn render(
     state: &AppState,
@@ -46,7 +43,7 @@ pub(in crate::panel::main) fn render(
         title,
         focused,
         None,
-        state.animation_tick,
+        state.animation_ms,
         state.activity_label().is_some(),
     )
     .title_bottom(
@@ -356,7 +353,8 @@ fn styled_file_location(location: &str, selected: bool, state: &AppState) -> Vec
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReviewPathStyle {
     Normal,
-    Active(usize),
+    /// Being flagged right now; carries the animation clock in milliseconds.
+    Active(u64),
     Finding(ReviewStyleSeverity),
 }
 
@@ -364,7 +362,7 @@ fn review_path_style(path: &str, state: &AppState) -> ReviewPathStyle {
     if let Some(finding) = state.review_style_findings.get(path) {
         ReviewPathStyle::Finding(finding.severity)
     } else if state.review_flag_active_path.as_deref() == Some(path) {
-        ReviewPathStyle::Active(state.animation_tick)
+        ReviewPathStyle::Active(state.animation_ms)
     } else {
         ReviewPathStyle::Normal
     }
@@ -384,9 +382,9 @@ fn styled_file_path(path: &str, selected: bool, path_style: ReviewPathStyle) -> 
         ReviewPathStyle::Finding(severity) => {
             file_style = file_style.bg(review_style_bg(severity));
         }
-        ReviewPathStyle::Active(tick) => {
+        ReviewPathStyle::Active(clock_ms) => {
             file_style = file_style
-                .bg(active_review_style_bg(tick))
+                .bg(active_review_style_bg(clock_ms))
                 .add_modifier(Modifier::BOLD);
         }
         ReviewPathStyle::Normal => {}
@@ -397,12 +395,12 @@ fn styled_file_path(path: &str, selected: bool, path_style: ReviewPathStyle) -> 
         selected_style(file_style, selected)
     };
     let mut spans = Vec::new();
-    if let ReviewPathStyle::Active(tick) = path_style {
+    if let ReviewPathStyle::Active(clock_ms) = path_style {
         spans.push(Span::styled(
-            format!(" {} FLAGGING ", active_review_marker(tick)),
+            format!(" {} FLAGGING ", active_review_marker(clock_ms)),
             Style::default()
                 .fg(Color::Black)
-                .bg(active_review_style_bg(tick))
+                .bg(active_review_style_bg(clock_ms))
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(" "));
@@ -411,12 +409,18 @@ fn styled_file_path(path: &str, selected: bool, path_style: ReviewPathStyle) -> 
     spans
 }
 
-pub(in crate::panel::main) fn active_review_style_bg(tick: usize) -> Color {
-    ACTIVE_REVIEW_STYLE_PULSE[(tick / 2) % ACTIVE_REVIEW_STYLE_PULSE.len()]
+pub(in crate::panel::main) fn active_review_style_bg(clock_ms: u64) -> Color {
+    crate::ui::palette::breathe(
+        ACTIVE_REVIEW_STYLE_DIM,
+        ACTIVE_REVIEW_STYLE_BRIGHT,
+        clock_ms,
+        ACTIVE_REVIEW_PULSE_MS,
+    )
 }
 
-fn active_review_marker(tick: usize) -> &'static str {
-    match (tick / 2) % 4 {
+fn active_review_marker(clock_ms: u64) -> &'static str {
+    let tick = clock_ms / (2 * crate::config::ANIMATION_STEP_MS);
+    match tick % 4 {
         0 => "◌",
         1 => "◐",
         2 => "●",

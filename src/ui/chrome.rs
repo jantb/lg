@@ -6,7 +6,10 @@ use ratatui::{
 };
 
 use super::palette;
-use crate::{config::BORDER_COLOR, state::SPINNER_FRAMES};
+use crate::{
+    config::{ANIMATION_STEP_MS, BORDER_COLOR},
+    state::SPINNER_FRAMES,
+};
 
 /// A block with the default border color and the given title.
 pub fn bordered(title: &str) -> Block<'_> {
@@ -33,7 +36,7 @@ pub fn framed_with_activity<'a>(
     title: &'a str,
     focused: bool,
     count: Option<(usize, usize)>,
-    tick: usize,
+    clock_ms: u64,
     active: bool,
 ) -> Block<'a> {
     // A running job pulses the whole frame, not only the marker in the title:
@@ -41,7 +44,7 @@ pub fn framed_with_activity<'a>(
     // as "busy" from across the screen. Idle, the frame holds one accent shade.
     let (border_color, title_style) = if focused {
         let border = if active {
-            palette::pulse(tick)
+            palette::pulse(clock_ms)
         } else {
             palette::ACCENT
         };
@@ -62,6 +65,7 @@ pub fn framed_with_activity<'a>(
         // Focus is already carried by the border colour, so the marker only
         // animates while there is work to report.
         let pulse = if active {
+            let tick = (clock_ms / ANIMATION_STEP_MS) as usize;
             SPINNER_FRAMES[tick % SPINNER_FRAMES.len()]
         } else {
             "\u{25cf}"
@@ -99,11 +103,16 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::widgets::Widget;
 
+    /// The animation clock reading for a given step of a spinner.
+    fn step(tick: u64) -> u64 {
+        tick * ANIMATION_STEP_MS
+    }
+
     /// The block's top border, which is where the title and its marker sit.
-    fn title_row(tick: usize, active: bool) -> String {
+    fn title_row(tick: u64, active: bool) -> String {
         let area = Rect::new(0, 0, 24, 3);
         let mut buf = Buffer::empty(area);
-        framed_with_activity(1, "Status", true, None, tick, active).render(area, &mut buf);
+        framed_with_activity(1, "Status", true, None, step(tick), active).render(area, &mut buf);
         (0..area.width)
             .map(|x| buf[(x, 0)].symbol().to_string())
             .collect()
@@ -132,10 +141,10 @@ mod tests {
     }
 
     /// The colour of the top-left corner, which is border and nothing else.
-    fn corner_color(tick: usize, focused: bool, active: bool) -> Option<Color> {
+    fn corner_color(tick: u64, focused: bool, active: bool) -> Option<Color> {
         let area = Rect::new(0, 0, 24, 3);
         let mut buf = Buffer::empty(area);
-        framed_with_activity(1, "Status", focused, None, tick, active).render(area, &mut buf);
+        framed_with_activity(1, "Status", focused, None, step(tick), active).render(area, &mut buf);
         buf[(0, 0)].style().fg
     }
 

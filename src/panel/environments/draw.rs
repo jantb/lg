@@ -122,7 +122,7 @@ pub(super) fn render_nested_repositories(
         &title,
         focused,
         selected_idx.map(|idx| (idx + 1, len)),
-        state.animation_tick,
+        state.animation_ms,
         state.activity_label().is_some(),
     );
     let row_width = tree_area.width.saturating_sub(4) as usize;

@@ -123,14 +123,16 @@ pub const TICK_MS: u64 = 250;
 /// is being typed into it, so it has to keep up with typing.
 pub const SESSION_TICK_MS: u64 = 16;
 
-/// How long one animation step lasts. Spinners advance on this clock rather
-/// than once per frame, because the poll interval ranges from `SESSION_TICK_MS`
-/// to `TICK_MS` and a per-frame animation runs at whatever rate that happens to
-/// be.
+/// How long one animation step lasts. Spinners and other frame-by-frame
+/// animations advance on this clock rather than once per redraw, because the
+/// poll interval ranges from `ANIMATION_FRAME_MS` to `TICK_MS` and a per-frame
+/// animation runs at whatever rate that happens to be.
 pub const ANIMATION_STEP_MS: u64 = 120;
-/// Poll interval while a background job is in flight, so its result lands
-/// without waiting out a full `TICK_MS`.
-pub const JOB_TICK_MS: u64 = 80;
+/// Poll interval while something on screen is moving: a pulsing frame, a
+/// settling status line, a running job's spinner. Colour fades are continuous
+/// in time, so the more often they are drawn the smoother they look; this is
+/// about 120 frames a second.
+pub const ANIMATION_FRAME_MS: u64 = 8;
 /// How many queued input events one frame may take before drawing again. A
 /// trackpad sends wheel events far faster than lg redraws, so they are handled
 /// in a batch rather than one per frame — but a flood must not starve the

@@ -29,7 +29,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         &title,
         focused,
         count,
-        state.animation_tick,
+        state.animation_ms,
         state.activity_label().is_some(),
     );
 

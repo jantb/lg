@@ -26,7 +26,7 @@ use std::{
 
 use crate::{
     config::{
-        ANIMATION_STEP_MS, BACKGROUND_FETCH_INTERVAL_SECS, ERROR_MSG_LIFETIME_SECS, JOB_TICK_MS,
+        ANIMATION_FRAME_MS, BACKGROUND_FETCH_INTERVAL_SECS, ERROR_MSG_LIFETIME_SECS,
         MAX_EVENTS_PER_FRAME, SESSION_TICK_MS, STATUS_MSG_LIFETIME_SECS, TICK_MS,
     },
     state::AppState,
@@ -248,13 +248,12 @@ impl App {
 
             let poll_ms = if self.state.session_view().is_some() {
                 SESSION_TICK_MS
-            } else if self.state.any_job_running() {
-                JOB_TICK_MS
-            } else if self.state.wants_animation() {
-                // The branch-action preview animates, and at the idle rate it
-                // would be redrawn less often than its clock advances — a
-                // diagram that jumps rather than moves.
-                ANIMATION_STEP_MS
+            } else if self.state.any_job_running() || self.state.wants_animation() {
+                // A running job pulses its frame and the branch-action preview
+                // moves a marker; at the idle rate either would be redrawn far
+                // less often than it changes — a picture that jumps rather than
+                // moves. A job's result also lands sooner this way.
+                ANIMATION_FRAME_MS
             } else {
                 TICK_MS
             };

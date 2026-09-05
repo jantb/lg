@@ -2,7 +2,6 @@
 
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 
@@ -23,16 +22,19 @@ impl StatusMsg {
 }
 
 impl AppState {
-    /// Advance the animation clock if a step's worth of time has passed. Called
-    /// once per frame, so the check is what keeps a spinner at one speed whether
-    /// lg is idle or redrawing a session at `SESSION_TICK_MS`.
+    /// Read the animation clock. Called once per frame; the clock follows wall
+    /// time rather than counting frames, which is what keeps a spinner at one
+    /// speed whether lg is idle or redrawing at `ANIMATION_FRAME_MS`.
     pub fn advance_animation(&mut self) {
-        let step = Duration::from_millis(crate::config::ANIMATION_STEP_MS);
-        let now = Instant::now();
-        if now.duration_since(self.animation_stepped_at) >= step {
-            self.animation_stepped_at = now;
-            self.animation_tick = self.animation_tick.wrapping_add(1);
-        }
+        self.animation_ms = self.animation_started.elapsed().as_millis() as u64;
+        self.animation_tick = (self.animation_ms / crate::config::ANIMATION_STEP_MS) as usize;
+    }
+
+    /// Move the animation clock forward by `by`, as though that much time had
+    /// passed. Lets a test look at a later frame without waiting for it.
+    pub fn skip_animation(&mut self, by: std::time::Duration) {
+        self.animation_started -= by;
+        self.advance_animation();
     }
 
     /// Hand over every running job's worker handle so the caller can wait for
@@ -320,6 +322,8 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::super::ReviewJob;
     use super::*;
 
@@ -359,10 +363,21 @@ mod tests {
     #[test]
     fn the_animation_clock_advances_once_a_step_has_passed() {
         let mut state = AppState::new();
-        let start = state.animation_tick;
-        state.animation_stepped_at =
-            Instant::now() - Duration::from_millis(crate::config::ANIMATION_STEP_MS);
         state.advance_animation();
-        assert_eq!(state.animation_tick, start.wrapping_add(1));
+        let start = state.animation_tick;
+        state.skip_animation(Duration::from_millis(crate::config::ANIMATION_STEP_MS));
+        assert_eq!(state.animation_tick, start + 1);
+    }
+
+    #[test]
+    fn the_animation_clock_runs_in_milliseconds_too() {
+        let mut state = AppState::new();
+        state.skip_animation(Duration::from_millis(1_500));
+        assert!(state.animation_ms >= 1_500);
+        assert_eq!(
+            state.animation_tick,
+            (state.animation_ms / crate::config::ANIMATION_STEP_MS) as usize,
+            "the two readings of the clock must agree"
+        );
     }
 }
