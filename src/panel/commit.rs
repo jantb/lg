@@ -112,9 +112,12 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         let text: Vec<String> = visible.iter().map(|line| line.text.clone()).collect();
         let flights = flights(&generation.arrivals, visible, state.animation_ms);
         let lines = commit_art::stage(
-            lang,
-            generation.scene,
-            state.animation_ms,
+            commit_art::Show {
+                lang,
+                seed: generation.scene,
+                ms: state.animation_ms,
+                feed: &generation.feed,
+            },
             body_area.width,
             body_area.height,
             &text,
@@ -758,7 +761,7 @@ mod tests {
     fn ctrl_r_restarts_a_generation_already_running() {
         let mut state = AppState::default();
         let (_tx, rx) = std::sync::mpsc::channel();
-        state.start_generation(rx, std::thread::spawn(|| {}));
+        state.start_generation(rx, std::thread::spawn(|| {}), Default::default());
 
         handle_key(
             &mut state,

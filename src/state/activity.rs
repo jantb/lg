@@ -207,7 +207,12 @@ impl AppState {
         }
     }
 
-    pub fn start_generation(&mut self, rx: Receiver<GenMsg>, handle: JoinHandle<()>) {
+    pub fn start_generation(
+        &mut self,
+        rx: Receiver<GenMsg>,
+        handle: JoinHandle<()>,
+        feed: crate::panel::commit_art::Feed,
+    ) {
         self.generation = Some(Generation {
             rx,
             handle: Some(handle),
@@ -215,6 +220,7 @@ impl AppState {
             spinner: 0,
             scene: self.animation_tick,
             arrivals: Vec::new(),
+            feed,
         });
     }
 

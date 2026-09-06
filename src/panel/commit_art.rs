@@ -14,7 +14,7 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use super::solid;
+use super::{arena, solid};
 
 /// The language most of the staged files are written in, judged by extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -24,7 +24,6 @@ pub enum Language {
     Java,
     Go,
     Python,
-    JavaScript,
     TypeScript,
     Other,
 }
@@ -38,7 +37,6 @@ impl Language {
             "java" => Self::Java,
             "go" => Self::Go,
             "py" => Self::Python,
-            "js" | "mjs" | "cjs" | "jsx" => Self::JavaScript,
             "ts" | "tsx" | "mts" => Self::TypeScript,
             _ => return None,
         })
@@ -77,7 +75,6 @@ impl Language {
             Self::Java => "instantiating an AbstractCommitMessageFactory",
             Self::Go => "checking if err != nil",
             Self::Python => "counting the indentation",
-            Self::JavaScript => "awaiting a promise, hopefully",
             Self::TypeScript => "narrowing the type of \"commit\"",
             Self::Other => "reading the diff twice",
         }
@@ -92,7 +89,6 @@ impl Language {
             Self::Java => "feat(java): ",
             Self::Go => "feat(go): ",
             Self::Python => "feat(python): ",
-            Self::JavaScript => "feat(js): ",
             Self::TypeScript => "feat(ts): ",
             Self::Other => "feat: ",
         }
@@ -101,7 +97,7 @@ impl Language {
     /// Whether the mascot is a creature that can move about, or an object
     /// that only turns.
     fn is_alive(self) -> bool {
-        !matches!(self, Self::JavaScript | Self::TypeScript)
+        !matches!(self, Self::TypeScript)
     }
 
     /// The mascot as a three-dimensional figure at time `t` seconds, ready
@@ -113,24 +109,14 @@ impl Language {
             Self::Java => solid::duke(t),
             Self::Go => solid::gopher(t),
             Self::Python => solid::snake(t),
-            Self::JavaScript => solid::monitor(t, Color::Rgb(247, 223, 30), JS_CODE),
             Self::TypeScript => solid::monitor(t, Color::Rgb(90, 160, 240), TS_CODE),
             Self::Other => solid::robot(t),
         }
     }
 }
 
-/// The code being typed on the JavaScript and TypeScript monitors. Short
-/// lines: the screen is a dozen cells across at the biggest.
-const JS_CODE: &[&str] = &[
-    "const msg =",
-    "  await llm(",
-    "    diff);",
-    "if (!msg) {",
-    "  retry();",
-    "}",
-    "log(msg);",
-];
+/// The code being typed on the TypeScript monitor. Short lines: the screen
+/// is a dozen cells across at the biggest.
 const TS_CODE: &[&str] = &[
     "type Msg =",
     "  string;",
@@ -162,9 +148,16 @@ enum Backdrop {
     Night,
     /// The diff itself scrolling up past the reader.
     Diff,
+    /// Light cycles and a snake playing out a round on the grid.
+    Arena,
 }
 
-const BACKDROPS: [Backdrop; 3] = [Backdrop::Rain, Backdrop::Night, Backdrop::Diff];
+const BACKDROPS: [Backdrop; 4] = [
+    Backdrop::Rain,
+    Backdrop::Night,
+    Backdrop::Diff,
+    Backdrop::Arena,
+];
 
 /// The figure's picture is this many rows tall at most, and never fewer than
 /// the minimum; its width follows from the cell shape.
@@ -280,6 +273,97 @@ impl Canvas {
                 Line::from(spans)
             })
             .collect()
+    }
+}
+
+/// Which side of the diff a character came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Added,
+    Removed,
+    Context,
+}
+
+/// The diff, ready to be fed into the network a character at a time: what
+/// the model is reading, shown going in. Header lines are left out and runs
+/// of whitespace become one gap, so the stream is the code and not its
+/// indentation; a very long diff is cut, as the stream loops round anyway.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Feed {
+    chars: Vec<(char, Side)>,
+}
+
+/// Characters of the diff kept for the stream, at most.
+const FEED_CAP: usize = 40_000;
+/// Slots are counted back from here into the diff; far enough ahead of any
+/// slot the stream reaches in a wait.
+const FEED_ORIGIN: usize = STREAM_ORIGIN * 2;
+
+impl Feed {
+    pub fn from_diff(diff: &str) -> Self {
+        let mut chars: Vec<(char, Side)> = Vec::new();
+        for line in diff.lines() {
+            if [
+                "diff --git",
+                "index ",
+                "--- ",
+                "+++ ",
+                "new file",
+                "deleted file",
+                "similarity",
+            ]
+            .iter()
+            .any(|h| line.starts_with(h))
+            {
+                continue;
+            }
+            let side = match line.chars().next() {
+                Some('+') => Side::Added,
+                Some('-') => Side::Removed,
+                _ => Side::Context,
+            };
+            for c in line.chars() {
+                if c.is_whitespace() || c.is_control() {
+                    if chars.last().is_some_and(|&(last, _)| last != ' ') {
+                        chars.push((' ', side));
+                    }
+                } else {
+                    chars.push((c, side));
+                }
+            }
+            if chars.last().is_some_and(|&(last, _)| last != ' ') {
+                chars.push((' ', side));
+            }
+            if chars.len() >= FEED_CAP {
+                chars.truncate(FEED_CAP);
+                break;
+            }
+        }
+        Self { chars }
+    }
+
+    /// The character in stream slot `slot`, or none when there is no diff
+    /// to show and the stream falls back to abstract tokens.
+    ///
+    /// Slots rise towards the network, which is on the right, so a run of
+    /// text laid out slot by slot would come out mirrored. Taking the diff
+    /// backwards puts it the right way round for a reader: the words drift
+    /// rightwards into the network and read left to right on the way. The
+    /// stream is a loop either way, so all of the diff goes past.
+    fn at(&self, slot: usize) -> Option<(char, Side)> {
+        if self.chars.is_empty() {
+            return None;
+        }
+        let i = FEED_ORIGIN.saturating_sub(slot);
+        self.chars.get(i % self.chars.len()).copied()
+    }
+
+    /// Whether `slot` carries anything: a gap between words carries nothing.
+    fn occupied(&self, slot: usize) -> bool {
+        match self.at(slot) {
+            Some((c, _)) => c != ' ',
+            None => hash(slot, 11) % TOKEN_GAP != 0,
+        }
     }
 }
 
@@ -590,16 +674,10 @@ impl Plan {
 /// Empty when the box cannot hold the figure: a crab squeezed into two rows
 /// is worse than nothing.
 /// `writing` shows the network starting on the message; once the real one
-/// is streaming in above the scene, that would be two messages.
-pub fn scene(
-    lang: Language,
-    seed: usize,
-    ms: u64,
-    width: u16,
-    height: u16,
-    writing: bool,
-) -> Vec<Line<'static>> {
-    paint(lang, seed, ms, width as usize, height as usize, writing)
+/// is streaming in above the scene, that would be two messages. `feed` is
+/// the diff the model is reading, which is what flows down the stream.
+pub fn scene(show: Show<'_>, width: u16, height: u16, writing: bool) -> Vec<Line<'static>> {
+    paint(show, width as usize, height as usize, writing)
         .map_or_else(Vec::new, |(canvas, _)| canvas.lines())
 }
 
@@ -624,6 +702,17 @@ pub const FLIGHT_TOTAL_MS: u64 = FLIGHT_MS + LANDING_GLOW_MS;
 /// Rows the flight path bulges upward above the straight line, at its most.
 const FLIGHT_ARC: f32 = 1.5;
 
+/// What is on show for one generation: the language of the commit, the
+/// seed that picked its backdrop, the clock, and the diff going into the
+/// network. Everything but the box it is drawn in.
+#[derive(Debug, Clone, Copy)]
+pub struct Show<'a> {
+    pub lang: Language,
+    pub seed: usize,
+    pub ms: u64,
+    pub feed: &'a Feed,
+}
+
 /// The message pane while the model is writing: the `text` streamed so far
 /// on the top rows and the scene underneath, with each newly arrived run of
 /// text flying from the network out to where it belongs, glowing as it
@@ -632,9 +721,7 @@ const FLIGHT_ARC: f32 = 1.5;
 /// `height` rows of `width` cells; the text takes as many rows as it has,
 /// the scene what is left, or nothing when that is too little.
 pub fn stage(
-    lang: Language,
-    seed: usize,
-    ms: u64,
+    show: Show<'_>,
     width: u16,
     height: u16,
     text: &[String],
@@ -658,12 +745,12 @@ pub fn stage(
     }
     let scene_y = text_rows + usize::from(text_rows > 0);
     let scene_rows = height.saturating_sub(scene_y);
-    let exit = paint(lang, seed, ms, width, scene_rows, text_rows == 0).map(|(scene, exit)| {
+    let exit = paint(show, width, scene_rows, text_rows == 0).map(|(scene, exit)| {
         canvas.blit(&scene, scene_y);
         (exit.0 as f32, (exit.1 + scene_y) as f32)
     });
     for flight in flights {
-        draw_flight(&mut canvas, flight, exit, text_rows, ms);
+        draw_flight(&mut canvas, flight, exit, text_rows, show.ms);
     }
     canvas.lines()
 }
@@ -733,13 +820,17 @@ fn draw_flight(
 /// leaves it from: the leaves of the network, or the top of the mascot's
 /// head when the box is too narrow for a network.
 fn paint(
-    lang: Language,
-    seed: usize,
-    ms: u64,
+    show: Show<'_>,
     width: usize,
     height: usize,
     writing: bool,
 ) -> Option<(Canvas, (usize, usize))> {
+    let Show {
+        lang,
+        seed,
+        ms,
+        feed,
+    } = show;
     let plan = Plan::fit(lang, seed, width, height)?;
     let mut canvas = Canvas::new(plan.width, plan.height);
     let t = ms as f32 / 1000.0;
@@ -748,6 +839,11 @@ fn paint(
         Backdrop::Rain => draw_rain(&mut canvas, plan.width, plan.ground, t),
         Backdrop::Night => draw_night(&mut canvas, plan.width, plan.ground, ms),
         Backdrop::Diff => draw_diff(&mut canvas, plan.width, plan.ground, t),
+        Backdrop::Arena => {
+            arena::frame(seed, plan.width, plan.ground, ms, &mut |x, y, c, style| {
+                canvas.put(x, y, c, style)
+            })
+        }
     }
     canvas.text(
         0,
@@ -774,10 +870,10 @@ fn paint(
 
     let mut exit = (mascot_x + plan.mascot_w / 2, band_y);
     if let Some(pipe) = &plan.pipeline {
-        let network = Network::new(&pipe.tree, pipe.tree_y, t);
+        let network = Network::new(&pipe.tree, pipe.tree_y, t, feed);
         let root_row = pipe.tree_y + pipe.tree.nodes[0].row;
         exit = (pipe.tree.x + pipe.tree.width() + 1, root_row);
-        draw_stream(&mut canvas, pipe.stream_x, root_row, pipe.stream_w, t);
+        draw_stream(&mut canvas, pipe.stream_x, root_row, pipe.stream_w, t, feed);
         let style = Style::default().fg(mix(
             Color::Rgb(80, 80, 110),
             Color::Rgb(255, 250, 170),
@@ -1007,24 +1103,33 @@ fn draw_figure(
     }
 }
 
-/// The token in slot `slot` of stream `row` at time `t`, or none for a gap.
-/// Each slot is hashed for its glyph and its own hue, so the stream is a
-/// jumble rather than a pattern, and every token glitters at its own pace.
-/// The hue also drifts with time and along the stream, so the whole thing
-/// slowly cycles through the rainbow.
-fn token(slot: usize, row: usize, along: f32, t: f32) -> Option<(char, Style)> {
-    let seed = hash(slot, row + 11);
-    if seed % TOKEN_GAP == 0 {
+/// The token in slot `slot` of the stream at time `t`, or none for a gap:
+/// the next character of the diff, coloured for the side of the diff it is
+/// on, or an abstract glyph when there is no diff to show. Each slot is
+/// hashed for its own hue, so the stream is a jumble rather than a pattern,
+/// and every token glitters at its own pace. The hue also drifts with time
+/// and along the stream, so the whole thing slowly cycles through the
+/// rainbow.
+fn token(feed: &Feed, slot: usize, along: f32, t: f32) -> Option<(char, Style)> {
+    let seed = hash(slot, 11);
+    if !feed.occupied(slot) {
         return None;
     }
-    let glyph = TOKEN_GLYPHS[((seed >> 8) % TOKEN_GLYPHS.len() as u64) as usize];
+    let (glyph, side) = feed.at(slot).unwrap_or_else(|| {
+        let glyph = TOKEN_GLYPHS[((seed >> 8) % TOKEN_GLYPHS.len() as u64) as usize];
+        (glyph, Side::Context)
+    });
     let own_hue = ((seed >> 16) % 1_000) as f32 / 1_000.0;
-    let color = hue(own_hue * 0.35 + along * 0.5 + t * 0.12);
+    let color = match side {
+        Side::Added => mix(Color::Rgb(120, 255, 140), Color::Rgb(40, 200, 90), own_hue),
+        Side::Removed => mix(Color::Rgb(255, 120, 130), Color::Rgb(230, 60, 80), own_hue),
+        Side::Context => hue(own_hue * 0.35 + along * 0.5 + t * 0.12),
+    };
     // Each token twinkles on its own period; the brightest go white-hot.
     let rate = 3.0 + ((seed >> 24) % 50) as f32 / 10.0;
     let phase = ((seed >> 32) % 628) as f32 / 100.0;
     let sparkle = 0.5 + 0.5 * (t * rate + phase).sin();
-    let dense = glyph == TOKEN_GLYPHS[0] || glyph == TOKEN_GLYPHS[1];
+    let dense = token_fires(feed, slot);
     let color = if sparkle > 0.85 {
         mix(color, Color::Rgb(255, 255, 255), (sparkle - 0.85) * 5.0)
     } else {
@@ -1044,20 +1149,20 @@ fn arrival(slot: usize) -> f32 {
 }
 
 /// Whether the token in `slot` fires a pulse when it reaches the network:
-/// only the dense ones do, so the paths through the tree stay distinct.
-fn token_fires(slot: usize) -> bool {
+/// only a few do, so the paths through the tree stay distinct.
+fn token_fires(feed: &Feed, slot: usize) -> bool {
     let seed = hash(slot, 11);
-    seed % TOKEN_GAP != 0 && (seed >> 8) % (TOKEN_GLYPHS.len() as u64) < 2
+    feed.occupied(slot) && (seed >> 8) % (TOKEN_GLYPHS.len() as u64) < 2
 }
 
 /// The stream of tokens flowing right into the root of the network, one
 /// line of them ending in an arrowhead at the wire.
-fn draw_stream(canvas: &mut Canvas, x: usize, y: usize, width: usize, t: f32) {
+fn draw_stream(canvas: &mut Canvas, x: usize, y: usize, width: usize, t: f32, feed: &Feed) {
     let travelled = (t * STREAM_SPEED) as usize;
     for col in 0..width.saturating_sub(1) {
         let slot = STREAM_ORIGIN + travelled + width - col;
         let along = col as f32 / width.max(1) as f32;
-        if let Some((c, style)) = token(slot, 0, along, t) {
+        if let Some((c, style)) = token(feed, slot, along, t) {
             canvas.put(x + col, y, c, style);
         }
     }
@@ -1094,7 +1199,7 @@ struct Network<'a> {
 }
 
 impl<'a> Network<'a> {
-    fn new(tree: &'a Tree, y: usize, t: f32) -> Self {
+    fn new(tree: &'a Tree, y: usize, t: f32, feed: &Feed) -> Self {
         let mut heat = vec![0.0f32; tree.nodes.len()];
         let mut branches = vec![0.0f32; tree.nodes.len()];
         let travel = tree.levels as f32 * PULSE_LEVEL_TIME;
@@ -1106,7 +1211,7 @@ impl<'a> Network<'a> {
         let mut landed = 0;
         let mut landing = 0.0f32;
         for slot in newest.saturating_sub(in_flight)..=newest {
-            if !token_fires(slot) {
+            if !token_fires(feed, slot) {
                 continue;
             }
             let age = t - arrival(slot);
@@ -1301,6 +1406,18 @@ fn caption(lang: Language, ms: u64) -> String {
 mod tests {
     use super::*;
 
+    /// A show with no diff behind it: the stream falls back to abstract
+    /// tokens, which is what most of these tests are looking at.
+    fn show(lang: Language, seed: usize, ms: u64) -> Show<'static> {
+        static EMPTY: std::sync::OnceLock<Feed> = std::sync::OnceLock::new();
+        Show {
+            lang,
+            seed,
+            ms,
+            feed: EMPTY.get_or_init(Feed::default),
+        }
+    }
+
     fn text_of(lines: &[Line<'_>]) -> String {
         lines
             .iter()
@@ -1314,13 +1431,12 @@ mod tests {
             .join("\n")
     }
 
-    const ALL: [Language; 8] = [
+    const ALL: [Language; 7] = [
         Language::Rust,
         Language::Kotlin,
         Language::Java,
         Language::Go,
         Language::Python,
-        Language::JavaScript,
         Language::TypeScript,
         Language::Other,
     ];
@@ -1330,6 +1446,9 @@ mod tests {
         let paths = ["README.md", "a/Main.kt", "b/Other.kt", "c/lib.rs"];
         assert_eq!(Language::dominant(paths), Language::Kotlin);
         assert_eq!(Language::dominant(["notes.txt"]), Language::Other);
+        // JavaScript has no figure of its own; its commits get the generic
+        // one rather than a stand-in.
+        assert_eq!(Language::dominant(["app.js", "b.jsx"]), Language::Other);
         assert_eq!(Language::dominant([]), Language::Other);
     }
 
@@ -1340,7 +1459,7 @@ mod tests {
                 for (w, h) in [(90u16, 16u16), (120, 40), (200, 60)] {
                     for frame in 0..40 {
                         let ms = frame * 230;
-                        let lines = scene(lang, seed, ms, w, h, true);
+                        let lines = scene(show(lang, seed, ms), w, h, true);
                         assert_eq!(
                             lines.len(),
                             h as usize,
@@ -1362,13 +1481,13 @@ mod tests {
 
     #[test]
     fn the_scene_moves_between_frames_and_says_what_the_model_is_doing() {
-        let first = text_of(&scene(Language::Rust, 0, 0, 110, 30, true));
+        let first = text_of(&scene(show(Language::Rust, 0, 0), 110, 30, true));
         // Eight milliseconds on, the figure has turned a hair and the light on
         // it has moved: a frame rate that high must not draw the same picture
         // twice.
-        let next_frame = scene(Language::Rust, 0, 8, 110, 30, true);
+        let next_frame = scene(show(Language::Rust, 0, 8), 110, 30, true);
         assert_ne!(
-            scene(Language::Rust, 0, 0, 110, 30, true),
+            scene(show(Language::Rust, 0, 0), 110, 30, true),
             next_frame,
             "8ms later is a new frame"
         );
@@ -1400,7 +1519,7 @@ mod tests {
     #[test]
     fn different_seeds_give_different_backdrops_behind_the_same_mascot() {
         let scenes: Vec<String> = (0..BACKDROPS.len())
-            .map(|seed| text_of(&scene(Language::Go, seed, 1_440, 110, 30, true)))
+            .map(|seed| text_of(&scene(show(Language::Go, seed, 1_440), 110, 30, true)))
             .collect();
         for (i, a) in scenes.iter().enumerate() {
             // The gopher may have its back turned at this instant, so look
@@ -1418,9 +1537,9 @@ mod tests {
 
     #[test]
     fn a_box_too_small_gets_nothing_rather_than_a_cropped_crab() {
-        assert!(scene(Language::Rust, 0, 0, 70, 2, true).is_empty());
-        assert!(scene(Language::Rust, 0, 0, 8, 12, true).is_empty());
-        assert!(scene(Language::Rust, 0, 0, 0, 0, true).is_empty());
+        assert!(scene(show(Language::Rust, 0, 0), 70, 2, true).is_empty());
+        assert!(scene(show(Language::Rust, 0, 0), 8, 12, true).is_empty());
+        assert!(scene(show(Language::Rust, 0, 0), 0, 0, true).is_empty());
     }
 
     #[test]
@@ -1435,16 +1554,20 @@ mod tests {
         let (w, h) = (110, 30);
         // Just left the model: the word is somewhere in the box, not yet
         // where it belongs.
-        let early = text_of(&stage(Language::Rust, 0, 100, w, h, &text, &[flight(0)]));
+        let early = text_of(&stage(
+            show(Language::Rust, 0, 100),
+            w,
+            h,
+            &text,
+            &[flight(0)],
+        ));
         assert_eq!(early.lines().count(), h as usize);
         assert!(early.starts_with("feat: add "), "{early}");
         assert!(!early.starts_with("feat: add flights"), "{early}");
         assert!(early.contains("flights"), "the word is in flight:\n{early}");
         // Landed and cooling: in place.
         let late = text_of(&stage(
-            Language::Rust,
-            0,
-            500,
+            show(Language::Rust, 0, 500),
             w,
             h,
             &text,
@@ -1453,9 +1576,7 @@ mod tests {
         assert!(late.starts_with("feat: add flights"), "{late}");
         // Long gone: plain text, nothing else drawn for it.
         let done = text_of(&stage(
-            Language::Rust,
-            0,
-            900,
+            show(Language::Rust, 0, 900),
             w,
             h,
             &text,
@@ -1477,7 +1598,7 @@ mod tests {
         // Each letter in flight has a colour of its own, so the word is
         // found cell by cell rather than span by span.
         let at = |ms: u64, age: u64| {
-            let lines = stage(Language::Go, 1, ms, 110, 30, &text, &[flight(age)]);
+            let lines = stage(show(Language::Go, 1, ms), 110, 30, &text, &[flight(age)]);
             lines.iter().enumerate().find_map(|(row, line)| {
                 let cells: Vec<(char, Style)> = line
                     .spans
@@ -1516,7 +1637,7 @@ mod tests {
             text: "tiny".to_owned(),
             age_ms: 0,
         };
-        let lines = stage(Language::Rust, 0, 0, 20, 3, &text, &[flight]);
+        let lines = stage(show(Language::Rust, 0, 0), 20, 3, &text, &[flight]);
         assert_eq!(lines.len(), 3);
         let shown = text_of(&lines);
         assert!(shown.starts_with("feat: tiny"), "{shown}");
@@ -1524,7 +1645,7 @@ mod tests {
 
     #[test]
     fn a_narrow_box_keeps_the_mascot_and_drops_the_pipeline() {
-        let lines = scene(Language::Go, 1, 7_000, 40, 16, true);
+        let lines = scene(show(Language::Go, 1, 7_000), 40, 16, true);
         assert_eq!(lines.len(), 16);
         assert!(lines.iter().all(|line| line.width() == 40));
         let text = text_of(&lines);
@@ -1533,5 +1654,68 @@ mod tests {
             !text.contains("\u{25b8}"),
             "no room for the token stream:\n{text}"
         );
+    }
+
+    #[test]
+    fn the_stream_carries_the_diff_the_model_is_reading() {
+        let feed = Feed::from_diff(
+            "diff --git a/x.rs b/x.rs\nindex 111..222 100644\n@@ -1 +1 @@\n\
+             -let sleepy = 1;\n+let sparkly = 2;\n",
+        );
+        // Headers are not code and do not go down the stream.
+        let text: String = feed.chars.iter().map(|&(c, _)| c).collect();
+        assert!(!text.contains("100644"), "{text}");
+        assert!(text.contains("sparkly"), "{text}");
+
+        // Over a few seconds the whole of a short diff goes past.
+        let seen: String = (0..80)
+            .map(|frame| {
+                let show = Show {
+                    lang: Language::Rust,
+                    seed: 0,
+                    ms: frame * 90,
+                    feed: &feed,
+                };
+                text_of(&scene(show, 130, 30, false))
+            })
+            .collect();
+        assert!(seen.contains("sleepy"), "the diff is legible in the stream");
+        assert!(seen.contains("sparkly"), "both sides of it go in");
+
+        // With no diff to show the stream still runs, on abstract tokens.
+        let bare = text_of(&scene(show(Language::Rust, 0, 0), 130, 30, false));
+        assert!(
+            bare.contains(TOKEN_GLYPHS[0]) || bare.contains(TOKEN_GLYPHS[1]),
+            "{bare}"
+        );
+    }
+
+    #[test]
+    fn the_arena_backdrop_plays_out_a_round_above_the_mascot() {
+        let seed = BACKDROPS
+            .iter()
+            .position(|b| *b == Backdrop::Arena)
+            .expect("the arena is one of the backdrops");
+        // The arena builds up as the wait goes on, so run the clock the way
+        // a real wait would rather than jumping to one moment.
+        let mut last = String::new();
+        for frame in 0..600u64 {
+            last = text_of(&scene(
+                show(Language::Rust, seed, frame * 50),
+                120,
+                34,
+                false,
+            ));
+        }
+        let sky: String = last.lines().take(12).collect::<Vec<_>>().join("\n");
+        assert!(
+            sky.contains(['>', '<', '^', 'v']),
+            "riders are out there:\n{sky}"
+        );
+        assert!(
+            sky.contains('\u{2500}') || sky.contains('\u{2502}'),
+            "and they have left trails:\n{sky}"
+        );
+        assert!(sky.contains('@'), "the snake is out too:\n{sky}");
     }
 }

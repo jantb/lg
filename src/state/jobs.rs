@@ -117,6 +117,9 @@ pub struct Generation {
     /// The chunks that have lately streamed in, still flying from the
     /// network in the scene to their place in the text.
     pub arrivals: Vec<Arrival>,
+    /// The diff that went to the model, prepared for the scene: it is what
+    /// flows down the stream into the network.
+    pub feed: crate::panel::commit_art::Feed,
 }
 
 /// One chunk of the message as it came out of the model: where it sits in

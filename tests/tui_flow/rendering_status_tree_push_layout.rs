@@ -81,6 +81,7 @@ fn status_panel_shows_active_generation() {
         spinner: 0,
         scene: 0,
         arrivals: Vec::new(),
+        feed: Default::default(),
     });
 
     let backend = TestBackend::new(40, 8);

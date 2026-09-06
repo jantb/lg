@@ -66,10 +66,13 @@ impl App {
             PendingAction::GenerateMessage => match crate::git::staged_diff() {
                 Ok(diff) => {
                     let (tx, rx) = std::sync::mpsc::channel();
+                    // The scene shows the very diff that went to the model,
+                    // streaming into the network a character at a time.
+                    let feed = crate::panel::commit_art::Feed::from_diff(&diff);
                     let handle = std::thread::spawn(move || {
                         crate::llm::stream_commit_message(diff, tx);
                     });
-                    self.state.start_generation(rx, handle);
+                    self.state.start_generation(rx, handle, feed);
                     self.state.set_status("generating\u{2026}", false);
                 }
                 Err(e) => {
