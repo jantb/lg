@@ -79,6 +79,7 @@ fn status_panel_shows_active_generation() {
         handle: None,
         output: String::new(),
         spinner: 0,
+        scene: 0,
     });
 
     let backend = TestBackend::new(40, 8);

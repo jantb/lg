@@ -213,6 +213,7 @@ impl AppState {
             handle: Some(handle),
             output: String::new(),
             spinner: 0,
+            scene: self.animation_tick,
         });
     }
 

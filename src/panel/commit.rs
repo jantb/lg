@@ -15,6 +15,7 @@ use crate::{
     ui,
 };
 
+use super::commit_art;
 use super::files::code_span;
 use super::scroll;
 
@@ -48,18 +49,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         .constraints([Constraint::Min(3), Constraint::Length(1)])
         .split(chunks[0]);
 
+    // The title names the mode and the keys, nothing more: how far the model
+    // has got is a long and changing figure that would push the keys off the
+    // right edge of the frame, so it goes below the box instead.
     let (msg_view, msg_cursor, title_text, editable) = match &state.generation {
         Some(g) => {
             let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
-            // What the model is doing, how long it has been at it, and how
-            // fast: a wait of a minute on a local model is bearable when the
-            // reader can see it moving.
-            let progress = crate::llm::progress()
-                .map(|p| format!(" \u{b7} {p}"))
-                .unwrap_or_default();
-            let title = format!(
-                "Commit message  {spinner} generating\u{2026}{progress}  (Ctrl+R=restart  Esc=cancel)"
-            );
+            let title = format!("Commit message  {spinner} generating\u{2026}  (Ctrl+R=restart  Esc=cancel)");
             (g.output.clone(), g.output.chars().count(), title, false)
         }
         None => (
@@ -72,28 +68,69 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     };
 
     let body_area = editor_body_area(area);
-    let (visible_text, cursor) = visible_message_view(
-        &msg_view,
-        msg_cursor,
-        body_area.width,
-        body_area.height,
-        state.commit_scroll_offset,
-    );
-
-    let input = Paragraph::new(visible_text).block(ui::bordered(&title_text));
-    frame.render_widget(input, left_chunks[0]);
-    if editable && body_area.width > 0 && body_area.height > 0 {
-        frame.set_cursor_position(Position::new(
-            body_area.x.saturating_add(cursor.0),
-            body_area.y.saturating_add(cursor.1),
-        ));
+    let block = ui::bordered(&title_text);
+    let waiting_for_first_token = state
+        .generation
+        .as_ref()
+        .is_some_and(|g| g.output.is_empty());
+    if waiting_for_first_token {
+        // Nothing has come back yet, so the box would be empty for as long as
+        // the model takes to read the diff. Put on a show instead, in the
+        // language the commit is written in.
+        let lang = commit_art::Language::dominant(
+            state
+                .files
+                .iter()
+                .filter(|e| e.x != ' ' && e.x != '?')
+                .map(|e| e.path.as_str()),
+        );
+        let seed = state.generation.as_ref().map_or(0, |g| g.scene);
+        let scene = commit_art::scene(
+            lang,
+            seed,
+            state.animation_ms,
+            body_area.width,
+            body_area.height,
+        );
+        let top = (body_area.height as usize).saturating_sub(scene.len()) / 2;
+        let mut lines: Vec<Line> = std::iter::repeat_n(Line::default(), top).collect();
+        lines.extend(scene);
+        frame.render_widget(
+            Paragraph::new(lines).centered().block(block),
+            left_chunks[0],
+        );
+    } else {
+        let (visible_text, cursor) = visible_message_view(
+            &msg_view,
+            msg_cursor,
+            body_area.width,
+            body_area.height,
+            state.commit_scroll_offset,
+        );
+        let input = Paragraph::new(visible_text).block(block);
+        frame.render_widget(input, left_chunks[0]);
+        if editable && body_area.width > 0 && body_area.height > 0 {
+            frame.set_cursor_position(Position::new(
+                body_area.x.saturating_add(cursor.0),
+                body_area.y.saturating_add(cursor.1),
+            ));
+        }
     }
 
     let generating = state.generation.is_some();
     let hints = if generating {
+        // What the model is doing, how long it has been at it, and how fast:
+        // a wait of a minute on a local model is bearable when the reader
+        // can see it moving.
+        let progress = crate::llm::progress()
+            .map(|p| format!("  \u{b7} {p}"))
+            .unwrap_or_default();
         Paragraph::new(Line::from(vec![
+            Span::styled("Ctrl+R", Style::default().fg(Color::Yellow)),
+            Span::raw(" restart  "),
             Span::styled("Esc", Style::default().fg(Color::Gray)),
-            Span::raw(" cancel generation"),
+            Span::raw(" cancel"),
+            Span::styled(progress, Style::default().fg(Color::DarkGray)),
         ]))
     } else {
         Paragraph::new(Line::from(vec![

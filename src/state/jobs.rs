@@ -111,6 +111,9 @@ pub struct Generation {
     pub handle: Option<JoinHandle<()>>,
     pub output: String,
     pub spinner: usize,
+    /// Which of the waiting scenes this generation shows, chosen when it
+    /// started so the picture does not change under the reader.
+    pub scene: usize,
 }
 
 pub const SPINNER_FRAMES: &[&str] = &[
