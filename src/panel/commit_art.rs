@@ -83,6 +83,27 @@ impl Language {
         }
     }
 
+    /// How the commit message this language's commits usually open: what the
+    /// network can be seen writing before the model has said anything.
+    fn opening(self) -> &'static str {
+        match self {
+            Self::Rust => "feat(rust): ",
+            Self::Kotlin => "feat(kotlin): ",
+            Self::Java => "feat(java): ",
+            Self::Go => "feat(go): ",
+            Self::Python => "feat(python): ",
+            Self::JavaScript => "feat(js): ",
+            Self::TypeScript => "feat(ts): ",
+            Self::Other => "feat: ",
+        }
+    }
+
+    /// Whether the mascot is a creature that can move about, or an object
+    /// that only turns.
+    fn is_alive(self) -> bool {
+        !matches!(self, Self::JavaScript | Self::TypeScript)
+    }
+
     /// The mascot as a three-dimensional figure at time `t` seconds, ready
     /// to be turned and lit.
     fn figure(self, t: f32) -> Vec<solid::Part> {
@@ -92,12 +113,33 @@ impl Language {
             Self::Java => solid::duke(t),
             Self::Go => solid::gopher(t),
             Self::Python => solid::snake(t),
-            Self::JavaScript => solid::monitor(t, Color::Rgb(247, 223, 30), 'J'),
-            Self::TypeScript => solid::monitor(t, Color::Rgb(90, 160, 240), 'T'),
+            Self::JavaScript => solid::monitor(t, Color::Rgb(247, 223, 30), JS_CODE),
+            Self::TypeScript => solid::monitor(t, Color::Rgb(90, 160, 240), TS_CODE),
             Self::Other => solid::robot(t),
         }
     }
 }
+
+/// The code being typed on the JavaScript and TypeScript monitors. Short
+/// lines: the screen is a dozen cells across at the biggest.
+const JS_CODE: &[&str] = &[
+    "const msg =",
+    "  await llm(",
+    "    diff);",
+    "if (!msg) {",
+    "  retry();",
+    "}",
+    "log(msg);",
+];
+const TS_CODE: &[&str] = &[
+    "type Msg =",
+    "  string;",
+    "const m: Msg",
+    "  = await",
+    "  gen(diff);",
+    "if (!m) fail",
+    "export {m};",
+];
 
 /// What the model is supposedly doing, one line at a time.
 const CAPTIONS: &[&str] = &[
@@ -132,23 +174,33 @@ const FIGURE_MIN_ROWS: usize = 8;
 const TURN_RATE: f32 = 0.9;
 /// Milliseconds a caption stays up before the next one.
 const CAPTION_MS: u64 = 1_700;
-/// The stream of tokens between the mascot and the network, as a repeating
-/// pattern of dense, faint, and empty cells.
-const TOKEN_PATTERN: &str = "\u{25aa}\u{25ab}\u{25aa}\u{b7} \u{25ab}\u{25aa}\u{25aa}\u{b7}\u{25ab} \u{25aa}\u{b7}\u{25ab}\u{25aa} \u{b7}\u{25aa}\u{25ab}\u{25aa}\u{25aa} \u{b7}";
+/// The glyphs a token can be drawn as, from dense to faint.
+const TOKEN_GLYPHS: &[char] = &[
+    '\u{25aa}', '\u{2022}', '\u{25b4}', '\u{25be}', '\u{25ab}', '\u{25e6}', '\u{2218}', '\u{b7}',
+];
+/// Every token slot in this many is empty, so the stream has gaps.
+const TOKEN_GAP: u64 = 3;
 /// Cells the stream moves per second.
 const STREAM_SPEED: f32 = 12.0;
-/// The narrowest the stream may be before the pipeline is dropped.
+/// The narrowest the stream may be before the pipeline is dropped, and the
+/// widest it is allowed to be: the width beyond that goes to the tree.
 const MIN_STREAM_WIDTH: usize = 10;
-/// Rows of tokens in the stream.
-const STREAM_ROWS: usize = 3;
-/// Nodes per layer of the network, left to right; all odd so the wires run
-/// through the middle node of every layer.
-const LAYERS: [usize; 4] = [3, 5, 5, 3];
-/// Rows between nodes in a layer, and cells between layers.
-const NODE_STEP: usize = 2;
-const LAYER_STEP: usize = 5;
-/// Seconds for the wave of activity to cross the network once.
-const WAVE_PERIOD: f32 = 1.4;
+const MAX_STREAM_WIDTH: usize = 22;
+/// The network is a tree lying on its side, root at the left where the
+/// stream comes in, leaves at the right. This many levels at most; a low
+/// band gets fewer.
+const TREE_LEVELS: usize = 7;
+const TREE_MIN_LEVELS: usize = 3;
+/// Rows between leaves when there is room; in a short box the leaves sit on
+/// consecutive rows instead.
+const LEAF_STEP: usize = 2;
+/// Cells between levels, at the least and at the most: the tree spreads out
+/// to fill the width it is given.
+const LEVEL_STEP: usize = 6;
+const MAX_LEVEL_STEP: usize = 10;
+/// Cells kept clear to the right of the network so the leaves do not sit on
+/// the border and look cut off.
+const NETWORK_MARGIN: usize = 2;
 /// The glyphs raining down the background.
 const RAIN_GLYPHS: &[char] = &[
     '{', '}', '(', ')', '[', ']', ';', '=', '<', '>', '+', '-', '*', '/', '&', '|', '!', '?', ':',
@@ -183,15 +235,6 @@ impl Canvas {
     fn put(&mut self, x: usize, y: usize, c: char, style: Style) {
         if let Some(cell) = self.cells.get_mut(y).and_then(|row| row.get_mut(x)) {
             *cell = (c, style);
-        }
-    }
-
-    /// Blank a rectangle, for a figure to be drawn over the backdrop.
-    fn clear(&mut self, x: usize, y: usize, w: usize, h: usize) {
-        for row in y..y + h {
-            for col in x..x + w {
-                self.put(col, row, ' ', Style::default());
-            }
         }
     }
 
@@ -274,23 +317,161 @@ fn hue(hue: f32) -> Color {
     }
 }
 
-/// Where the parts go in a box of one size.
+/// Where the parts go in a box of one size. The backdrop fills the top down
+/// to the ground line; under it is a black band with the mascot at the left,
+/// a stream of tokens running from it across the middle into the root of the
+/// network at the right, and the message the network is writing under the
+/// network; the caption sits at the very bottom.
 struct Plan {
     width: usize,
     height: usize,
     mascot_w: usize,
     mascot_h: usize,
-    mascot_x: usize,
-    /// The row the mascot stands on and the backdrop stops at.
+    /// The row the backdrop stops at; the band starts on the row below.
     ground: usize,
-    /// The stream and network, if there is room for them beside the mascot:
-    /// where the stream starts, how wide it is, where the network starts.
-    pipeline: Option<(usize, usize, usize)>,
+    /// The stream and network, if there is room for them beside the mascot.
+    pipeline: Option<Pipeline>,
     caption: bool,
 }
 
+#[derive(Debug, Clone)]
+struct Pipeline {
+    /// Where the stream starts and how wide it is.
+    stream_x: usize,
+    stream_w: usize,
+    tree: Tree,
+    /// Top row of the tree.
+    tree_y: usize,
+    /// The row the network writes its output on, when there is one to spare.
+    output_row: Option<usize>,
+}
+
+/// One node of the network.
+#[derive(Debug, Clone)]
+struct Node {
+    level: usize,
+    /// Row relative to the top of the tree.
+    row: usize,
+    children: Vec<usize>,
+}
+
+/// The network's shape: an irregular tree, grown from a seed. Each node has
+/// one to three branches, some stop short, and no two waits grow the same
+/// one. Leaves take the rows in order; a node sits in the middle of the rows
+/// its leaves take.
+#[derive(Debug, Clone)]
+struct Tree {
+    nodes: Vec<Node>,
+    levels: usize,
+    /// Column of the root, and cells between levels.
+    x: usize,
+    level_step: usize,
+    height: usize,
+}
+
+impl Tree {
+    /// Grow a tree with at most `levels` levels whose leaves, `leaf_step`
+    /// rows apart, fit in `max_height` rows. `None` if not even a root and
+    /// two leaves fit.
+    fn grow(seed: usize, levels: usize, leaf_step: usize, max_height: usize) -> Option<Self> {
+        let max_leaves = max_height.checked_sub(1)? / leaf_step + 1;
+        if max_leaves < 2 || levels < 2 {
+            return None;
+        }
+        let mut nodes = vec![Node {
+            level: 0,
+            row: 0,
+            children: Vec::new(),
+        }];
+        // Leaves still allowed beyond the one every node already is.
+        let mut spare = max_leaves - 1;
+        Self::branch(&mut nodes, 0, seed, levels, &mut spare);
+        let mut next_row = 0;
+        Self::place(&mut nodes, 0, leaf_step, &mut next_row);
+        let height = nodes.iter().map(|n| n.row).max().unwrap_or(0) + 1;
+        Some(Self {
+            nodes,
+            levels,
+            x: 0,
+            level_step: LEVEL_STEP,
+            height,
+        })
+    }
+
+    /// Give node `id` its children and grow them in turn, within the leaf
+    /// budget.
+    fn branch(nodes: &mut Vec<Node>, id: usize, seed: usize, levels: usize, spare: &mut usize) {
+        let level = nodes[id].level;
+        if level + 1 >= levels || *spare == 0 {
+            return;
+        }
+        let h = hash(seed.wrapping_mul(7919).wrapping_add(id), 5);
+        let mut want = match h % 10 {
+            0..=1 => 1,
+            2..=7 => 2,
+            _ => 3,
+        };
+        // Some branches stop short of the last level; the root never does,
+        // and always forks.
+        if level == 0 {
+            want = want.max(2);
+        } else if level >= 2 && (h >> 8) % 5 == 0 {
+            return;
+        }
+        let want = want.min(*spare + 1);
+        *spare -= want - 1;
+        let first = nodes.len();
+        for _ in 0..want {
+            nodes.push(Node {
+                level: level + 1,
+                row: 0,
+                children: Vec::new(),
+            });
+        }
+        nodes[id].children = (first..first + want).collect();
+        for child in first..first + want {
+            Self::branch(nodes, child, seed, levels, spare);
+        }
+    }
+
+    /// Rows: leaves in order, each node in the middle of its leaves.
+    fn place(nodes: &mut [Node], id: usize, leaf_step: usize, next_row: &mut usize) {
+        let children = nodes[id].children.clone();
+        if children.is_empty() {
+            nodes[id].row = *next_row;
+            *next_row += leaf_step;
+            return;
+        }
+        for &c in &children {
+            Self::place(nodes, c, leaf_step, next_row);
+        }
+        let first = nodes[children[0]].row;
+        let last = nodes[*children.last().unwrap_or(&children[0])].row;
+        nodes[id].row = (first + last) / 2;
+    }
+
+    fn width(&self) -> usize {
+        (self.levels - 1) * self.level_step + 1
+    }
+
+    fn col(&self, level: usize) -> usize {
+        self.x + level * self.level_step
+    }
+}
+
+/// Cells between the end of the stream and the root.
+const WIRE_GAP: usize = 3;
+/// Rows of backdrop the band leaves above itself when the box allows.
+const MIN_SKY: usize = 5;
+
 impl Plan {
-    fn fit(lang: Language, width: usize, height: usize) -> Option<Self> {
+    /// The figure's box is a little over twice as wide as tall in cells, as
+    /// cells are twice as tall as they are wide: square on screen.
+    fn mascot_width(rows: usize) -> usize {
+        rows * 2 + 4
+    }
+
+    fn fit(lang: Language, seed: usize, width: usize, height: usize) -> Option<Self> {
         let caption_w = CAPTIONS
             .iter()
             .chain(std::iter::once(&lang.quip()))
@@ -298,39 +479,83 @@ impl Plan {
             .max()
             .unwrap_or(0);
         let caption = caption_w <= width;
-        // Ground line, blank, caption below the figure.
+        // Ground line above the band, blank and caption below it.
         let below = 1 + if caption { 2 } else { 0 };
-        if FIGURE_MIN_ROWS + below > height {
+        let usable = height.checked_sub(below)?;
+        if usable < FIGURE_MIN_ROWS {
             return None;
         }
-        let ground = height - below;
-        // The figure takes as many rows as it can up to its limit, and is a
-        // little over twice as wide as tall since cells are twice as tall as
-        // they are wide.
-        let mascot_h = ground.min(FIGURE_MAX_ROWS);
-        let mascot_w = mascot_h * 2 + 4;
-        if mascot_w > width {
-            return None;
+        // The band is as tall as the figure, which takes what it can while
+        // leaving some sky, and shrinks to the width if it must.
+        let mut mascot_h = usable
+            .saturating_sub(MIN_SKY)
+            .clamp(FIGURE_MIN_ROWS, FIGURE_MAX_ROWS.min(usable));
+        while Self::mascot_width(mascot_h) > width {
+            mascot_h -= 1;
+            if mascot_h < FIGURE_MIN_ROWS {
+                return None;
+            }
         }
-
-        let network_w = (LAYERS.len() - 1) * LAYER_STEP + 1;
-        let gap = 3;
-        let pipeline = (mascot_w + gap + MIN_STREAM_WIDTH + gap + network_w <= width).then(|| {
-            let stream_x = mascot_w + gap;
-            let network_x = width - network_w;
-            (stream_x, network_x - gap - stream_x, network_x)
+        let mascot_w = Self::mascot_width(mascot_h);
+        let ground = height - below - mascot_h;
+        let band_y = ground + 1;
+        // The biggest tree the band holds, spread out if it can be; ideally
+        // with a row left under it for the output. The stream takes only
+        // what it needs of the width; the tree gets the rest, level by level.
+        let stream_x = mascot_w + 1;
+        let for_tree = width
+            .checked_sub(stream_x + MIN_STREAM_WIDTH + WIRE_GAP + NETWORK_MARGIN)?
+            .checked_sub(1)?;
+        let pipeline = [2, 0].into_iter().find_map(|spare| {
+            let band = mascot_h.checked_sub(spare)?;
+            // Levels the width allows, and no more than the leaves can
+            // fill: a tall thin tree with one leaf a level is a stick.
+            let max_leaves = (band - 1) / LEAF_STEP + 1;
+            let most_levels = (for_tree / LEVEL_STEP + 1)
+                .min(TREE_LEVELS)
+                .min((max_leaves / 2).max(TREE_MIN_LEVELS));
+            (TREE_MIN_LEVELS..=most_levels)
+                .rev()
+                .flat_map(|levels| [(levels, LEAF_STEP), (levels, 1)])
+                .find_map(|(levels, leaf_step)| {
+                    let mut tree = Tree::grow(seed, levels, leaf_step, band)?;
+                    // A tree that could not fork enough to use its levels
+                    // is no better than a smaller one; let that be tried.
+                    if tree.nodes.iter().map(|n| n.level).max().unwrap_or(0) + 1 < levels {
+                        return None;
+                    }
+                    // Spread the levels to fill what the stream does not
+                    // need, then give the stream the rest.
+                    let widest = width
+                        .checked_sub(stream_x + MAX_STREAM_WIDTH + WIRE_GAP + NETWORK_MARGIN + 1)?;
+                    tree.level_step = (widest / (levels - 1)).clamp(LEVEL_STEP, MAX_LEVEL_STEP);
+                    tree.x = width.checked_sub(tree.width() + NETWORK_MARGIN)?;
+                    let stream_w = tree.x.checked_sub(stream_x + WIRE_GAP)?;
+                    if stream_w < MIN_STREAM_WIDTH {
+                        return None;
+                    }
+                    // The stream leaves the figure a little below its
+                    // middle, where its body is, so the root sits there and
+                    // the tree hangs off it as far as the band allows.
+                    let root_target = band_y + mascot_h * 3 / 5;
+                    let lowest = band_y + mascot_h - spare - tree.height;
+                    let tree_y = root_target
+                        .saturating_sub(tree.nodes[0].row)
+                        .clamp(band_y, lowest);
+                    Some(Pipeline {
+                        stream_x,
+                        stream_w,
+                        tree,
+                        tree_y,
+                        output_row: (spare > 0).then_some(band_y + mascot_h - 1),
+                    })
+                })
         });
-        let mascot_x = if pipeline.is_some() {
-            0
-        } else {
-            (width - mascot_w) / 2
-        };
         Some(Self {
             width,
             height,
             mascot_w,
             mascot_h,
-            mascot_x,
             ground,
             pipeline,
             caption,
@@ -340,14 +565,25 @@ impl Plan {
 
 /// The scene at clock `ms`, filling a box `width` by `height` cells. `seed`
 /// picks the backdrop, and stays the same for one wait so the picture does
-/// not change under the reader. The mascot stands on a ground line at the
-/// bottom left, tokens stream from it across whatever width is left into the
-/// network at the right, and the caption sits under the ground. Every row is
-/// the full width so centring the block does not shift anything as the parts
-/// animate. Empty when the box cannot hold the figure: a crab squeezed into
-/// two rows is worse than nothing.
-pub fn scene(lang: Language, seed: usize, ms: u64, width: u16, height: u16) -> Vec<Line<'static>> {
-    let Some(plan) = Plan::fit(lang, width as usize, height as usize) else {
+/// not change under the reader. The sky is the backdrop; under the ground
+/// line, on black, the mascot stands at the left and feeds a stream of
+/// tokens into the root of the network at the right. Each token that arrives
+/// fires a pulse down one path of the tree, and as pulses reach the leaves
+/// the network starts writing the message underneath. Every row is the full
+/// width so centring the block does not shift anything as the parts animate.
+/// Empty when the box cannot hold the figure: a crab squeezed into two rows
+/// is worse than nothing.
+/// `writing` shows the network starting on the message; once the real one
+/// is streaming in above the scene, that would be two messages.
+pub fn scene(
+    lang: Language,
+    seed: usize,
+    ms: u64,
+    width: u16,
+    height: u16,
+    writing: bool,
+) -> Vec<Line<'static>> {
+    let Some(plan) = Plan::fit(lang, seed, width as usize, height as usize) else {
         return Vec::new();
     };
     let mut canvas = Canvas::new(plan.width, plan.height);
@@ -365,34 +601,48 @@ pub fn scene(lang: Language, seed: usize, ms: u64, width: u16, height: u16) -> V
         Style::default().fg(Color::Rgb(90, 92, 120)),
     );
 
-    let mascot_y = plan.ground - plan.mascot_h;
-    // The figures stand in front of the backdrop, so each footprint is
-    // cleared first: stars showing through a crab read as holes in the crab.
-    canvas.clear(plan.mascot_x, mascot_y, plan.mascot_w, plan.mascot_h);
+    let band_y = plan.ground + 1;
+    let mascot_x = if plan.pipeline.is_some() {
+        0
+    } else {
+        (plan.width - plan.mascot_w) / 2
+    };
     draw_figure(
         &mut canvas,
         lang,
-        plan.mascot_x,
-        mascot_y,
+        mascot_x,
+        band_y,
         plan.mascot_w,
         plan.mascot_h,
         t,
     );
 
-    if let Some((stream_x, stream_w, network_x)) = plan.pipeline {
-        let stream_y = (mascot_y + plan.mascot_h / 2).saturating_sub(STREAM_ROWS / 2);
-        canvas.clear(stream_x, stream_y, stream_w, STREAM_ROWS);
-        draw_stream(&mut canvas, stream_x, stream_y, stream_w, t);
-        let network_w = (LAYERS.len() - 1) * LAYER_STEP + 1;
-        let network_h = (LAYERS.iter().copied().max().unwrap_or(1) - 1) * NODE_STEP + 1;
-        let network_y = plan.ground.saturating_sub(network_h) / 2;
-        canvas.clear(
-            network_x.saturating_sub(1),
-            network_y.saturating_sub(1),
-            network_w + 2,
-            network_h + 2,
-        );
-        draw_network(&mut canvas, network_x, network_y, t);
+    if let Some(pipe) = &plan.pipeline {
+        let network = Network::new(&pipe.tree, pipe.tree_y, t);
+        let root_row = pipe.tree_y + pipe.tree.nodes[0].row;
+        draw_stream(&mut canvas, pipe.stream_x, root_row, pipe.stream_w, t);
+        let style = Style::default().fg(mix(
+            Color::Rgb(80, 80, 110),
+            Color::Rgb(255, 250, 170),
+            network.root_heat(),
+        ));
+        for x in pipe.stream_x + pipe.stream_w..pipe.tree.x {
+            canvas.put(x, root_row, '\u{2500}', style);
+        }
+        network.draw(&mut canvas);
+        if let Some(row) = pipe.output_row.filter(|_| writing) {
+            let room = plan.width.saturating_sub(pipe.tree.x + 1);
+            draw_output(
+                &mut canvas,
+                lang,
+                pipe.tree.x,
+                row,
+                room,
+                network.landed,
+                network.landing,
+                t,
+            );
+        }
     }
 
     if plan.caption {
@@ -488,7 +738,7 @@ fn draw_night(canvas: &mut Canvas, width: usize, ground: usize, ms: u64) {
         r"   '--'   ",
     ];
     if width > 40 && ground > moon.len() + 1 {
-        let moon_x = width.saturating_sub(moon[0].len() + (LAYERS.len() - 1) * LAYER_STEP + 8);
+        let moon_x = width.saturating_sub(moon[0].len() + (TREE_LEVELS - 1) * MAX_LEVEL_STEP + 8);
         let glow = 0.9 + 0.1 * (t * 0.7).sin();
         let style = Style::default()
             .fg(dim(Color::Rgb(250, 245, 205), glow))
@@ -570,6 +820,7 @@ fn draw_diff(canvas: &mut Canvas, width: usize, ground: usize, t: f32) {
 /// The language's figure, turned and lit for the moment `t`, drawn into a
 /// `w` by `h` window with its bottom on the ground. It turns steadily and
 /// moves on its own clock, so at any frame rate it is where it should be.
+/// Draw the mascot into its box, moving as `solid::pose` says.
 fn draw_figure(
     canvas: &mut Canvas,
     lang: Language,
@@ -579,7 +830,12 @@ fn draw_figure(
     h: usize,
     t: f32,
 ) {
-    let grid = solid::render(&lang.figure(t), t * TURN_RATE, w, h);
+    let grid = solid::render_posed(
+        &lang.figure(t),
+        solid::pose(t, TURN_RATE, lang.is_alive()),
+        w,
+        h,
+    );
     for (r, row) in grid.iter().enumerate() {
         for (c, cell) in row.iter().enumerate() {
             if let Some((ch, color)) = cell {
@@ -594,83 +850,280 @@ fn draw_figure(
     }
 }
 
-/// Rows of tokens flowing right into the network, each row a little out of
-/// phase with its neighbours so the flow reads as a river rather than a
-/// conveyor belt. Colour cools along the way, and a shimmer runs down the
-/// stream so it glitters as it moves.
-fn draw_stream(canvas: &mut Canvas, x: usize, y: usize, width: usize, t: f32) {
-    let pattern: Vec<char> = TOKEN_PATTERN.chars().collect();
-    let n = pattern.len();
-    let travelled = (t * STREAM_SPEED) as usize;
-    for row in 0..STREAM_ROWS {
-        let phase = row * 5;
-        for col in 0..width.saturating_sub(1) {
-            let c = pattern[(col + phase + n * 1_000 - travelled % n) % n];
-            let along = col as f32 / width.max(1) as f32;
-            let base = mix(Color::Rgb(120, 140, 255), Color::Rgb(140, 255, 255), along);
-            let shimmer = 0.7 + 0.3 * (t * 6.0 - col as f32 * 0.4 + row as f32).sin();
-            let style = match c {
-                '\u{25aa}' => Style::default()
-                    .fg(dim(base, shimmer))
-                    .add_modifier(Modifier::BOLD),
-                '\u{25ab}' => Style::default().fg(dim(base, shimmer * 0.8)),
-                ' ' => continue,
-                _ => Style::default().fg(Color::Rgb(90, 95, 130)),
-            };
-            canvas.put(x + col, y + row, c, style);
-        }
-        canvas.put(
-            x + width - 1,
-            y + row,
-            '\u{25b8}',
-            Style::default()
-                .fg(Color::Rgb(140, 255, 255))
-                .add_modifier(Modifier::BOLD),
-        );
+/// The token in slot `slot` of stream `row` at time `t`, or none for a gap.
+/// Each slot is hashed for its glyph and its own hue, so the stream is a
+/// jumble rather than a pattern, and every token glitters at its own pace.
+/// The hue also drifts with time and along the stream, so the whole thing
+/// slowly cycles through the rainbow.
+fn token(slot: usize, row: usize, along: f32, t: f32) -> Option<(char, Style)> {
+    let seed = hash(slot, row + 11);
+    if seed % TOKEN_GAP == 0 {
+        return None;
     }
+    let glyph = TOKEN_GLYPHS[((seed >> 8) % TOKEN_GLYPHS.len() as u64) as usize];
+    let own_hue = ((seed >> 16) % 1_000) as f32 / 1_000.0;
+    let color = hue(own_hue * 0.35 + along * 0.5 + t * 0.12);
+    // Each token twinkles on its own period; the brightest go white-hot.
+    let rate = 3.0 + ((seed >> 24) % 50) as f32 / 10.0;
+    let phase = ((seed >> 32) % 628) as f32 / 100.0;
+    let sparkle = 0.5 + 0.5 * (t * rate + phase).sin();
+    let dense = glyph == TOKEN_GLYPHS[0] || glyph == TOKEN_GLYPHS[1];
+    let color = if sparkle > 0.85 {
+        mix(color, Color::Rgb(255, 255, 255), (sparkle - 0.85) * 5.0)
+    } else {
+        dim(color, 0.55 + 0.45 * sparkle)
+    };
+    let mut style = Style::default().fg(color);
+    if dense || sparkle > 0.85 {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    Some((glyph, style))
 }
 
-/// The network: layers of nodes joined by wires. A wave of activity runs
-/// through it left to right; a node glows in proportion to how close the
-/// wave is, from grey through ember to white-hot, and the wires light as it
-/// crosses them.
-fn draw_network(canvas: &mut Canvas, x: usize, y: usize, t: f32) {
-    let tallest = LAYERS.iter().copied().max().unwrap_or(1);
-    let mid = y + (tallest - 1) * NODE_STEP / 2;
-    // The wave's position in layers, wrapping with a gap before it returns.
-    let span = LAYERS.len() as f32 + 1.5;
-    let wave = (t / WAVE_PERIOD).fract() * span;
-    let cold = Color::Rgb(100, 100, 135);
-    let ember = Color::Rgb(255, 120, 70);
-    let hot = Color::Rgb(255, 250, 170);
-    for (layer, &count) in LAYERS.iter().enumerate() {
-        let col_x = x + layer * LAYER_STEP;
-        let top = y + (tallest - count) * NODE_STEP / 2;
-        for n in 0..count {
-            // Each node fires a little after its neighbour above.
-            let here = layer as f32 + n as f32 * 0.12;
-            let heat = (1.0 - (wave - here).abs() / 1.2).clamp(0.0, 1.0);
+/// When slot `slot` reaches the arrowhead at the end of the stream: the slot
+/// there at time `t` is `STREAM_ORIGIN + t * STREAM_SPEED + 1`.
+fn arrival(slot: usize) -> f32 {
+    (slot as f32 - STREAM_ORIGIN as f32 - 1.0) / STREAM_SPEED
+}
+
+/// Whether the token in `slot` fires a pulse when it reaches the network:
+/// only the dense ones do, so the paths through the tree stay distinct.
+fn token_fires(slot: usize) -> bool {
+    let seed = hash(slot, 11);
+    seed % TOKEN_GAP != 0 && (seed >> 8) % (TOKEN_GLYPHS.len() as u64) < 2
+}
+
+/// The stream of tokens flowing right into the root of the network, one
+/// line of them ending in an arrowhead at the wire.
+fn draw_stream(canvas: &mut Canvas, x: usize, y: usize, width: usize, t: f32) {
+    let travelled = (t * STREAM_SPEED) as usize;
+    for col in 0..width.saturating_sub(1) {
+        let slot = STREAM_ORIGIN + travelled + width - col;
+        let along = col as f32 / width.max(1) as f32;
+        if let Some((c, style)) = token(slot, 0, along, t) {
+            canvas.put(x + col, y, c, style);
+        }
+    }
+    canvas.put(
+        x + width - 1,
+        y,
+        '\u{25b8}',
+        Style::default()
+            .fg(hue(t * 0.12 + 0.5))
+            .add_modifier(Modifier::BOLD),
+    );
+}
+
+/// Slots are counted from here so the arithmetic never goes below zero.
+const STREAM_ORIGIN: usize = 1_000_000;
+/// Seconds a pulse takes to cross one level of the tree.
+const PULSE_LEVEL_TIME: f32 = 0.28;
+
+/// The network at one moment: the tree with the pulses running through it.
+/// Every dense token that has reached the end of the stream lately is a
+/// pulse somewhere in the tree, following a path of its own from the root to
+/// one leaf, so different branches light up as the tokens go in.
+struct Network<'a> {
+    tree: &'a Tree,
+    y: usize,
+    /// How hot each node is, 0..=1.
+    heat: Vec<f32>,
+    /// How hot the branch into each node is.
+    branches: Vec<f32>,
+    /// Tokens that have come all the way through so far.
+    landed: usize,
+    /// How recently the last one landed, 1 at the moment it does, fading.
+    landing: f32,
+}
+
+impl<'a> Network<'a> {
+    fn new(tree: &'a Tree, y: usize, t: f32) -> Self {
+        let mut heat = vec![0.0f32; tree.nodes.len()];
+        let mut branches = vec![0.0f32; tree.nodes.len()];
+        let travel = tree.levels as f32 * PULSE_LEVEL_TIME;
+        let travelled = (t * STREAM_SPEED) as usize;
+        // The slot at the arrowhead right now, and the ones just before it
+        // that may still be crossing the tree.
+        let newest = STREAM_ORIGIN + travelled + 1;
+        let in_flight = (travel * STREAM_SPEED) as usize + 2;
+        let mut landed = 0;
+        let mut landing = 0.0f32;
+        for slot in newest.saturating_sub(in_flight)..=newest {
+            if !token_fires(slot) {
+                continue;
+            }
+            let age = t - arrival(slot);
+            if age < 0.0 {
+                continue;
+            }
+            if age > travel {
+                landed += 1;
+                landing = landing.max(1.0 - (age - travel) / 0.5);
+                continue;
+            }
+            let position = age / PULSE_LEVEL_TIME;
+            let mut node = 0;
+            loop {
+                let level = tree.nodes[node].level as f32;
+                let glow = (1.0 - (position - level).abs()).clamp(0.0, 1.0);
+                heat[node] = heat[node].max(glow);
+                let children = &tree.nodes[node].children;
+                if children.is_empty() {
+                    break;
+                }
+                // Which branch, decided by the token itself.
+                let pick = (hash(slot, tree.nodes[node].level + 40) >> 8) as usize % children.len();
+                node = children[pick];
+                let crossing = (1.0 - (position - level - 0.5).abs() / 0.7).clamp(0.0, 1.0);
+                branches[node] = branches[node].max(crossing);
+            }
+        }
+        // Everything that landed before the window counts too.
+        landed += newest
+            .saturating_sub(in_flight)
+            .saturating_sub(STREAM_ORIGIN)
+            / 6;
+        Self {
+            tree,
+            y,
+            heat,
+            branches,
+            landed,
+            landing,
+        }
+    }
+
+    fn root_heat(&self) -> f32 {
+        self.heat[0]
+    }
+
+    fn draw(&self, canvas: &mut Canvas) {
+        let cold = Color::Rgb(100, 100, 135);
+        let ember = Color::Rgb(255, 120, 70);
+        let hot = Color::Rgb(255, 250, 170);
+        let branch_cold = Color::Rgb(70, 70, 100);
+        let tree = self.tree;
+        let style = |k: f32| {
+            let mut st = Style::default().fg(mix(branch_cold, hot, k));
+            if k > 0.3 {
+                st = st.add_modifier(Modifier::BOLD);
+            }
+            st
+        };
+        // Branches first, nodes over them. Each parent runs a stub right to
+        // an elbow column, a bar there spans its children's rows, and each
+        // child gets a stub from the bar; the bar's cells are joined with
+        // whichever corner or tee the lines through them call for.
+        for node in &tree.nodes {
+            if node.children.is_empty() {
+                continue;
+            }
+            let px = tree.col(node.level);
+            let elbow = px + tree.level_step / 2;
+            let cx = tree.col(node.level + 1);
+            let py = self.y + node.row;
+            let rows: Vec<(usize, f32)> = node
+                .children
+                .iter()
+                .map(|&c| (self.y + tree.nodes[c].row, self.branches[c]))
+                .collect();
+            let stub = rows.iter().map(|r| r.1).fold(0.0, f32::max);
+            for x in px + 1..elbow {
+                canvas.put(x, py, '\u{2500}', style(stub));
+            }
+            let lo = rows.iter().map(|r| r.0).min().unwrap_or(py).min(py);
+            let hi = rows.iter().map(|r| r.0).max().unwrap_or(py).max(py);
+            for yy in lo..=hi {
+                let up = yy > lo;
+                let down = yy < hi;
+                let left = yy == py;
+                let child = rows.iter().find(|r| r.0 == yy);
+                let right = child.is_some();
+                let glyph = match (up, down, left, right) {
+                    (false, true, false, true) => '\u{256d}',
+                    (true, false, false, true) => '\u{2570}',
+                    (true, true, false, true) => '\u{251c}',
+                    (true, true, true, false) => '\u{2524}',
+                    (true, true, true, true) => '\u{253c}',
+                    (false, true, true, false) => '\u{256e}',
+                    (true, false, true, false) => '\u{256f}',
+                    (false, true, true, true) => '\u{252c}',
+                    (true, false, true, true) => '\u{2534}',
+                    (true, true, false, false) => '\u{2502}',
+                    _ => '\u{2500}',
+                };
+                // A cell of the bar is as hot as the hottest branch running
+                // through it: one whose child row is on the far side of it.
+                let k = rows
+                    .iter()
+                    .filter(|r| (r.0.min(py)..=r.0.max(py)).contains(&yy))
+                    .map(|r| r.1)
+                    .fold(0.0, f32::max);
+                canvas.put(elbow, yy, glyph, style(k));
+                if let Some(&(_, kh)) = child {
+                    for x in elbow + 1..cx {
+                        canvas.put(x, yy, '\u{2500}', style(kh));
+                    }
+                }
+            }
+        }
+        for (id, node) in tree.nodes.iter().enumerate() {
+            let heat = self.heat[id];
+            let leaf = node.children.is_empty();
             let (glyph, color) = if heat > 0.75 {
                 ('\u{25c9}', mix(ember, hot, (heat - 0.75) * 4.0))
             } else if heat > 0.3 {
                 ('\u{25cf}', mix(cold, ember, (heat - 0.3) / 0.45))
+            } else if leaf {
+                ('\u{25c7}', cold)
             } else {
-                ('\u{25cb}', mix(cold, cold, 0.0))
+                ('\u{25cb}', cold)
             };
             let mut style = Style::default().fg(color);
             if heat > 0.75 {
                 style = style.add_modifier(Modifier::BOLD);
             }
-            canvas.put(col_x, top + n * NODE_STEP, glyph, style);
+            canvas.put(tree.col(node.level), self.y + node.row, glyph, style);
         }
-        if layer + 1 < LAYERS.len() {
-            let here = layer as f32 + 0.5;
-            let heat = (1.0 - (wave - here).abs() / 0.9).clamp(0.0, 1.0);
-            let style = Style::default().fg(mix(Color::Rgb(80, 80, 110), hot, heat));
-            for dx in 1..LAYER_STEP {
-                canvas.put(col_x + dx, mid, '\u{2500}', style);
-            }
-        }
+    }
+}
+
+/// Tokens through the network per character of output.
+const TOKENS_PER_CHAR: usize = 2;
+
+/// The start of the commit message the network is writing, one character
+/// per couple of tokens through it, with a cursor blinking at the end. The
+/// newest character flares as the pulse that wrote it lands. Only the
+/// opening is guessable before the model has spoken; the real message takes
+/// this line's place the moment it does.
+#[allow(clippy::too_many_arguments)]
+fn draw_output(
+    canvas: &mut Canvas,
+    lang: Language,
+    x: usize,
+    y: usize,
+    room: usize,
+    landed: usize,
+    landing: f32,
+    t: f32,
+) {
+    let text = lang.opening();
+    let typed = (landed / TOKENS_PER_CHAR).min(text.chars().count());
+    let shown: String = text.chars().take(typed).collect();
+    let plain = Color::Rgb(220, 220, 240);
+    let style = Style::default().fg(plain).add_modifier(Modifier::BOLD);
+    for (i, c) in shown.chars().enumerate().take(room.saturating_sub(1)) {
+        let st = if i + 1 == typed {
+            Style::default()
+                .fg(mix(plain, Color::Rgb(255, 200, 120), landing))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            style
+        };
+        canvas.put(x + i, y, c, st);
+    }
+    if ((t * 3.0).sin() > 0.0 || landing > 0.5) && typed < room {
+        canvas.put(x + typed, y, '\u{258c}', style);
     }
 }
 
@@ -730,7 +1183,7 @@ mod tests {
                 for (w, h) in [(90u16, 16u16), (120, 40), (200, 60)] {
                     for frame in 0..40 {
                         let ms = frame * 230;
-                        let lines = scene(lang, seed, ms, w, h);
+                        let lines = scene(lang, seed, ms, w, h, true);
                         assert_eq!(
                             lines.len(),
                             h as usize,
@@ -752,13 +1205,13 @@ mod tests {
 
     #[test]
     fn the_scene_moves_between_frames_and_says_what_the_model_is_doing() {
-        let first = text_of(&scene(Language::Rust, 0, 0, 110, 30));
+        let first = text_of(&scene(Language::Rust, 0, 0, 110, 30, true));
         // Eight milliseconds on, the figure has turned a hair and the light on
         // it has moved: a frame rate that high must not draw the same picture
         // twice.
-        let next_frame = scene(Language::Rust, 0, 8, 110, 30);
+        let next_frame = scene(Language::Rust, 0, 8, 110, 30, true);
         assert_ne!(
-            scene(Language::Rust, 0, 0, 110, 30),
+            scene(Language::Rust, 0, 0, 110, 30, true),
             next_frame,
             "8ms later is a new frame"
         );
@@ -790,10 +1243,16 @@ mod tests {
     #[test]
     fn different_seeds_give_different_backdrops_behind_the_same_mascot() {
         let scenes: Vec<String> = (0..BACKDROPS.len())
-            .map(|seed| text_of(&scene(Language::Go, seed, 1_440, 110, 30)))
+            .map(|seed| text_of(&scene(Language::Go, seed, 1_440, 110, 30, true)))
             .collect();
         for (i, a) in scenes.iter().enumerate() {
-            assert!(a.contains('O'), "the gopher is in scene {i}:\n{a}");
+            // The gopher may have its back turned at this instant, so look
+            // for its shaded body rather than its eyes: no backdrop uses the
+            // dense shading glyphs.
+            assert!(
+                a.contains(['#', '%', '@']),
+                "the gopher is in scene {i}:\n{a}"
+            );
             for b in &scenes[i + 1..] {
                 assert_ne!(a, b, "seeds pick different backdrops");
             }
@@ -802,14 +1261,14 @@ mod tests {
 
     #[test]
     fn a_box_too_small_gets_nothing_rather_than_a_cropped_crab() {
-        assert!(scene(Language::Rust, 0, 0, 70, 2).is_empty());
-        assert!(scene(Language::Rust, 0, 0, 8, 12).is_empty());
-        assert!(scene(Language::Rust, 0, 0, 0, 0).is_empty());
+        assert!(scene(Language::Rust, 0, 0, 70, 2, true).is_empty());
+        assert!(scene(Language::Rust, 0, 0, 8, 12, true).is_empty());
+        assert!(scene(Language::Rust, 0, 0, 0, 0, true).is_empty());
     }
 
     #[test]
     fn a_narrow_box_keeps_the_mascot_and_drops_the_pipeline() {
-        let lines = scene(Language::Go, 1, 7_000, 40, 16);
+        let lines = scene(Language::Go, 1, 7_000, 40, 16, true);
         assert_eq!(lines.len(), 16);
         assert!(lines.iter().all(|line| line.width() == 40));
         let text = text_of(&lines);

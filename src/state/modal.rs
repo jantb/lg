@@ -489,6 +489,7 @@ impl AppState {
 
     pub fn open_commit_modal(&mut self) {
         self.modal = Modal::Commit;
+        self.commit_files_scroll = 0;
         self.commit_cursor = self.commit_message.chars().count();
         if self.commit_message.is_empty() && self.generation.is_none() {
             self.set_status("generating\u{2026}", false);

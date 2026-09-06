@@ -112,6 +112,8 @@ pub struct AppState {
     pub commit_message: String,
     pub commit_cursor: usize,
     pub commit_scroll_offset: usize,
+    /// First visible row of the staged-files list beside the commit editor.
+    pub commit_files_scroll: usize,
     pub author_path_input: String,
     pub author_name_input: String,
     pub author_email_input: String,
@@ -319,6 +321,7 @@ impl AppState {
             commit_message: String::new(),
             commit_cursor: 0,
             commit_scroll_offset: 0,
+            commit_files_scroll: 0,
             author_path_input: String::new(),
             author_name_input: String::new(),
             author_email_input: String::new(),

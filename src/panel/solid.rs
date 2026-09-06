@@ -48,6 +48,10 @@ impl V3 {
         let (s, c) = a.sin_cos();
         v(self.x * c + self.z * s, self.y, -self.x * s + self.z * c)
     }
+    fn rot_z(self, a: f32) -> V3 {
+        let (s, c) = a.sin_cos();
+        v(self.x * c - self.y * s, self.x * s + self.y * c, self.z)
+    }
 }
 
 /// One solid piece of a figure.
@@ -142,10 +146,119 @@ pub struct Part {
     /// A character to draw this part in whatever the light, for things that
     /// should read as a flat panel or a mark rather than a shaded body.
     pub glyph: Option<char>,
+    /// Text laid over the part's front face, for a screen with something on
+    /// it. Where set, it picks the character instead of `glyph`.
+    pub screen: Option<Screen>,
+}
+
+/// Lines of text on the front (+z) face of a box, typed out one character at
+/// a time: `typed` characters are on the screen so far, and a cursor blinks
+/// where the next one goes. The face is centred on `c` with half extents `h`.
+#[derive(Debug, Clone, Copy)]
+pub struct Screen {
+    pub c: V3,
+    pub h: V3,
+    pub lines: &'static [&'static str],
+    pub typed: usize,
+    pub cursor_on: bool,
+}
+
+impl Screen {
+    /// Characters in the text, counting one for each line break.
+    pub fn len(lines: &[&str]) -> usize {
+        lines.iter().map(|l| l.chars().count() + 1).sum()
+    }
+
+    /// The character showing at the point `p` on the face: the text is
+    /// stretched to fill the face, so one text cell may be several picture
+    /// cells or none.
+    fn glyph_at(&self, p: V3) -> char {
+        let rows = self.lines.len().max(1);
+        let cols = self
+            .lines
+            .iter()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let u = ((p.x - self.c.x + self.h.x) / (2.0 * self.h.x)).clamp(0.0, 0.999);
+        let v = ((self.c.y + self.h.y - p.y) / (2.0 * self.h.y)).clamp(0.0, 0.999);
+        let col = (u * cols as f32) as usize;
+        let row = (v * rows as f32) as usize;
+        let before: usize = self.lines[..row]
+            .iter()
+            .map(|l| l.chars().count() + 1)
+            .sum();
+        let index = before + col;
+        let line_len = self.lines[row].chars().count();
+        if index < self.typed {
+            if col < line_len {
+                self.lines[row].chars().nth(col).unwrap_or(' ')
+            } else {
+                ' '
+            }
+        } else if index == self.typed && col <= line_len && self.cursor_on {
+            '\u{258c}'
+        } else {
+            ' '
+        }
+    }
 }
 
 /// The characters a surface is drawn in, dimmest first.
 const RAMP: &[char] = &['.', ':', '-', '=', '+', '*', '#', '%', '@'];
+
+/// How a figure sits in its box at one moment: turned `yaw` about the
+/// vertical, leaning `tilt` radians to the side, raised `bob` units.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pose {
+    pub yaw: f32,
+    pub tilt: f32,
+    pub bob: f32,
+    /// Units the figure has paced to the right of the middle.
+    pub sway: f32,
+    /// Units of air above the figure for it to hop into.
+    pub headroom: f32,
+}
+
+/// Seconds between hops.
+const HOP_PERIOD: f32 = 4.0;
+/// How long a hop is in the air.
+const HOP_TIME: f32 = 0.7;
+
+/// The figure's pose at time `t`. A live mascot turns at `turn_rate` on
+/// average but speeds up and slows down as it goes, paces from side to side,
+/// sways, breathes up and down, and every few seconds hops. An object such
+/// as a monitor just turns on the spot: a monitor that hops is unsettling.
+pub fn pose(t: f32, turn_rate: f32, alive: bool) -> Pose {
+    if !alive {
+        return Pose {
+            yaw: t * turn_rate,
+            tilt: 0.0,
+            bob: 0.0,
+            sway: 0.0,
+            headroom: 0.0,
+        };
+    }
+    let yaw = t * turn_rate + 0.7 * (t * 0.8).sin();
+    let tilt = 0.14 * (t * 1.9).sin();
+    let breathe = 0.06 * (t * 2.6).sin();
+    let into_hop = t % HOP_PERIOD;
+    let hop = if into_hop < HOP_TIME {
+        // A parabola: up and back down to where it started.
+        let k = into_hop / HOP_TIME;
+        1.4 * k * (1.0 - k)
+    } else {
+        0.0
+    };
+    Pose {
+        yaw,
+        tilt: tilt + hop * 0.3,
+        bob: breathe + hop,
+        sway: 0.7 * (t * 0.45).sin(),
+        headroom: 0.4,
+    }
+}
 
 /// Render `parts` turned by `angle` about the vertical into a grid `cols` by
 /// `rows`, where each cell is twice as tall as it is wide. `None` where the
@@ -156,10 +269,35 @@ pub fn render(
     cols: usize,
     rows: usize,
 ) -> Vec<Vec<Option<(char, Color)>>> {
+    render_posed(
+        parts,
+        Pose {
+            yaw: angle,
+            tilt: 0.0,
+            bob: 0.0,
+            sway: 0.0,
+            headroom: 0.0,
+        },
+        cols,
+        rows,
+    )
+}
+
+/// Render `parts` in `pose` into a grid `cols` by `rows`.
+pub fn render_posed(
+    parts: &[Part],
+    pose: Pose,
+    cols: usize,
+    rows: usize,
+) -> Vec<Vec<Option<(char, Color)>>> {
     // The figure lives in a box about 3.6 units wide and 3.6 high; the view
-    // is scaled so that box just fits the grid.
-    let extent_y = 3.6f32;
+    // is scaled so that box, plus any room for a hop, just fits the grid.
+    let extent_y = 3.6 + pose.headroom;
     let extent_x = extent_y * cols as f32 / (rows as f32 * 2.0);
+    let angle = pose.yaw;
+    // Moving and tilting the figure is moving and tilting the camera the
+    // other way, which keeps the distance fields where they are.
+    let to_figure = |p: V3| p.rot_z(-pose.tilt).rot_y(angle);
     let light = v(-0.5, 0.8, 1.0).norm();
     let mut out = vec![vec![None; cols]; rows];
     let dist = |p: V3| -> (f32, usize) {
@@ -177,8 +315,8 @@ pub fn render(
             let sx = ((col as f32 + 0.5) / cols as f32 - 0.5) * extent_x;
             let sy = (0.5 - (row as f32 + 0.5) / rows as f32) * extent_y;
             // Orthographic rays from the front, the figure rotated to meet them.
-            let mut p = v(sx, sy, 3.0).rot_y(angle);
-            let dir = v(0.0, 0.0, -1.0).rot_y(angle);
+            let mut p = to_figure(v(sx - pose.sway, sy - pose.bob + pose.headroom / 2.0, 3.0));
+            let dir = to_figure(v(0.0, 0.0, -1.0));
             let mut hit = None;
             for _ in 0..64 {
                 let (d, i) = dist(p);
@@ -200,17 +338,21 @@ pub fn render(
                 dist(p.add(v(0.0, 0.0, e))).0 - dist(p.sub(v(0.0, 0.0, e))).0,
             )
             .norm();
-            let light_here = light.rot_y(angle);
+            let light_here = to_figure(light);
             let diffuse = n.dot(light_here).max(0.0);
             let shade = 0.35 + 0.65 * diffuse;
-            let ch = part.glyph.unwrap_or_else(|| {
-                RAMP[((diffuse * (RAMP.len() - 1) as f32).round() as usize).min(RAMP.len() - 1)]
-            });
+            let ch = part
+                .screen
+                .map(|s| s.glyph_at(p))
+                .or(part.glyph)
+                .unwrap_or_else(|| {
+                    RAMP[((diffuse * (RAMP.len() - 1) as f32).round() as usize).min(RAMP.len() - 1)]
+                });
             *cell = Some((
                 ch,
                 dim(
                     part.color,
-                    if part.glyph.is_some() {
+                    if part.glyph.is_some() || part.screen.is_some() {
                         0.6 + 0.4 * shade
                     } else {
                         shade
@@ -238,6 +380,7 @@ fn part(shape: Shape, color: Color) -> Part {
         shape,
         color,
         glyph: None,
+        screen: None,
     }
 }
 
@@ -246,8 +389,15 @@ fn mark(shape: Shape, color: Color, glyph: char) -> Part {
         shape,
         color,
         glyph: Some(glyph),
+        screen: None,
     }
 }
+
+/// Characters typed on a screen per second.
+const TYPING_RATE: f32 = 9.0;
+/// Seconds the finished text stays up before the screen clears and typing
+/// starts over.
+const TYPING_PAUSE: f32 = 2.5;
 
 const WHITE: Color = Color::Rgb(250, 250, 250);
 const DARK: Color = Color::Rgb(28, 28, 36);
@@ -648,14 +798,23 @@ pub fn snake(t: f32) -> Vec<Part> {
     ]
 }
 
-/// A monitor with a coloured screen full of the language's letter, its stand,
-/// and a light that blinks with `t`.
-pub fn monitor(t: f32, screen: Color, letter: char) -> Vec<Part> {
+/// A monitor with `code` being typed out on its coloured screen, its stand,
+/// and a light that blinks with `t`. The text types out, sits a while, then
+/// clears and starts again.
+pub fn monitor(t: f32, screen: Color, code: &'static [&'static str]) -> Vec<Part> {
     let grey = Color::Rgb(170, 170, 190);
     let led = if (t * 2.0).sin() > 0.0 {
         Color::Rgb(90, 255, 120)
     } else {
         Color::Rgb(40, 90, 50)
+    };
+    let total = Screen::len(code);
+    let cycle = total as f32 / TYPING_RATE + TYPING_PAUSE;
+    let typed = ((t % cycle) * TYPING_RATE) as usize;
+    let face = Shape::RoundBox {
+        c: v(0.0, 0.35, 0.27),
+        h: v(1.3, 0.8, 0.03),
+        r: 0.02,
     };
     vec![
         part(
@@ -666,15 +825,18 @@ pub fn monitor(t: f32, screen: Color, letter: char) -> Vec<Part> {
             },
             grey,
         ),
-        mark(
-            Shape::RoundBox {
+        Part {
+            shape: face,
+            color: screen,
+            glyph: Some(' '),
+            screen: Some(Screen {
                 c: v(0.0, 0.35, 0.27),
                 h: v(1.3, 0.8, 0.03),
-                r: 0.02,
-            },
-            screen,
-            letter,
-        ),
+                lines: code,
+                typed: typed.min(total),
+                cursor_on: (t * 4.0).sin() > 0.0,
+            }),
+        },
         mark(
             Shape::Sphere {
                 c: v(1.25, -0.55, 0.27),
@@ -682,16 +844,6 @@ pub fn monitor(t: f32, screen: Color, letter: char) -> Vec<Part> {
             },
             led,
             '*',
-        ),
-        // A cursor blinking in the corner of the screen.
-        mark(
-            Shape::RoundBox {
-                c: v(1.0, -0.2, 0.31),
-                h: v(0.08, if (t * 2.0).sin() > 0.0 { 0.18 } else { 0.001 }, 0.02),
-                r: 0.0,
-            },
-            WHITE,
-            '\u{258c}',
         ),
         part(
             Shape::Capsule {
@@ -869,7 +1021,7 @@ mod tests {
             gopher,
             duke,
             snake,
-            |t| monitor(t, Color::Rgb(247, 223, 30), 'J'),
+            |t| monitor(t, Color::Rgb(247, 223, 30), &["const x = 1;", "run(x);"]),
             robot,
         ];
         for figure in figures {

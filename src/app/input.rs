@@ -81,8 +81,18 @@ fn handle_modal_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) -> bool 
             state.column_drag_active = false;
             state.row_drag_active = None;
             state.review_chat_drag_active = false;
-            if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
-                let _ = panel::commit::place_cursor_at(state, area, m.column, m.row);
+            let over_files = rect_contains(panel::commit::staged_area(area), m.column, m.row);
+            match m.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let _ = panel::commit::place_cursor_at(state, area, m.column, m.row);
+                }
+                MouseEventKind::ScrollDown if over_files => {
+                    panel::commit::scroll_files(state, area, true, 3);
+                }
+                MouseEventKind::ScrollUp if over_files => {
+                    panel::commit::scroll_files(state, area, false, 3);
+                }
+                _ => {}
             }
             true
         }
@@ -909,6 +919,69 @@ mod tests {
         assert!(handle_modal_mouse(&mut state, area, &click));
 
         assert_eq!(state.commit_cursor, 5);
+    }
+
+    #[test]
+    fn wheel_over_staged_files_scrolls_the_list_and_stops_at_the_ends() {
+        let area = Rect::new(0, 0, 100, 30);
+        let mut state = AppState::new();
+        state.modal = Modal::Commit;
+        state.files = (0..80)
+            .map(|i| crate::git::FileEntry {
+                path: format!("src/file{i:02}.rs"),
+                x: 'M',
+                y: ' ',
+            })
+            .collect();
+        let pane = crate::panel::commit::staged_area(area);
+        let wheel = |kind| MouseEvent {
+            kind,
+            column: pane.x + 2,
+            row: pane.y + 2,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        assert!(handle_modal_mouse(
+            &mut state,
+            area,
+            &wheel(MouseEventKind::ScrollDown)
+        ));
+        assert!(state.commit_files_scroll > 0, "the list moved down");
+
+        for _ in 0..1_000 {
+            handle_modal_mouse(&mut state, area, &wheel(MouseEventKind::ScrollDown));
+        }
+        let visible = pane.height.saturating_sub(2) as usize;
+        // 80 files plus the folder row, and the last of them stays on screen.
+        assert_eq!(state.commit_files_scroll, 81 - visible);
+
+        for _ in 0..1_000 {
+            handle_modal_mouse(&mut state, area, &wheel(MouseEventKind::ScrollUp));
+        }
+        assert_eq!(state.commit_files_scroll, 0);
+    }
+
+    #[test]
+    fn wheel_over_the_message_leaves_the_file_list_alone() {
+        let area = Rect::new(0, 0, 100, 30);
+        let mut state = AppState::new();
+        state.modal = Modal::Commit;
+        state.files = (0..80)
+            .map(|i| crate::git::FileEntry {
+                path: format!("f{i}.rs"),
+                x: 'M',
+                y: ' ',
+            })
+            .collect();
+        let body = crate::panel::commit::editor_body_area(area);
+        let wheel = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: body.x + 1,
+            row: body.y + 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_modal_mouse(&mut state, area, &wheel);
+        assert_eq!(state.commit_files_scroll, 0);
     }
 
     #[test]

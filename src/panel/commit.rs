@@ -28,9 +28,15 @@ struct VisualLine {
 
 /// The modal's footprint: most of the screen. A commit message is written
 /// here and the diff it describes is read beside it, and both want room.
+/// The commit modal is widescreen: as wide as it can be, and no taller than
+/// sixteen by nine on screen (cells being twice as tall as wide), so the
+/// scene in the message pane has room to spread out sideways.
 fn modal_area(area: Rect) -> Rect {
     let w = (area.width * 92 / 100).clamp(60, 180).min(area.width);
-    let h = (area.height * 9 / 10).clamp(14, 60).min(area.height);
+    let h = (area.height * 9 / 10)
+        .clamp(14, 60)
+        .min(area.height)
+        .min((w * 9 / 32).max(14));
     ui::centered(area, w, h)
 }
 
@@ -69,14 +75,12 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 
     let body_area = editor_body_area(area);
     let block = ui::bordered(&title_text);
-    let waiting_for_first_token = state
-        .generation
-        .as_ref()
-        .is_some_and(|g| g.output.is_empty());
-    if waiting_for_first_token {
-        // Nothing has come back yet, so the box would be empty for as long as
-        // the model takes to read the diff. Put on a show instead, in the
-        // language the commit is written in.
+    if let Some(generation) = &state.generation {
+        // While the model works the box is a stage: the language's mascot
+        // feeding the diff into a network. Before the first token it has the
+        // whole box; as the message streams in, the text takes the rows it
+        // needs at the top and the show goes on underneath, until the box
+        // is full or the message is done and handed over for editing.
         let lang = commit_art::Language::dominant(
             state
                 .files
@@ -84,21 +88,49 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 .filter(|e| e.x != ' ' && e.x != '?')
                 .map(|e| e.path.as_str()),
         );
-        let seed = state.generation.as_ref().map_or(0, |g| g.scene);
+        let text_rows = if generation.output.is_empty() {
+            0
+        } else {
+            visual_lines(&generation.output, body_area.width.max(1) as usize).len()
+        }
+        .min(body_area.height as usize);
+        let scene_rows = (body_area.height as usize)
+            .saturating_sub(text_rows)
+            .saturating_sub(usize::from(text_rows > 0));
         let scene = commit_art::scene(
             lang,
-            seed,
+            generation.scene,
             state.animation_ms,
             body_area.width,
-            body_area.height,
+            scene_rows as u16,
+            text_rows == 0,
         );
-        let top = (body_area.height as usize).saturating_sub(scene.len()) / 2;
-        let mut lines: Vec<Line> = std::iter::repeat_n(Line::default(), top).collect();
-        lines.extend(scene);
-        frame.render_widget(
-            Paragraph::new(lines).centered().block(block),
-            left_chunks[0],
+        let (visible_text, _) = visible_message_view(
+            &msg_view,
+            msg_cursor,
+            body_area.width,
+            if scene.is_empty() {
+                body_area.height
+            } else {
+                text_rows as u16
+            },
+            state.commit_scroll_offset,
         );
+        let mut lines: Vec<Line> = if text_rows > 0 {
+            visible_text.split('\n').map(Line::raw).collect()
+        } else {
+            Vec::new()
+        };
+        if !scene.is_empty() {
+            lines.resize(text_rows, Line::default());
+            if text_rows > 0 {
+                lines.push(Line::default());
+            }
+            let top = scene_rows.saturating_sub(scene.len()) / 2;
+            lines.extend(std::iter::repeat_n(Line::default(), top));
+            lines.extend(scene);
+        }
+        frame.render_widget(Paragraph::new(lines).block(block), left_chunks[0]);
     } else {
         let (visible_text, cursor) = visible_message_view(
             &msg_view,
@@ -189,8 +221,55 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         })
         .collect();
 
-    let sidebar = List::new(items).block(ui::bordered("Staged"));
+    // The list scrolls rather than stopping at the bottom of the pane; the
+    // offset is clamped so the last rows are never scrolled out of sight.
+    let visible = chunks[1].height.saturating_sub(2) as usize;
+    let offset = files_scroll_clamped(state.commit_files_scroll, items.len(), visible);
+    let items: Vec<ListItem> = items.into_iter().skip(offset).collect();
+    let title = if offset > 0 {
+        format!("Staged \u{2191}{offset}")
+    } else {
+        "Staged".to_owned()
+    };
+    let sidebar = List::new(items).block(ui::bordered(&title));
     frame.render_widget(sidebar, chunks[1]);
+}
+
+/// The staged-files pane of the commit modal, borders included.
+pub fn staged_area(area: Rect) -> Rect {
+    let modal = modal_area(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+        .split(modal)[1]
+}
+
+fn files_scroll_clamped(offset: usize, rows: usize, visible: usize) -> usize {
+    offset.min(rows.saturating_sub(visible))
+}
+
+fn staged_row_count(state: &AppState) -> usize {
+    let staged: Vec<FileEntry> = state
+        .files
+        .iter()
+        .filter(|e| e.x != ' ' && e.x != '?')
+        .cloned()
+        .collect();
+    build_tree_rows(&staged, &HashSet::new())
+        .len()
+        .saturating_sub(1)
+}
+
+/// Scroll the staged-files list by `n` rows, stopping at either end.
+pub fn scroll_files(state: &mut AppState, area: Rect, down: bool, n: usize) {
+    let visible = staged_area(area).height.saturating_sub(2) as usize;
+    let rows = staged_row_count(state);
+    let offset = if down {
+        state.commit_files_scroll.saturating_add(n)
+    } else {
+        state.commit_files_scroll.saturating_sub(n)
+    };
+    state.commit_files_scroll = files_scroll_clamped(offset, rows, visible);
 }
 
 pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
@@ -554,6 +633,15 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             if !generating {
                 move_cursor_vertical(state, false);
             }
+        }
+        KeyCode::PageDown => {
+            // The pane's height is not known here, so this stops at the last
+            // row; the render clamps the rest so the list never over-scrolls.
+            let last = staged_row_count(state).saturating_sub(1);
+            state.commit_files_scroll = state.commit_files_scroll.saturating_add(10).min(last);
+        }
+        KeyCode::PageUp => {
+            state.commit_files_scroll = state.commit_files_scroll.saturating_sub(10);
         }
         KeyCode::Home => {
             if !generating {
