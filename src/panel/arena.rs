@@ -571,11 +571,14 @@ impl Arena {
         if let Some(dir) = self.path_to_food(id) {
             return Some(dir);
         }
+        let leaving = (snake.grow == 0 && snake.body.len() > 1)
+            .then(|| snake.body.back().copied())
+            .flatten();
         [snake.dir, snake.dir.left(), snake.dir.right()]
             .into_iter()
             .filter_map(|dir| {
                 let (nx, ny) = self.step_from(hx, hy, dir)?;
-                self.passable(nx, ny).then(|| {
+                (self.passable(nx, ny) || Some((nx, ny)) == leaving).then(|| {
                     let room = self.room(nx, ny, LOOKAHEAD_ROOM);
                     let burning = usize::from(self.burning(nx, ny)) * 4;
                     (room.saturating_sub(burning), dir)
@@ -605,9 +608,14 @@ impl Arena {
             return;
         };
         let &(hx, hy) = snake.body.front().expect("a snake has a head");
+        // The cell the tail is about to leave is free to move into: a snake
+        // follows its own tail rather than dying on it, as it always has.
+        let leaving = (snake.grow == 0 && snake.body.len() > 1)
+            .then(|| snake.body.back().copied())
+            .flatten();
         let next = self
             .step_from(hx, hy, dir)
-            .filter(|&(nx, ny)| self.passable(nx, ny));
+            .filter(|&(nx, ny)| self.passable(nx, ny) || Some((nx, ny)) == leaving);
         let Some((nx, ny)) = next else {
             self.kill_snake(id);
             return;
@@ -626,10 +634,12 @@ impl Arena {
         } else {
             snake.body.pop_back()
         };
-        self.set(nx, ny, Cell::Snake(id));
+        // The tail is cleared before the head is drawn, so a head that has
+        // just taken the tail's cell is not wiped out by it.
         if let Some((tx, ty)) = tail {
             self.set(tx, ty, Cell::Empty);
         }
+        self.set(nx, ny, Cell::Snake(id));
     }
 
     /// The snake comes apart from the head back, each segment its own small
@@ -942,6 +952,8 @@ const KEPT: usize = 16;
 const MAX_CATCH_UP: u64 = 400;
 
 /// Draw the arena for `seed`, `width` by `height`, as it stands at `ms`.
+/// The clock is expected to run forward: an arena caught up to a later `ms`
+/// cannot be rewound, and a call for an earlier one starts a fresh round.
 pub fn frame(
     seed: usize,
     width: usize,
