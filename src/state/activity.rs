@@ -214,6 +214,7 @@ impl AppState {
             output: String::new(),
             spinner: 0,
             scene: self.animation_tick,
+            arrivals: Vec::new(),
         });
     }
 

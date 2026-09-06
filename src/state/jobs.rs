@@ -114,6 +114,19 @@ pub struct Generation {
     /// Which of the waiting scenes this generation shows, chosen when it
     /// started so the picture does not change under the reader.
     pub scene: usize,
+    /// The chunks that have lately streamed in, still flying from the
+    /// network in the scene to their place in the text.
+    pub arrivals: Vec<Arrival>,
+}
+
+/// One chunk of the message as it came out of the model: where it sits in
+/// the output, and when it arrived on the animation clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Arrival {
+    /// First character of the chunk in the output.
+    pub start: usize,
+    pub len: usize,
+    pub at_ms: u64,
 }
 
 pub const SPINNER_FRAMES: &[&str] = &[

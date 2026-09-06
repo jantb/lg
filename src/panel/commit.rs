@@ -94,42 +94,32 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             visual_lines(&generation.output, body_area.width.max(1) as usize).len()
         }
         .min(body_area.height as usize);
-        let scene_rows = (body_area.height as usize)
-            .saturating_sub(text_rows)
-            .saturating_sub(usize::from(text_rows > 0));
-        let scene = commit_art::scene(
+        // The text is scrolled to keep its end in view, as the message
+        // grows from the end; the box takes it all when the text is long
+        // enough to have pushed the scene out.
+        let visible = scrolled_lines(
+            &msg_view,
+            msg_cursor,
+            body_area.width,
+            body_area.height,
+            state.commit_scroll_offset,
+        );
+        let visible = if text_rows > 0 {
+            &visible[..text_rows.min(visible.len())]
+        } else {
+            &[]
+        };
+        let text: Vec<String> = visible.iter().map(|line| line.text.clone()).collect();
+        let flights = flights(&generation.arrivals, visible, state.animation_ms);
+        let lines = commit_art::stage(
             lang,
             generation.scene,
             state.animation_ms,
             body_area.width,
-            scene_rows as u16,
-            text_rows == 0,
+            body_area.height,
+            &text,
+            &flights,
         );
-        let (visible_text, _) = visible_message_view(
-            &msg_view,
-            msg_cursor,
-            body_area.width,
-            if scene.is_empty() {
-                body_area.height
-            } else {
-                text_rows as u16
-            },
-            state.commit_scroll_offset,
-        );
-        let mut lines: Vec<Line> = if text_rows > 0 {
-            visible_text.split('\n').map(Line::raw).collect()
-        } else {
-            Vec::new()
-        };
-        if !scene.is_empty() {
-            lines.resize(text_rows, Line::default());
-            if text_rows > 0 {
-                lines.push(Line::default());
-            }
-            let top = scene_rows.saturating_sub(scene.len()) / 2;
-            lines.extend(std::iter::repeat_n(Line::default(), top));
-            lines.extend(scene);
-        }
         frame.render_widget(Paragraph::new(lines).block(block), left_chunks[0]);
     } else {
         let (visible_text, cursor) = visible_message_view(
@@ -345,6 +335,72 @@ fn visible_message_view(
     let cursor_x = cursor_col.min(width.saturating_sub(1)) as u16;
 
     (visible, (cursor_x, cursor_y))
+}
+
+/// The wrapped lines of `message` that fit in a box, scrolled so the cursor
+/// is in view.
+fn scrolled_lines(
+    message: &str,
+    cursor: usize,
+    width: u16,
+    height: u16,
+    scroll_offset: usize,
+) -> Vec<VisualLine> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let cursor = cursor.min(message.chars().count());
+    let lines = visual_lines(message, width as usize);
+    let (cursor_row, _) = cursor_visual_position(&lines, cursor);
+    let scroll = scroll::selection_scroll_offset(
+        Some(cursor_row),
+        lines.len(),
+        height as usize,
+        scroll_offset,
+    );
+    lines
+        .into_iter()
+        .skip(scroll)
+        .take(height as usize)
+        .collect()
+}
+
+/// Where each chunk that has lately arrived lands in the `visible` lines:
+/// one flight per visible line a chunk touches, since a chunk may wrap.
+/// Chunks that have landed and cooled, or land on a line scrolled out of
+/// view, are left out.
+fn flights(
+    arrivals: &[crate::state::Arrival],
+    visible: &[VisualLine],
+    now_ms: u64,
+) -> Vec<commit_art::Flight> {
+    let mut out = Vec::new();
+    for arrival in arrivals {
+        let age_ms = now_ms.saturating_sub(arrival.at_ms);
+        if age_ms >= commit_art::FLIGHT_TOTAL_MS {
+            continue;
+        }
+        let end = arrival.start + arrival.len;
+        for (row, line) in visible.iter().enumerate() {
+            let from = arrival.start.max(line.start);
+            let to = end.min(line.start + line.len);
+            if from >= to {
+                continue;
+            }
+            let col = from - line.start;
+            let text: String = line.text.chars().skip(col).take(to - from).collect();
+            if text.trim().is_empty() {
+                continue;
+            }
+            out.push(commit_art::Flight {
+                row,
+                col,
+                text,
+                age_ms,
+            });
+        }
+    }
+    out
 }
 
 fn cursor_visual_position(lines: &[VisualLine], cursor: usize) -> (usize, usize) {

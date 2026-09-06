@@ -183,9 +183,10 @@ const TOKEN_GAP: u64 = 3;
 /// Cells the stream moves per second.
 const STREAM_SPEED: f32 = 12.0;
 /// The narrowest the stream may be before the pipeline is dropped, and the
-/// widest it is allowed to be: the width beyond that goes to the tree.
-const MIN_STREAM_WIDTH: usize = 10;
-const MAX_STREAM_WIDTH: usize = 22;
+/// widest it is allowed to be: the width beyond that goes to the tree. The
+/// stream is kept short so the words leaving the network have room.
+const MIN_STREAM_WIDTH: usize = 8;
+const MAX_STREAM_WIDTH: usize = 16;
 /// The network is a tree lying on its side, root at the left where the
 /// stream comes in, leaves at the right. This many levels at most; a low
 /// band gets fewer.
@@ -198,9 +199,9 @@ const LEAF_STEP: usize = 2;
 /// to fill the width it is given.
 const LEVEL_STEP: usize = 6;
 const MAX_LEVEL_STEP: usize = 10;
-/// Cells kept clear to the right of the network so the leaves do not sit on
-/// the border and look cut off.
-const NETWORK_MARGIN: usize = 2;
+/// Cells kept clear to the right of the network: the runway the words of
+/// the message take off along as they leave the leaves for the text.
+const NETWORK_MARGIN: usize = 12;
 /// The glyphs raining down the background.
 const RAIN_GLYPHS: &[char] = &[
     '{', '}', '(', ')', '[', ']', ';', '=', '<', '>', '+', '-', '*', '/', '&', '|', '!', '?', ':',
@@ -241,6 +242,19 @@ impl Canvas {
     fn text(&mut self, x: usize, y: usize, text: &str, style: Style) {
         for (i, c) in text.chars().enumerate() {
             self.put(x + i, y, c, style);
+        }
+    }
+
+    fn width(&self) -> usize {
+        self.cells.first().map_or(0, Vec::len)
+    }
+
+    /// Copy another canvas onto this one with its top left at row `y`.
+    fn blit(&mut self, other: &Canvas, y: usize) {
+        for (dy, row) in other.cells.iter().enumerate() {
+            for (x, &(c, style)) in row.iter().enumerate() {
+                self.put(x, y + dy, c, style);
+            }
         }
     }
 
@@ -503,10 +517,12 @@ impl Plan {
         // with a row left under it for the output. The stream takes only
         // what it needs of the width; the tree gets the rest, level by level.
         let stream_x = mascot_w + 1;
+        // A box too narrow for the pipeline keeps the mascot on its own.
         let for_tree = width
-            .checked_sub(stream_x + MIN_STREAM_WIDTH + WIRE_GAP + NETWORK_MARGIN)?
-            .checked_sub(1)?;
+            .checked_sub(stream_x + MIN_STREAM_WIDTH + WIRE_GAP + NETWORK_MARGIN)
+            .and_then(|w| w.checked_sub(1));
         let pipeline = [2, 0].into_iter().find_map(|spare| {
+            let for_tree = for_tree?;
             let band = mascot_h.checked_sub(spare)?;
             // Levels the width allows, and no more than the leaves can
             // fill: a tall thin tree with one leaf a level is a stick.
@@ -583,9 +599,148 @@ pub fn scene(
     height: u16,
     writing: bool,
 ) -> Vec<Line<'static>> {
-    let Some(plan) = Plan::fit(lang, seed, width as usize, height as usize) else {
-        return Vec::new();
+    paint(lang, seed, ms, width as usize, height as usize, writing)
+        .map_or_else(Vec::new, |(canvas, _)| canvas.lines())
+}
+
+/// A run of the message that has just come out of the model and is still on
+/// its way from the network to its place in the text above the scene.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Flight {
+    /// Row and column in the text where the run lands.
+    pub row: usize,
+    pub col: usize,
+    pub text: String,
+    /// Milliseconds since the run left the model.
+    pub age_ms: u64,
+}
+
+/// Milliseconds a run takes to fly from the network to the text.
+pub const FLIGHT_MS: u64 = 380;
+/// Milliseconds a run glows after landing, cooling into plain text.
+const LANDING_GLOW_MS: u64 = 400;
+/// After this long a run is plain text and can be forgotten.
+pub const FLIGHT_TOTAL_MS: u64 = FLIGHT_MS + LANDING_GLOW_MS;
+/// Rows the flight path bulges upward above the straight line, at its most.
+const FLIGHT_ARC: f32 = 1.5;
+
+/// The message pane while the model is writing: the `text` streamed so far
+/// on the top rows and the scene underneath, with each newly arrived run of
+/// text flying from the network out to where it belongs, glowing as it
+/// lands. Text that is still in flight is not yet at its destination, so
+/// its cells there are blank until it gets there. The whole box is filled,
+/// `height` rows of `width` cells; the text takes as many rows as it has,
+/// the scene what is left, or nothing when that is too little.
+pub fn stage(
+    lang: Language,
+    seed: usize,
+    ms: u64,
+    width: u16,
+    height: u16,
+    text: &[String],
+    flights: &[Flight],
+) -> Vec<Line<'static>> {
+    let (width, height) = (width as usize, height as usize);
+    let mut canvas = Canvas::new(width, height);
+    let text_rows = text.len().min(height);
+    let plain = Style::default();
+    for (row, line) in text.iter().enumerate().take(text_rows) {
+        for (col, c) in line.chars().enumerate().take(width) {
+            let flying = flights.iter().any(|f| {
+                f.age_ms < FLIGHT_MS
+                    && f.row == row
+                    && (f.col..f.col + f.text.chars().count()).contains(&col)
+            });
+            if !flying {
+                canvas.put(col, row, c, plain);
+            }
+        }
+    }
+    let scene_y = text_rows + usize::from(text_rows > 0);
+    let scene_rows = height.saturating_sub(scene_y);
+    let exit = paint(lang, seed, ms, width, scene_rows, text_rows == 0).map(|(scene, exit)| {
+        canvas.blit(&scene, scene_y);
+        (exit.0 as f32, (exit.1 + scene_y) as f32)
+    });
+    for flight in flights {
+        draw_flight(&mut canvas, flight, exit, text_rows, ms);
+    }
+    canvas.lines()
+}
+
+/// Turns of the colour wheel per second a run in flight cycles through.
+const RAINBOW_RATE: f32 = 0.6;
+/// How far round the wheel each character is from the one before it.
+const RAINBOW_SPREAD: f32 = 0.05;
+
+/// One run on its way, or cooling where it has just landed. In flight it is
+/// the model's: bold and cycling through the rainbow, so there is no
+/// mistaking generated text for the message as it stands. Landed, it cools
+/// from its last colour into plain text. With no scene to come from the run
+/// simply appears where it belongs and cools there.
+fn draw_flight(
+    canvas: &mut Canvas,
+    flight: &Flight,
+    exit: Option<(f32, f32)>,
+    text_rows: usize,
+    ms: u64,
+) {
+    if flight.age_ms >= FLIGHT_TOTAL_MS || flight.row >= text_rows {
+        return;
+    }
+    let plain = Color::Rgb(220, 220, 240);
+    let (tx, ty) = (flight.col as f32, flight.row as f32);
+    let flying = flight.age_ms < FLIGHT_MS;
+    let (x, y) = match exit.filter(|_| flying) {
+        Some((ex, ey)) => {
+            let k = flight.age_ms as f32 / FLIGHT_MS as f32;
+            // Ease in and out, and lift the path into an arc so the run
+            // rises out of the network before it settles into the line.
+            let s = k * k * (3.0 - 2.0 * k);
+            let arc = (k * std::f32::consts::PI).sin() * FLIGHT_ARC;
+            (ex + (tx - ex) * s, ey + (ty - ey) * s - arc)
+        }
+        None => (tx, ty),
     };
+    // The run takes off from the far right of the network; keep all of it
+    // in the box on its way rather than clip its tail off.
+    let len = flight.text.chars().count();
+    let x = (x.round().max(0.0) as usize).min(canvas.width().saturating_sub(len));
+    let y = y.round().max(0.0) as usize;
+    // The wheel keeps turning after landing, from where it was when the run
+    // touched down, so the colour cools without a jump.
+    let landed_ms = ms.saturating_sub(flight.age_ms.saturating_sub(FLIGHT_MS));
+    let turn = landed_ms as f32 / 1000.0 * RAINBOW_RATE;
+    let cooled = if flying {
+        0.0
+    } else {
+        (flight.age_ms - FLIGHT_MS) as f32 / LANDING_GLOW_MS as f32
+    };
+    for (i, c) in flight.text.chars().enumerate() {
+        if c.is_whitespace() {
+            continue;
+        }
+        let color = mix(hue(turn + i as f32 * RAINBOW_SPREAD), plain, cooled);
+        let mut style = Style::default().fg(color);
+        if flying {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        canvas.put(x + i, y, c, style);
+    }
+}
+
+/// The scene painted onto a canvas of its own, and the point the message
+/// leaves it from: the leaves of the network, or the top of the mascot's
+/// head when the box is too narrow for a network.
+fn paint(
+    lang: Language,
+    seed: usize,
+    ms: u64,
+    width: usize,
+    height: usize,
+    writing: bool,
+) -> Option<(Canvas, (usize, usize))> {
+    let plan = Plan::fit(lang, seed, width, height)?;
     let mut canvas = Canvas::new(plan.width, plan.height);
     let t = ms as f32 / 1000.0;
 
@@ -617,9 +772,11 @@ pub fn scene(
         t,
     );
 
+    let mut exit = (mascot_x + plan.mascot_w / 2, band_y);
     if let Some(pipe) = &plan.pipeline {
         let network = Network::new(&pipe.tree, pipe.tree_y, t);
         let root_row = pipe.tree_y + pipe.tree.nodes[0].row;
+        exit = (pipe.tree.x + pipe.tree.width() + 1, root_row);
         draw_stream(&mut canvas, pipe.stream_x, root_row, pipe.stream_w, t);
         let style = Style::default().fg(mix(
             Color::Rgb(80, 80, 110),
@@ -658,7 +815,7 @@ pub fn scene(
                 .add_modifier(Modifier::BOLD | Modifier::ITALIC),
         );
     }
-    canvas.lines()
+    Some((canvas, exit))
 }
 
 /// Code falling down the background above the ground: a third of the
@@ -1264,6 +1421,105 @@ mod tests {
         assert!(scene(Language::Rust, 0, 0, 70, 2, true).is_empty());
         assert!(scene(Language::Rust, 0, 0, 8, 12, true).is_empty());
         assert!(scene(Language::Rust, 0, 0, 0, 0, true).is_empty());
+    }
+
+    #[test]
+    fn a_flight_leaves_its_place_in_the_text_empty_until_it_lands() {
+        let text = vec!["feat: add flights".to_owned()];
+        let flight = |age_ms| Flight {
+            row: 0,
+            col: 10,
+            text: "flights".to_owned(),
+            age_ms,
+        };
+        let (w, h) = (110, 30);
+        // Just left the model: the word is somewhere in the box, not yet
+        // where it belongs.
+        let early = text_of(&stage(Language::Rust, 0, 100, w, h, &text, &[flight(0)]));
+        assert_eq!(early.lines().count(), h as usize);
+        assert!(early.starts_with("feat: add "), "{early}");
+        assert!(!early.starts_with("feat: add flights"), "{early}");
+        assert!(early.contains("flights"), "the word is in flight:\n{early}");
+        // Landed and cooling: in place.
+        let late = text_of(&stage(
+            Language::Rust,
+            0,
+            500,
+            w,
+            h,
+            &text,
+            &[flight(FLIGHT_MS)],
+        ));
+        assert!(late.starts_with("feat: add flights"), "{late}");
+        // Long gone: plain text, nothing else drawn for it.
+        let done = text_of(&stage(
+            Language::Rust,
+            0,
+            900,
+            w,
+            h,
+            &text,
+            &[flight(FLIGHT_TOTAL_MS)],
+        ));
+        assert!(done.starts_with("feat: add flights"), "{done}");
+        assert_eq!(done.matches("flights").count(), 1, "{done}");
+    }
+
+    #[test]
+    fn a_flight_moves_between_frames_and_stands_out_from_the_text() {
+        let text = vec!["fix: it".to_owned()];
+        let flight = |age_ms| Flight {
+            row: 0,
+            col: 5,
+            text: "it".to_owned(),
+            age_ms,
+        };
+        // Each letter in flight has a colour of its own, so the word is
+        // found cell by cell rather than span by span.
+        let at = |ms: u64, age: u64| {
+            let lines = stage(Language::Go, 1, ms, 110, 30, &text, &[flight(age)]);
+            lines.iter().enumerate().find_map(|(row, line)| {
+                let cells: Vec<(char, Style)> = line
+                    .spans
+                    .iter()
+                    .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
+                    .collect();
+                cells
+                    .windows(2)
+                    .position(|w| w[0].0 == 'i' && w[1].0 == 't')
+                    .map(|col| (row, col, cells[col].1))
+            })
+        };
+        let a = at(0, 0).expect("in the picture at take-off");
+        let b = at(150, 150).expect("in the picture midway");
+        let c = at(300, 300).expect("in the picture near landing");
+        assert!(a != b && b != c, "the word moves: {a:?} {b:?} {c:?}");
+        assert!(
+            a.2.add_modifier.contains(Modifier::BOLD) && a.2.fg.is_some(),
+            "in flight it is coloured and bold, unlike the text: {a:?}"
+        );
+        let landed = at(FLIGHT_TOTAL_MS, FLIGHT_TOTAL_MS).expect("in place at the end");
+        assert_eq!((landed.0, landed.1), (0, 5));
+        assert_eq!(
+            landed.2,
+            Style::default(),
+            "settled text is plain: {landed:?}"
+        );
+    }
+
+    #[test]
+    fn without_a_scene_the_text_still_fills_the_box() {
+        let text = vec!["feat: tiny".to_owned()];
+        let flight = Flight {
+            row: 0,
+            col: 6,
+            text: "tiny".to_owned(),
+            age_ms: 0,
+        };
+        let lines = stage(Language::Rust, 0, 0, 20, 3, &text, &[flight]);
+        assert_eq!(lines.len(), 3);
+        let shown = text_of(&lines);
+        assert!(shown.starts_with("feat: tiny"), "{shown}");
     }
 
     #[test]

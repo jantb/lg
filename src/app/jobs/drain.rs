@@ -422,13 +422,25 @@ impl App {
             match msg {
                 GenMsg::Thinking(_) => {}
                 GenMsg::Output(o) => {
+                    let now = self.state.animation_ms;
                     if let Some(g) = self.state.generation.as_mut() {
+                        // Chunks that have landed and stopped glowing are
+                        // plain text now and need no remembering.
+                        g.arrivals.retain(|a| {
+                            now.saturating_sub(a.at_ms) < crate::panel::commit_art::FLIGHT_TOTAL_MS
+                        });
+                        g.arrivals.push(crate::state::Arrival {
+                            start: g.output.chars().count(),
+                            len: o.chars().count(),
+                            at_ms: now,
+                        });
                         g.output.push_str(&o);
                     }
                 }
                 GenMsg::Reset => {
                     if let Some(g) = self.state.generation.as_mut() {
                         g.output.clear();
+                        g.arrivals.clear();
                     }
                 }
                 GenMsg::Done {
