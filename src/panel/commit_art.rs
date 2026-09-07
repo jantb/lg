@@ -332,13 +332,22 @@ enum Side {
 /// the model is reading, shown going in. Header lines are left out and runs
 /// of whitespace become one gap, so the stream is the code and not its
 /// indentation; a very long diff is cut, as the stream loops round anyway.
+/// The lines are kept as they were written as well, indentation and all, for
+/// the backdrop that scrolls the change itself past the reader.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Feed {
     chars: Vec<(char, Side)>,
+    lines: Vec<(String, Side)>,
 }
 
 /// Characters of the diff kept for the stream, at most.
 const FEED_CAP: usize = 40_000;
+/// Lines of the diff kept for the backdrop, at most, and how much of each:
+/// the backdrop loops round, and no terminal is that wide.
+const FEED_LINE_CAP: usize = 4_000;
+const FEED_LINE_WIDTH: usize = 400;
+/// Columns a tab stands for when the line is laid out on the grid.
+const TAB_WIDTH: usize = 4;
 /// Slots are counted back from here into the diff; far enough ahead of any
 /// slot the stream reaches in a wait.
 const FEED_ORIGIN: usize = STREAM_ORIGIN * 2;
@@ -346,6 +355,7 @@ const FEED_ORIGIN: usize = STREAM_ORIGIN * 2;
 impl Feed {
     pub fn from_diff(diff: &str) -> Self {
         let mut chars: Vec<(char, Side)> = Vec::new();
+        let mut lines: Vec<(String, Side)> = Vec::new();
         for line in diff.lines() {
             if [
                 "diff --git",
@@ -366,24 +376,29 @@ impl Feed {
                 Some('-') => Side::Removed,
                 _ => Side::Context,
             };
-            for c in line.chars() {
-                if c.is_whitespace() || c.is_control() {
-                    if chars.last().is_some_and(|&(last, _)| last != ' ') {
-                        chars.push((' ', side));
+            if lines.len() < FEED_LINE_CAP {
+                lines.push((on_grid(line), side));
+            }
+            if chars.len() < FEED_CAP {
+                for c in line.chars() {
+                    if c.is_whitespace() || c.is_control() {
+                        if chars.last().is_some_and(|&(last, _)| last != ' ') {
+                            chars.push((' ', side));
+                        }
+                    } else {
+                        chars.push((cell(c), side));
                     }
-                } else {
-                    chars.push((c, side));
+                }
+                if chars.last().is_some_and(|&(last, _)| last != ' ') {
+                    chars.push((' ', side));
                 }
             }
-            if chars.last().is_some_and(|&(last, _)| last != ' ') {
-                chars.push((' ', side));
-            }
-            if chars.len() >= FEED_CAP {
-                chars.truncate(FEED_CAP);
+            if chars.len() >= FEED_CAP && lines.len() >= FEED_LINE_CAP {
                 break;
             }
         }
-        Self { chars }
+        chars.truncate(FEED_CAP);
+        Self { chars, lines }
     }
 
     /// The character in stream slot `slot`, or none when there is no diff
@@ -408,6 +423,43 @@ impl Feed {
             Some((c, _)) => c != ' ',
             None => hash(slot, 11) % TOKEN_GAP != 0,
         }
+    }
+}
+
+/// A line of the diff as it can be laid out on the grid: tabs opened out to
+/// their stop, whitespace flattened to spaces and every other character put
+/// in a cell it fits. Long lines are cut well past any terminal's width.
+fn on_grid(line: &str) -> String {
+    let mut out = String::new();
+    for c in line.chars() {
+        if out.chars().count() >= FEED_LINE_WIDTH {
+            break;
+        }
+        match c {
+            '\t' => {
+                let pad = TAB_WIDTH - out.chars().count() % TAB_WIDTH;
+                out.extend(std::iter::repeat_n(' ', pad));
+            }
+            c if c.is_whitespace() || c.is_control() => out.push(' '),
+            c => out.push(cell(c)),
+        }
+    }
+    out
+}
+
+/// `c` as it can go in a canvas cell, which holds one character in one
+/// column: itself when that is what it takes, and a dot when it is not.
+/// Combining marks, the wide scripts and emoji would otherwise leave the row
+/// they land in a column short or a column over.
+fn cell(c: char) -> char {
+    if c.is_ascii_graphic() || c == ' ' {
+        return c;
+    }
+    let mut buf = [0u8; 4];
+    if Span::raw(&*c.encode_utf8(&mut buf)).width() == 1 {
+        c
+    } else {
+        '\u{b7}'
     }
 }
 
@@ -882,7 +934,7 @@ fn paint(
     match BACKDROPS[seed % BACKDROPS.len()] {
         Backdrop::Rain => draw_rain(&mut canvas, plan.width, plan.ground, t),
         Backdrop::Night => draw_night(&mut canvas, plan.width, plan.ground, ms),
-        Backdrop::Diff => draw_diff(&mut canvas, plan.width, plan.ground, t),
+        Backdrop::Diff => draw_diff(&mut canvas, feed, plan.width, plan.ground, t),
         Backdrop::Arena => {
             arena::frame(seed, plan.width, plan.ground, ms, &mut |x, y, c, style| {
                 canvas.put(x, y, c, style)
@@ -1132,10 +1184,39 @@ fn moon_patch(x: f32, y: f32, px: f32, py: f32, pr: f32) -> f32 {
     e * e * (3.0 - 2.0 * e)
 }
 
-/// The diff scrolling up behind everything: lines of added and removed code
-/// in the colours a diff is read in, drawn as runs of glyphs since the real
-/// diff is the model's to read, not ours to show.
-fn draw_diff(canvas: &mut Canvas, width: usize, ground: usize, t: f32) {
+/// The diff scrolling up behind everything: the very lines the model is
+/// reading, in the colours a diff is read in. The change itself is what the
+/// wait is about, so the backdrop shows it rather than a stand-in; it loops
+/// round, so a wait long enough sees all of it go past. Only a diff too
+/// large to have been kept falls back to abstract glyphs.
+fn draw_diff(canvas: &mut Canvas, feed: &Feed, width: usize, ground: usize, t: f32) {
+    if feed.lines.is_empty() {
+        draw_glyph_diff(canvas, width, ground, t);
+        return;
+    }
+    let offset = (t * DIFF_SPEED) as usize;
+    for y in 0..ground {
+        let (line, side) = &feed.lines[(y + offset) % feed.lines.len()];
+        let color = match side {
+            Side::Added => Color::Rgb(70, 160, 90),
+            Side::Removed => Color::Rgb(170, 70, 80),
+            Side::Context => Color::Rgb(75, 78, 100),
+        };
+        // Lines nearer the top have been read and fade; the newest arrive
+        // bright at the bottom.
+        let depth = 0.55 + 0.45 * (y as f32 / ground.max(1) as f32);
+        let style = Style::default().fg(dim(color, depth));
+        for (x, c) in line.chars().take(width).enumerate() {
+            if c != ' ' {
+                canvas.put(x, y, c, style);
+            }
+        }
+    }
+}
+
+/// The stand-in for a diff there is nothing left of: lines of the right
+/// shape in the right colours, drawn as runs of glyphs.
+fn draw_glyph_diff(canvas: &mut Canvas, width: usize, ground: usize, t: f32) {
     let offset = (t * DIFF_SPEED) as usize;
     for y in 0..ground {
         let line = y + offset;
@@ -1552,26 +1633,49 @@ mod tests {
         assert_eq!(Language::dominant([]), Language::Other);
     }
 
+    /// A diff with the awkward things a real one has in it: a tab, a line
+    /// far longer than any terminal, characters that take two columns and
+    /// ones that take none. The scene draws these, so the box must still
+    /// come out square.
+    const AWKWARD_DIFF: &str = "diff --git a/x.rs b/x.rs\n@@ -1,4 +1,4 @@\n\
+         \x20fn wake() {\n\
+         -\tlet sleepy = 1; // \u{5e73}\u{4eee}\u{540d} \u{1f980} e\u{301}\n\
+         +\tlet sparkly = 2;\n\
+         +    // and a line that runs on and on and on and on and on and on and \
+         on and on and on and on and on and on and on and on and on past any \
+         terminal anyone has ever sat in front of\n";
+
     #[test]
     fn every_scene_fills_the_box_it_was_given_and_holds_still() {
-        for lang in ALL {
-            for seed in 0..BACKDROPS.len() {
-                for (w, h) in [(90u16, 16u16), (120, 40), (200, 60)] {
-                    for frame in 0..40 {
-                        let ms = frame * 230;
-                        let lines = scene(show(lang, seed, ms), w, h, true);
-                        assert_eq!(
-                            lines.len(),
-                            h as usize,
-                            "{lang:?} fills {w}x{h} top to bottom"
-                        );
-                        for line in &lines {
+        // With nothing behind the scene, and with a real diff behind it: the
+        // diff backdrop lays out lines that came out of a repository, not
+        // glyphs of its own choosing.
+        for feed in [Feed::default(), Feed::from_diff(AWKWARD_DIFF)] {
+            for lang in ALL {
+                for seed in 0..BACKDROPS.len() {
+                    for (w, h) in [(90u16, 16u16), (120, 40), (200, 60)] {
+                        for frame in 0..40 {
+                            let ms = frame * 230;
+                            let show = Show {
+                                lang,
+                                seed,
+                                ms,
+                                feed: &feed,
+                            };
+                            let lines = scene(show, w, h, true);
                             assert_eq!(
-                                line.width(),
-                                w as usize,
-                                "{lang:?} seed {seed} at {ms}ms fills {w} across: {}",
-                                text_of(std::slice::from_ref(line))
+                                lines.len(),
+                                h as usize,
+                                "{lang:?} fills {w}x{h} top to bottom"
                             );
+                            for line in &lines {
+                                assert_eq!(
+                                    line.width(),
+                                    w as usize,
+                                    "{lang:?} seed {seed} at {ms}ms fills {w} across: {}",
+                                    text_of(std::slice::from_ref(line))
+                                );
+                            }
                         }
                     }
                 }
@@ -1788,6 +1892,38 @@ mod tests {
             bare.contains(TOKEN_GLYPHS[0]) || bare.contains(TOKEN_GLYPHS[1]),
             "{bare}"
         );
+    }
+
+    #[test]
+    fn the_diff_backdrop_scrolls_the_change_itself_past_the_reader() {
+        let seed = BACKDROPS
+            .iter()
+            .position(|b| *b == Backdrop::Diff)
+            .expect("the diff is one of the backdrops");
+        let feed = Feed::from_diff(
+            "diff --git a/x.rs b/x.rs\nindex 111..222 100644\n@@ -1,2 +1,2 @@\n\
+             \x20fn wake() {\n-    let sleepy = 1;\n+\tlet sparkly = 2;\n",
+        );
+        let seen: String = (0..40)
+            .map(|frame| {
+                let show = Show {
+                    lang: Language::Rust,
+                    seed,
+                    ms: frame * 120,
+                    feed: &feed,
+                };
+                text_of(&scene(show, 130, 30, false))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(seen.contains("let sparkly = 2;"), "{seen}");
+        assert!(seen.contains("let sleepy = 1;"), "both sides show");
+        assert!(seen.contains("fn wake() {"), "and the context around them");
+
+        // Nothing to show falls back to a stand-in rather than a blank sky.
+        let bare = scene(show(Language::Rust, seed, 0), 130, 30, false);
+        let sky = text_of(&bare[..6]);
+        assert!(!sky.trim().is_empty(), "the sky is not left blank:\n{sky}");
     }
 
     #[test]
