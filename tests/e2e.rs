@@ -203,15 +203,17 @@ fn unknown_argument_is_reported_instead_of_silently_launching() {
     assert!(stderr.contains("Usage:"), "got: {stderr}");
 }
 
+/// lg is often opened on the folder a project is about to be cloned into, or
+/// on one that was never a repository at all, so a directory with no
+/// repository in it is a place to start rather than a reason to refuse.
 #[test]
-fn a_directory_with_no_repositories_is_refused_with_a_reason() {
+fn a_directory_with_no_repositories_is_opened_anyway() {
     let dir = tempfile::tempdir().expect("tempdir");
     let out = lg_bin(&[], dir.path());
 
-    assert!(!out.status.success(), "nothing here for lg to show");
+    // Run without a terminal, lg gets as far as the alternate screen and
+    // stops there; what matters is that it never turned the directory down.
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("no repositories found"),
-        "the reason must be said: {stderr}"
-    );
+    assert!(!stderr.contains("no repositories found"), "got: {stderr}");
+    assert!(!stderr.contains("not a git repository"), "got: {stderr}");
 }

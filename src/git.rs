@@ -13,6 +13,7 @@ mod diff;
 mod flow;
 mod index;
 mod nested;
+mod plain;
 mod release;
 mod remote;
 mod review;
@@ -63,6 +64,7 @@ pub use nested::{
     NestedRepo, checkout_nested_branch, checkout_nested_branch_at, checkout_nested_remote_branch,
     checkout_nested_remote_branch_at, nested_repositories, nested_repositories_at,
 };
+pub use plain::{init_repository, new_file_diff, new_file_entries, new_files_diff};
 pub use release::{
     BranchReleaseStatus, ReleaseBranches, ReleaseEnv, ReleaseTargetStatus, branch_release_status,
     release_branches,

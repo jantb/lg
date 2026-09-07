@@ -15,17 +15,18 @@ mod draw;
 mod tree;
 
 pub(crate) use actions::{
-    activate_selected_repository_row, close_nested_repo_detail, reload_nested_repo_detail,
-    selected_checkout_label, selected_linked_worktree, selected_session,
+    activate_selected_repository_row, close_nested_repo_detail, init_available,
+    reload_nested_repo_detail, selected_checkout_label, selected_linked_worktree, selected_session,
     start_session_for_selection,
 };
 pub(crate) use draw::{nested_repo_scroll_offset, sync_scroll_offset};
 pub(crate) use tree::{nested_repo_tree_len, select_nested_repo_tree_row};
 
 use actions::{
-    bring_selected_worktree_home, close_selected_session, land_selected_worktree,
-    load_nested_repo_detail, open_new_worktree_form, remove_selected_worktree,
-    selected_repository_project_path, show_session_row, sync_selected_worktree,
+    bring_selected_worktree_home, close_selected_session, init_selected_checkout,
+    land_selected_worktree, load_nested_repo_detail, open_new_worktree_form,
+    remove_selected_worktree, selected_repository_project_path, show_session_row,
+    sync_selected_worktree,
 };
 use draw::render_nested_repositories;
 use tree::{NestedRepoTreeRow, move_selection, selected_tree_row};
@@ -111,6 +112,7 @@ pub fn handle_key(
                 state.pending_action = Some(crate::state::PendingAction::OpenProjectAt(path));
             }
         }
+        KeyCode::Char('i') => init_selected_checkout(state),
         KeyCode::Char('n') => open_new_worktree_form(state),
         KeyCode::Char('s') => state.open_agent_picker(true),
         KeyCode::Char('S') => state.open_agent_picker(false),

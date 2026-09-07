@@ -149,6 +149,9 @@ mod tests {
             .collect();
 
         assert!(text.contains("spk"), "header line was {text:?}");
-        assert!(text.contains("/tmp/workspace/spk"), "header line was {text:?}");
+        assert!(
+            text.contains("/tmp/workspace/spk"),
+            "header line was {text:?}"
+        );
     }
 }

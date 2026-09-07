@@ -1,8 +1,10 @@
 use anyhow::Result;
 use std::path::Path;
 
+use std::process::Command;
+
 use super::attrs::suppress_generated_diff;
-use super::{git_command, run, run_combined};
+use super::{git_command, git_command_in_dir, run, run_combined};
 
 pub fn staged_diff() -> Result<String> {
     let out = run(&["diff", "--cached"])?;
@@ -168,7 +170,27 @@ fn untracked_paths(pathspec: &str) -> Result<Vec<String>> {
 }
 
 fn untracked_file_diff(path: &str) -> Result<String> {
-    let out = git_command(&["diff", "--no-index", "--", "/dev/null", path]).output()?;
+    no_index_diff(
+        git_command(&["diff", "--no-index", "--", "/dev/null", path]),
+        path,
+    )
+}
+
+/// A file with nothing to compare against, shown as the diff that adding it
+/// would be. `git diff --no-index` asks nothing of a repository, which is what
+/// lets a plain directory be shown this way too — so the directory is named
+/// outright rather than taken from whichever checkout is selected.
+pub(super) fn added_file_diff(dir: &Path, path: &str) -> Result<String> {
+    no_index_diff(
+        git_command_in_dir(dir, &["diff", "--no-index", "--", "/dev/null", path]),
+        path,
+    )
+}
+
+/// A `--no-index` diff reports a difference with exit code 1, which for this
+/// is the expected answer rather than a failure.
+fn no_index_diff(mut command: Command, path: &str) -> Result<String> {
+    let out = command.output()?;
     if out.status.success() || out.status.code() == Some(1) {
         let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
         normalize_no_index_path(&mut text, path);

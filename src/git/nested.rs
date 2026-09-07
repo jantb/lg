@@ -94,7 +94,7 @@ fn collect_nested_repo_dirs(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn ignored_discovery_dir(path: &Path) -> bool {
+pub(super) fn ignored_discovery_dir(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|name| name.to_str()),
         Some(".git" | "target" | "build" | ".gradle" | "node_modules")

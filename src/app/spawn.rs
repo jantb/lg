@@ -81,7 +81,16 @@ pub(super) fn selected_commit_ref(state: &AppState) -> Option<String> {
     }
 }
 
-pub(super) fn load_diff_text(source: &DiffSource) -> String {
+/// The text the diff pane shows for what is selected.
+///
+/// `checkout` is false for a directory that is no repository: there is no
+/// history to compare against there, so a file is shown as the diff that
+/// adding it would be, and the things that only a checkout has — a commit, a
+/// branch log — have nothing to show at all.
+pub(super) fn load_diff_text(source: &DiffSource, checkout: bool) -> String {
+    if !checkout {
+        return load_new_file_text(source);
+    }
     match source {
         DiffSource::None | DiffSource::Review => String::new(),
         DiffSource::All => crate::git::all_diffs().unwrap_or_else(|e| format!("error: {e}")),
@@ -96,6 +105,26 @@ pub(super) fn load_diff_text(source: &DiffSource) -> String {
         }
         DiffSource::Branch(branch) => crate::git::branch_log(branch, COMMIT_LIST_LIMIT)
             .unwrap_or_else(|e| format!("error: {e}")),
+    }
+}
+
+fn load_new_file_text(source: &DiffSource) -> String {
+    let Some(dir) = crate::git::active_repo() else {
+        return String::new();
+    };
+    match source {
+        DiffSource::None | DiffSource::Review | DiffSource::Commit(_) | DiffSource::Branch(_) => {
+            String::new()
+        }
+        DiffSource::All => {
+            crate::git::new_files_diff(&dir, "").unwrap_or_else(|e| format!("error: {e}"))
+        }
+        DiffSource::Folder(path) => {
+            crate::git::new_files_diff(&dir, path).unwrap_or_else(|e| format!("error: {e}"))
+        }
+        DiffSource::File(path) => {
+            crate::git::new_file_diff(&dir, path).unwrap_or_else(|e| format!("error: {e}"))
+        }
     }
 }
 

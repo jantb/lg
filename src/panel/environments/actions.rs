@@ -125,6 +125,27 @@ fn dir_name(path: &str) -> &str {
         .unwrap_or(path)
 }
 
+/// Whether the selected row stands for a folder that is not a repository yet
+/// — the only thing `git init` has to work on.
+pub(crate) fn init_available(state: &AppState) -> bool {
+    selected_checkout(state)
+        .is_some_and(|(path, _)| crate::git::repo_root_at(std::path::Path::new(&path)).is_none())
+}
+
+/// Make the selected folder a repository. In practice that is the workspace
+/// row of a plain directory: every other row already stands for a checkout.
+pub(super) fn init_selected_checkout(state: &mut AppState) {
+    let Some((path, label)) = selected_checkout(state) else {
+        state.set_status("select a folder to initialize", false);
+        return;
+    };
+    if crate::git::repo_root_at(std::path::Path::new(&path)).is_some() {
+        state.set_status(format!("{label} is already a git repository"), false);
+        return;
+    }
+    state.pending_action = Some(crate::state::PendingAction::InitRepository { path });
+}
+
 /// Open the new-worktree form for the active repository.
 pub(super) fn open_new_worktree_form(state: &mut AppState) {
     if state.repo_root.is_none() && state.worktrees.is_empty() {

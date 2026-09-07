@@ -103,23 +103,28 @@ fn scan_nested_repositories(
 /// What a refresh reports for a directory that is no checkout — a plain folder
 /// lg was started in, with nothing cloned into it yet.
 ///
-/// Git is not asked anything, because every question would fail and each
-/// failure is a red banner on the refresh timer. The panels are emptied rather
-/// than left holding a repository that is no longer there, and the scan for
-/// repositories inside the folder still runs: that is what makes a clone
-/// landing in it appear in the workspace pane.
+/// Nothing is asked of git about a branch, a commit or a diff, because every
+/// such question would fail and each failure is a red banner on the refresh
+/// timer. Two things still happen. The folder's files are listed as new, since
+/// with no history behind them that is what they are, so the file pane and the
+/// diff beside it work as they would in a fresh checkout. And the scan for
+/// repositories inside the folder runs, which is what makes a clone landing in
+/// it appear in the workspace pane.
 fn no_repo_snapshot(workspace_root: Option<String>) -> RefreshSnapshot {
     let mut errors = Vec::new();
-    // Without a folder to scan there is nothing to find; the scan would fall
-    // back to asking git where it is, which is the question that just failed.
-    let nested_repositories = match workspace_root.as_deref() {
-        Some(root) => scan_nested_repositories(Some(root), &mut errors),
-        None => Some(Vec::new()),
+    // Without a folder there is nothing to look in; the scan would fall back
+    // to asking git where it is, which is the question that just failed.
+    let (files, nested_repositories) = match workspace_root.as_deref() {
+        Some(root) => (
+            crate::git::new_file_entries(Path::new(root)),
+            scan_nested_repositories(Some(root), &mut errors),
+        ),
+        None => (Vec::new(), Some(Vec::new())),
     };
     RefreshSnapshot {
         repo_root: None,
         workspace_root,
-        files: Some(Vec::new()),
+        files: Some(files),
         branches: Some(Vec::new()),
         remote_branches: Some(Vec::new()),
         nested_repositories,
@@ -387,22 +392,29 @@ mod tests {
         assert_eq!(roots.start_dir, tmp.path().join("project"));
     }
 
-    /// Nothing to report and nothing to complain about: a folder that is no
-    /// checkout must not produce an error banner on every refresh.
+    /// Nothing to complain about: a folder that is no checkout must not put an
+    /// error banner up on every refresh. Its files are still there to work on,
+    /// and with no history behind them they are all new.
     #[test]
-    fn refreshing_a_plain_directory_reports_no_repository_and_no_errors() {
+    fn refreshing_a_plain_directory_lists_its_files_and_reports_no_errors() {
         let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(tmp.path().join("notes.txt"), "mine\n").expect("write file");
         let workspace = tmp.path().to_string_lossy().into_owned();
 
-        let snapshot =
-            crate::git::with_repo(tmp.path(), || build_refresh_snapshot(Some(workspace.clone())));
+        let snapshot = crate::git::with_repo(tmp.path(), || {
+            build_refresh_snapshot(Some(workspace.clone()))
+        });
 
         assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors);
         assert_eq!(snapshot.repo_root, None);
         assert_eq!(snapshot.workspace_root, Some(workspace));
         assert_eq!(snapshot.branch, None);
-        assert!(snapshot.files.unwrap_or_default().is_empty());
         assert!(snapshot.commits.unwrap_or_default().is_empty());
+        let files = snapshot.files.unwrap_or_default();
+        assert!(
+            files.iter().any(|file| file.path == "notes.txt"),
+            "got {files:?}"
+        );
     }
 
     /// The folder was opened to clone into, so the clone has to show up.
@@ -412,7 +424,8 @@ mod tests {
         init_repo_at(&tmp.path().join("cloned"));
         let workspace = tmp.path().to_string_lossy().into_owned();
 
-        let snapshot = crate::git::with_repo(tmp.path(), || build_refresh_snapshot(Some(workspace)));
+        let snapshot =
+            crate::git::with_repo(tmp.path(), || build_refresh_snapshot(Some(workspace)));
 
         assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors);
         assert!(

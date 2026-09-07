@@ -195,6 +195,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("Enter", "expand/checkout")),
             },
             Binding {
+                key: "i",
+                help: "Make this folder a git repository",
+                footer: Some(("i", "git init")),
+            },
+            Binding {
                 key: "n",
                 help: "New worktree for a branch",
                 footer: Some(("n", "new worktree")),
@@ -279,6 +284,7 @@ pub const SECTIONS: &[Section] = &[
         footer_order: &[
             "j/k",
             "Enter",
+            "i",
             "n",
             "m",
             "M",

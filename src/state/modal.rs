@@ -321,6 +321,10 @@ pub enum PendingAction {
     SwitchRepository {
         target: RepoTarget,
     },
+    /// Turn a plain folder into a repository.
+    InitRepository {
+        path: String,
+    },
     CreateWorktree {
         path: String,
         branch: String,

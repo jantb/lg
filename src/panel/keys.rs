@@ -157,6 +157,7 @@ mod tests {
                 &[
                     ("j/k", "repo tree"),
                     ("Enter", "expand/checkout"),
+                    ("i", "git init"),
                     ("n", "new worktree"),
                     ("m", "land worktree"),
                     ("M", "sync main"),

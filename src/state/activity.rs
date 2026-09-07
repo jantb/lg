@@ -194,6 +194,7 @@ impl AppState {
                 Some(PendingAction::DeleteBranch { .. }) => Some("deleting branch"),
                 Some(PendingAction::SetBranchUpstream { .. }) => Some("setting upstream"),
                 Some(PendingAction::SwitchRepository { .. }) => Some("switching repo"),
+                Some(PendingAction::InitRepository { .. }) => Some("initializing repository"),
                 Some(PendingAction::CreateWorktree { .. }) => Some("adding worktree"),
                 Some(PendingAction::RemoveWorktree { .. }) => Some("removing worktree"),
                 Some(PendingAction::LandWorktree { .. }) => Some("landing worktree"),

@@ -19,6 +19,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
             Span::styled("\u{2713} ", Style::default().fg(Color::Green)),
             Span::styled(b.as_str(), Style::default().fg(Color::Green)),
         ]),
+        // Without a checkout there is no branch to be detached from, and
+        // saying "detached" would report a repository in trouble where there
+        // is no repository at all.
+        None if state.repo_root.is_none() => Line::from(Span::styled(
+            "\u{2a2f} no repository",
+            Style::default().fg(Color::DarkGray),
+        )),
         None => Line::from(Span::styled(
             "\u{2a2f} detached",
             Style::default().fg(Color::Red),

@@ -171,6 +171,8 @@ fn shortcut_visible(state: &AppState, key: &str, label: &str) -> bool {
         ("m", "land worktree") | ("b", "branch home") => {
             crate::panel::environments::selected_linked_worktree(state).is_some()
         }
+        // Nothing to initialize once the folder is a checkout.
+        ("i", "git init") => crate::panel::environments::init_available(state),
         // Only a session row has a session to close.
         ("x", "close session") => crate::panel::environments::selected_session(state).is_some(),
         // Distinguished from the Status pane's Esc, which means "back".

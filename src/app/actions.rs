@@ -511,6 +511,23 @@ impl App {
                         .set_status(format!("start session failed: {err}"), true),
                 }
             }
+            PendingAction::InitRepository { path } => {
+                let dir = PathBuf::from(&path);
+                let label = dir
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.clone());
+                match crate::git::init_repository(&dir) {
+                    Ok(message) => {
+                        // Point lg at what it just created: the folder is a
+                        // checkout now, and every panel was showing it as a
+                        // directory with no history a moment ago.
+                        self.switch_to_repository(&dir, &label);
+                        self.state.set_status(message, false);
+                    }
+                    Err(err) => self.state.set_status(err.to_string(), true),
+                }
+            }
             PendingAction::SwitchRepository { target } => {
                 let root = self
                     .state

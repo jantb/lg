@@ -177,10 +177,11 @@ impl App {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let thread_source = source.clone();
+        let checkout = self.state.repo_root.is_some();
         let spawn_result = std::thread::Builder::new()
             .name("lg-diff".into())
             .spawn(move || {
-                let text = load_diff_text(&thread_source);
+                let text = load_diff_text(&thread_source, checkout);
                 let _ = tx.send(DiffMsg::Done {
                     source: thread_source,
                     text,
