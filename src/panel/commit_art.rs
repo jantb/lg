@@ -15,6 +15,7 @@ use ratatui::{
 };
 
 use super::{arena, solid};
+use crate::ui::Token;
 
 /// The language most of the staged files are written in, judged by extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -255,6 +256,20 @@ const MOON_SKY: usize = 32;
 const MOON_Y: usize = 1;
 /// Rows per second the diff scrolls.
 const DIFF_SPEED: f32 = 4.0;
+/// The colours the sides of a diff are read in.
+const DIFF_ADDED: Color = Color::Rgb(70, 160, 90);
+const DIFF_REMOVED: Color = Color::Rgb(170, 70, 80);
+const DIFF_CONTEXT: Color = Color::Rgb(75, 78, 100);
+/// The backdrop's own register for the code itself: the hues the diff pane
+/// highlights in, held back to where they can sit behind a scene.
+const CODE_KEYWORD: Color = Color::Rgb(198, 162, 88);
+const CODE_TYPE: Color = Color::Rgb(118, 190, 200);
+const CODE_FUNCTION: Color = Color::Rgb(200, 140, 190);
+const CODE_LITERAL: Color = Color::Rgb(206, 196, 122);
+const CODE_COMMENT: Color = Color::Rgb(96, 102, 120);
+const CODE_PLAIN: Color = Color::Rgb(150, 156, 168);
+/// How far a character's colour is pulled towards its side of the diff.
+const SIDE_TINT: f32 = 0.45;
 
 type Cell = (char, Style);
 
@@ -332,13 +347,18 @@ enum Side {
 /// the model is reading, shown going in. Header lines are left out and runs
 /// of whitespace become one gap, so the stream is the code and not its
 /// indentation; a very long diff is cut, as the stream loops round anyway.
-/// The lines are kept as they were written as well, indentation and all, for
-/// the backdrop that scrolls the change itself past the reader.
+/// The lines are kept as well, laid out for the grid and coloured by what
+/// the code in them is, for the backdrop that scrolls the change itself past
+/// the reader.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Feed {
     chars: Vec<(char, Side)>,
-    lines: Vec<(String, Side)>,
+    lines: Vec<GridLine>,
 }
+
+/// A line of the diff ready to be drawn: each cell a character and the
+/// colour it takes.
+type GridLine = Vec<(char, Color)>;
 
 /// Characters of the diff kept for the stream, at most.
 const FEED_CAP: usize = 40_000;
@@ -355,8 +375,14 @@ const FEED_ORIGIN: usize = STREAM_ORIGIN * 2;
 impl Feed {
     pub fn from_diff(diff: &str) -> Self {
         let mut chars: Vec<(char, Side)> = Vec::new();
-        let mut lines: Vec<(String, Side)> = Vec::new();
+        let mut lines: Vec<GridLine> = Vec::new();
+        // The file the lines below belong to, which is what says how to read
+        // the code in them.
+        let mut path = String::new();
         for line in diff.lines() {
+            if let Some(next) = crate::ui::diff_header_path(line) {
+                path = next.to_owned();
+            }
             if [
                 "diff --git",
                 "index ",
@@ -377,7 +403,7 @@ impl Feed {
                 _ => Side::Context,
             };
             if lines.len() < FEED_LINE_CAP {
-                lines.push((on_grid(line), side));
+                lines.push(on_grid(line, &path, side));
             }
             if chars.len() < FEED_CAP {
                 for c in line.chars() {
@@ -427,24 +453,51 @@ impl Feed {
 }
 
 /// A line of the diff as it can be laid out on the grid: tabs opened out to
-/// their stop, whitespace flattened to spaces and every other character put
-/// in a cell it fits. Long lines are cut well past any terminal's width.
-fn on_grid(line: &str) -> String {
-    let mut out = String::new();
-    for c in line.chars() {
-        if out.chars().count() >= FEED_LINE_WIDTH {
+/// their stop, whitespace flattened to spaces, every other character put in a
+/// cell it fits, and each of them coloured for what the highlighter made of
+/// it and which side of the diff it is on. Long lines are cut well past any
+/// terminal's width.
+fn on_grid(line: &str, path: &str, side: Side) -> GridLine {
+    let tokens = crate::ui::diff_line_tokens(line, path);
+    let mut out: GridLine = Vec::new();
+    for (i, c) in line.chars().enumerate() {
+        if out.len() >= FEED_LINE_WIDTH {
             break;
         }
+        let color = code_color(tokens.get(i).copied().unwrap_or(Token::Plain), side);
         match c {
             '\t' => {
-                let pad = TAB_WIDTH - out.chars().count() % TAB_WIDTH;
-                out.extend(std::iter::repeat_n(' ', pad));
+                let pad = TAB_WIDTH - out.len() % TAB_WIDTH;
+                out.extend(std::iter::repeat_n((' ', color), pad));
             }
-            c if c.is_whitespace() || c.is_control() => out.push(' '),
-            c => out.push(cell(c)),
+            c if c.is_whitespace() || c.is_control() => out.push((' ', color)),
+            c => out.push((cell(c), color)),
         }
     }
     out
+}
+
+/// The colour a character of the diff takes in the backdrop: the scene's own
+/// muted reading of what the highlighter made of it, pulled towards the
+/// colour of its side of the diff so added and removed still tell apart at a
+/// glance. The markers a diff is structured by are that side's colour and
+/// nothing else.
+fn code_color(token: Token, side: Side) -> Color {
+    let side = match side {
+        Side::Added => DIFF_ADDED,
+        Side::Removed => DIFF_REMOVED,
+        Side::Context => DIFF_CONTEXT,
+    };
+    let code = match token {
+        Token::Marker => return side,
+        Token::Keyword => CODE_KEYWORD,
+        Token::Type => CODE_TYPE,
+        Token::Function => CODE_FUNCTION,
+        Token::Literal => CODE_LITERAL,
+        Token::Comment => CODE_COMMENT,
+        Token::Plain => CODE_PLAIN,
+    };
+    mix(code, side, SIDE_TINT)
 }
 
 /// `c` as it can go in a canvas cell, which holds one character in one
@@ -1185,10 +1238,11 @@ fn moon_patch(x: f32, y: f32, px: f32, py: f32, pr: f32) -> f32 {
 }
 
 /// The diff scrolling up behind everything: the very lines the model is
-/// reading, in the colours a diff is read in. The change itself is what the
-/// wait is about, so the backdrop shows it rather than a stand-in; it loops
-/// round, so a wait long enough sees all of it go past. Only a diff too
-/// large to have been kept falls back to abstract glyphs.
+/// reading, highlighted the way the diff pane highlights them and in the
+/// colours a diff is read in. The change itself is what the wait is about, so
+/// the backdrop shows it rather than a stand-in; it loops round, so a wait
+/// long enough sees all of it go past. Only a diff too large to have been
+/// kept falls back to abstract glyphs.
 fn draw_diff(canvas: &mut Canvas, feed: &Feed, width: usize, ground: usize, t: f32) {
     if feed.lines.is_empty() {
         draw_glyph_diff(canvas, width, ground, t);
@@ -1196,19 +1250,13 @@ fn draw_diff(canvas: &mut Canvas, feed: &Feed, width: usize, ground: usize, t: f
     }
     let offset = (t * DIFF_SPEED) as usize;
     for y in 0..ground {
-        let (line, side) = &feed.lines[(y + offset) % feed.lines.len()];
-        let color = match side {
-            Side::Added => Color::Rgb(70, 160, 90),
-            Side::Removed => Color::Rgb(170, 70, 80),
-            Side::Context => Color::Rgb(75, 78, 100),
-        };
+        let line = &feed.lines[(y + offset) % feed.lines.len()];
         // Lines nearer the top have been read and fade; the newest arrive
         // bright at the bottom.
         let depth = 0.55 + 0.45 * (y as f32 / ground.max(1) as f32);
-        let style = Style::default().fg(dim(color, depth));
-        for (x, c) in line.chars().take(width).enumerate() {
+        for (x, &(c, color)) in line.iter().take(width).enumerate() {
             if c != ' ' {
-                canvas.put(x, y, c, style);
+                canvas.put(x, y, c, Style::default().fg(dim(color, depth)));
             }
         }
     }
@@ -1222,10 +1270,10 @@ fn draw_glyph_diff(canvas: &mut Canvas, width: usize, ground: usize, t: f32) {
         let line = y + offset;
         let seed = hash(line, 3);
         let (sign, color) = match seed % 7 {
-            0 | 1 => ('+', Color::Rgb(70, 160, 90)),
-            2 => ('-', Color::Rgb(170, 70, 80)),
+            0 | 1 => ('+', DIFF_ADDED),
+            2 => ('-', DIFF_REMOVED),
             3 => continue,
-            _ => (' ', Color::Rgb(75, 78, 100)),
+            _ => (' ', DIFF_CONTEXT),
         };
         // Lines nearer the top have been read and fade; the newest arrive
         // bright at the bottom.
@@ -1919,6 +1967,28 @@ mod tests {
         assert!(seen.contains("let sparkly = 2;"), "{seen}");
         assert!(seen.contains("let sleepy = 1;"), "both sides show");
         assert!(seen.contains("fn wake() {"), "and the context around them");
+
+        // And the code is highlighted where it lands, not painted one flat
+        // colour: the keyword, the name and the marker are all told apart.
+        let row = (0..40)
+            .flat_map(|frame| {
+                let show = Show {
+                    lang: Language::Rust,
+                    seed,
+                    ms: frame * 120,
+                    feed: &feed,
+                };
+                scene(show, 130, 30, false)
+            })
+            .find(|line| text_of(std::slice::from_ref(line)).contains("let sparkly = 2;"))
+            .expect("a row of the backdrop carries the added line");
+        let colors: std::collections::HashSet<Option<Color>> = row
+            .spans
+            .iter()
+            .filter(|span| !span.content.trim().is_empty())
+            .map(|span| span.style.fg)
+            .collect();
+        assert!(colors.len() > 2, "the line is highlighted: {colors:?}");
 
         // Nothing to show falls back to a stand-in rather than a blank sky.
         let bare = scene(show(Language::Rust, seed, 0), 130, 30, false);
