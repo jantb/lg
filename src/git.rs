@@ -40,8 +40,8 @@ pub use config::{
 pub use context::{active_repo, set_active_repo, spawn_pinned, with_repo};
 use context::{git_command, git_command_in_dir};
 pub use diff::{
-    all_diffs, branch_log, fetch_updates, file_diff, folder_diff, repo_root, show_commit,
-    staged_diff,
+    all_diffs, branch_log, fetch_updates, file_diff, folder_diff, repo_root, repo_root_at,
+    show_commit, staged_diff,
 };
 pub use flow::{
     ConflictHunk, ConflictSideCommit, ConflictSides, ConflictedFile, Followup,

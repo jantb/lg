@@ -33,7 +33,11 @@ impl App {
             Err(err) => Some(err.to_string()),
         };
 
-        self.state.repo_root = Some(dir.to_string_lossy().into_owned());
+        // Only a checkout becomes the repository lg is showing. The workspace
+        // row can be a plain folder, and claiming that as a checkout would
+        // have the panels — and the periodic fetch — question a directory git
+        // knows nothing about until the next refresh corrected it.
+        self.state.repo_root = crate::git::repo_root_at(dir);
         self.clear_release_status(None);
         self.state.nested_repo_detail_path = None;
         self.state.nested_repo_branches.clear();
@@ -81,6 +85,11 @@ impl App {
     }
 
     pub(in crate::app) fn start_fetch(&mut self) {
+        // A plain directory has nothing to fetch, and the periodic fetch would
+        // turn that into a failure banner every few minutes.
+        if self.state.repo_root.is_none() {
+            return;
+        }
         if git_job_running(&self.state) {
             return;
         }

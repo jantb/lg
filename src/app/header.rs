@@ -39,7 +39,13 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 fn project_line(state: &AppState) -> Line<'static> {
-    let Some(root) = state.repo_root.as_deref() else {
+    // A plain directory lg was started in has no checkout to name, but it is
+    // still where everything happens, so the header names the folder.
+    let Some(root) = state
+        .repo_root
+        .as_deref()
+        .or(state.workspace_root.as_deref())
+    else {
         return Line::from(Span::styled(
             "unknown project",
             Style::default()
@@ -100,6 +106,9 @@ fn session_badge(state: &AppState) -> Option<Span<'static>> {
 }
 
 fn branch_text(state: &AppState) -> String {
+    if state.repo_root.is_none() {
+        return "no repository".to_string();
+    }
     let branch = state.branch.as_deref().unwrap_or("no branch");
     match state.ahead_behind {
         Some((ahead, behind)) if ahead > 0 && behind > 0 => {
@@ -118,4 +127,28 @@ fn project_name(root: &str) -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or(root)
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::project_line;
+    use crate::state::AppState;
+
+    /// Opened on a plain folder there is no project to name, and the header
+    /// used to say only "unknown project" — which left the one thing the user
+    /// needs to see, which directory lg is on, off the screen.
+    #[test]
+    fn the_header_names_the_folder_when_there_is_no_checkout() {
+        let mut state = AppState::new();
+        state.workspace_root = Some("/tmp/workspace/spk".to_string());
+
+        let text: String = project_line(&state)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(text.contains("spk"), "header line was {text:?}");
+        assert!(text.contains("/tmp/workspace/spk"), "header line was {text:?}");
+    }
 }

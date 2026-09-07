@@ -16,6 +16,15 @@ pub fn repo_root() -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// The checkout `dir` belongs to, or `None` when it belongs to none. Asked
+/// about an explicit directory because startup has to answer this before any
+/// repository has been picked to run git in.
+pub fn repo_root_at(dir: &Path) -> Option<String> {
+    let out = super::run_in_dir(dir, &["rev-parse", "--show-toplevel"]).ok()?;
+    let root = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!root.is_empty()).then_some(root)
+}
+
 pub fn fetch_updates() -> Result<String> {
     let remotes = run(&["remote"])?;
     if String::from_utf8_lossy(&remotes.stdout).trim().is_empty() {

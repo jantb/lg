@@ -11,6 +11,9 @@ pub(super) fn build_refresh_snapshot(workspace_root: Option<String>) -> RefreshS
     let mut errors = Vec::new();
     let current_root = crate::git::repo_root().ok();
     let workspace_root = workspace_root.or_else(|| current_root.clone());
+    if current_root.is_none() {
+        return no_repo_snapshot(workspace_root);
+    }
     let files = match crate::git::status_entries() {
         Ok(files) => Some(files),
         Err(e) => {
@@ -32,18 +35,7 @@ pub(super) fn build_refresh_snapshot(workspace_root: Option<String>) -> RefreshS
             None
         }
     };
-    let nested_repositories = match workspace_root
-        .as_deref()
-        .map(PathBuf::from)
-        .map(|root| crate::git::nested_repositories_at(&root))
-        .unwrap_or_else(crate::git::nested_repositories)
-    {
-        Ok(repositories) => Some(repositories),
-        Err(e) => {
-            errors.push(format!("nested repository scan failed: {e}"));
-            None
-        }
-    };
+    let nested_repositories = scan_nested_repositories(workspace_root.as_deref(), &mut errors);
     let worktrees = match crate::git::worktrees() {
         Ok(worktrees) => Some(worktrees),
         Err(e) => {
@@ -87,6 +79,57 @@ pub(super) fn build_refresh_snapshot(workspace_root: Option<String>) -> RefreshS
         branch,
         remote_url: crate::git::remote_url(DEFAULT_PUSH_REMOTE).ok(),
         ahead_behind: crate::git::counts_ahead_behind().ok(),
+        errors,
+    }
+}
+
+fn scan_nested_repositories(
+    workspace_root: Option<&str>,
+    errors: &mut Vec<String>,
+) -> Option<Vec<crate::git::NestedRepo>> {
+    match workspace_root
+        .map(PathBuf::from)
+        .map(|root| crate::git::nested_repositories_at(&root))
+        .unwrap_or_else(crate::git::nested_repositories)
+    {
+        Ok(repositories) => Some(repositories),
+        Err(e) => {
+            errors.push(format!("nested repository scan failed: {e}"));
+            None
+        }
+    }
+}
+
+/// What a refresh reports for a directory that is no checkout — a plain folder
+/// lg was started in, with nothing cloned into it yet.
+///
+/// Git is not asked anything, because every question would fail and each
+/// failure is a red banner on the refresh timer. The panels are emptied rather
+/// than left holding a repository that is no longer there, and the scan for
+/// repositories inside the folder still runs: that is what makes a clone
+/// landing in it appear in the workspace pane.
+fn no_repo_snapshot(workspace_root: Option<String>) -> RefreshSnapshot {
+    let mut errors = Vec::new();
+    // Without a folder to scan there is nothing to find; the scan would fall
+    // back to asking git where it is, which is the question that just failed.
+    let nested_repositories = match workspace_root.as_deref() {
+        Some(root) => scan_nested_repositories(Some(root), &mut errors),
+        None => Some(Vec::new()),
+    };
+    RefreshSnapshot {
+        repo_root: None,
+        workspace_root,
+        files: Some(Vec::new()),
+        branches: Some(Vec::new()),
+        remote_branches: Some(Vec::new()),
+        nested_repositories,
+        worktrees: Some(Vec::new()),
+        release_branches: Default::default(),
+        commits: Some(Vec::new()),
+        unpushed_shas: Some(Default::default()),
+        branch: None,
+        remote_url: None,
+        ahead_behind: None,
         errors,
     }
 }
@@ -213,43 +256,47 @@ pub(super) fn watch_repo(
     Ok((watcher, rx))
 }
 
-/// The checkout lg starts in: the repository around the working directory.
-/// Where lg starts: the checkout to run git in, and the workspace it sits in
+/// Where lg starts: the directory to run git in, and the workspace it sits in
 /// when that is a different directory.
 ///
 /// Started inside a repository, that repository is the checkout and there is
 /// no separate workspace. Started in a directory that only holds repositories
 /// — a folder of projects — the directory is the workspace and the first
 /// repository in it is the checkout, so the tree of repositories is there to
-/// pick another from. A directory with neither is an error.
+/// pick another from. Started in a plain directory, that directory is the
+/// workspace and there is no checkout at all: an empty folder is where a clone
+/// or a `git init` is about to happen, and lg opens on it so a session can be
+/// started there to do exactly that.
 pub(super) fn startup_roots() -> Result<StartupRoots> {
     let cwd = std::env::current_dir().context("resolve current directory")?;
-    if crate::git::is_repo() {
-        let repo = crate::git::repo_root().map(PathBuf::from).unwrap_or(cwd);
+    roots_for_dir(&cwd)
+}
+
+fn roots_for_dir(cwd: &Path) -> Result<StartupRoots> {
+    if let Some(root) = crate::git::repo_root_at(cwd) {
         return Ok(StartupRoots {
             workspace: None,
-            repo,
+            start_dir: PathBuf::from(root),
         });
     }
-    let nested = crate::git::nested_repositories_at(&cwd)
+    let nested = crate::git::nested_repositories_at(cwd)
         .with_context(|| format!("scan {} for repositories", cwd.display()))?;
-    let Some(first) = nested.first() else {
-        anyhow::bail!(
-            "not a git repository, and no repositories found under {}",
-            cwd.display()
-        );
+    let start_dir = match nested.first() {
+        Some(first) => cwd.join(&first.path),
+        None => cwd.to_path_buf(),
     };
     Ok(StartupRoots {
-        repo: cwd.join(&first.path),
-        workspace: Some(cwd),
+        start_dir,
+        workspace: Some(cwd.to_path_buf()),
     })
 }
 
 pub(super) struct StartupRoots {
     /// The directory holding the repositories, when lg was started in one.
     pub workspace: Option<PathBuf>,
-    /// The checkout git commands run in.
-    pub repo: PathBuf,
+    /// The directory git commands run in and the watcher watches: the checkout
+    /// lg opens on, or the workspace itself when it holds no repository yet.
+    pub start_dir: PathBuf,
 }
 
 fn git_metadata_dirs(cwd: &Path) -> Vec<PathBuf> {
@@ -297,15 +344,84 @@ fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
 
 #[cfg(test)]
 mod tests {
-    use super::should_refresh_for_fs_event;
+    use super::{build_refresh_snapshot, roots_for_dir, should_refresh_for_fs_event};
     use notify::{
         Event, EventKind,
         event::{AccessKind, AccessMode, ModifyKind},
     };
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn modify_event(path: &str) -> Event {
         Event::new(EventKind::Modify(ModifyKind::Any)).add_path(PathBuf::from(path))
+    }
+
+    fn init_repo_at(dir: &Path) {
+        std::fs::create_dir_all(dir).expect("create repo dir");
+        let out = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(dir)
+            .output()
+            .expect("run git init");
+        assert!(out.status.success(), "git init failed");
+    }
+
+    /// lg is often opened on the folder a project is about to be cloned into.
+    #[test]
+    fn a_plain_directory_opens_as_a_workspace_with_no_checkout() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        let roots = roots_for_dir(tmp.path()).expect("a plain directory must open");
+
+        assert_eq!(roots.workspace.as_deref(), Some(tmp.path()));
+        assert_eq!(roots.start_dir, tmp.path());
+    }
+
+    #[test]
+    fn a_folder_of_projects_opens_on_a_repository_inside_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        init_repo_at(&tmp.path().join("project"));
+
+        let roots = roots_for_dir(tmp.path()).expect("a workspace must open");
+
+        assert_eq!(roots.workspace.as_deref(), Some(tmp.path()));
+        assert_eq!(roots.start_dir, tmp.path().join("project"));
+    }
+
+    /// Nothing to report and nothing to complain about: a folder that is no
+    /// checkout must not produce an error banner on every refresh.
+    #[test]
+    fn refreshing_a_plain_directory_reports_no_repository_and_no_errors() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().to_string_lossy().into_owned();
+
+        let snapshot =
+            crate::git::with_repo(tmp.path(), || build_refresh_snapshot(Some(workspace.clone())));
+
+        assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors);
+        assert_eq!(snapshot.repo_root, None);
+        assert_eq!(snapshot.workspace_root, Some(workspace));
+        assert_eq!(snapshot.branch, None);
+        assert!(snapshot.files.unwrap_or_default().is_empty());
+        assert!(snapshot.commits.unwrap_or_default().is_empty());
+    }
+
+    /// The folder was opened to clone into, so the clone has to show up.
+    #[test]
+    fn refreshing_a_plain_directory_finds_a_repository_cloned_into_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        init_repo_at(&tmp.path().join("cloned"));
+        let workspace = tmp.path().to_string_lossy().into_owned();
+
+        let snapshot = crate::git::with_repo(tmp.path(), || build_refresh_snapshot(Some(workspace)));
+
+        assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors);
+        assert!(
+            snapshot
+                .nested_repositories
+                .unwrap_or_default()
+                .iter()
+                .any(|repo| repo.path == "cloned")
+        );
     }
 
     #[test]

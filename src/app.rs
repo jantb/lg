@@ -164,14 +164,14 @@ where
 
 impl App {
     pub fn new() -> Result<Self> {
-        // Pin git to the repository root up front: every command then runs
+        // Pin git to the directory lg opens on up front: every command runs
         // against a directory lg chose, not whichever one the process happens
         // to sit in, which is what lets checkouts be switched underneath.
         let roots = startup_roots()?;
-        let repo_root = roots.repo;
-        crate::git::set_active_repo(&repo_root);
+        let start_dir = roots.start_dir;
+        crate::git::set_active_repo(&start_dir);
 
-        let (file_watcher, file_events) = watch_repo(&repo_root)?;
+        let (file_watcher, file_events) = watch_repo(&start_dir)?;
 
         // Off the startup path on purpose: asking the model server what it
         // serves is a round trip, and nothing here waits on the answer.
