@@ -119,12 +119,13 @@ fn resolve_files(
         let outcome = resolve_file(root, &path, ask);
         let unavailable = matches!(outcome, Err(Decline::Unavailable(_)));
         let sent = match outcome {
-            Ok(hunks) => {
+            Ok(verdicts) => {
                 log_attempt(&format!(
-                    "file {path}: resolved, {hunks} conflict(s) written back"
+                    "file {path}: resolved, {} conflict(s) written back",
+                    verdicts.len()
                 ));
                 resolved.push(path.clone());
-                tx.send(ConflictResolveMsg::Resolved { path, hunks })
+                tx.send(ConflictResolveMsg::Resolved { path, verdicts })
             }
             Err(decline) => {
                 let reason = decline.reason().to_string();
@@ -157,15 +158,36 @@ fn resolve_files(
 /// Settle one file and write it back, or say why it was left alone. The file is
 /// only ever written once every conflict in it has an accepted answer, so a
 /// partial success leaves nothing half-merged on disk.
-fn resolve_file(root: &Path, path: &str, ask: &mut Ask<'_>) -> Result<usize, Decline> {
+fn resolve_file(root: &Path, path: &str, ask: &mut Ask<'_>) -> Result<Vec<String>, Decline> {
     let full = root.join(path);
     let text = std::fs::read_to_string(&full)
         .map_err(|err| Decline::Refused(format!("cannot read the file: {err}")))?;
     let sides = crate::git::conflict_sides(root, path);
-    let (resolved, hunks) = resolve_conflicted_text(path, &text, &sides, ask)?;
+    let (resolved, verdicts) = resolve_conflicted_text(path, &text, &sides, ask)?;
     std::fs::write(&full, resolved)
         .map_err(|err| Decline::Refused(format!("cannot write the file back: {err}")))?;
-    Ok(hunks)
+    Ok(verdicts)
+}
+
+/// How a conflict was settled, in a few words for the reader who reviews
+/// it: which side the answer amounts to, or that the model wrote a merge of
+/// its own.
+fn verdict(hunk: &ConflictHunk, resolution: &str) -> String {
+    if resolution == hunk.ours && resolution == hunk.theirs {
+        "same on both sides".into()
+    } else if resolution == hunk.ours {
+        "took ours".into()
+    } else if resolution == hunk.theirs {
+        "took theirs".into()
+    } else if resolution == format!("{}{}", hunk.ours, hunk.theirs) {
+        "took both, ours first".into()
+    } else if resolution == format!("{}{}", hunk.theirs, hunk.ours) {
+        "took both, theirs first".into()
+    } else if resolution.trim().is_empty() {
+        "dropped both sides".into()
+    } else {
+        "wrote its own merge".into()
+    }
 }
 
 /// What the model sent back for one conflict, and whether it got to the end of
@@ -190,8 +212,8 @@ pub(crate) struct HunkQuestion<'a> {
 type Ask<'a> = dyn FnMut(&HunkQuestion<'_>) -> Result<Answer, Decline> + 'a;
 
 /// Settle every conflict in `text`, or say why the local model is the wrong
-/// tool for this file. Reports the merged file and how many conflicts were in
-/// it.
+/// tool for this file. Reports the merged file and, conflict by conflict, how
+/// each was settled.
 ///
 /// The gates come first and are cheap: a file past them costs nothing to
 /// decline, and declining is not a failure — it is the answer that sends the
@@ -201,7 +223,7 @@ fn resolve_conflicted_text(
     text: &str,
     sides: &ConflictSides,
     ask: &mut Ask<'_>,
-) -> Result<(String, usize), Decline> {
+) -> Result<(String, Vec<String>), Decline> {
     let Some(file) = ConflictedFile::parse(text) else {
         return Err(Decline::Refused(
             "the conflict markers are not a shape lg can splice".to_string(),
@@ -215,8 +237,10 @@ fn resolve_conflicted_text(
     }
 
     let mut resolutions = Vec::with_capacity(count);
+    let mut verdicts = Vec::with_capacity(count);
     for (index, hunk) in file.hunks().enumerate() {
         if let Some(agreed) = hunk.agreed_text() {
+            verdicts.push(verdict(hunk, &agreed));
             resolutions.push(agreed);
             continue;
         }
@@ -243,10 +267,12 @@ fn resolve_conflicted_text(
                 Err(decline) => format!("answer refused: {}", decline.reason()),
             }
         ));
-        resolutions.push(verdict?);
+        let resolution = verdict?;
+        verdicts.push(self::verdict(hunk, &resolution));
+        resolutions.push(resolution);
     }
 
-    Ok((file.render(&resolutions), count))
+    Ok((file.render(&resolutions), verdicts))
 }
 
 /// Take the model's answer, or say what is wrong with it.
@@ -436,7 +462,7 @@ mod tests {
 
     #[test]
     fn a_settled_conflict_is_spliced_into_the_file_git_wrote() {
-        let (resolved, hunks) = resolve_conflicted_text(
+        let (resolved, verdicts) = resolve_conflicted_text(
             "src/main.rs",
             CONFLICT,
             &no_sides(),
@@ -445,7 +471,8 @@ mod tests {
         .expect("a small conflict the model answered");
 
         assert_eq!(resolved, "fn main() {\n    a();\n    b();\n}\n");
-        assert_eq!(hunks, 1);
+        assert_eq!(verdicts, ["took both, ours first"]);
+        assert_eq!(verdicts.len(), 1);
     }
 
     #[test]

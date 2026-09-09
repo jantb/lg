@@ -461,6 +461,112 @@ fn taking_a_side_after_editing_by_hand_keeps_the_edit() {
 }
 
 #[test]
+fn x_reverts_a_conflict_to_the_way_it_was_found() {
+    let dir = fixture();
+    let mut app = HeadlessApp::new(TestBackend::new(160, 42)).unwrap();
+    app.state.repo_root = Some(dir.path().to_string_lossy().into_owned());
+    app.state.set_conflicts(vec![FILE.into()]);
+    app.state.modal = Modal::Conflict;
+    app.render().unwrap();
+    let hunk = |app: &HeadlessApp<TestBackend>| {
+        let editor = app
+            .state
+            .conflict_preview
+            .as_ref()
+            .unwrap()
+            .editor
+            .as_ref()
+            .unwrap();
+        (editor.hunks[0].result.clone(), editor.hunks[0].accepted)
+    };
+    let ours = find_label_beside(&app, "local first", ">>");
+    app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), ours))
+        .unwrap();
+    assert_eq!(hunk(&app), ("local first\n".to_string(), true));
+    find_label(&app, "resolved: ours", 0);
+    let revert = find_label_beside(&app, "local first", "X");
+    app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), revert))
+        .unwrap();
+    assert_eq!(hunk(&app), ("base first\n".to_string(), false));
+    find_label(&app, "unresolved", 0);
+}
+
+#[test]
+fn a_side_added_after_an_unterminated_line_starts_on_its_own_line() {
+    let dir = fixture();
+    let middle = (0..20)
+        .map(|i| format!("shared context {i}\n"))
+        .collect::<String>();
+    // Written elsewhere without a newline before the merged text after it.
+    fs::write(
+        dir.path().join(FILE),
+        format!("header\nlocal first\n{middle}local lastfooter\n"),
+    )
+    .unwrap();
+    let mut editor = editor(dir.path());
+    assert_eq!(editor.hunks[1].result, "local last");
+    editor.hunks[1].choose('2');
+    assert_eq!(editor.hunks[1].result, "local last\nincoming last\n");
+}
+
+#[test]
+fn the_file_is_saved_as_soon_as_every_conflict_is_settled() {
+    let dir = fixture();
+    let original = fs::read_to_string(dir.path().join(FILE)).unwrap();
+    let mut app = HeadlessApp::new(TestBackend::new(160, 42)).unwrap();
+    app.state.repo_root = Some(dir.path().to_string_lossy().into_owned());
+    app.state.set_conflicts(vec![FILE.into()]);
+    app.state.modal = Modal::Conflict;
+    app.render().unwrap();
+    app.send_key(key(KeyCode::Char('1'))).unwrap();
+    assert_eq!(
+        fs::read_to_string(dir.path().join(FILE)).unwrap(),
+        original,
+        "one conflict still open: nothing written"
+    );
+    app.send_key(key(KeyCode::Char(']'))).unwrap();
+    app.send_key(key(KeyCode::Char('2'))).unwrap();
+    let saved = fs::read_to_string(dir.path().join(FILE)).unwrap();
+    assert!(
+        saved.contains("local first\n") && saved.contains("incoming last\n"),
+        "{saved}"
+    );
+    assert!(!lg::git::holds_conflict_marker(&saved));
+    assert!(app.state.conflict_resolved.contains(FILE));
+    // A change after that is written too.
+    app.send_key(key(KeyCode::Char('1'))).unwrap();
+    assert!(
+        fs::read_to_string(dir.path().join(FILE))
+            .unwrap()
+            .contains("incoming last\nlocal last\n")
+    );
+}
+
+#[test]
+fn a_file_the_local_model_settled_says_how_beside_each_conflict() {
+    let dir = fixture();
+    let middle = (0..20)
+        .map(|i| format!("shared context {i}\n"))
+        .collect::<String>();
+    fs::write(
+        dir.path().join(FILE),
+        format!("header\nincoming first\n{middle}local first\nincoming last\nfooter\n"),
+    )
+    .unwrap();
+    let mut app = HeadlessApp::new(TestBackend::new(160, 42)).unwrap();
+    app.state.repo_root = Some(dir.path().to_string_lossy().into_owned());
+    app.state.set_conflicts(vec![FILE.into()]);
+    app.state.conflict_model_notes.insert(
+        FILE.into(),
+        vec!["took theirs".into(), "wrote its own merge".into()],
+    );
+    app.state.modal = Modal::Conflict;
+    app.render().unwrap();
+    find_label(&app, "local model took theirs", 0);
+    find_label(&app, "local model wrote its own merge", 0);
+}
+
+#[test]
 fn malformed_markers_and_binary_files_use_the_external_editor_fallback() {
     let dir = fixture();
     fs::write(dir.path().join(FILE), "<<<<<<< HEAD\nbroken\n").unwrap();

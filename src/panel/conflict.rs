@@ -131,12 +131,18 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     match state
         .conflict_preview
         .as_ref()
-        .map(|preview| &preview.editor)
+        .map(|preview| (&preview.editor, &preview.path))
     {
-        Some(Ok(editor)) => merge::render(editor, regions.preview, frame),
+        Some((Ok(editor), path)) => {
+            let notes = state
+                .conflict_model_notes
+                .get(path)
+                .map_or(&[][..], Vec::as_slice);
+            merge::render(editor, notes, regions.preview, frame)
+        }
         preview => {
             let detail = match preview {
-                Some(Err(error)) => format!("{error}\n\nPress o to open externally, Ctrl-r to reload, or v to validate resolved/staged/merged state."),
+                Some((Err(error), _)) => format!("{error}\n\nPress o to open externally, Ctrl-r to reload, or v to validate resolved/staged/merged state."),
                 _ => "Select a conflicted file. Press o to open externally, l for the local model, or v to validate resolved/staged/merged state.".into(),
             };
             frame.render_widget(
@@ -162,14 +168,14 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         ]
     } else if modal.width < 100 {
         vec![
-            Line::from("1 ours  2 theirs  3 both  0 ignore  Enter edit  Ctrl-s save"),
+            Line::from("1 ours  2 theirs  3 both  0 keep  x revert  Enter edit  Ctrl-s save"),
             Line::from("j/k files  [/] conflicts  b base  PgUp/Dn scroll  ←/→ pan  u undo"),
             Line::from("Ctrl-r discard/reload  o open  v validate  l/c agents  a abort  Esc close"),
         ]
     } else {
         vec![
             Line::from(
-                "j/k files   [/] conflicts   1 ours   2 theirs   3 both   0 ignore   Enter edit   or click >> << X beside a conflict",
+                "j/k files   [/] conflicts   1 ours   2 theirs   3 both   0 keep   x revert   Enter edit   or click >> << X beside a conflict",
             ),
             Line::from(
                 "b ancestor   PgUp/PgDn scroll   ←/→ pan   u undo   Ctrl-s save   Ctrl-r reload/discard",
@@ -332,6 +338,7 @@ fn handle_merge_key(state: &mut AppState, key: KeyEvent) -> bool {
         editor.follow_cursor = true;
         if key.code == KeyCode::Esc {
             editor.editing = false;
+            autosave(state);
         } else {
             editor.current_mut().edit(key);
         }
@@ -351,6 +358,7 @@ fn handle_merge_key(state: &mut AppState, key: KeyEvent) -> bool {
             KeyCode::Char('b') => editor.apply(selected, MergeAction::Base),
             KeyCode::PageDown => merge::scroll_by(editor, 8),
             KeyCode::PageUp => merge::scroll_by(editor, -8),
+            KeyCode::Char('x') => editor.apply(selected, MergeAction::Reset),
             KeyCode::Right => editor.horizontal = editor.horizontal.saturating_add(8),
             KeyCode::Left => editor.horizontal = editor.horizontal.saturating_sub(8),
             _ => {
@@ -373,10 +381,25 @@ fn handle_merge_key(state: &mut AppState, key: KeyEvent) -> bool {
                 return false;
             }
         }
+        autosave(state);
         return true;
     }
     // Modified letters must not fall through to plain-letter merge actions.
     true
+}
+
+/// Write the file as soon as every conflict in it has an answer: a settled
+/// file is what the reader wants on disk, and asking for a save on top of
+/// the decision that settled it is a step for nothing. Edits made while a
+/// conflict is still open wait for the next decision, or for Ctrl-s.
+fn autosave(state: &mut AppState) {
+    let settled = state
+        .conflict_preview
+        .as_ref()
+        .is_some_and(|p| p.editor.as_ref().is_ok_and(|e| e.settled() && e.dirty()));
+    if settled {
+        app::save_conflict_editor(state);
+    }
 }
 
 pub fn handle_paste(state: &mut AppState, text: &str) -> bool {
@@ -445,4 +468,5 @@ pub(crate) fn handle_mouse(state: &mut AppState, area: Rect, event: &MouseEvent)
     if let Some(Ok(editor)) = state.conflict_preview.as_mut().map(|p| &mut p.editor) {
         editor.apply(hunk, action);
     }
+    autosave(state);
 }

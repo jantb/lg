@@ -18,6 +18,8 @@ pub enum MergeAction {
     Both,
     /// Settle the conflict with the result as it stands.
     Keep,
+    /// Put the conflict back the way the editor found it.
+    Reset,
     Edit,
     Save,
     Base,
@@ -34,6 +36,7 @@ impl MergeAction {
             Self::AcceptOurs | Self::AllOurs => Some(hunk.accepting(&[Side::Ours])),
             Self::AcceptTheirs | Self::AllTheirs => Some(hunk.accepting(&[Side::Theirs])),
             Self::Both => Some(hunk.accepting(&[Side::Ours, Side::Theirs])),
+            Self::Reset => Some(hunk.start.0.clone()),
             _ => None,
         }
     }
@@ -54,6 +57,9 @@ pub struct MergeHunk {
     pub cursor: usize,
     /// The sides taken into the result so far, in the order they were taken.
     pub applied: Vec<Side>,
+    /// Result, settledness and sides as the editor found the conflict, for
+    /// putting it back.
+    start: (String, bool, Vec<Side>),
     history: Vec<(String, bool, usize, Vec<Side>)>,
 }
 
@@ -93,6 +99,14 @@ impl MergeHunk {
             if untouched && applied.is_empty() {
                 result = self.side_text(side).to_string();
             } else {
+                // A side is whole lines; it starts on one.
+                if !result.is_empty() && !result.ends_with('\n') {
+                    result.push_str(if self.side_text(side).contains("\r\n") {
+                        "\r\n"
+                    } else {
+                        "\n"
+                    });
+                }
                 result.push_str(self.side_text(side));
             }
             applied.push(side);
@@ -132,6 +146,21 @@ impl MergeHunk {
         }
         self.accepted = true;
         self.cursor = 0;
+    }
+
+    /// Back to the way the editor found the conflict, undoably.
+    pub fn reset(&mut self) {
+        self.checkpoint();
+        let (result, accepted, applied) = self.start.clone();
+        self.result = result;
+        self.accepted = accepted;
+        self.applied = applied;
+        self.cursor = 0;
+    }
+
+    /// Whether the conflict is as the editor found it.
+    pub fn at_start(&self) -> bool {
+        self.result == self.start.0 && self.accepted == self.start.1
     }
 
     /// The keyboard's shorthand: `1` ours, `2` theirs, `3` both, `0` keep.
@@ -381,6 +410,7 @@ impl MergeEditor {
                     Vec::new()
                 };
                 MergeHunk {
+                    start: (result.clone(), accepted, applied.clone()),
                     result,
                     source,
                     accepted,
@@ -411,6 +441,11 @@ impl MergeEditor {
             viewport: None,
             baseline,
         })
+    }
+
+    /// Whether every conflict has an answer.
+    pub fn settled(&self) -> bool {
+        self.hunks.iter().all(|h| h.accepted)
     }
 
     pub fn dirty(&self) -> bool {
@@ -475,6 +510,7 @@ impl MergeEditor {
             MergeAction::AcceptTheirs => self.hunks[index].accept(&[Side::Theirs]),
             MergeAction::Both => self.hunks[index].accept(&[Side::Ours, Side::Theirs]),
             MergeAction::Keep => self.hunks[index].choose('0'),
+            MergeAction::Reset => self.hunks[index].reset(),
             MergeAction::AllOurs | MergeAction::AllTheirs => {
                 let side = if action == MergeAction::AllOurs {
                     Side::Ours

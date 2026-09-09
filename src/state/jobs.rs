@@ -385,8 +385,9 @@ pub enum ConflictResolveMsg {
         index: usize,
         total: usize,
     },
-    /// The file was written back with every conflict in it settled.
-    Resolved { path: String, hunks: usize },
+    /// The file was written back with every conflict in it settled;
+    /// `verdicts` says how, conflict by conflict.
+    Resolved { path: String, verdicts: Vec<String> },
     /// The file was left exactly as git wrote it, because the local model was
     /// the wrong tool for it. `reason` says which way it fell short.
     Declined { path: String, reason: String },

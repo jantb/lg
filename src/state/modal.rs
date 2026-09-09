@@ -33,6 +33,7 @@ impl AppState {
         self.conflicts.clear();
         self.conflict_preview = None;
         self.conflict_resolved.clear();
+        self.conflict_model_notes.clear();
         self.modal = Modal::None;
         if validated && let Some(resume) = followup.and_then(|followup| followup.resume) {
             self.pending_action = Some(*resume);
@@ -48,6 +49,7 @@ impl AppState {
         self.conflict_idx = 0;
         self.conflict_scroll_offset = 0;
         self.conflict_resolved.clear();
+        self.conflict_model_notes.clear();
     }
 
     /// Open the picker that says which agent to start in the selected checkout.

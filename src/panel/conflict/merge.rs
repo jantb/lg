@@ -12,7 +12,7 @@ use ratatui::{
 };
 
 use crate::{
-    state::{MergeAction, MergeEditor, MergePart},
+    state::{MergeAction, MergeEditor, MergePart, Side},
     ui,
 };
 
@@ -141,14 +141,19 @@ const FILE_ACTIONS: [(MergeAction, &str, &str); 5] = [
 
 /// Actions on one conflict that sit in the rule above it; taking a side
 /// and ignoring sit beside the conflict itself, in the panes' gutters.
-const HUNK_ACTIONS: [(MergeAction, &str, &str); 3] = [
+const HUNK_ACTIONS: [(MergeAction, &str, &str); 4] = [
     (MergeAction::Both, "Both", "Take both sides, ours first"),
+    (
+        MergeAction::Keep,
+        "Keep as is",
+        "Settle the conflict with the result as it stands",
+    ),
     (MergeAction::Edit, "Edit", "Edit the result"),
     (MergeAction::Base, "Base", "Toggle the common ancestor"),
 ];
 
 /// The buttons in the gutters at a conflict's first row: arrows take that
-/// side into the result, the cross settles the conflict as it stands.
+/// side into the result, the cross puts the conflict back as it was found.
 const GUTTER_ACTIONS: [(MergeAction, &str, &str); 3] = [
     (
         MergeAction::AcceptOurs,
@@ -161,9 +166,9 @@ const GUTTER_ACTIONS: [(MergeAction, &str, &str); 3] = [
         "Take their side into the result",
     ),
     (
-        MergeAction::Keep,
+        MergeAction::Reset,
         "X",
-        "Ignore: settle the conflict with the result as it is",
+        "Revert: put the conflict back the way it was found",
     ),
 ];
 
@@ -264,7 +269,7 @@ fn rule_areas(area: Rect) -> Vec<Rect> {
 }
 
 /// Room at the left of a conflict's rule for its title.
-const RULE_TITLE_WIDTH: u16 = 22;
+const RULE_TITLE_WIDTH: u16 = 62;
 
 /// Where each button of a conflict's rule sits: (line, x offset) within a
 /// rule `width` wide. Buttons wrap to further lines when the rule is narrow.
@@ -497,10 +502,10 @@ fn gutter_buttons(area: Rect, view: &View, hunk: usize) -> Vec<Button> {
         framed: false,
     };
     vec![
-        button(MergeAction::Keep, "X", ours.x + 1, ours.y, 1),
+        button(MergeAction::Reset, "X", ours.x + 1, ours.y, 1),
         button(MergeAction::AcceptOurs, ">>", ours.x + 3, ours.y, 2),
         button(MergeAction::AcceptTheirs, "<<", theirs.x, theirs.y, 2),
-        button(MergeAction::Keep, "X", theirs.x + 3, theirs.y, 1),
+        button(MergeAction::Reset, "X", theirs.x + 3, theirs.y, 1),
     ]
 }
 
@@ -592,21 +597,30 @@ fn render_base(editor: &MergeEditor, area: Rect, frame: &mut Frame) {
     );
 }
 
-fn gutter(number: Option<usize>, marker: char, selected: bool) -> Span<'static> {
+/// A row's line number and marker. Rows of a conflict take its colour,
+/// `Some((settled, selected))`: green once it is settled, amber while it is
+/// not, bold for the selected conflict.
+fn gutter(number: Option<usize>, marker: char, state: Option<(bool, bool)>) -> Span<'static> {
+    let mut style = Style::default().fg(match state {
+        Some((true, _)) => Color::LightGreen,
+        Some((false, _)) => Color::Yellow,
+        None => Color::DarkGray,
+    });
+    if state.is_some_and(|(_, selected)| selected) {
+        style = style.add_modifier(Modifier::BOLD);
+    }
     Span::styled(
         match number {
             Some(number) => format!("{number:>4}{marker} "),
             None => format!("    {marker} "),
         },
-        Style::default().fg(if selected {
-            Color::Yellow
-        } else {
-            Color::DarkGray
-        }),
+        style,
     )
 }
 
-pub(super) fn render(editor: &MergeEditor, area: Rect, frame: &mut Frame) {
+/// Draw the editor; `notes` is how the local model settled each conflict,
+/// when it was the local model that did.
+pub(super) fn render(editor: &MergeEditor, notes: &[String], area: Rect, frame: &mut Frame) {
     if area.width < 12 || area.height < 4 {
         return;
     }
@@ -688,13 +702,13 @@ pub(super) fn render(editor: &MergeEditor, area: Rect, frame: &mut Frame) {
         let lines: Vec<Line<'static>> = visible
             .map(|row| match row {
                 Row::Context { text, numbers } => Line::from(vec![
-                    gutter(Some(numbers[pane]), ' ', false),
+                    gutter(Some(numbers[pane]), ' ', None),
                     Span::styled(text.clone(), Style::default().fg(Color::DarkGray)),
                 ]),
                 Row::Rule { .. } => Line::default(),
                 Row::Hunk { hunk, lines } => {
                     let hunk_view = &view.doc.hunks[*hunk];
-                    let selected = *hunk == editor.selected;
+                    let selected = Some((editor.hunks[*hunk].accepted, *hunk == editor.selected));
                     let equal = lines[0]
                         .zip(lines[1])
                         .zip(lines[2])
@@ -777,7 +791,7 @@ pub(super) fn render(editor: &MergeEditor, area: Rect, frame: &mut Frame) {
             panes[pane],
         );
     }
-    render_rules(editor, area, &view, frame);
+    render_rules(editor, notes, area, &view, frame);
     if editor.editing
         && candidate.is_none()
         && panes[1].width > 8
@@ -796,7 +810,13 @@ pub(super) fn render(editor: &MergeEditor, area: Rect, frame: &mut Frame) {
 
 /// Draw every visible conflict's rule: a title naming and grading it, then
 /// its buttons, over the panes' otherwise empty rows.
-fn render_rules(editor: &MergeEditor, area: Rect, view: &View, frame: &mut Frame) {
+fn render_rules(
+    editor: &MergeEditor,
+    notes: &[String],
+    area: Rect,
+    view: &View,
+    frame: &mut Frame,
+) {
     for rule in rule_areas(area) {
         for (offset, row) in view
             .doc
@@ -816,31 +836,53 @@ fn render_rules(editor: &MergeEditor, area: Rect, view: &View, frame: &mut Frame
                 Rect::new(rule.x, y, rule.width, 1),
             );
             if *line == 0 {
-                let accepted = editor.hunks[*hunk].accepted;
+                let hunk_state = &editor.hunks[*hunk];
                 let selected = *hunk == editor.selected;
-                let title = Line::from(vec![
-                    Span::styled(
-                        format!(" Conflict {}/{} ", hunk + 1, editor.hunks.len()),
+                // The banner says at a glance where the conflict stands: what
+                // it still needs, or what settled it.
+                let (text, background) = if hunk_state.accepted {
+                    let how = match hunk_state.applied.as_slice() {
+                        _ if hunk_state.at_start() && notes.get(*hunk).is_some() => {
+                            format!("local model {}", notes[*hunk])
+                        }
+                        [Side::Ours] => "ours".to_string(),
+                        [Side::Theirs] => "theirs".to_string(),
+                        [Side::Ours, Side::Theirs] => "ours + theirs".to_string(),
+                        [Side::Theirs, Side::Ours] => "theirs + ours".to_string(),
+                        _ if hunk_state.at_start() => "as found".to_string(),
+                        _ => "edited".to_string(),
+                    };
+                    (
+                        format!(
+                            " ✓ Conflict {}/{} · resolved: {how} ",
+                            hunk + 1,
+                            editor.hunks.len()
+                        ),
+                        Color::Rgb(60, 140, 80),
+                    )
+                } else {
+                    (
+                        format!(
+                            " ? Conflict {}/{} · unresolved ",
+                            hunk + 1,
+                            editor.hunks.len()
+                        ),
+                        Color::Rgb(170, 130, 30),
+                    )
+                };
+                let width = (text.chars().count() as u16).min(rule.width);
+                frame.render_widget(
+                    Paragraph::new(text).style(
                         Style::default()
-                            .fg(if selected { Color::Yellow } else { Color::Gray })
+                            .fg(Color::Black)
+                            .bg(background)
                             .add_modifier(if selected {
                                 Modifier::BOLD
                             } else {
                                 Modifier::empty()
                             }),
                     ),
-                    Span::styled(
-                        if accepted { "✓ " } else { "? " },
-                        Style::default().fg(if accepted {
-                            Color::LightGreen
-                        } else {
-                            Color::Yellow
-                        }),
-                    ),
-                ]);
-                frame.render_widget(
-                    Paragraph::new(title),
-                    Rect::new(rule.x, y, RULE_TITLE_WIDTH.min(rule.width), 1),
+                    Rect::new(rule.x, y, width, 1),
                 );
             }
         }
@@ -874,7 +916,7 @@ fn render_rules(editor: &MergeEditor, area: Rect, view: &View, frame: &mut Frame
             Style::default().fg(Color::Black).bg(Color::LightCyan)
         } else {
             Style::default()
-                .fg(if button.action == MergeAction::Keep {
+                .fg(if button.action == MergeAction::Reset {
                     Color::LightRed
                 } else {
                     Color::LightCyan

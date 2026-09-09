@@ -18,13 +18,17 @@ impl App {
                     self.state
                         .set_status(format!("resolving {index}/{total}: {path}"), false);
                 }
-                ConflictResolveMsg::Resolved { path, hunks } => {
+                ConflictResolveMsg::Resolved { path, verdicts } => {
                     self.advance_conflict_resolve(&path);
                     self.state.conflict_resolved.insert(path.clone());
                     self.state.set_status(
-                        format!("local model settled {hunks} conflict(s) in {path}"),
+                        format!(
+                            "local model settled {} conflict(s) in {path}",
+                            verdicts.len()
+                        ),
                         false,
                     );
+                    self.state.conflict_model_notes.insert(path, verdicts);
                 }
                 ConflictResolveMsg::Declined { path, reason } => {
                     self.advance_conflict_resolve(&path);

@@ -225,6 +225,9 @@ pub struct AppState {
     /// so this is what tells the panel which ones are waiting to be read
     /// rather than waiting to be resolved.
     pub conflict_resolved: std::collections::HashSet<String>,
+    /// How the local model settled each conflict of the files it resolved,
+    /// by path, for the editor to show beside them.
+    pub conflict_model_notes: std::collections::HashMap<String, Vec<String>>,
 
     pub delete_branch_target: String,
     pub delete_branch_local: bool,
@@ -411,6 +414,7 @@ impl AppState {
             conflict_log: String::new(),
             conflict_followup: None,
             conflict_resolved: std::collections::HashSet::new(),
+            conflict_model_notes: std::collections::HashMap::new(),
 
             delete_branch_target: String::new(),
             delete_branch_local: true,
