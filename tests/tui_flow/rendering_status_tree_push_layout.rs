@@ -81,6 +81,7 @@ fn status_panel_shows_active_generation() {
         spinner: 0,
         scene: 0,
         arrivals: Vec::new(),
+        first_output_ms: None,
         feed: Default::default(),
     });
 

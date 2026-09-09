@@ -10,40 +10,40 @@ use crate::git::{ConflictHunk, ConflictedFile, MergeSnapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MergeAction {
-    ReplaceOurs,
-    InsertOurs,
-    ReplaceTheirs,
-    InsertTheirs,
+    /// Take our side into the result: in place of the base, or after
+    /// whatever side was taken first.
+    AcceptOurs,
+    AcceptTheirs,
+    /// Both sides, ours first.
     Both,
+    /// Settle the conflict with the result as it stands.
     Keep,
     Edit,
     Save,
     Base,
     Previous,
     Next,
+    /// Accept one side for every conflict not yet settled.
+    AllOurs,
+    AllTheirs,
 }
 
 impl MergeAction {
     pub fn preview(self, hunk: &MergeHunk) -> Option<String> {
         match self {
-            Self::ReplaceOurs => Some(hunk.source.ours.clone()),
-            Self::ReplaceTheirs => Some(hunk.source.theirs.clone()),
-            Self::Both => Some(format!("{}{}", hunk.source.ours, hunk.source.theirs)),
-            Self::InsertOurs | Self::InsertTheirs => {
-                let mut result = hunk.result.clone();
-                result.insert_str(
-                    hunk.cursor,
-                    if self == Self::InsertOurs {
-                        &hunk.source.ours
-                    } else {
-                        &hunk.source.theirs
-                    },
-                );
-                Some(result)
-            }
+            Self::AcceptOurs | Self::AllOurs => Some(hunk.accepting(&[Side::Ours])),
+            Self::AcceptTheirs | Self::AllTheirs => Some(hunk.accepting(&[Side::Theirs])),
+            Self::Both => Some(hunk.accepting(&[Side::Ours, Side::Theirs])),
             _ => None,
         }
     }
+}
+
+/// One side of a conflict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Ours,
+    Theirs,
 }
 
 #[derive(Debug)]
@@ -52,7 +52,9 @@ pub struct MergeHunk {
     pub result: String,
     pub accepted: bool,
     pub cursor: usize,
-    history: Vec<(String, bool, usize)>,
+    /// The sides taken into the result so far, in the order they were taken.
+    pub applied: Vec<Side>,
+    history: Vec<(String, bool, usize, Vec<Side>)>,
 }
 
 impl MergeHunk {
@@ -60,20 +62,89 @@ impl MergeHunk {
         if self.history.len() >= 100 {
             self.history.remove(0);
         }
-        self.history
-            .push((self.result.clone(), self.accepted, self.cursor));
+        self.history.push((
+            self.result.clone(),
+            self.accepted,
+            self.cursor,
+            self.applied.clone(),
+        ));
     }
 
-    pub fn choose(&mut self, choice: char) {
+    fn side_text(&self, side: Side) -> &str {
+        match side {
+            Side::Ours => &self.source.ours,
+            Side::Theirs => &self.source.theirs,
+        }
+    }
+
+    /// The result once `sides` are taken as well: the first side taken
+    /// stands in for an untouched base, and each after that follows on, as
+    /// does the first when the result has already been written to by hand.
+    /// A side already taken is not taken twice.
+    pub fn accepting(&self, sides: &[Side]) -> String {
+        let mut result = self.result.clone();
+        let mut applied = self.applied.clone();
+        let untouched =
+            applied.is_empty() && self.result == self.source.base.clone().unwrap_or_default();
+        for &side in sides {
+            if applied.contains(&side) {
+                continue;
+            }
+            if untouched && applied.is_empty() {
+                result = self.side_text(side).to_string();
+            } else {
+                result.push_str(self.side_text(side));
+            }
+            applied.push(side);
+        }
+        result
+    }
+
+    /// Which sides a result written elsewhere amounts to, when it is one of
+    /// them or both in either order; nothing is claimed for anything else.
+    fn sides_of(source: &ConflictHunk, result: &str) -> Vec<Side> {
+        if result.is_empty() {
+            return Vec::new();
+        }
+        let both = format!("{}{}", source.ours, source.theirs);
+        let reversed = format!("{}{}", source.theirs, source.ours);
+        if result == source.ours {
+            vec![Side::Ours]
+        } else if result == source.theirs {
+            vec![Side::Theirs]
+        } else if result == both {
+            vec![Side::Ours, Side::Theirs]
+        } else if result == reversed {
+            vec![Side::Theirs, Side::Ours]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Take `sides` into the result and count the conflict settled.
+    pub fn accept(&mut self, sides: &[Side]) {
         self.checkpoint();
-        self.result = match choice {
-            '1' => self.source.ours.clone(),
-            '2' => self.source.theirs.clone(),
-            '3' => format!("{}{}", self.source.ours, self.source.theirs),
-            _ => self.result.clone(),
-        };
+        self.result = self.accepting(sides);
+        for &side in sides {
+            if !self.applied.contains(&side) {
+                self.applied.push(side);
+            }
+        }
         self.accepted = true;
         self.cursor = 0;
+    }
+
+    /// The keyboard's shorthand: `1` ours, `2` theirs, `3` both, `0` keep.
+    pub fn choose(&mut self, choice: char) {
+        match choice {
+            '1' => self.accept(&[Side::Ours]),
+            '2' => self.accept(&[Side::Theirs]),
+            '3' => self.accept(&[Side::Ours, Side::Theirs]),
+            _ => {
+                self.checkpoint();
+                self.accepted = true;
+            }
+        }
     }
 
     pub fn insert(&mut self, text: &str) {
@@ -84,10 +155,11 @@ impl MergeHunk {
     }
 
     pub fn undo(&mut self) {
-        if let Some((text, accepted, cursor)) = self.history.pop() {
+        if let Some((text, accepted, cursor, applied)) = self.history.pop() {
             self.result = text;
             self.accepted = accepted;
             self.cursor = cursor;
+            self.applied = applied;
         }
     }
 
@@ -248,9 +320,22 @@ pub struct MergeEditor {
 
 impl MergeEditor {
     pub fn new(snapshot: MergeSnapshot) -> Result<Self> {
-        let parsed = ConflictedFile::parse(&snapshot.original);
+        let mut parsed = ConflictedFile::parse(&snapshot.original);
         if parsed.is_none() && crate::git::holds_conflict_marker(&snapshot.original) {
             bail!("unsupported or incomplete conflict markers; press o to resolve externally");
+        }
+        // A file with no markers left in it but still unmerged in the index
+        // has been written by something else: an earlier save, or another
+        // tool. The conflicts are still there to be seen in the three stages,
+        // so recover them from git's own three-way merge and take what the
+        // file holds in each one's place as its result so far.
+        let mut recovered = None;
+        if parsed.is_none()
+            && let Some(diff3) = &snapshot.diff3
+            && let Some(results) = split_resolved(&snapshot.original, diff3)
+        {
+            parsed = Some(diff3.clone());
+            recovered = Some(results);
         }
         let sources: Vec<_> = if let Some(file) = &parsed {
             file.hunks().cloned().collect()
@@ -265,7 +350,8 @@ impl MergeEditor {
         };
         let hunks: Vec<_> = sources
             .into_iter()
-            .map(|mut source| {
+            .enumerate()
+            .map(|(index, mut source)| {
                 if source.base.is_none()
                     && let Some(diff3) = &snapshot.diff3
                 {
@@ -281,15 +367,25 @@ impl MergeEditor {
                         source.base = matching[0].base.clone();
                     }
                 }
+                // The result starts from what both sides started from: the
+                // common ancestor, or nothing where there is none to show.
+                // Taking a side is then a decision the reader can see.
+                let (result, accepted) = match &recovered {
+                    Some(results) => (results[index].clone(), true),
+                    None if parsed.is_some() => (source.base.clone().unwrap_or_default(), false),
+                    None => (snapshot.original.clone(), true),
+                };
+                let applied = if recovered.is_some() {
+                    MergeHunk::sides_of(&source, &result)
+                } else {
+                    Vec::new()
+                };
                 MergeHunk {
-                    result: if parsed.is_some() {
-                        source.ours.clone()
-                    } else {
-                        snapshot.original.clone()
-                    },
+                    result,
                     source,
-                    accepted: parsed.is_none(),
+                    accepted,
                     cursor: 0,
+                    applied,
                     history: Vec::new(),
                 }
             })
@@ -375,17 +471,19 @@ impl MergeEditor {
         }
         self.selected = index;
         match action {
-            MergeAction::ReplaceOurs => self.hunks[index].choose('1'),
-            MergeAction::ReplaceTheirs => self.hunks[index].choose('2'),
-            MergeAction::Both => self.hunks[index].choose('3'),
+            MergeAction::AcceptOurs => self.hunks[index].accept(&[Side::Ours]),
+            MergeAction::AcceptTheirs => self.hunks[index].accept(&[Side::Theirs]),
+            MergeAction::Both => self.hunks[index].accept(&[Side::Ours, Side::Theirs]),
             MergeAction::Keep => self.hunks[index].choose('0'),
-            MergeAction::InsertOurs | MergeAction::InsertTheirs => {
-                let source = if action == MergeAction::InsertOurs {
-                    self.hunks[index].source.ours.clone()
+            MergeAction::AllOurs | MergeAction::AllTheirs => {
+                let side = if action == MergeAction::AllOurs {
+                    Side::Ours
                 } else {
-                    self.hunks[index].source.theirs.clone()
+                    Side::Theirs
                 };
-                self.hunks[index].insert(&source);
+                for hunk in self.hunks.iter_mut().filter(|h| !h.accepted) {
+                    hunk.accept(&[side]);
+                }
             }
             MergeAction::Edit => {
                 self.editing = true;
@@ -428,6 +526,44 @@ impl MergeEditor {
         self.saved = true;
         Ok(())
     }
+}
+
+/// What `original`, a file with no markers in it, holds in place of each
+/// conflict of `merged`, git's three-way merge of its stages: the text
+/// between the stretches git merged on its own, which must all appear in
+/// `original` in order and account for all of it. `None` when they do not,
+/// or when two conflicts adjoin with nothing merged between them to split
+/// the file on.
+fn split_resolved(original: &str, merged: &ConflictedFile) -> Option<Vec<String>> {
+    let mut results = Vec::new();
+    let mut position = 0;
+    let mut open = false;
+    for part in merged.parts() {
+        match part {
+            crate::git::FilePart::Kept(text) => {
+                let found = position + original[position..].find(text)?;
+                if open {
+                    results.push(original[position..found].to_string());
+                    open = false;
+                } else if found != position {
+                    return None;
+                }
+                position = found + text.len();
+            }
+            crate::git::FilePart::Conflict(_) => {
+                if open {
+                    return None;
+                }
+                open = true;
+            }
+        }
+    }
+    if open {
+        results.push(original[position..].to_string());
+    } else if position != original.len() {
+        return None;
+    }
+    (results.len() == merged.hunk_count()).then_some(results)
 }
 
 #[derive(Debug)]

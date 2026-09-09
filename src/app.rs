@@ -49,7 +49,7 @@ mod spawn;
 mod workflow;
 
 pub(crate) use conflict_assist::spawn_conflict_resolve;
-pub(crate) use conflict_editor::{prepare_conflict_editor, save_conflict_editor};
+pub(crate) use conflict_editor::{prepare_conflict_editor, reopen_conflicts, save_conflict_editor};
 pub(crate) use spawn::{
     checkout_branch_async, checkout_nested_branch_async, checkout_nested_remote_branch_async,
     checkout_remote_branch_async,

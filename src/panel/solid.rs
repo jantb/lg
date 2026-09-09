@@ -2,8 +2,9 @@
 //! text. A figure is a handful of signed-distance primitives, each with a
 //! colour; each cell of the picture fires one ray at the figure, and where it
 //! lands the surface's slope towards the light picks both how bright the
-//! colour is and how dense the character. Turning the figure a little every
-//! tick makes it rotate on the spot.
+//! colour is and how dense the character. The figure stands facing the
+//! reader, shifting its stance every few seconds, and its eyes follow the
+//! reader as it turns.
 
 use ratatui::style::Color;
 
@@ -225,23 +226,57 @@ pub struct Pose {
 const HOP_PERIOD: f32 = 4.0;
 /// How long a hop is in the air.
 const HOP_TIME: f32 = 0.7;
+/// Seconds a stance is held before the figure shifts to the next, and how
+/// long the shift takes.
+const SHIFT_PERIOD: f32 = 5.0;
+const SHIFT_TIME: f32 = 0.9;
+/// Seconds between blinks, when in the period the eyes close, and for how
+/// long. The first blink comes well after the figure appears, so its eyes
+/// are open when it does.
+const BLINK_PERIOD: f32 = 3.7;
+const BLINK_AT: f32 = 1.0;
+const BLINK_TIME: f32 = 0.14;
 
-/// The figure's pose at time `t`. A live mascot turns at `turn_rate` on
-/// average but speeds up and slows down as it goes, paces from side to side,
-/// sways, breathes up and down, and every few seconds hops. An object such
-/// as a monitor just turns on the spot: a monitor that hops is unsettling.
-pub fn pose(t: f32, turn_rate: f32, alive: bool) -> Pose {
+/// A small deterministic scatter in 0..1 for stance `n`.
+fn noise(n: i32) -> f32 {
+    let mut h = (n as u32).wrapping_mul(0x9E37_79B9);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x85EB_CA6B);
+    h ^= h >> 13;
+    (h % 10_000) as f32 / 10_000.0
+}
+
+/// The yaw the figure holds at time `t`: a stance within `turn` radians of
+/// facing the reader, eased to a new one every few seconds. It never turns
+/// far enough to look away.
+fn stance(t: f32, turn: f32) -> f32 {
+    let n = (t / SHIFT_PERIOD).floor();
+    let into = t - n * SHIFT_PERIOD;
+    let at = |n: i32| (noise(n) * 2.0 - 1.0) * turn;
+    let (from, to) = (at(n as i32), at(n as i32 + 1));
+    let k = (into / SHIFT_TIME).clamp(0.0, 1.0);
+    let ease = k * k * (3.0 - 2.0 * k);
+    from + (to - from) * ease
+}
+
+/// The figure's pose at time `t`. A live mascot faces the reader, shifting
+/// its stance within `turn` radians of straight on, leaning into each turn,
+/// pacing from side to side, breathing up and down, and every few seconds
+/// hopping. An object such as a monitor only turns a little on the spot: a
+/// monitor that hops is unsettling.
+pub fn pose(t: f32, turn: f32, alive: bool) -> Pose {
     if !alive {
         return Pose {
-            yaw: t * turn_rate,
+            yaw: stance(t, turn * 0.6) + 0.05 * (t * 0.6).sin(),
             tilt: 0.0,
             bob: 0.0,
             sway: 0.0,
             headroom: 0.0,
         };
     }
-    let yaw = t * turn_rate + 0.7 * (t * 0.8).sin();
-    let tilt = 0.14 * (t * 1.9).sin();
+    let stance = stance(t, turn);
+    let yaw = stance + 0.05 * (t * 1.3).sin();
+    let tilt = 0.12 * (t * 1.9).sin() + 0.2 * stance;
     let breathe = 0.06 * (t * 2.6).sin();
     let into_hop = t % HOP_PERIOD;
     let hop = if into_hop < HOP_TIME {
@@ -257,6 +292,38 @@ pub fn pose(t: f32, turn_rate: f32, alive: bool) -> Pose {
         bob: breathe + hop,
         sway: 0.7 * (t * 0.45).sin(),
         headroom: 0.4,
+    }
+}
+
+/// Where a figure's eyes are looking, and whether they are open.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Gaze {
+    /// The direction the pupils point, in the figure's own frame.
+    pub look: V3,
+    pub blink: bool,
+}
+
+impl Gaze {
+    /// Straight ahead, eyes open.
+    pub fn forward() -> Self {
+        Self {
+            look: v(0.0, 0.0, 1.0),
+            blink: false,
+        }
+    }
+
+    /// Looking back at a reader the figure has turned `yaw` radians away
+    /// from, so the eyes stay on them whichever way it stands; the glance
+    /// drifts a little so the eyes are alive rather than fixed, and every
+    /// few seconds they blink.
+    pub fn at(t: f32, yaw: f32) -> Self {
+        let drift = yaw + 0.18 * (t * 0.9).sin();
+        let look = v(drift.sin(), 0.12 * (t * 0.7).sin(), drift.cos()).norm();
+        let into = t.rem_euclid(BLINK_PERIOD);
+        Self {
+            look,
+            blink: (BLINK_AT..BLINK_AT + BLINK_TIME).contains(&into),
+        }
     }
 }
 
@@ -403,15 +470,23 @@ const WHITE: Color = Color::Rgb(250, 250, 250);
 const DARK: Color = Color::Rgb(28, 28, 36);
 const RED: Color = Color::Rgb(255, 80, 80);
 
-/// Two eyes looking out of the front of a figure at `y`, `x` apart, with
-/// their pupils on the surface at depth `z`.
-fn eyes(x: f32, y: f32, z: f32, r: f32) -> [Part; 4] {
-    [
+/// Two eyes looking out of the front of a figure at `y`, `x` apart, on the
+/// surface at depth `z`: white balls with the pupils turned the way the
+/// figure is looking, or a closed line while it blinks.
+fn eyes(gaze: Gaze, x: f32, y: f32, z: f32, r: f32) -> Vec<Part> {
+    if gaze.blink {
+        return vec![
+            mark(Shape::Sphere { c: v(-x, y, z), r }, WHITE, '-'),
+            mark(Shape::Sphere { c: v(x, y, z), r }, WHITE, '-'),
+        ];
+    }
+    let pupil = gaze.look.scale(r * 0.85);
+    vec![
         mark(Shape::Sphere { c: v(-x, y, z), r }, WHITE, 'O'),
         mark(Shape::Sphere { c: v(x, y, z), r }, WHITE, 'O'),
         mark(
             Shape::Sphere {
-                c: v(-x, y, z + r * 0.85),
+                c: v(-x, y, z).add(pupil),
                 r: r * 0.38,
             },
             DARK,
@@ -419,7 +494,7 @@ fn eyes(x: f32, y: f32, z: f32, r: f32) -> [Part; 4] {
         ),
         mark(
             Shape::Sphere {
-                c: v(x, y, z + r * 0.85),
+                c: v(x, y, z).add(pupil),
                 r: r * 0.38,
             },
             DARK,
@@ -428,10 +503,15 @@ fn eyes(x: f32, y: f32, z: f32, r: f32) -> [Part; 4] {
     ]
 }
 
+/// The glyph a lidless eye is drawn in: its own, or a line while it blinks.
+fn lid(gaze: Gaze, open: char) -> char {
+    if gaze.blink { '-' } else { open }
+}
+
 /// Kodee, the Kotlin mascot: a purple body with two pointed ears, a black
 /// screen for a face with two big white eyes, and noodle arms and legs. The
 /// right arm waves with `t`.
-pub fn kodee(t: f32) -> Vec<Part> {
+pub fn kodee(t: f32, gaze: Gaze) -> Vec<Part> {
     let purple = Color::Rgb(125, 82, 255);
     let wave = (t * 2.0).sin();
     let mut parts = vec![
@@ -519,13 +599,13 @@ pub fn kodee(t: f32) -> Vec<Part> {
             purple,
         ),
     ];
-    parts.extend(eyes(0.3, 0.1, 0.5, 0.2));
+    parts.extend(eyes(gaze, 0.3, 0.1, 0.5, 0.2));
     parts
 }
 
 /// Ferris the crab: a flat orange body with a spiky back, eyes on top,
 /// six legs, and two claws that wave with `t`.
-pub fn ferris(t: f32) -> Vec<Part> {
+pub fn ferris(t: f32, gaze: Gaze) -> Vec<Part> {
     let orange = Color::Rgb(247, 96, 20);
     let wave = (t * 2.0).sin() * 0.35;
     let mut parts = vec![part(
@@ -575,13 +655,13 @@ pub fn ferris(t: f32) -> Vec<Part> {
             ));
         }
     }
-    parts.extend(eyes(0.45, -0.05, 0.75, 0.19));
+    parts.extend(eyes(gaze, 0.45, -0.05, 0.75, 0.19));
     parts
 }
 
 /// The Go gopher: a tall rounded blue body, round ears, huge eyes, a nose
 /// and two front teeth, and arms that swing with `t`.
-pub fn gopher(t: f32) -> Vec<Part> {
+pub fn gopher(t: f32, gaze: Gaze) -> Vec<Part> {
     let blue = Color::Rgb(0, 190, 230);
     let swing = (t * 1.5).sin() * 0.25;
     let mut parts = vec![
@@ -654,7 +734,7 @@ pub fn gopher(t: f32) -> Vec<Part> {
             blue,
         ),
     ];
-    parts.extend(eyes(0.4, 0.5, 0.75, 0.32));
+    parts.extend(eyes(gaze, 0.4, 0.5, 0.75, 0.32));
     parts
 }
 
@@ -722,9 +802,9 @@ pub fn duke(t: f32) -> Vec<Part> {
     ]
 }
 
-/// A python: coils of blue and yellow, a raised head that sways, and a
-/// tongue that flicks with `t`.
-pub fn snake(t: f32) -> Vec<Part> {
+/// A python: coils of blue and yellow, a raised head that sways, eyes that
+/// blink, and a tongue that flicks with `t`.
+pub fn snake(t: f32, gaze: Gaze) -> Vec<Part> {
     let blue = Color::Rgb(70, 140, 200);
     let yellow = Color::Rgb(255, 212, 59);
     let flick = if (t * 3.0).sin() > 0.0 { 0.4 } else { 0.0 };
@@ -785,7 +865,7 @@ pub fn snake(t: f32) -> Vec<Part> {
                 r: 0.09,
             },
             WHITE,
-            'O',
+            lid(gaze, 'O'),
         ),
         mark(
             Shape::Sphere {
@@ -793,7 +873,7 @@ pub fn snake(t: f32) -> Vec<Part> {
                 r: 0.09,
             },
             WHITE,
-            'O',
+            lid(gaze, 'O'),
         ),
     ]
 }
@@ -864,9 +944,9 @@ pub fn monitor(t: f32, screen: Color, code: &'static [&'static str]) -> Vec<Part
     ]
 }
 
-/// A robot: a boxy head on a boxy body, cyan eyes, an antenna whose light
-/// blinks with `t`, and arms that swing.
-pub fn robot(t: f32) -> Vec<Part> {
+/// A robot: a boxy head on a boxy body, cyan eyes that blink, an antenna
+/// whose light blinks with `t`, and arms that swing.
+pub fn robot(t: f32, gaze: Gaze) -> Vec<Part> {
     let steel = Color::Rgb(160, 170, 200);
     let cyan = Color::Rgb(80, 230, 255);
     let swing = (t * 1.5).sin() * 0.3;
@@ -914,7 +994,7 @@ pub fn robot(t: f32) -> Vec<Part> {
                 r: 0.16,
             },
             cyan,
-            'o',
+            lid(gaze, 'o'),
         ),
         mark(
             Shape::Sphere {
@@ -922,7 +1002,7 @@ pub fn robot(t: f32) -> Vec<Part> {
                 r: 0.16,
             },
             cyan,
-            'o',
+            lid(gaze, 'o'),
         ),
         mark(
             Shape::RoundBox {
@@ -993,6 +1073,7 @@ mod tests {
 
     #[test]
     fn kodee_faces_the_viewer_with_two_eyes_and_turns() {
+        let kodee = |t| kodee(t, Gaze::forward());
         let front = render(&kodee(0.0), 0.0, 40, 20);
         assert!(
             count_glyph(&front, 'O') >= 6,
@@ -1014,15 +1095,52 @@ mod tests {
     }
 
     #[test]
+    fn the_figure_keeps_facing_the_reader_and_its_eyes_follow_and_blink() {
+        // Over a long wait the stance wanders but never turns the back.
+        for step in 0..600 {
+            let t = step as f32 * 0.1;
+            let pose = pose(t, 0.55, true);
+            assert!(
+                pose.yaw.abs() < 0.8,
+                "yaw {} at {t}s faces the reader",
+                pose.yaw
+            );
+        }
+        // The pupils turn with the figure so they stay on the reader: turned
+        // to one side, the eyes still show from the front. Nothing else on
+        // Ferris is that dark a blue, so such a cell is a pupil.
+        let pupils = |grid: &[Vec<Option<(char, Color)>>]| {
+            grid.iter()
+                .flatten()
+                .filter(
+                    |c| matches!(c, Some((_, Color::Rgb(r, g, b))) if *r < 30 && *g < 30 && b >= r),
+                )
+                .count()
+        };
+        let turned = pose(7.0, 0.55, true);
+        let grid = render_posed(&ferris(7.0, Gaze::at(7.0, turned.yaw)), turned, 44, 20);
+        assert!(pupils(&grid) > 0, "pupils show while turned");
+        // And every few seconds they close.
+        let blinks = (0..400)
+            .filter(|i| Gaze::at(*i as f32 * 0.01, 0.0).blink)
+            .count();
+        assert!(blinks > 0, "a blink comes within four seconds");
+        assert!(!Gaze::at(0.0, 0.0).blink, "the eyes are open to begin with");
+        let shut = render(&ferris(1.05, Gaze::at(1.05, 0.0)), 0.0, 44, 20);
+        assert_eq!(pupils(&shut), 0, "no pupils while blinking");
+        assert_eq!(count_glyph(&shut, 'O'), 0, "the eyes are shut");
+    }
+
+    #[test]
     fn every_figure_renders_something_and_moves_with_time() {
         let figures: [fn(f32) -> Vec<Part>; 7] = [
-            kodee,
-            ferris,
-            gopher,
+            |t| kodee(t, Gaze::forward()),
+            |t| ferris(t, Gaze::forward()),
+            |t| gopher(t, Gaze::forward()),
             duke,
-            snake,
+            |t| snake(t, Gaze::forward()),
             |t| monitor(t, Color::Rgb(247, 223, 30), &["const x = 1;", "run(x);"]),
-            robot,
+            |t| robot(t, Gaze::forward()),
         ];
         for figure in figures {
             let grid = render(&figure(0.0), 0.3, 44, 20);

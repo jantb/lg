@@ -2,10 +2,11 @@
 //! model is a silent minute: nothing streams back, so the message pane is an
 //! empty box with a timer on it. This fills the box with a small animated
 //! scene of what is going on, filling the whole box: the language's mascot,
-//! a small three-dimensional figure turning on the spot, feeds the diff token
-//! by token into a neural network that pulses as it thinks, against one of a
-//! few backgrounds (code raining down, a starry night, the diff scrolling
-//! past), with a caption reporting what the model is up to. Everything moves
+//! a small three-dimensional figure facing the reader, waving, shifting its
+//! stance and blinking, feeds the diff token by token into a neural network
+//! that pulses as it thinks, against one of a few backgrounds (code raining
+//! down, a starry night, the diff scrolling past, an arcade round, the trench
+//! run), with a caption reporting what the model is up to. Everything moves
 //! on the millisecond clock, so it is as smooth as the terminal can draw.
 //! None of it is true, all of it is more fun than a timer.
 
@@ -14,7 +15,7 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use super::{arena, solid};
+use super::{arena, solid, trench};
 use crate::ui::Token;
 
 /// The language most of the staged files are written in, judged by extension.
@@ -101,17 +102,17 @@ impl Language {
         !matches!(self, Self::TypeScript)
     }
 
-    /// The mascot as a three-dimensional figure at time `t` seconds, ready
-    /// to be turned and lit.
-    fn figure(self, t: f32) -> Vec<solid::Part> {
+    /// The mascot as a three-dimensional figure at time `t` seconds, its
+    /// eyes on `gaze`, ready to be posed and lit.
+    fn figure(self, t: f32, gaze: solid::Gaze) -> Vec<solid::Part> {
         match self {
-            Self::Rust => solid::ferris(t),
-            Self::Kotlin => solid::kodee(t),
+            Self::Rust => solid::ferris(t, gaze),
+            Self::Kotlin => solid::kodee(t, gaze),
             Self::Java => solid::duke(t),
-            Self::Go => solid::gopher(t),
-            Self::Python => solid::snake(t),
+            Self::Go => solid::gopher(t, gaze),
+            Self::Python => solid::snake(t, gaze),
             Self::TypeScript => solid::monitor(t, Color::Rgb(90, 160, 240), TS_CODE),
-            Self::Other => solid::robot(t),
+            Self::Other => solid::robot(t, gaze),
         }
     }
 }
@@ -151,21 +152,26 @@ enum Backdrop {
     Diff,
     /// Light cycles and a snake playing out a round on the grid.
     Arena,
+    /// The trench run: the Death Star, which goes up when the first word
+    /// of the message flies in.
+    Trench,
 }
 
-const BACKDROPS: [Backdrop; 4] = [
+const BACKDROPS: [Backdrop; 5] = [
     Backdrop::Rain,
     Backdrop::Night,
     Backdrop::Diff,
     Backdrop::Arena,
+    Backdrop::Trench,
 ];
 
 /// The figure's picture is this many rows tall at most, and never fewer than
 /// the minimum; its width follows from the cell shape.
 const FIGURE_MAX_ROWS: usize = 22;
 const FIGURE_MIN_ROWS: usize = 8;
-/// Radians the figure turns per second: one full turn in about seven.
-const TURN_RATE: f32 = 0.9;
+/// Radians either side of straight on the figure's stance may turn to: far
+/// enough to shift its weight, never far enough to look away.
+const TURN_RANGE: f32 = 0.55;
 /// Milliseconds a caption stays up before the next one.
 const CAPTION_MS: u64 = 1_700;
 /// The glyphs a token can be drawn as, from dense to faint.
@@ -860,6 +866,9 @@ pub struct Show<'a> {
     pub seed: usize,
     pub ms: u64,
     pub feed: &'a Feed,
+    /// When the first word of the message arrived, on the same clock: the
+    /// moment the wait paid off, which some backdrops make an event of.
+    pub boom: Option<u64>,
 }
 
 /// The message pane while the model is writing: the `text` streamed so far
@@ -979,6 +988,7 @@ fn paint(
         seed,
         ms,
         feed,
+        boom,
     } = show;
     let plan = Plan::fit(lang, seed, width, height)?;
     let mut canvas = Canvas::new(plan.width, plan.height);
@@ -993,6 +1003,14 @@ fn paint(
                 canvas.put(x, y, c, style)
             })
         }
+        Backdrop::Trench => trench::frame(
+            seed,
+            plan.width,
+            plan.ground,
+            ms,
+            boom,
+            &mut |x, y, c, style| canvas.put(x, y, c, style),
+        ),
     }
     canvas.text(
         0,
@@ -1299,10 +1317,10 @@ fn draw_glyph_diff(canvas: &mut Canvas, width: usize, ground: usize, t: f32) {
     }
 }
 
-/// The language's figure, turned and lit for the moment `t`, drawn into a
-/// `w` by `h` window with its bottom on the ground. It turns steadily and
-/// moves on its own clock, so at any frame rate it is where it should be.
-/// Draw the mascot into its box, moving as `solid::pose` says.
+/// The language's figure, posed and lit for the moment `t`, drawn into a
+/// `w` by `h` window with its bottom on the ground. It faces the reader,
+/// its eyes following them as it shifts its stance, and moves on its own
+/// clock, so at any frame rate it is where it should be.
 fn draw_figure(
     canvas: &mut Canvas,
     lang: Language,
@@ -1312,12 +1330,8 @@ fn draw_figure(
     h: usize,
     t: f32,
 ) {
-    let grid = solid::render_posed(
-        &lang.figure(t),
-        solid::pose(t, TURN_RATE, lang.is_alive()),
-        w,
-        h,
-    );
+    let pose = solid::pose(t, TURN_RANGE, lang.is_alive());
+    let grid = solid::render_posed(&lang.figure(t, solid::Gaze::at(t, pose.yaw)), pose, w, h);
     for (r, row) in grid.iter().enumerate() {
         for (c, cell) in row.iter().enumerate() {
             if let Some((ch, color)) = cell {
@@ -1644,6 +1658,7 @@ mod tests {
             seed,
             ms,
             feed: EMPTY.get_or_init(Feed::default),
+            boom: None,
         }
     }
 
@@ -1709,6 +1724,7 @@ mod tests {
                                 seed,
                                 ms,
                                 feed: &feed,
+                                boom: None,
                             };
                             let lines = scene(show, w, h, true);
                             assert_eq!(
@@ -1927,6 +1943,7 @@ mod tests {
                     seed: 0,
                     ms: frame * 90,
                     feed: &feed,
+                    boom: None,
                 };
                 text_of(&scene(show, 130, 30, false))
             })
@@ -1959,6 +1976,7 @@ mod tests {
                     seed,
                     ms: frame * 120,
                     feed: &feed,
+                    boom: None,
                 };
                 text_of(&scene(show, 130, 30, false))
             })
@@ -1977,6 +1995,7 @@ mod tests {
                     seed,
                     ms: frame * 120,
                     feed: &feed,
+                    boom: None,
                 };
                 scene(show, 130, 30, false)
             })
@@ -1994,6 +2013,26 @@ mod tests {
         let bare = scene(show(Language::Rust, seed, 0), 130, 30, false);
         let sky = text_of(&bare[..6]);
         assert!(!sky.trim().is_empty(), "the sky is not left blank:\n{sky}");
+    }
+
+    #[test]
+    fn the_trench_run_blows_the_station_when_the_first_word_flies_in() {
+        let seed = BACKDROPS
+            .iter()
+            .position(|b| *b == Backdrop::Trench)
+            .expect("the trench run is one of the backdrops");
+        let mut show = show(Language::Rust, seed, 4_000);
+        let waiting = text_of(&scene(show, 130, 34, true));
+        assert!(waiting.contains(">=[O]=<"), "the run is on:\n{waiting}");
+        show.ms = 8_000;
+        show.boom = Some(6_000);
+        let burning = text_of(&scene(show, 130, 34, false));
+        let sky: String = burning.lines().take(12).collect::<Vec<_>>().join("\n");
+        assert!(
+            sky.matches(['#', '%', '@']).count() > 60,
+            "the station is going up:\n{sky}"
+        );
+        assert_ne!(waiting, burning);
     }
 
     #[test]

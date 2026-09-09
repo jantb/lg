@@ -119,52 +119,59 @@ fn aligned_rows(ours: &[&str], result: &[&str], theirs: &[&str]) -> Vec<[Option<
 }
 
 /// Actions on the file as a whole; they sit in the toolbar above the panes.
-const FILE_ACTIONS: [(MergeAction, &str, &str); 3] = [
+const FILE_ACTIONS: [(MergeAction, &str, &str); 5] = [
     (
         MergeAction::Save,
         "Save",
-        "Save this file after every conflict is accepted",
+        "Save this file after every conflict is settled",
     ),
     (MergeAction::Previous, "‹ Prev", "Previous conflict"),
     (MergeAction::Next, "Next ›", "Next conflict"),
+    (
+        MergeAction::AllOurs,
+        "Accept all Ours",
+        "Take our side for every conflict not yet settled",
+    ),
+    (
+        MergeAction::AllTheirs,
+        "Accept all Theirs",
+        "Take their side for every conflict not yet settled",
+    ),
 ];
 
-/// Actions on one conflict; they sit in the rule above that conflict.
-const HUNK_ACTIONS: [(MergeAction, &str, &str); 8] = [
-    (
-        MergeAction::ReplaceOurs,
-        "→ Ours",
-        "Replace result with ours",
-    ),
-    (
-        MergeAction::InsertOurs,
-        "+ Ours",
-        "Insert ours at the result cursor",
-    ),
-    (
-        MergeAction::Both,
-        "Both",
-        "Replace result with ours followed by theirs",
-    ),
-    (
-        MergeAction::ReplaceTheirs,
-        "Theirs ←",
-        "Replace result with theirs",
-    ),
-    (
-        MergeAction::InsertTheirs,
-        "+ Theirs",
-        "Insert theirs at the result cursor",
-    ),
-    (MergeAction::Keep, "✓ Keep", "Accept the current result"),
-    (MergeAction::Edit, "Edit", "Edit the current result"),
+/// Actions on one conflict that sit in the rule above it; taking a side
+/// and ignoring sit beside the conflict itself, in the panes' gutters.
+const HUNK_ACTIONS: [(MergeAction, &str, &str); 3] = [
+    (MergeAction::Both, "Both", "Take both sides, ours first"),
+    (MergeAction::Edit, "Edit", "Edit the result"),
     (MergeAction::Base, "Base", "Toggle the common ancestor"),
+];
+
+/// The buttons in the gutters at a conflict's first row: arrows take that
+/// side into the result, the cross settles the conflict as it stands.
+const GUTTER_ACTIONS: [(MergeAction, &str, &str); 3] = [
+    (
+        MergeAction::AcceptOurs,
+        ">>",
+        "Take our side into the result",
+    ),
+    (
+        MergeAction::AcceptTheirs,
+        "<<",
+        "Take their side into the result",
+    ),
+    (
+        MergeAction::Keep,
+        "X",
+        "Ignore: settle the conflict with the result as it is",
+    ),
 ];
 
 fn describe(action: MergeAction) -> &'static str {
     FILE_ACTIONS
         .iter()
         .chain(HUNK_ACTIONS.iter())
+        .chain(GUTTER_ACTIONS.iter())
         .find(|entry| entry.0 == action)
         .map_or("", |entry| entry.2)
 }
@@ -175,6 +182,8 @@ struct Button {
     action: MergeAction,
     label: &'static str,
     area: Rect,
+    /// Drawn as `[ label ]`; gutter buttons are drawn bare.
+    framed: bool,
 }
 
 fn button_width(label: &str) -> u16 {
@@ -198,6 +207,7 @@ fn toolbar(area: Rect) -> Vec<Button> {
             action,
             label,
             area: Rect::new(x, y, width, 1),
+            framed: true,
         });
         x = x.saturating_add(width + 1);
     }
@@ -301,8 +311,10 @@ struct HunkView {
     /// Lines the result holds; the display may add one empty line after a
     /// trailing newline for the cursor to sit on.
     result_lines: usize,
-    /// Row of the first rule line.
+    /// Row of the first rule line, and of the first row of the conflict
+    /// itself under it.
     rule: usize,
+    first: usize,
 }
 
 struct Doc {
@@ -335,9 +347,14 @@ fn document(editor: &MergeEditor, results: &[&str], rule_height: usize) -> Doc {
                     .map(|line| display(line.trim_end_matches('\r')))
                     .collect();
                 // The line after a trailing newline exists for the cursor to
-                // sit on; away from the cursor it is only an empty row.
-                if result.ends_with('\n') && !(editor.editing && editor.selected == index) {
-                    result_text.pop();
+                // sit on, as does the one line of an empty result; away from
+                // the cursor they are only empty rows.
+                if !(editor.editing && editor.selected == index) {
+                    if result.is_empty() {
+                        result_text.clear();
+                    } else if result.ends_with('\n') {
+                        result_text.pop();
+                    }
                 }
                 let texts = [
                     hunk.source.ours.lines().map(display).collect::<Vec<_>>(),
@@ -352,6 +369,7 @@ fn document(editor: &MergeEditor, results: &[&str], rule_height: usize) -> Doc {
                 for line in 0..rule_height {
                     rows.push(Row::Rule { hunk: index, line });
                 }
+                let first = rows.len();
                 for lines in aligned_rows(&references[0], &references[1], &references[2]) {
                     rows.push(Row::Hunk { hunk: index, lines });
                 }
@@ -365,6 +383,7 @@ fn document(editor: &MergeEditor, results: &[&str], rule_height: usize) -> Doc {
                     start,
                     result_lines,
                     rule,
+                    first,
                 });
             }
         }
@@ -444,9 +463,54 @@ fn view(editor: &MergeEditor, area: Rect, preview: Option<(usize, &str)>) -> Vie
     }
 }
 
-/// Every button on screen: the toolbar, then each visible conflict's rule.
+/// The six cells the gutter buttons of conflict `hunk` take at its first
+/// row, when that row is on screen: at the right edge of ours, and in the
+/// line-number gutter of theirs.
+fn gutter_slots(area: Rect, view: &View, hunk: usize) -> Option<(Rect, Rect)> {
+    let first = view.doc.hunks[hunk].first;
+    if first < view.scroll || first >= view.scroll + view.height {
+        return None;
+    }
+    let panes = panes(area);
+    let (ours, theirs) = (inner(panes[0]), inner(panes[2]));
+    if ours.width < 12 || theirs.width < 12 {
+        return None;
+    }
+    let offset = (first - view.scroll) as u16;
+    Some((
+        Rect::new(ours.right() - 6, ours.y + offset, 6, 1),
+        Rect::new(theirs.x, theirs.y + offset, 6, 1),
+    ))
+}
+
+/// The gutter buttons beside conflict `hunk`: `X >>` at the right edge of
+/// ours, `<< X` in the gutter of theirs.
+fn gutter_buttons(area: Rect, view: &View, hunk: usize) -> Vec<Button> {
+    let Some((ours, theirs)) = gutter_slots(area, view, hunk) else {
+        return Vec::new();
+    };
+    let button = |action, label, x, y, width| Button {
+        hunk: Some(hunk),
+        action,
+        label,
+        area: Rect::new(x, y, width, 1),
+        framed: false,
+    };
+    vec![
+        button(MergeAction::Keep, "X", ours.x + 1, ours.y, 1),
+        button(MergeAction::AcceptOurs, ">>", ours.x + 3, ours.y, 2),
+        button(MergeAction::AcceptTheirs, "<<", theirs.x, theirs.y, 2),
+        button(MergeAction::Keep, "X", theirs.x + 3, theirs.y, 1),
+    ]
+}
+
+/// Every button on screen: the toolbar, then each visible conflict's rule
+/// and gutter.
 fn buttons(area: Rect, view: &View) -> Vec<Button> {
     let mut buttons = toolbar(area);
+    for hunk in 0..view.doc.hunks.len() {
+        buttons.extend(gutter_buttons(area, view, hunk));
+    }
     for rule in rule_areas(area) {
         let slots = rule_slots(rule.width);
         for (offset, row) in view
@@ -470,6 +534,7 @@ fn buttons(area: Rect, view: &View) -> Vec<Button> {
                     action: *action,
                     label,
                     area: Rect::new(rule.x + x, y, button_width(label).min(rule.width - x), 1),
+                    framed: true,
                 });
             }
         }
@@ -564,9 +629,9 @@ pub(super) fn render(editor: &MergeEditor, area: Rect, frame: &mut Frame) {
             editor.selected + 1,
             editor.hunks.len(),
             if hunk.accepted {
-                "result accepted"
+                "settled"
             } else {
-                "choose a side or edit the result"
+                "take a side (>> <<), both, or edit the result"
             },
             if editor.dirty() {
                 " · unsaved"
@@ -638,6 +703,35 @@ pub(super) fn render(editor: &MergeEditor, area: Rect, frame: &mut Frame) {
                                 && hunk_view.texts[1][b] == hunk_view.texts[2][c]
                         });
                     let Some(index) = lines[pane] else {
+                        // The result's first row says what an empty region
+                        // is: a conflict still to settle, or settled as nothing.
+                        if pane == 1
+                            && hunk_view.texts[1].is_empty()
+                            && view
+                                .doc
+                                .rows
+                                .get(hunk_view.first)
+                                .is_some_and(|r| std::ptr::eq(r, row))
+                        {
+                            let accepted = editor.hunks[*hunk].accepted;
+                            return Line::from(vec![
+                                gutter(None, '┆', selected),
+                                Span::styled(
+                                    if accepted {
+                                        "╌╌ settled as nothing ╌╌".to_string()
+                                    } else {
+                                        "╌╌ unresolved · take a side or edit ╌╌".to_string()
+                                    },
+                                    Style::default()
+                                        .fg(if accepted {
+                                            Color::DarkGray
+                                        } else {
+                                            Color::Yellow
+                                        })
+                                        .add_modifier(Modifier::ITALIC),
+                                ),
+                            ]);
+                        }
                         return Line::from(gutter(None, '·', selected));
                     };
                     let color = if equal {
@@ -751,15 +845,43 @@ fn render_rules(editor: &MergeEditor, area: Rect, view: &View, frame: &mut Frame
             }
         }
     }
+    // Clear the cells the gutter buttons sit in, so neither a line's tail
+    // nor its number runs under them.
+    for hunk in 0..view.doc.hunks.len() {
+        if let Some((ours, theirs)) = gutter_slots(area, view, hunk) {
+            for slot in [ours, theirs] {
+                frame.render_widget(
+                    Paragraph::new(" ".repeat(slot.width as usize))
+                        .style(Style::default().bg(Color::Rgb(28, 35, 49))),
+                    slot,
+                );
+            }
+        }
+    }
     for button in buttons(area, view) {
         let Some(hunk) = button.hunk else {
             continue;
         };
         let hovered = editor.hovered == Some((hunk, button.action));
-        frame.render_widget(
-            Paragraph::new(format!("[ {} ]", button.label)).style(button_style(hovered)),
-            button.area,
-        );
+        let text = if button.framed {
+            format!("[ {} ]", button.label)
+        } else {
+            button.label.to_string()
+        };
+        let style = if button.framed {
+            button_style(hovered)
+        } else if hovered {
+            Style::default().fg(Color::Black).bg(Color::LightCyan)
+        } else {
+            Style::default()
+                .fg(if button.action == MergeAction::Keep {
+                    Color::LightRed
+                } else {
+                    Color::LightCyan
+                })
+                .add_modifier(Modifier::BOLD)
+        };
+        frame.render_widget(Paragraph::new(text).style(style), button.area);
     }
 }
 

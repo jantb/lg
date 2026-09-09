@@ -22,6 +22,7 @@ pub(crate) mod scroll;
 pub mod solid;
 pub mod stage_all;
 pub mod status;
+pub mod trench;
 pub mod worktree;
 
 /// Splits `text` into chunks no wider than `width`, breaking on spaces so a

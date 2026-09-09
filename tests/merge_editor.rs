@@ -132,7 +132,7 @@ fn screenshot(app: &HeadlessApp<TestBackend>, suffix: &str) {
 }
 
 #[test]
-fn mouse_arrows_preview_without_mutation_then_apply_replace_insert_and_save() {
+fn gutter_arrows_preview_without_mutation_then_take_sides_in_order_and_save() {
     let dir = fixture();
     let original = fs::read_to_string(dir.path().join(FILE)).unwrap();
     let mut app = HeadlessApp::new(TestBackend::new(160, 42)).unwrap();
@@ -140,107 +140,77 @@ fn mouse_arrows_preview_without_mutation_then_apply_replace_insert_and_save() {
     app.state.set_conflicts(vec![FILE.into()]);
     app.state.modal = Modal::Conflict;
     app.render().unwrap();
-    let theirs = find_label(&app, "Theirs ←", 0);
+    let editor = |app: &HeadlessApp<TestBackend>| {
+        app.state
+            .conflict_preview
+            .as_ref()
+            .unwrap()
+            .editor
+            .as_ref()
+            .unwrap()
+            .current()
+            .result
+            .clone()
+    };
+    // The result starts from the common ancestor, not from either side.
+    assert_eq!(editor(&app), "base first\n");
+    find_label(&app, "Accept all Ours", 0);
+    // The arrows sit beside the conflict: `<<` on the row of their first line.
+    let theirs = find_label_beside(&app, "incoming first", "<<");
     app.send_mouse(mouse(MouseEventKind::Moved, theirs))
         .unwrap();
     find_label(&app, "HOVER PREVIEW", 0);
-    let editor = app
-        .state
-        .conflict_preview
-        .as_ref()
-        .unwrap()
-        .editor
-        .as_ref()
-        .unwrap();
-    assert_eq!(editor.current().result, "local first\n");
-    assert!(!editor.dirty(), "hover must not accept or edit anything");
+    find_label(&app, "Take their side into the result", 0);
+    assert_eq!(
+        editor(&app),
+        "base first\n",
+        "hover must not change the draft"
+    );
     assert_eq!(fs::read_to_string(dir.path().join(FILE)).unwrap(), original);
     screenshot(&app, ".hover");
     app.send_mouse(mouse(MouseEventKind::Moved, (0, 0)))
         .unwrap();
-    assert!(
-        app.state
-            .conflict_preview
-            .as_ref()
-            .unwrap()
-            .editor
-            .as_ref()
-            .unwrap()
-            .hovered
-            .is_none()
-    );
     app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), theirs))
         .unwrap();
-    assert_eq!(
-        app.state
-            .conflict_preview
-            .as_ref()
-            .unwrap()
-            .editor
-            .as_ref()
-            .unwrap()
-            .current()
-            .result,
-        "incoming first\n"
-    );
-    // Click the result itself, then insert a side at that cursor.
-    let result = find_label(&app, "incoming first", 0);
-    app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), result))
+    assert_eq!(editor(&app), "incoming first\n");
+    // Taking the other side as well appends it: both, in the order taken.
+    let ours = find_label_beside(&app, "local first", ">>");
+    app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), ours))
         .unwrap();
-    let insert = find_label(&app, "+ Ours", 0);
-    app.send_mouse(mouse(MouseEventKind::Moved, insert))
+    assert_eq!(editor(&app), "incoming first\nlocal first\n");
+    // Taking a side twice changes nothing.
+    app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), ours))
         .unwrap();
-    find_label(&app, "Insert ours at the result cursor", 0);
-    assert_eq!(
-        app.state
-            .conflict_preview
-            .as_ref()
-            .unwrap()
-            .editor
-            .as_ref()
-            .unwrap()
-            .current()
-            .result,
-        "incoming first\n"
-    );
-    app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), insert))
-        .unwrap();
-    assert_eq!(
-        app.state
-            .conflict_preview
-            .as_ref()
-            .unwrap()
-            .editor
-            .as_ref()
-            .unwrap()
-            .current()
-            .result,
-        "local first\nincoming first\n"
-    );
+    assert_eq!(editor(&app), "incoming first\nlocal first\n");
     let next = find_label(&app, "Next ›", 0);
     app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), next))
         .unwrap();
-    assert_eq!(
-        app.state
-            .conflict_preview
-            .as_ref()
-            .unwrap()
-            .editor
-            .as_ref()
-            .unwrap()
-            .selected,
-        1
-    );
-    // Every conflict carries its own buttons, on the rule that names it.
-    let ours = find_label_beside(&app, "Conflict 2/2", "→ Ours");
+    let ours = find_label_beside(&app, "local last", ">>");
     app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), ours))
         .unwrap();
+    assert_eq!(editor(&app), "local last\n");
     let save = find_label(&app, "[ Save ]", 0);
     app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), save))
         .unwrap();
     let result = fs::read_to_string(dir.path().join(FILE)).unwrap();
-    assert!(result.contains("local first\nincoming first\n") && result.contains("local last\n"));
+    assert!(result.contains("incoming first\nlocal first\n") && result.contains("local last\n"));
     assert!(!lg::git::holds_conflict_marker(&result));
+}
+
+#[test]
+fn ignoring_a_conflict_settles_it_with_the_base_and_accept_all_takes_the_rest() {
+    let dir = fixture();
+    let mut editor = editor(dir.path());
+    // The first conflict is settled as its ancestor by X; Accept all Theirs
+    // then takes only the conflicts nobody has touched.
+    editor.apply(0, lg::state::MergeAction::Keep);
+    editor.apply(0, lg::state::MergeAction::AllTheirs);
+    assert_eq!(editor.hunks[0].result, "base first\n");
+    assert_eq!(editor.hunks[1].result, "incoming last\n");
+    editor.save().unwrap();
+    let result = fs::read_to_string(dir.path().join(FILE)).unwrap();
+    assert!(result.contains("header\nbase first\n"), "{result}");
+    assert!(result.contains("incoming last\nfooter\n"), "{result}");
 }
 
 #[test]
@@ -324,16 +294,16 @@ fn manual_text_editing_and_undo_preserve_unicode_and_line_endings() {
     let hunk = editor.current_mut();
     hunk.insert("λ😀\r\n");
     hunk.edit(key(KeyCode::Backspace));
-    assert!(hunk.result.starts_with("λ😀local"));
+    assert!(hunk.result.starts_with("λ😀base"));
     hunk.edit(key(KeyCode::Backspace));
-    assert!(hunk.result.starts_with("λlocal"));
+    assert!(hunk.result.starts_with("λbase"));
     hunk.undo();
-    assert!(hunk.result.starts_with("λ😀local"));
+    assert!(hunk.result.starts_with("λ😀base"));
     hunk.undo();
-    assert!(hunk.result.starts_with("λ😀\r\nlocal"));
+    assert!(hunk.result.starts_with("λ😀\r\nbase"));
     hunk.undo();
     assert!(!hunk.accepted);
-    assert_eq!(hunk.result, hunk.source.ours);
+    assert_eq!(Some(&hunk.result), hunk.source.base.as_ref());
 }
 
 #[test]
@@ -362,7 +332,10 @@ fn inline_editor_routes_typing_paste_save_and_navigation_without_triggering_merg
     app.send_key(ctrl('s')).unwrap();
     assert!(app.state.conflict_resolved.contains(FILE));
     let text = fs::read_to_string(dir.path().join(FILE)).unwrap();
-    assert!(text.contains("// custom resolution\nacvllocal first"));
+    assert!(
+        text.contains("// custom resolution\nacvlbase first"),
+        "{text}"
+    );
     assert!(text.contains("incoming last"));
 }
 
@@ -413,6 +386,78 @@ fn three_way_view_renders_all_sides_and_ancestor_at_normal_and_tiny_sizes() {
         app.send_key(key(KeyCode::End)).unwrap();
         app.send_key(key(KeyCode::Esc)).unwrap();
     }
+}
+
+/// Another tool, or an earlier save, may have written the file without
+/// markers while the index still lists it as unmerged. The conflicts are
+/// recovered from the stages, each one's controls sit at the conflict, and
+/// what the file holds there is its result so far.
+#[test]
+fn a_file_resolved_elsewhere_still_shows_its_conflicts_where_they_are() {
+    let dir = fixture();
+    let middle = (0..20)
+        .map(|i| format!("shared context {i}\n"))
+        .collect::<String>();
+    // The first conflict taken as theirs, the second dropped altogether.
+    fs::write(
+        dir.path().join(FILE),
+        format!("header\nincoming first\n{middle}footer\n"),
+    )
+    .unwrap();
+    let mut editor = editor(dir.path());
+    assert_eq!(editor.hunks.len(), 2);
+    assert_eq!(editor.hunks[0].result, "incoming first\n");
+    assert_eq!(editor.hunks[1].result, "");
+    assert!(editor.hunks.iter().all(|h| h.accepted));
+    assert_eq!(editor.hunks[1].source.ours, "local last\n");
+    assert!(!editor.dirty());
+
+    let mut app = HeadlessApp::new(TestBackend::new(160, 42)).unwrap();
+    app.state.repo_root = Some(dir.path().to_string_lossy().into_owned());
+    app.state.set_conflicts(vec![FILE.into()]);
+    app.state.modal = Modal::Conflict;
+    app.render().unwrap();
+    // The second conflict's controls are beside its lines, not at the top.
+    let (_, row) = find_label_beside(&app, "local last", ">>");
+    let (_, top) = find_label_beside(&app, "header", "header");
+    assert!(
+        row > top + 20,
+        "controls at the conflict, row {row} vs top {top}"
+    );
+    find_label(&app, "settled as nothing", 0);
+
+    // The first region is recognised as their side, so taking theirs again
+    // adds nothing and taking ours follows on after it.
+    editor.hunks[0].choose('2');
+    assert_eq!(editor.hunks[0].result, "incoming first\n");
+    editor.hunks[0].choose('1');
+    assert_eq!(editor.hunks[0].result, "incoming first\nlocal first\n");
+    editor.hunks[0].undo();
+    editor.hunks[1].choose('1');
+    editor.save().unwrap();
+    let result = fs::read_to_string(dir.path().join(FILE)).unwrap();
+    assert!(
+        result.contains("incoming first\n") && result.contains("local last\nfooter\n"),
+        "{result}"
+    );
+}
+
+/// Text typed into a result is the reader's; taking a side adds to it
+/// rather than throwing it away.
+#[test]
+fn taking_a_side_after_editing_by_hand_keeps_the_edit() {
+    let dir = fixture();
+    let mut editor = editor(dir.path());
+    editor.current_mut().insert("// keep me\n");
+    editor.current_mut().choose('1');
+    assert_eq!(
+        editor.current().result,
+        "// keep me\nbase first\nlocal first\n"
+    );
+    // Untouched, the base gives way to the side taken.
+    editor.navigate(true);
+    editor.current_mut().choose('2');
+    assert_eq!(editor.current().result, "incoming last\n");
 }
 
 #[test]

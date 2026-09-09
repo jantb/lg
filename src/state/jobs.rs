@@ -117,6 +117,9 @@ pub struct Generation {
     /// The chunks that have lately streamed in, still flying from the
     /// network in the scene to their place in the text.
     pub arrivals: Vec<Arrival>,
+    /// When the first chunk arrived on the animation clock; the scene makes
+    /// an event of the wait paying off.
+    pub first_output_ms: Option<u64>,
     /// The diff that went to the model, prepared for the scene: it is what
     /// flows down the stream into the network.
     pub feed: crate::panel::commit_art::Feed,

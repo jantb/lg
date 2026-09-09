@@ -435,12 +435,14 @@ impl App {
                             at_ms: now,
                         });
                         g.output.push_str(&o);
+                        g.first_output_ms.get_or_insert(now);
                     }
                 }
                 GenMsg::Reset => {
                     if let Some(g) = self.state.generation.as_mut() {
                         g.output.clear();
                         g.arrivals.clear();
+                        g.first_output_ms = None;
                     }
                 }
                 GenMsg::Done {

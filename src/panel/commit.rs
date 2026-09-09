@@ -117,6 +117,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 seed: generation.scene,
                 ms: state.animation_ms,
                 feed: &generation.feed,
+                boom: generation.first_output_ms,
             },
             body_area.width,
             body_area.height,

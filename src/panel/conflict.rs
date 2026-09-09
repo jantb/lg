@@ -162,14 +162,14 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         ]
     } else if modal.width < 100 {
         vec![
-            Line::from("1 ours  2 theirs  3 both  0 accept  Enter edit  Ctrl-s save"),
+            Line::from("1 ours  2 theirs  3 both  0 ignore  Enter edit  Ctrl-s save"),
             Line::from("j/k files  [/] conflicts  b base  PgUp/Dn scroll  ←/→ pan  u undo"),
             Line::from("Ctrl-r discard/reload  o open  v validate  l/c agents  a abort  Esc close"),
         ]
     } else {
         vec![
             Line::from(
-                "j/k files   [/] conflicts   1 ours   2 theirs   3 both   0 accept result   Enter edit   or click a conflict's buttons",
+                "j/k files   [/] conflicts   1 ours   2 theirs   3 both   0 ignore   Enter edit   or click >> << X beside a conflict",
             ),
             Line::from(
                 "b ancestor   PgUp/PgDn scroll   ←/→ pan   u undo   Ctrl-s save   Ctrl-r reload/discard",
@@ -341,8 +341,8 @@ fn handle_merge_key(state: &mut AppState, key: KeyEvent) -> bool {
         let selected = editor.selected;
         match key.code {
             KeyCode::Enter | KeyCode::Char('e') => editor.apply(selected, MergeAction::Edit),
-            KeyCode::Char('1') => editor.apply(selected, MergeAction::ReplaceOurs),
-            KeyCode::Char('2') => editor.apply(selected, MergeAction::ReplaceTheirs),
+            KeyCode::Char('1') => editor.apply(selected, MergeAction::AcceptOurs),
+            KeyCode::Char('2') => editor.apply(selected, MergeAction::AcceptTheirs),
             KeyCode::Char('3') => editor.apply(selected, MergeAction::Both),
             KeyCode::Char('0') => editor.apply(selected, MergeAction::Keep),
             KeyCode::Char('u') => editor.current_mut().undo(),

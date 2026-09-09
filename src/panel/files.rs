@@ -285,12 +285,23 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
         }
         KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
             if let Some(row) = rows.get(state.files_idx) {
-                if let TreeKind::Folder { expanded, .. } = row.kind {
-                    if expanded {
-                        state.collapsed_dirs.insert(row.path.clone());
-                    } else {
-                        state.collapsed_dirs.remove(&row.path);
+                match row.kind {
+                    TreeKind::Folder { expanded, .. } => {
+                        if expanded {
+                            state.collapsed_dirs.insert(row.path.clone());
+                        } else {
+                            state.collapsed_dirs.remove(&row.path);
+                        }
                     }
+                    // An unmerged file opens in the conflict dialog: that is
+                    // where it gets settled.
+                    TreeKind::File { entry_idx } if is_unmerged(&state.files[entry_idx]) => {
+                        let path = state.files[entry_idx].path.clone();
+                        if !crate::app::reopen_conflicts(state, Some(&path)) {
+                            state.set_status("no unmerged files left; refresh to update", false);
+                        }
+                    }
+                    TreeKind::File { .. } | TreeKind::AllChanges => {}
                 }
             }
         }
@@ -316,4 +327,30 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
         _ => return Ok(false),
     }
     Ok(true)
+}
+
+/// Whether git's status codes for `entry` mark it unmerged: either side `U`,
+/// or both sides adding or both deleting.
+fn is_unmerged(entry: &crate::git::FileEntry) -> bool {
+    entry.x == 'U' || entry.y == 'U' || (entry.x == entry.y && matches!(entry.x, 'A' | 'D'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unmerged_status_codes_are_recognised() {
+        let entry = |x, y| crate::git::FileEntry {
+            path: "f".into(),
+            x,
+            y,
+        };
+        for (x, y) in [('U', 'U'), ('A', 'U'), ('U', 'D'), ('A', 'A'), ('D', 'D')] {
+            assert!(is_unmerged(&entry(x, y)), "{x}{y}");
+        }
+        for (x, y) in [('M', ' '), (' ', 'M'), ('A', ' '), ('D', ' '), ('?', '?')] {
+            assert!(!is_unmerged(&entry(x, y)), "{x}{y}");
+        }
+    }
 }

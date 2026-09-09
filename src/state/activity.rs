@@ -221,6 +221,7 @@ impl AppState {
             spinner: 0,
             scene: self.animation_tick,
             arrivals: Vec::new(),
+            first_output_ms: None,
             feed,
         });
     }
