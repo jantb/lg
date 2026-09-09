@@ -77,6 +77,13 @@ fn handle_modal_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) -> bool 
             true
         }
         Modal::ReviewChat if review_chat_is_docked(state) => false,
+        Modal::Conflict => {
+            state.column_drag_active = false;
+            state.row_drag_active = None;
+            state.review_chat_drag_active = false;
+            panel::conflict::handle_mouse(state, area, m);
+            true
+        }
         Modal::Commit => {
             state.column_drag_active = false;
             state.row_drag_active = None;

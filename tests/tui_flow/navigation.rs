@@ -222,16 +222,21 @@ fn conflict_modal_o_opens_selected_conflicted_file() {
 }
 
 #[test]
-fn conflict_modal_enter_opens_selected_conflicted_file() {
+fn conflict_modal_enter_reports_when_inline_preview_is_unavailable() {
     let mut state = AppState::new();
     state.modal = Modal::Conflict;
     state.conflicts = vec!["src/conflict.rs".into()];
 
     panel::conflict::handle_key(&mut state, key(KeyCode::Enter)).unwrap();
 
-    assert_eq!(
-        state.pending_action,
-        Some(PendingAction::OpenFile("src/conflict.rs".into()))
+    assert!(state.pending_action.is_none());
+    assert!(
+        state
+            .status
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("inline preview unavailable")
     );
 }
 

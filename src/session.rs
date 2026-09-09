@@ -1399,6 +1399,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn only_working_sessions_request_animation_frames() {
+        let mut state = crate::state::AppState::new();
+        state.sessions = registry(&["/a"]);
+        assert!(!state.wants_animation());
+        state.sessions.get_mut(SessionId(1)).unwrap().activity = SessionActivity::Working;
+        assert!(state.wants_animation());
+        state.sessions.get_mut(SessionId(1)).unwrap().asking = true;
+        assert!(
+            !state.wants_animation(),
+            "waiting for input should hold steady"
+        );
+    }
+
     /// Whatever a session last reported, a dead one is not waiting on anybody.
     #[test]
     fn an_ended_session_is_counted_as_neither_blocked_nor_busy() {

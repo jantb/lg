@@ -18,7 +18,7 @@ use ratatui::{
     backend::{Backend, CrosstermBackend},
 };
 use std::{
-    io::{Stdout, Write},
+    io::{BufWriter, Stdout, Write},
     sync::atomic::{AtomicBool, Ordering},
     sync::mpsc::Receiver,
     time::{Duration, Instant},
@@ -27,13 +27,15 @@ use std::{
 use crate::{
     config::{
         ANIMATION_FRAME_MS, BACKGROUND_FETCH_INTERVAL_SECS, ERROR_MSG_LIFETIME_SECS,
-        MAX_EVENTS_PER_FRAME, SESSION_TICK_MS, STATUS_MSG_LIFETIME_SECS, TICK_MS,
+        FRAME_BUFFER_BYTES, MAX_EVENTS_PER_FRAME, SESSION_TICK_MS, STATUS_MSG_LIFETIME_SECS,
+        TICK_MS,
     },
     state::AppState,
 };
 
 mod actions;
 mod conflict_assist;
+mod conflict_editor;
 mod footer;
 mod header;
 mod input;
@@ -47,6 +49,7 @@ mod spawn;
 mod workflow;
 
 pub(crate) use conflict_assist::spawn_conflict_resolve;
+pub(crate) use conflict_editor::{prepare_conflict_editor, save_conflict_editor};
 pub(crate) use spawn::{
     checkout_branch_async, checkout_nested_branch_async, checkout_nested_remote_branch_async,
     checkout_remote_branch_async,
@@ -71,7 +74,7 @@ use spawn::{
 
 pub struct App {
     pub state: AppState,
-    pub terminal: Terminal<CrosstermBackend<Stdout>>,
+    pub terminal: Terminal<CrosstermBackend<BufWriter<Stdout>>>,
     file_events: Receiver<notify::Result<notify::Event>>,
     /// Held so the watcher keeps running; replaced when lg switches checkout.
     file_watcher: RecommendedWatcher,
@@ -185,7 +188,7 @@ impl App {
         }));
 
         enable_raw_mode().context("enable raw mode")?;
-        let mut stdout = std::io::stdout();
+        let mut stdout = BufWriter::with_capacity(FRAME_BUFFER_BYTES, std::io::stdout());
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture).context("enter alt screen")?;
 
         // Asked before the loop starts: the query waits on the terminal's
@@ -221,6 +224,7 @@ impl App {
                 break;
             }
 
+            let frame_started = Instant::now();
             self.sync_session_keyboard();
             self.render()?;
 
@@ -257,7 +261,15 @@ impl App {
             } else {
                 TICK_MS
             };
-            if event::poll(Duration::from_millis(poll_ms))? {
+            let poll_duration = if self.state.modal == crate::state::Modal::Worktree
+                || self.state.sessions.activity_counts().1 > 0
+            {
+                // Include rendering and job draining in the 120 Hz budget.
+                Duration::from_nanos(1_000_000_000 / 120).saturating_sub(frame_started.elapsed())
+            } else {
+                Duration::from_millis(poll_ms)
+            };
+            if event::poll(poll_duration)? {
                 // Take everything already queued rather than one event per
                 // frame. Each frame is a redraw and a pass over every job, so
                 // spreading a wheel burst across frames made scrolling crawl
@@ -268,7 +280,9 @@ impl App {
                         Event::Key(k) => self.handle_key(k)?,
                         Event::Mouse(m) => self.handle_mouse(m)?,
                         Event::Paste(text) => {
-                            session::forward_paste(&mut self.state, &text);
+                            if !crate::panel::conflict::handle_paste(&mut self.state, &text) {
+                                session::forward_paste(&mut self.state, &text);
+                            }
                         }
                         Event::Resize(_, _) => {}
                         _ => {}

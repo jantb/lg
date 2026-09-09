@@ -82,6 +82,7 @@ pub(super) fn layout_for(state: &AppState, area: Rect) -> ui::LayoutRects {
 fn prepare(state: &mut AppState, area: Rect) {
     let rects = layout_for(state, area);
     state.advance_animation();
+    super::prepare_conflict_editor(state);
     state.diff_viewport_height = if state.modal == Modal::ReviewChat {
         panel::main::review_chat_layout(state, rects.main)[0]
             .height

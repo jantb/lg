@@ -684,6 +684,51 @@ fn worktrees_hang_under_the_repository_they_belong_to() {
 }
 
 #[test]
+fn worktree_animation_keeps_the_form_still_and_stops_when_closed() {
+    let mut state = AppState::new();
+    state.repo_root = Some("/dev/lg".into());
+    state.open_worktree_modal("origin/main".into());
+    assert!(state.wants_animation());
+    for (width, height) in [(100, 24), (76, 11), (28, 9), (20, 6), (1, 1)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        state.animation_ms = 0;
+        terminal
+            .draw(|frame| panel::worktree::render(&state, frame.area(), frame))
+            .unwrap();
+        let before = terminal.backend().buffer().clone();
+        state.animation_ms = 600;
+        terminal
+            .draw(|frame| panel::worktree::render(&state, frame.area(), frame))
+            .unwrap();
+        let after = terminal.backend().buffer();
+        let modal = lg::ui::centered(before.area, 76.min(width), 11.min(height));
+        let mut changed = 0;
+        for y in 0..height {
+            for x in 0..width {
+                assert_eq!(before[(x, y)].symbol(), after[(x, y)].symbol());
+                if before[(x, y)] != after[(x, y)] {
+                    assert!(
+                        x == modal.x
+                            || x == modal.right() - 1
+                            || y == modal.y
+                            || y == modal.bottom() - 1,
+                        "animation changed a cell away from the border"
+                    );
+                    changed += 1;
+                }
+            }
+        }
+        if width >= 28 && height >= 9 {
+            assert!(changed > 0, "border should move with elapsed time");
+        } else {
+            assert_eq!(changed, 0, "small-terminal fallback stays static");
+        }
+    }
+    panel::worktree::handle_key(&mut state, key(KeyCode::Esc)).unwrap();
+    assert!(!state.wants_animation());
+}
+
+#[test]
 fn the_worktree_form_derives_a_path_from_the_branch_until_it_is_edited() {
     let mut state = AppState::new();
     state.repo_root = Some("/workspace".into());
@@ -1328,7 +1373,7 @@ fn flow_modal_draws_the_graph_beside_the_running_steps() {
 }
 
 #[test]
-fn conflict_modal_asks_user_to_resolve_externally() {
+fn conflict_modal_exposes_inline_and_external_resolution() {
     let mut state = AppState::new();
     state.modal = Modal::Conflict;
     state.conflicts = vec!["src/conflict.rs".into()];
@@ -1352,11 +1397,11 @@ fn conflict_modal_asks_user_to_resolve_externally() {
 
     assert!(text.contains("Git conflict detected"), "{text}");
     assert!(
-        text.contains("Resolve the conflict outside lg"),
-        "modal should ask for external resolution: {text}"
+        text.contains("Resolve here with Enter"),
+        "modal should expose inline resolution: {text}"
     );
     assert!(
-        text.contains("validate resolved/staged/merged state"),
+        text.contains("v validate"),
         "modal should expose validate action: {text}"
     );
     assert!(
@@ -1375,7 +1420,7 @@ fn the_conflict_modal_separates_files_to_read_from_files_to_resolve() {
     state.conflicts = vec!["src/easy.rs".into(), "src/hard.rs".into()];
     state.conflict_resolved.insert("src/easy.rs".into());
 
-    let backend = TestBackend::new(100, 24);
+    let backend = TestBackend::new(140, 32);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|frame| {
@@ -1394,7 +1439,7 @@ fn the_conflict_modal_separates_files_to_read_from_files_to_resolve() {
     assert!(text.contains("src/easy.rs"), "{text}");
     assert!(text.contains("src/hard.rs"), "{text}");
     assert!(
-        text.contains("resolved by the local model"),
+        text.contains("resolved in lg"),
         "the modal has to say a file was rewritten before v commits it: {text}"
     );
     assert!(

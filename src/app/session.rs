@@ -127,7 +127,13 @@ impl App {
     /// second, the terminal sends the same bare `\r` for Enter and Shift+Enter,
     /// and a prompt can only ever be submitted, never given a newline.
     pub(super) fn sync_session_keyboard(&mut self) {
-        let wanted = self.state.session_capture;
+        let wanted = self.state.session_capture
+            || (self.state.modal == Modal::Conflict
+                && self
+                    .state
+                    .conflict_preview
+                    .as_ref()
+                    .is_some_and(|p| p.editor.as_ref().is_ok_and(|editor| editor.editing)));
         if wanted == self.session_keyboard {
             return;
         }

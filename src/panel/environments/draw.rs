@@ -142,7 +142,7 @@ pub(super) fn render_nested_repositories(
                 Some(session) => {
                     let shown = state.session_view() == Some(*id);
                     repository_list_item(
-                        session_line(session, row_width, shown, state.animation_tick),
+                        session_line(session, row_width, shown, state.animation_ms),
                         shown,
                     )
                 }
@@ -309,10 +309,12 @@ fn nested_repo_line(
 
 /// The colour of a running session's dot: green when it is ready for a command,
 /// yellow while it works, red when it is blocked on a question.
-fn activity_color(activity: crate::session::SessionActivity) -> Color {
+fn activity_color(activity: crate::session::SessionActivity, clock_ms: u64) -> Color {
     match activity {
         crate::session::SessionActivity::Idle => Color::Green,
-        crate::session::SessionActivity::Working => Color::Yellow,
+        crate::session::SessionActivity::Working => {
+            crate::ui::palette::breathe((150, 112, 24), (255, 222, 95), clock_ms, 1_200)
+        }
         crate::session::SessionActivity::NeedsInput => Color::Red,
     }
 }
@@ -331,26 +333,17 @@ fn activity_word(activity: crate::session::SessionActivity) -> Option<&'static s
 /// A session under its checkout: whether it is running, what it is doing, and
 /// whether it has said something since it was last looked at.
 ///
-/// A session blocked on a question is the one state that should interrupt
-/// whoever is looking elsewhere, so its dot blinks on the animation clock. The
-/// others hold still; a screen full of blinking dots would say nothing.
+/// Working dots breathe continuously; waiting dots stay solid red.
 fn session_line(
     session: &crate::session::Session,
     row_width: usize,
     shown: bool,
-    tick: usize,
+    clock_ms: u64,
 ) -> Line<'static> {
     let (glyph, glyph_color) = match &session.status {
         crate::session::SessionStatus::Ended(_) => ("\u{25cb} ", Color::DarkGray),
         crate::session::SessionStatus::Running => {
-            let activity = session.activity();
-            let blocked = activity == crate::session::SessionActivity::NeedsInput;
-            let glyph = if blocked && !crate::ui::palette::blink_on(tick) {
-                "\u{25cb} "
-            } else {
-                "\u{25cf} "
-            };
-            (glyph, activity_color(activity))
+            ("\u{25cf} ", activity_color(session.activity(), clock_ms))
         }
     };
     // The dot says what it is doing; the word repeats it for anyone the colour
@@ -622,4 +615,38 @@ fn release_status_loading(state: &AppState) -> bool {
         .release_status_job
         .as_ref()
         .is_some_and(|job| Some(job.branch.as_str()) == state.branch.as_deref())
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+    use crate::session::SessionActivity;
+
+    #[test]
+    fn working_yellow_pulses_smoothly_while_waiting_red_holds() {
+        let channels = |color| match color {
+            Color::Rgb(r, g, b) => [r, g, b],
+            other => panic!("working pulse must use RGB: {other:?}"),
+        };
+        assert_ne!(
+            activity_color(SessionActivity::Working, 0),
+            activity_color(SessionActivity::Working, 600)
+        );
+        assert_eq!(
+            activity_color(SessionActivity::Working, 0),
+            activity_color(SessionActivity::Working, 1_200)
+        );
+        for ms in (0..2_400).step_by(8) {
+            assert_eq!(activity_color(SessionActivity::NeedsInput, ms), Color::Red);
+            assert_eq!(activity_color(SessionActivity::Idle, ms), Color::Green);
+            let before = channels(activity_color(SessionActivity::Working, ms));
+            let after = channels(activity_color(SessionActivity::Working, ms + 8));
+            assert!(
+                before
+                    .into_iter()
+                    .zip(after)
+                    .all(|(a, b)| a.abs_diff(b) <= 3)
+            );
+        }
+    }
 }

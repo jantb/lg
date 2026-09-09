@@ -8,8 +8,8 @@
 //!
 //! Motion follows one rule: something moves only while something is happening.
 //! A running job pulses the frame it runs in, a fresh status line settles from
-//! bright to normal, a new error flashes, and a session waiting on a question
-//! blinks. An idle screen holds still.
+//! bright to normal, a new error flashes, and a working session pulses yellow.
+//! A session waiting on a question holds solid red. An idle screen holds still.
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -91,12 +91,6 @@ pub fn glow(intensity: f64) -> Color {
 /// The accent shade at this point of the animation clock, in milliseconds.
 pub fn pulse(clock_ms: u64) -> Color {
     breathe(ACCENT_DIM_RGB, ACCENT_BRIGHT_RGB, clock_ms, PULSE_PERIOD_MS)
-}
-
-/// Whether a blink is in its "on" half. Slower than the pulse: a blink is an
-/// interruption, and one that flickers is an irritation.
-pub fn blink_on(tick: usize) -> bool {
-    (tick / 4) % 2 == 0
 }
 
 /// How long a fresh status message stays bright before settling.
@@ -222,11 +216,5 @@ mod tests {
         );
         assert!(status_animating(0, false));
         assert!(!status_animating(STATUS_SETTLE_MS, false));
-    }
-
-    #[test]
-    fn a_blink_has_an_off_half() {
-        assert!((0..16).any(|tick| !blink_on(tick)));
-        assert!((0..16).any(blink_on));
     }
 }

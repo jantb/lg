@@ -51,9 +51,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             state.worktree_field == WorktreeField::Branch,
             value_width,
             if reuses_branch {
-                Some("checked out here")
+                Some("use existing branch")
             } else {
-                None
+                Some("create a new branch")
             },
         ),
         field_line(
@@ -72,7 +72,11 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             &state.worktree_path_input,
             state.worktree_field == WorktreeField::Path,
             value_width,
-            (!state.worktree_path_edited).then_some("follows the branch name"),
+            Some(if state.worktree_path_edited {
+                "worktree directory"
+            } else {
+                "directory follows branch name"
+            }),
         ),
         Line::from(""),
         Line::from(vec![
@@ -89,8 +93,48 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         Paragraph::new(lines).block(ui::bordered("New Worktree")),
         modal,
     );
+    animate_border(state.animation_ms, modal, frame);
     if let Some((x, y)) = active_field_cursor(state, modal) {
         frame.set_cursor_position(Position::new(x, y));
+    }
+}
+
+/// Two soft light trails orbit the frame. Only tint border cells so the form
+/// and cursor remain still; continuous colour interpolation avoids cell jumps.
+fn animate_border(clock_ms: u64, area: Rect, frame: &mut Frame) {
+    let horizontal = area.width - 1;
+    let vertical = area.height - 1;
+    let perimeter = 2 * (u32::from(horizontal) + u32::from(vertical));
+    let phase = (clock_ms % 4_800) as f64 / 4_800.0;
+    for step in 0..perimeter {
+        let position = f64::from(step) / f64::from(perimeter);
+        let glow = |offset: f64| {
+            let distance = (position - phase - offset + 0.5).rem_euclid(1.0) - 0.5;
+            (-((distance / 0.085).powi(2))).exp()
+        };
+        let cyan = glow(0.0);
+        let violet = glow(0.5);
+        let color = Color::Rgb(
+            (85.0 + 35.0 * cyan + 150.0 * violet).min(255.0) as u8,
+            (75.0 + 170.0 * cyan + 45.0 * violet).min(255.0) as u8,
+            (135.0 + 115.0 * cyan + 120.0 * violet).min(255.0) as u8,
+        );
+        let w = u32::from(horizontal);
+        let h = u32::from(vertical);
+        let (x, y) = if step < w {
+            (step, 0)
+        } else if step < w + h {
+            (w, step - w)
+        } else if step < 2 * w + h {
+            (2 * w + h - step, h)
+        } else {
+            (0, perimeter - step)
+        };
+        // Leave the title at its steady, readable accent colour.
+        if y == 0 && (1..=12).contains(&x) {
+            continue;
+        }
+        frame.buffer_mut()[(area.x + x as u16, area.y + y as u16)].set_fg(color);
     }
 }
 

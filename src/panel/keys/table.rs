@@ -791,9 +791,49 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("j/k", "select")),
             },
             Binding {
-                key: "o / Enter",
-                help: "Open the file in the editor",
-                footer: Some(("o/Enter", "open")),
+                key: "Enter",
+                help: "Edit result; Esc returns to merge actions",
+                footer: Some(("Enter", "edit")),
+            },
+            Binding {
+                key: "o",
+                help: "Open the file in an external editor",
+                footer: Some(("o", "open")),
+            },
+            Binding {
+                key: "1 / 2 / 3 / 0",
+                help: "Accept ours / theirs / both / result",
+                footer: None,
+            },
+            Binding {
+                key: "[ / ]",
+                help: "Previous / next conflict in this file",
+                footer: None,
+            },
+            Binding {
+                key: "b",
+                help: "Toggle the common ancestor",
+                footer: None,
+            },
+            Binding {
+                key: "Ctrl-s",
+                help: "Save resolved file; v stages and continues",
+                footer: Some(("Ctrl-s", "save")),
+            },
+            Binding {
+                key: "Ctrl-r",
+                help: "Discard draft and reload from disk",
+                footer: None,
+            },
+            Binding {
+                key: "u / Ctrl-z",
+                help: "Undo decision / undo text while editing",
+                footer: None,
+            },
+            Binding {
+                key: "PgUp/PgDn, ←/→",
+                help: "Scroll vertically / horizontally",
+                footer: None,
             },
             Binding {
                 key: "l",
@@ -1069,7 +1109,7 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         section: "Conflict",
         prefix: "Conflict ",
         tone: Tone::Danger,
-        order: &["j/k", "o / Enter", "c", "v", "a", "Esc"],
+        order: &["j/k", "Enter", "Ctrl-s", "o", "v", "Esc"],
     },
     ModalFooter {
         section: "Delete branch",

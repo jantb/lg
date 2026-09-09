@@ -12,6 +12,7 @@ mod context;
 mod diff;
 mod flow;
 mod index;
+mod merge_editor;
 mod nested;
 mod plain;
 mod release;
@@ -60,6 +61,7 @@ pub use flow::{
 pub use index::{
     commit, delete_worktree_path, rollback_worktree_path, stage, stage_all, unstage, unstage_all,
 };
+pub use merge_editor::MergeSnapshot;
 pub use nested::{
     NestedRepo, checkout_nested_branch, checkout_nested_branch_at, checkout_nested_remote_branch,
     checkout_nested_remote_branch_at, nested_repositories, nested_repositories_at,

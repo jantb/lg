@@ -13,6 +13,7 @@ mod activity;
 mod branches;
 mod flow;
 mod jobs;
+mod merge_editor;
 mod modal;
 mod tree;
 mod view;
@@ -21,6 +22,7 @@ pub use activity::*;
 pub use branches::*;
 pub use flow::*;
 pub use jobs::*;
+pub use merge_editor::*;
 pub use modal::*;
 pub use tree::{TreeKind, TreeRow, build_tree_rows};
 pub use view::*;
@@ -214,10 +216,11 @@ pub struct AppState {
 
     pub conflicts: Vec<String>,
     pub conflict_idx: usize,
+    pub conflict_preview: Option<ConflictPreview>,
     pub conflict_scroll_offset: usize,
     pub conflict_log: String,
     pub conflict_followup: Option<ConflictFollowup>,
-    /// Files the local model settled in this conflict. They are still
+    /// Files settled by the inline editor or local model in this conflict. They are still
     /// conflicted as far as git is concerned — nothing is staged until `v` —
     /// so this is what tells the panel which ones are waiting to be read
     /// rather than waiting to be resolved.
@@ -403,6 +406,7 @@ impl AppState {
 
             conflicts: Vec::new(),
             conflict_idx: 0,
+            conflict_preview: None,
             conflict_scroll_offset: 0,
             conflict_log: String::new(),
             conflict_followup: None,

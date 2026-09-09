@@ -31,6 +31,7 @@ impl AppState {
     pub fn settle_conflict(&mut self, validated: bool) {
         let followup = self.conflict_followup.take();
         self.conflicts.clear();
+        self.conflict_preview = None;
         self.conflict_resolved.clear();
         self.modal = Modal::None;
         if validated && let Some(resume) = followup.and_then(|followup| followup.resume) {
@@ -43,6 +44,7 @@ impl AppState {
     /// last conflict says nothing about a file of the same name in this one.
     pub fn set_conflicts(&mut self, conflicts: Vec<String>) {
         self.conflicts = conflicts;
+        self.conflict_preview = None;
         self.conflict_idx = 0;
         self.conflict_scroll_offset = 0;
         self.conflict_resolved.clear();
@@ -403,6 +405,18 @@ impl AppState {
     /// Quit, or ask first: leaving stops every running session, and that is not
     /// something to discover afterwards.
     pub fn request_quit(&mut self) {
+        if self
+            .conflict_preview
+            .as_ref()
+            .is_some_and(|preview| preview.editor.as_ref().is_ok_and(|editor| editor.dirty()))
+        {
+            self.modal = Modal::Conflict;
+            self.set_status(
+                "unsaved merge edits: Ctrl-s saves; Ctrl-r reloads and discards the draft",
+                true,
+            );
+            return;
+        }
         let running: Vec<&str> = self
             .sessions
             .iter()

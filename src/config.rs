@@ -138,6 +138,16 @@ pub const ANIMATION_FRAME_MS: u64 = 8;
 /// in a batch rather than one per frame — but a flood must not starve the
 /// redraw that makes the scrolling visible.
 pub const MAX_EVENTS_PER_FRAME: usize = 64;
+
+/// How much of a frame is held before any of it reaches the terminal.
+///
+/// Rust hands out a stdout that flushes every kilobyte, and a frame on a large
+/// window is hundreds of them: the terminal is given the picture in pieces and
+/// paints each piece as it arrives, so what is on screen is part of this frame
+/// beside part of the last. Worse, ratatui only ever sends the cells that
+/// changed, so a piece that arrived torn stays torn until something happens to
+/// write over it. A buffer that holds a whole frame makes it one write.
+pub const FRAME_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 pub const BACKGROUND_FETCH_INTERVAL_SECS: u64 = 300;
 pub const COMMIT_LIST_LIMIT: usize = 200;
 

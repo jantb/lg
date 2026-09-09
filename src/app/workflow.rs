@@ -394,7 +394,7 @@ fn conflict_prompt(conflicts: &[String], already_resolved: &[String]) -> String 
     }
     if !already_resolved.is_empty() {
         prompt.push_str(
-            "\nA local model already merged these files and wrote them back, so they hold \
+            "\nThese files were already merged in lg and written back, so they hold \
              no conflict markers. Leave them alone unless you find a mistake in one:\n",
         );
         for path in already_resolved {

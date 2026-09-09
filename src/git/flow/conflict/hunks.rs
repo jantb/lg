@@ -273,6 +273,23 @@ impl ConflictedFile {
         out
     }
 
+    /// Manual edits already carry their intended line endings. Preserve every
+    /// byte, including an empty replacement and the absence of a final newline.
+    pub fn render_exact(&self, resolutions: &[String]) -> Option<String> {
+        if resolutions.len() != self.hunk_count() {
+            return None;
+        }
+        let mut resolved = resolutions.iter();
+        let mut out = String::new();
+        for part in &self.parts {
+            match part {
+                Part::Kept(text) => out.push_str(text),
+                Part::Conflict(_) => out.push_str(resolved.next()?),
+            }
+        }
+        Some(out)
+    }
+
     fn position_of(&self, index: usize) -> Option<usize> {
         self.parts
             .iter()
