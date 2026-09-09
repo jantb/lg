@@ -125,6 +125,15 @@ pub struct ConflictedFile {
     parts: Vec<Part>,
 }
 
+/// One stretch of a conflicted file as a reader walks it top to bottom: text
+/// git merged, or the position of the next conflict in [`ConflictedFile::hunks`]
+/// order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilePart<'a> {
+    Kept(&'a str),
+    Conflict(usize),
+}
+
 /// Which side of a conflict the parser is reading.
 enum Side {
     Ours,
@@ -228,6 +237,19 @@ impl ConflictedFile {
 
     pub fn hunk_count(&self) -> usize {
         self.hunks().count()
+    }
+
+    /// The file top to bottom, merged text and conflicts interleaved in the
+    /// order they appear.
+    pub fn parts(&self) -> impl Iterator<Item = FilePart<'_>> {
+        let mut conflicts = 0;
+        self.parts.iter().map(move |part| match part {
+            Part::Kept(text) => FilePart::Kept(text),
+            Part::Conflict(_) => {
+                conflicts += 1;
+                FilePart::Conflict(conflicts - 1)
+            }
+        })
     }
 
     /// The last `lines` merged lines ahead of conflict `index`, as the context

@@ -25,7 +25,7 @@ pub use branch::{
     flow_transfer_diff_to_feature_branch_with_progress,
 };
 pub use conflict::{
-    ConflictHunk, ConflictSideCommit, ConflictSides, ConflictedFile, Followup,
+    ConflictHunk, ConflictSideCommit, ConflictSides, ConflictedFile, FilePart, Followup,
     abort_in_progress_operation, abort_in_progress_operation_with_cleanup,
     abort_in_progress_operation_with_return, conflict_sides, conflicted_files,
     holds_conflict_marker, marker_line, stage_resolved_conflicts, validate_conflict_resolution,

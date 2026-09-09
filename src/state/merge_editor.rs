@@ -1,7 +1,10 @@
 //! In-memory decisions and text editing; disk IO lives in git::MergeSnapshot.
 
 use anyhow::{Result, bail};
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{
+    crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
+    layout::Rect,
+};
 
 use crate::git::{ConflictHunk, ConflictedFile, MergeSnapshot};
 
@@ -208,6 +211,14 @@ impl MergeHunk {
     }
 }
 
+/// One stretch of the file as the editor lays it out: merged text every side
+/// agrees on, or a conflict identified by its position in `hunks`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergePart {
+    Kept(String),
+    Conflict(usize),
+}
+
 #[derive(Debug)]
 pub struct MergeEditor {
     pub snapshot: MergeSnapshot,
@@ -216,11 +227,22 @@ pub struct MergeEditor {
     pub selected: usize,
     pub editing: bool,
     pub show_base: bool,
+    /// Row offset into the laid-out file, honoured once neither `reveal` nor
+    /// `follow_cursor` asks for something else.
     pub scroll: usize,
+    /// Line offset in the ancestor view, kept apart so toggling the ancestor
+    /// does not lose the place in the file.
+    pub base_scroll: usize,
     pub horizontal: usize,
     pub saved: bool,
-    pub hovered: Option<MergeAction>,
+    /// The button under the mouse: which conflict it belongs to, and what it does.
+    pub hovered: Option<(usize, MergeAction)>,
+    /// Keep the result cursor of the selected conflict on screen.
     pub follow_cursor: bool,
+    /// Bring the selected conflict into view on the next render.
+    pub reveal: bool,
+    /// Where the view was last drawn, so keyboard scrolling can measure it.
+    pub viewport: Option<Rect>,
     baseline: Vec<(String, bool)>,
 }
 
@@ -284,10 +306,13 @@ impl MergeEditor {
             editing: false,
             show_base: false,
             scroll: 0,
+            base_scroll: 0,
             horizontal: 0,
             saved: false,
             hovered: None,
-            follow_cursor: true,
+            follow_cursor: false,
+            reveal: true,
+            viewport: None,
             baseline,
         })
     }
@@ -306,26 +331,80 @@ impl MergeEditor {
         &mut self.hunks[self.selected]
     }
 
+    /// Make `index` the selected conflict without moving the view; the caller
+    /// is acting on something already on screen.
+    pub fn select(&mut self, index: usize) {
+        if index < self.hunks.len() {
+            self.selected = index;
+        }
+    }
+
     pub fn navigate(&mut self, forward: bool) {
         self.selected = if forward {
             (self.selected + 1).min(self.hunks.len() - 1)
         } else {
             self.selected.saturating_sub(1)
         };
-        self.scroll = 0;
+        self.reveal = true;
+        self.follow_cursor = false;
         self.horizontal = 0;
     }
 
-    pub fn context(&self) -> (String, String) {
+    /// The whole file in order: merged text and conflicts interleaved. A file
+    /// without markers is one conflict spanning everything.
+    pub fn parts(&self) -> Vec<MergePart> {
         self.parsed.as_ref().map_or_else(
-            || (String::new(), String::new()),
-            |p| {
-                (
-                    p.context_before(self.selected, 3),
-                    p.context_after(self.selected, 3),
-                )
+            || vec![MergePart::Conflict(0)],
+            |parsed| {
+                parsed
+                    .parts()
+                    .map(|part| match part {
+                        crate::git::FilePart::Kept(text) => MergePart::Kept(text.to_string()),
+                        crate::git::FilePart::Conflict(index) => MergePart::Conflict(index),
+                    })
+                    .collect()
             },
         )
+    }
+
+    /// Carry out an action on conflict `index`. Saving is the caller's: it
+    /// touches the disk and the dialog's bookkeeping.
+    pub fn apply(&mut self, index: usize, action: MergeAction) {
+        if index >= self.hunks.len() {
+            return;
+        }
+        self.selected = index;
+        match action {
+            MergeAction::ReplaceOurs => self.hunks[index].choose('1'),
+            MergeAction::ReplaceTheirs => self.hunks[index].choose('2'),
+            MergeAction::Both => self.hunks[index].choose('3'),
+            MergeAction::Keep => self.hunks[index].choose('0'),
+            MergeAction::InsertOurs | MergeAction::InsertTheirs => {
+                let source = if action == MergeAction::InsertOurs {
+                    self.hunks[index].source.ours.clone()
+                } else {
+                    self.hunks[index].source.theirs.clone()
+                };
+                self.hunks[index].insert(&source);
+            }
+            MergeAction::Edit => {
+                self.editing = true;
+                self.follow_cursor = true;
+            }
+            MergeAction::Base => {
+                self.show_base = !self.show_base;
+                self.base_scroll = 0;
+            }
+            MergeAction::Previous => self.navigate(false),
+            MergeAction::Next => self.navigate(true),
+            MergeAction::Save => {}
+        }
+        if !matches!(
+            action,
+            MergeAction::Base | MergeAction::Previous | MergeAction::Next
+        ) {
+            self.show_base = false;
+        }
     }
 
     pub fn save(&mut self) -> Result<()> {

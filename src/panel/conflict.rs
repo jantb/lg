@@ -20,12 +20,36 @@ use super::scroll;
 
 mod merge;
 
-pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
+/// The dialog's regions: header, file list, merge view, controls.
+struct Regions {
+    header: Rect,
+    files: Rect,
+    preview: Rect,
+    controls: Rect,
+}
+
+/// Room for the file list: every path in full when the dialog can spare it,
+/// never more than a third of the width, and nothing at all on a terminal too
+/// narrow to hold both the list and a readable merge view.
+fn files_width(state: &AppState, width: u16) -> u16 {
+    if width < 90 {
+        return 0;
+    }
+    let longest = state
+        .conflicts
+        .iter()
+        .map(|path| path.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(u16::MAX as usize) as u16;
+    // Selection marker and resolved mark, then the borders.
+    (longest + 4 + 2).clamp(24, width / 3)
+}
+
+fn regions(state: &AppState, area: Rect) -> Regions {
     let w = area.width.saturating_sub(2).max(1).min(area.width);
     let h = area.height.saturating_sub(2).max(1).min(area.height);
     let modal = ui::centered(area, w, h);
-    frame.render_widget(Clear, modal);
-
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -34,6 +58,27 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             Constraint::Length(5),
         ])
         .split(modal);
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(files_width(state, area.width)),
+            Constraint::Min(1),
+        ])
+        .split(chunks[1]);
+    Regions {
+        header: chunks[0],
+        files: body[0],
+        preview: body[1],
+        controls: chunks[2],
+    }
+}
+
+pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
+    let w = area.width.saturating_sub(2).max(1).min(area.width);
+    let h = area.height.saturating_sub(2).max(1).min(area.height);
+    let modal = ui::centered(area, w, h);
+    frame.render_widget(Clear, modal);
+    let regions = regions(state, area);
 
     let header = vec![
         Line::from(Span::styled(
@@ -61,16 +106,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 .get(state.conflict_idx)
                 .map_or("Conflict", String::as_str),
         )),
-        chunks[0],
+        regions.header,
     );
-
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(if area.width >= 120 { 24 } else { 0 }),
-            Constraint::Min(1),
-        ])
-        .split(chunks[1]);
 
     let items: Vec<ListItem> = state
         .conflicts
@@ -85,18 +122,18 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let offset = scroll::selection_scroll_offset(
         selected_idx,
         state.conflicts.len(),
-        scroll::list_viewport_height(body[0].height),
+        scroll::list_viewport_height(regions.files.height),
         state.conflict_scroll_offset,
     );
     let mut list_state = scroll::list_state(selected_idx, offset);
-    frame.render_stateful_widget(list, body[0], &mut list_state);
+    frame.render_stateful_widget(list, regions.files, &mut list_state);
 
     match state
         .conflict_preview
         .as_ref()
         .map(|preview| &preview.editor)
     {
-        Some(Ok(editor)) => merge::render(editor, body[1], frame),
+        Some(Ok(editor)) => merge::render(editor, regions.preview, frame),
         preview => {
             let detail = match preview {
                 Some(Err(error)) => format!("{error}\n\nPress o to open externally, Ctrl-r to reload, or v to validate resolved/staged/merged state."),
@@ -106,7 +143,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 Paragraph::new(detail)
                     .block(ui::bordered("Merge preview"))
                     .wrap(Wrap { trim: false }),
-                body[1],
+                regions.preview,
             );
         }
     }
@@ -132,7 +169,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     } else {
         vec![
             Line::from(
-                "j/k files   [/] conflicts   1 ours   2 theirs   3 both   0 accept result   Enter edit",
+                "j/k files   [/] conflicts   1 ours   2 theirs   3 both   0 accept result   Enter edit   or click a conflict's buttons",
             ),
             Line::from(
                 "b ancestor   PgUp/PgDn scroll   ←/→ pan   u undo   Ctrl-s save   Ctrl-r reload/discard",
@@ -144,7 +181,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     };
     frame.render_widget(
         Paragraph::new(controls).block(Block::default().borders(Borders::ALL)),
-        chunks[2],
+        regions.controls,
     );
 }
 
@@ -190,35 +227,16 @@ fn conflict_row(state: &AppState, path: &str) -> Line<'static> {
 }
 
 pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
-    let files_area = files_area(area);
+    let regions = regions(state, area);
     state.conflict_scroll_offset = scroll::selection_scroll_offset(
         clamp_index(state.conflict_idx, state.conflicts.len()),
         state.conflicts.len(),
-        scroll::list_viewport_height(files_area.height),
+        scroll::list_viewport_height(regions.files.height),
         state.conflict_scroll_offset,
     );
-}
-
-fn files_area(area: Rect) -> Rect {
-    let w = area.width.saturating_sub(2).max(1).min(area.width);
-    let h = area.height.saturating_sub(2).max(1).min(area.height);
-    let modal = ui::centered(area, w, h);
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(5),
-            Constraint::Min(7),
-            Constraint::Length(5),
-        ])
-        .split(modal);
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(if area.width >= 120 { 24 } else { 0 }),
-            Constraint::Min(1),
-        ])
-        .split(chunks[1]);
-    body[0]
+    if let Some(Ok(editor)) = state.conflict_preview.as_mut().map(|p| &mut p.editor) {
+        editor.viewport = Some(regions.preview);
+    }
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
@@ -320,21 +338,19 @@ fn handle_merge_key(state: &mut AppState, key: KeyEvent) -> bool {
         return true;
     }
     if !ctrl {
+        let selected = editor.selected;
         match key.code {
-            KeyCode::Enter | KeyCode::Char('e') => {
-                editor.editing = true;
-                editor.show_base = false;
-            }
-            KeyCode::Char(choice @ ('0'..='3')) => editor.current_mut().choose(choice),
+            KeyCode::Enter | KeyCode::Char('e') => editor.apply(selected, MergeAction::Edit),
+            KeyCode::Char('1') => editor.apply(selected, MergeAction::ReplaceOurs),
+            KeyCode::Char('2') => editor.apply(selected, MergeAction::ReplaceTheirs),
+            KeyCode::Char('3') => editor.apply(selected, MergeAction::Both),
+            KeyCode::Char('0') => editor.apply(selected, MergeAction::Keep),
             KeyCode::Char('u') => editor.current_mut().undo(),
             KeyCode::Char(']') => editor.navigate(true),
             KeyCode::Char('[') => editor.navigate(false),
-            KeyCode::Char('b') => {
-                editor.show_base = !editor.show_base;
-                editor.scroll = 0;
-            }
-            KeyCode::PageDown => editor.scroll = editor.scroll.saturating_add(8),
-            KeyCode::PageUp => editor.scroll = editor.scroll.saturating_sub(8),
+            KeyCode::Char('b') => editor.apply(selected, MergeAction::Base),
+            KeyCode::PageDown => merge::scroll_by(editor, 8),
+            KeyCode::PageUp => merge::scroll_by(editor, -8),
             KeyCode::Right => editor.horizontal = editor.horizontal.saturating_add(8),
             KeyCode::Left => editor.horizontal = editor.horizontal.saturating_sub(8),
             _ => {
@@ -389,7 +405,8 @@ pub(crate) fn handle_mouse(state: &mut AppState, area: Rect, event: &MouseEvent)
     if state.conflict_resolve_job.is_some() {
         return;
     }
-    let files = files_area(area);
+    let regions = regions(state, area);
+    let files = regions.files;
     let point = ratatui::layout::Position::new(event.column, event.row);
     if files.contains(point)
         && event.kind == MouseEventKind::Down(MouseButton::Left)
@@ -413,61 +430,19 @@ pub(crate) fn handle_mouse(state: &mut AppState, area: Rect, event: &MouseEvent)
         }
         return;
     }
-    let modal = ui::centered(
-        area,
-        area.width.saturating_sub(2).max(1).min(area.width),
-        area.height.saturating_sub(2).max(1).min(area.height),
-    );
-    let preview_area = Rect::new(
-        files.right(),
-        files.y,
-        modal.right().saturating_sub(files.right()),
-        files.height,
-    );
     let action = state
         .conflict_preview
         .as_mut()
         .and_then(|p| p.editor.as_mut().ok())
-        .and_then(|editor| merge::mouse(editor, preview_area, event));
-    let Some(action) = action else {
+        .and_then(|editor| merge::mouse(editor, regions.preview, event));
+    let Some((hunk, action)) = action else {
         return;
     };
     if action == MergeAction::Save {
         app::save_conflict_editor(state);
         return;
     }
-    let Some(Ok(editor)) = state.conflict_preview.as_mut().map(|p| &mut p.editor) else {
-        return;
-    };
-    match action {
-        MergeAction::ReplaceOurs => editor.current_mut().choose('1'),
-        MergeAction::ReplaceTheirs => editor.current_mut().choose('2'),
-        MergeAction::Both => editor.current_mut().choose('3'),
-        MergeAction::Keep => editor.current_mut().choose('0'),
-        MergeAction::InsertOurs | MergeAction::InsertTheirs => {
-            let source = if action == MergeAction::InsertOurs {
-                editor.current().source.ours.clone()
-            } else {
-                editor.current().source.theirs.clone()
-            };
-            editor.current_mut().insert(&source);
-        }
-        MergeAction::Edit => {
-            editor.editing = true;
-            editor.follow_cursor = true;
-        }
-        MergeAction::Base => {
-            editor.show_base = !editor.show_base;
-            editor.scroll = 0;
-        }
-        MergeAction::Previous => editor.navigate(false),
-        MergeAction::Next => editor.navigate(true),
-        MergeAction::Save => {}
-    }
-    if !matches!(
-        action,
-        MergeAction::Base | MergeAction::Previous | MergeAction::Next
-    ) {
-        editor.show_base = false;
+    if let Some(Ok(editor)) = state.conflict_preview.as_mut().map(|p| &mut p.editor) {
+        editor.apply(hunk, action);
     }
 }

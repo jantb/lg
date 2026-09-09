@@ -10,7 +10,7 @@ use super::*;
 
 mod hunks;
 
-pub use hunks::{ConflictHunk, ConflictedFile, holds_conflict_marker, marker_line};
+pub use hunks::{ConflictHunk, ConflictedFile, FilePart, holds_conflict_marker, marker_line};
 
 pub fn conflicted_files() -> Result<Vec<String>> {
     let out = run(&["status", "--porcelain"])?;

@@ -46,7 +46,7 @@ pub use diff::{
     show_commit, staged_diff,
 };
 pub use flow::{
-    ConflictHunk, ConflictSideCommit, ConflictSides, ConflictedFile, Followup,
+    ConflictHunk, ConflictSideCommit, ConflictSides, ConflictedFile, FilePart, Followup,
     abort_in_progress_operation, abort_in_progress_operation_with_cleanup,
     abort_in_progress_operation_with_return, checkout_branch, checkout_remote_branch,
     conflict_sides, conflicted_files, delete_local_branch, delete_remote_branch,

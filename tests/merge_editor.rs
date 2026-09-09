@@ -96,6 +96,24 @@ fn find_label(app: &HeadlessApp<TestBackend>, label: &str, occurrence: usize) ->
         .unwrap_or_else(|| panic!("missing {label}"))
 }
 
+/// The first `label` on a row that also carries `needle`.
+fn find_label_beside(app: &HeadlessApp<TestBackend>, needle: &str, label: &str) -> (u16, u16) {
+    let buffer = app.terminal.backend().buffer();
+    let row_text = |y: u16, from: u16| -> String {
+        (from..buffer.area.width)
+            .map(|col| buffer[(col, y)].symbol())
+            .collect()
+    };
+    (0..buffer.area.height)
+        .filter(|y| row_text(*y, 0).contains(needle))
+        .find_map(|y| {
+            (0..buffer.area.width)
+                .find(|x| row_text(y, *x).starts_with(label))
+                .map(|x| (x, y))
+        })
+        .unwrap_or_else(|| panic!("missing {label} beside {needle}"))
+}
+
 fn mouse(kind: MouseEventKind, (column, row): (u16, u16)) -> MouseEvent {
     MouseEvent {
         kind,
@@ -202,7 +220,19 @@ fn mouse_arrows_preview_without_mutation_then_apply_replace_insert_and_save() {
     let next = find_label(&app, "Next ›", 0);
     app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), next))
         .unwrap();
-    let ours = find_label(&app, "→ Ours", 0);
+    assert_eq!(
+        app.state
+            .conflict_preview
+            .as_ref()
+            .unwrap()
+            .editor
+            .as_ref()
+            .unwrap()
+            .selected,
+        1
+    );
+    // Every conflict carries its own buttons, on the rule that names it.
+    let ours = find_label_beside(&app, "Conflict 2/2", "→ Ours");
     app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), ours))
         .unwrap();
     let save = find_label(&app, "[ Save ]", 0);
