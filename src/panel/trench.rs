@@ -25,6 +25,10 @@ const RUNGS: usize = 10;
 const TRENCH_SPEED: f32 = 3.4;
 /// One cell in this many is a star.
 const STAR_DENSITY: u64 = 23;
+/// How long a TIE takes to drop in behind the X-wing and fall away again,
+/// and how long the run goes between one arriving and the next.
+const TIE_ON_S: f32 = 3.0;
+const TIE_PASS_S: f32 = 7.0;
 /// The fire, faint to white-hot.
 const FIRE: &[char] = &['.', ':', '*', '#', '%', '@'];
 
@@ -521,24 +525,35 @@ fn draw_fighters(scene: &Scene, seed: usize, t: f32, since: Option<f32>, put: Pu
     let green = Color::Rgb(90, 255, 110);
     let grey = Color::Rgb(200, 205, 220);
     let after = since.map_or(0.0, |s| (s - TORPEDO_S).max(0.0));
-    // The X-wing, halfway down the trench, weaving between the walls and
-    // riding up and down; once the shot is away it climbs out and peels off.
-    let (xl, xr, fy, ty) = scene.floor(0.5);
+    // The X-wing, well down the trench and low in it, weaving between the
+    // walls and riding up and down; once the shot is away it climbs out and
+    // peels off.
+    let (xl, xr, fy, ty) = scene.floor(0.74);
     let phase = seed as f32 * 0.7;
     let u = 0.5 + 0.28 * (t * 2.1 + phase).sin();
-    let hv = 0.5 + 0.18 * (t * 1.5 + phase).sin();
+    let hv = 0.38 + 0.16 * (t * 1.5 + phase).sin();
     let xw = xl + (xr - xl) * u + after * 4.0;
     let yw = fy - (fy - ty) * hv - after * 5.0;
     let port = (scene.vx, scene.vy);
-    // Two TIE fighters on its tail, nearer the reader.
+    // The TIEs are not on the tail the whole way down: each swoops in over
+    // the reader, holds on the tail firing, and falls back out of the shot,
+    // so the trench is sometimes clear and sometimes crowded.
     let ties: Vec<(f32, f32)> = [-1.0f32, 1.0]
         .into_iter()
         .enumerate()
-        .map(|(i, side)| {
-            let (xl, xr, fy, ty) = scene.floor(0.68);
-            let u = 0.5 + side * 0.22 + 0.06 * (t * 3.1 + i as f32).sin();
-            let hv = 0.55 + side * 0.1 + 0.08 * (t * 1.9 + i as f32 * 2.0).cos();
-            (xl + (xr - xl) * u, fy - (fy - ty) * hv)
+        .filter_map(|(i, side)| {
+            let p = ((t + phase) / TIE_PASS_S + i as f32 * 0.09).fract() * TIE_PASS_S;
+            if p > TIE_ON_S {
+                return None;
+            }
+            let swoop = (p / TIE_ON_S * std::f32::consts::PI).sin();
+            let (xl, xr, fy, ty) = scene.floor(1.02 - 0.24 * swoop);
+            let hv = 0.15 + 0.35 * swoop + 0.08 * (t * 1.9 + i as f32 * 2.0).cos();
+            // Held off to one side of the X-wing and never in front of it:
+            // they are on its tail, between it and the reader.
+            let spread = (xr - xl) * (0.2 + 0.12 * (t * 3.1 + i as f32).sin());
+            let x = (xw + side * spread).clamp(xl, xr);
+            Some((x, (fy - (fy - ty) * hv).max(yw + 2.0)))
         })
         .collect();
     // Fire first, fighters over it: a bolt leaving a cannon or landing on a
@@ -649,9 +664,14 @@ mod tests {
             before.contains(">=[O]=<"),
             "the X-wing is in the trench:\n{before}"
         );
+        let tails: Vec<u64> = (0..12_000)
+            .step_by(200)
+            .filter(|ms| picture(120, 24, *ms, None).contains("|=o=|"))
+            .collect();
+        assert!(!tails.is_empty(), "TIEs join the run while it is flying");
         assert!(
-            before.contains("|=o=|"),
-            "the TIEs are on its tail:\n{before}"
+            tails.len() * 200 < 11_000,
+            "and they are not on the tail the whole way down"
         );
         assert!(before.contains('Y'), "turrets line the rim:\n{before}");
         assert!(before.contains('o'), "the port is ahead:\n{before}");

@@ -172,14 +172,20 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         && let Some(action) = selected_idx.and_then(|idx| actions.get(idx).copied())
     {
         let run = flow_run(state, action);
+        // The steps have first call on the pane's height, since they are read
+        // rather than watched; the diagram stretches into whatever is left,
+        // with a row spare for the caption wrapping.
+        let steps = step_lines(&run);
+        let reserved = u16::try_from(steps.len() + 1).unwrap_or(u16::MAX);
         let mut lines = preview::lines(
             state,
             &run,
             preview::Progress::Menu,
             state.animation_ms,
             area.width.saturating_sub(2),
+            area.height.saturating_sub(2).saturating_sub(reserved),
         );
-        lines.extend(step_lines(&run));
+        lines.extend(steps);
         frame.render_widget(
             Paragraph::new(lines)
                 .block(ui::bordered("What it does"))
@@ -254,6 +260,9 @@ fn render_running(
             preview::Progress::Step(job.current_step.unwrap_or(0)),
             state.animation_ms,
             area.width.saturating_sub(2),
+            // Nothing shares this pane with the diagram, so all of it but the
+            // border and a row for the caption to wrap into is the diagram's.
+            area.height.saturating_sub(3),
         );
         frame.render_widget(
             Paragraph::new(lines)

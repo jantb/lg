@@ -19,11 +19,23 @@ use crate::ui::palette;
 /// to `MAX_STRIDE` when there is room: a bigger picture is easier to read
 /// and gives the marker a longer road to travel.
 const MIN_STRIDE: usize = 3;
-const MAX_STRIDE: usize = 8;
+const MAX_STRIDE: usize = 16;
 
-/// Commits drawn past the last one a move lands on, so every lane runs on
-/// afterwards instead of stopping dead at the merge.
+/// Fewest rows between one lane and the next: the lane, and one row under it
+/// for the connectors to run down. Lanes are spread further apart when the pane
+/// is tall, for the same reason the columns stretch — the panes this is drawn in
+/// are far taller than the handful of rows a graph needs, and a diagram huddled
+/// in the top corner wastes the room that would make it readable.
+const MIN_ROW_STRIDE: usize = 2;
+const MAX_ROW_STRIDE: usize = 8;
+
+/// Fewest commits drawn past the last one a move lands on, so every lane runs
+/// on afterwards instead of stopping dead at the merge. More are added when the
+/// moves alone do not fill the pane's width, up to `MAX_TAIL_COMMITS` — past
+/// that the picture is all quiet lane with the moves crowded into one corner,
+/// which fills the pane without explaining any more of it.
 const TAIL_COMMITS: usize = 2;
+const MAX_TAIL_COMMITS: usize = 5;
 
 /// Longest a lane label is drawn at. Branch names run long, and a label that
 /// grows without limit pushes the track off the pane; the graph is the part
@@ -69,6 +81,10 @@ pub(super) struct Preview {
     steps: Vec<String>,
     /// Columns one commit takes on a track, see `MIN_STRIDE`.
     stride: usize,
+    /// Rows one lane takes, see `MIN_ROW_STRIDE`.
+    row_stride: usize,
+    /// Commits drawn after the last move, see `TAIL_COMMITS`.
+    tail: usize,
 }
 
 /// Whether the picture is being drawn for the menu or for a run.
@@ -109,18 +125,44 @@ impl Preview {
             caption: caption.into(),
             steps,
             stride: MIN_STRIDE,
+            row_stride: MIN_ROW_STRIDE,
+            tail: TAIL_COMMITS,
         }
     }
 
-    /// Stretch the diagram to the widest scale that still fits `width` beside
-    /// labels `label_width` wide. Never narrower than `MIN_STRIDE`, so a pane
-    /// too small for even that is reported by `grid_cols` overrunning it.
-    fn fit(&mut self, label_width: usize, width: u16) {
+    /// Stretch the diagram into a pane `width` by `height`, beside labels
+    /// `label_width` wide. Both scales are pushed as far as the room allows and
+    /// never below their minimum, so a pane too small for even that is reported
+    /// by `grid_cols` overrunning it.
+    fn fit(&mut self, label_width: usize, width: u16, height: u16) {
+        let track = usize::from(width).saturating_sub(label_width + 1);
+
         self.stride = MIN_STRIDE;
         for stride in (MIN_STRIDE..=MAX_STRIDE).rev() {
             self.stride = stride;
-            let needed = label_width + 1 + self.grid_cols();
-            if u16::try_from(needed).unwrap_or(u16::MAX) <= width {
+            if self.grid_cols() <= track {
+                break;
+            }
+        }
+
+        // The moves sit at the left of the track whatever the stride, so what
+        // is left over after the widest stride that fits goes to the lanes
+        // themselves: they run on to the edge of the pane rather than stopping
+        // short of it.
+        self.tail = TAIL_COMMITS;
+        while self.tail < MAX_TAIL_COMMITS && self.grid_cols() + self.stride <= track {
+            self.tail += 1;
+        }
+
+        // A terminal row is about twice as tall as a column is wide, so half
+        // the stride is the spacing that makes a connector's drop look like a
+        // commit's reach. Spread wider than that and a tall pane pulls the
+        // lanes apart into something that reads as unrelated tracks.
+        let widest_rows = (self.stride / 2).clamp(MIN_ROW_STRIDE, MAX_ROW_STRIDE);
+        self.row_stride = MIN_ROW_STRIDE;
+        for row_stride in (MIN_ROW_STRIDE..=widest_rows).rev() {
+            self.row_stride = row_stride;
+            if u16::try_from(self.grid_rows() + CAPTION_ROWS).unwrap_or(u16::MAX) <= height {
                 break;
             }
         }
@@ -238,7 +280,8 @@ impl Preview {
         if !moving {
             return vec![(route[0], 1.0)];
         }
-        let position = clock_ms as f64 / MARKER_CELL_MS as f64;
+        let trail_cells = self.trail_cells();
+        let position = clock_ms as f64 / self.cell_ms() as f64;
         let head = position.floor() as usize;
         let within = position - position.floor();
         let len = route.len();
@@ -250,21 +293,39 @@ impl Preview {
         if wraps || head + 1 < len {
             cells.push((route[(head + 1) % len], within));
         }
-        for back in 1..=TRAIL_CELLS {
+        for back in 1..=trail_cells {
             if !wraps && back > head {
                 break;
             }
             let idx = (head + len - back % len) % len;
-            let intensity = 1.0 - (within + back as f64) / (TRAIL_CELLS as f64 + 1.0);
+            let intensity = 1.0 - (within + back as f64) / (trail_cells as f64 + 1.0);
             cells.push((route[idx], intensity));
         }
         cells
     }
 
+    /// Cells of glow behind the marker at this scale, see `TRAIL_CELLS`.
+    fn trail_cells(&self) -> usize {
+        TRAIL_CELLS * self.stride / MIN_STRIDE
+    }
+
+    /// How lit a cell has to be to be the marker rather than track under it,
+    /// see `MARKER_HEAD_CELLS`.
+    fn marker_cutoff(&self) -> f64 {
+        1.0 - MARKER_HEAD_CELLS / (self.trail_cells() + 1) as f64
+    }
+
+    /// How long the marker rests on one cell at this scale, see
+    /// `MARKER_CELL_MS`.
+    fn cell_ms(&self) -> u64 {
+        let scaled = MARKER_CELL_MS * MIN_STRIDE as u64 / self.stride as u64;
+        scaled.max(1)
+    }
+
     /// Commits each lane is drawn with: one per move, plus a tail so the lanes
     /// carry on past the last thing that happens to them.
     fn commits(&self) -> usize {
-        self.moves.len() + TAIL_COMMITS
+        self.moves.len() + self.tail
     }
 
     /// Column of commit `slot` on a lane's track.
@@ -273,13 +334,21 @@ impl Preview {
     }
 
     /// Grid row a lane's track sits on. Lanes are spaced out so the connectors
-    /// between them have a row of their own to run down.
-    fn row(lane: usize) -> usize {
-        lane * 2
+    /// between them have rows of their own to run down.
+    fn row(&self, lane: usize) -> usize {
+        lane * self.row_stride
+    }
+
+    /// Whether a grid row is a lane's track rather than the space between two.
+    fn is_lane_row(&self, row: usize) -> bool {
+        row % self.row_stride == 0
     }
 
     fn grid_rows(&self) -> usize {
-        (self.lanes.len() * 2).saturating_sub(1)
+        match self.lanes.len() {
+            0 => 0,
+            lanes => (lanes - 1) * self.row_stride + 1,
+        }
     }
 
     fn grid_cols(&self) -> usize {
@@ -297,13 +366,13 @@ impl Preview {
             .enumerate()
             .map(|(idx, mv)| {
                 let col = self.column(idx + 1);
-                let to_row = Self::row(mv.to);
+                let to_row = self.row(mv.to);
                 let Some(from) = mv.from else {
                     // Nothing arrives; the lane itself is what goes, so the
                     // marker runs the length of it.
                     return (0..=last_col).map(|x| (to_row, x)).collect();
                 };
-                let from_row = Self::row(from);
+                let from_row = self.row(from);
                 let mut leg: Vec<(usize, usize)> = (0..=col).map(|x| (from_row, x)).collect();
                 let (lo, hi) = if from_row < to_row {
                     (from_row + 1, to_row)
@@ -468,7 +537,7 @@ fn grid(preview: &Preview, progress: Progress) -> Vec<Vec<Cell>> {
     let mut grid = vec![vec![Cell::BLANK; cols]; preview.grid_rows()];
 
     for (idx, lane) in preview.lanes.iter().enumerate() {
-        let track = &mut grid[Preview::row(idx)];
+        let track = &mut grid[preview.row(idx)];
         for (col, cell) in track.iter_mut().enumerate() {
             *cell = Cell {
                 glyph: if col % preview.stride == 0 {
@@ -484,7 +553,7 @@ fn grid(preview: &Preview, progress: Progress) -> Vec<Vec<Cell>> {
 
     for (idx, mv) in preview.moves.iter().enumerate() {
         let col = preview.column(idx + 1);
-        let to_row = Preview::row(mv.to);
+        let to_row = preview.row(mv.to);
         let reached = preview.reached(mv, progress);
         let color = if reached {
             preview.lanes[mv.to].color
@@ -526,7 +595,7 @@ fn grid(preview: &Preview, progress: Progress) -> Vec<Vec<Cell>> {
             }
         }
 
-        let from_row = Preview::row(from);
+        let from_row = preview.row(from);
         let (lo, hi) = if from_row < to_row {
             (from_row + 1, to_row.saturating_sub(1))
         } else {
@@ -539,7 +608,7 @@ fn grid(preview: &Preview, progress: Progress) -> Vec<Vec<Cell>> {
             // A connector reaching past its neighbour crosses a lane on the way.
             // Drawing straight through would rub that lane out and leave a
             // branch looking like it stops here.
-            let crosses_lane = row % 2 == 0;
+            let crosses_lane = preview.is_lane_row(row);
             grid[row][col] = Cell {
                 glyph: if crosses_lane { '\u{253c}' } else { '\u{2502}' },
                 color: if reached {
@@ -561,22 +630,38 @@ fn grid(preview: &Preview, progress: Progress) -> Vec<Vec<Cell>> {
     grid
 }
 
-/// How long the marker rests on each cell of its route.
+/// How long the marker rests on each cell of its route at `MIN_STRIDE`. A
+/// stretched diagram is not a slower one: the marker's pace is one commit per
+/// so long, not one character, so the time it rests on a cell shrinks as the
+/// commits are drawn further apart and the route it loops stays the same length
+/// in seconds however big the pane is.
 pub(super) const MARKER_CELL_MS: u64 = 90;
-/// How many cells of glow the marker leaves behind it.
+/// How many cells of glow the marker leaves behind it at `MIN_STRIDE`; it grows
+/// with the stride so the trail stays the same length in commits.
 const TRAIL_CELLS: usize = 7;
+
+/// Cells at the front of the trail drawn as the marker itself rather than as a
+/// lit stretch of track. This is a count and not a fraction of the trail: a
+/// stretched diagram earns a longer tail, but a head that grew with it would
+/// read as a bar sliding along the lane instead of something travelling it.
+const MARKER_HEAD_CELLS: f64 = 3.0;
+
+/// Rows `lines` adds under the diagram: a blank one and the caption.
+pub(super) const CAPTION_ROWS: usize = 2;
 
 /// The diagram as lines, with the marker where `progress` and the animation
 /// clock (`clock_ms`) put it.
 ///
-/// `width` is what the pane can show; a diagram that would not fit is dropped
-/// rather than drawn cut in half, since half a graph says the wrong thing.
+/// `width` and `height` are what the pane can show; the diagram is stretched to
+/// fill them, and one that would not fit even at its smallest is dropped rather
+/// than drawn cut in half, since half a graph says the wrong thing.
 pub(super) fn lines(
     state: &AppState,
     run: &FlowRun,
     progress: Progress,
     clock_ms: u64,
     width: u16,
+    height: u16,
 ) -> Vec<Line<'static>> {
     let Some(mut preview) = preview(state, run) else {
         return Vec::new();
@@ -591,7 +676,7 @@ pub(super) fn lines(
         .map(|label| label.chars().count())
         .max()
         .unwrap_or(0);
-    preview.fit(label_width, width);
+    preview.fit(label_width, width, height);
     let needed = label_width + 1 + preview.grid_cols();
     if u16::try_from(needed).unwrap_or(u16::MAX) > width {
         return vec![Line::from(Span::styled(
@@ -602,14 +687,16 @@ pub(super) fn lines(
 
     let cells = grid(&preview, progress);
     let trail = preview.trail(progress, clock_ms);
+    let marker_cutoff = preview.marker_cutoff();
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(cells.len() + 2);
     for (row, cols) in cells.iter().enumerate() {
         let mut spans = Vec::with_capacity(cols.len() + 1);
-        if row % 2 == 0 {
-            let lane = &preview.lanes[row / 2];
+        if preview.is_lane_row(row) {
+            let idx = row / preview.row_stride;
+            let lane = &preview.lanes[idx];
             spans.push(Span::styled(
-                format!("{:>label_width$} ", labels[row / 2]),
+                format!("{:>label_width$} ", labels[idx]),
                 Style::default().fg(lane.color).add_modifier(Modifier::BOLD),
             ));
         } else {
@@ -621,13 +708,13 @@ pub(super) fn lines(
                 .find(|(at, _)| *at == (row, col))
                 .map(|(_, intensity)| *intensity);
             let (glyph, style) = if let Some(intensity) = glow {
-                // The marker's own glyph goes wherever the light is more
-                // than half on, which is the head and, from halfway through
-                // a step, the cell it is sliding into. Everything else keeps
-                // the route's glyph and is only lit, from near-white just
-                // behind the head down to the resting accent where the glow
-                // rejoins the diagram.
-                let glyph = if intensity >= 0.5 {
+                // The marker's own glyph goes to the brightest few cells:
+                // the head, the couple just behind it, and the cell it is
+                // sliding into once the slide is nearly done. Everything
+                // else keeps the route's glyph and is only lit, from
+                // near-white just behind the head down to the resting accent
+                // where the glow rejoins the diagram.
+                let glyph = if intensity >= marker_cutoff {
                     '\u{25c9}'
                 } else {
                     cell.glyph
@@ -664,6 +751,10 @@ pub(super) fn lines(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pane with room to spare, the way the flow modal gives it; the tests
+    /// about fitting name their own sizes.
+    const ROOMY_HEIGHT: u16 = 24;
 
     /// A checkout where every branch action applies: a feature branch checked
     /// out and selected, and both deploy branches present.
@@ -730,7 +821,14 @@ mod tests {
             "this checkout should offer every action: {offered:?}"
         );
         for action in offered {
-            let lines = lines(&state, &run(&state, action), Progress::Menu, 0, 80);
+            let lines = lines(
+                &state,
+                &run(&state, action),
+                Progress::Menu,
+                0,
+                80,
+                ROOMY_HEIGHT,
+            );
             assert!(
                 !lines.is_empty(),
                 "{action:?} should draw something at a usable width"
@@ -753,6 +851,7 @@ mod tests {
             Progress::Menu,
             0,
             80,
+            ROOMY_HEIGHT,
         ));
 
         assert!(drawn.contains("origin/main"), "{drawn}");
@@ -772,6 +871,7 @@ mod tests {
             Progress::Menu,
             0,
             80,
+            ROOMY_HEIGHT,
         ));
         let release = text(&lines(
             &state,
@@ -779,6 +879,7 @@ mod tests {
             Progress::Menu,
             0,
             80,
+            ROOMY_HEIGHT,
         ));
 
         assert!(
@@ -800,6 +901,7 @@ mod tests {
             Progress::Menu,
             0,
             80,
+            ROOMY_HEIGHT,
         ));
         let moved = (1..40)
             .map(|tick| {
@@ -809,6 +911,7 @@ mod tests {
                     Progress::Menu,
                     tick * MARKER_CELL_MS,
                     80,
+                    ROOMY_HEIGHT,
                 ))
             })
             .any(|frame| frame != first);
@@ -846,6 +949,7 @@ mod tests {
             Progress::Menu,
             0,
             12,
+            ROOMY_HEIGHT,
         );
         assert_eq!(lines.len(), 1, "no room for a graph");
         assert!(text(&lines).contains("merge into"), "{:?}", text(&lines));
@@ -871,7 +975,8 @@ mod tests {
                 &run(&state, FlowAction::MergeMain),
                 Progress::Menu,
                 0,
-                80
+                80,
+                ROOMY_HEIGHT
             )
             .is_empty()
         );
@@ -953,8 +1058,14 @@ mod tests {
             .position(|step| step.contains("reset test to"))
             .expect("a reset step");
 
-        let waiting = colors(&lines(&state, &run, Progress::Step(0), 0, 80), '\u{2717}');
-        let done = colors(&lines(&state, &run, Progress::Step(at), 0, 80), '\u{2717}');
+        let waiting = colors(
+            &lines(&state, &run, Progress::Step(0), 0, 80, ROOMY_HEIGHT),
+            '\u{2717}',
+        );
+        let done = colors(
+            &lines(&state, &run, Progress::Step(at), 0, 80, ROOMY_HEIGHT),
+            '\u{2717}',
+        );
 
         assert!(
             !waiting.is_empty(),
@@ -1050,14 +1161,53 @@ mod tests {
     fn the_diagram_grows_into_the_room_it_is_given() {
         let state = state_with_deploy_branches();
         let mut preview = preview(&state, &run(&state, FlowAction::MergeMain)).expect("preview");
-        preview.fit(10, 200);
-        let wide = preview.grid_cols();
-        preview.fit(10, 25);
-        let narrow = preview.grid_cols();
-        assert!(wide > narrow, "a wide pane should get a bigger picture");
+        preview.fit(10, 200, 40);
+        let (wide, tall) = (preview.grid_cols(), preview.grid_rows());
+        preview.fit(10, 25, 8);
+        let (narrow, short) = (preview.grid_cols(), preview.grid_rows());
+        assert!(wide > narrow, "a wide pane should get a wider picture");
+        assert!(tall > short, "a tall pane should get a taller picture");
         assert!(
             u16::try_from(10 + 1 + narrow).unwrap() <= 25,
-            "and a narrow one should still fit"
+            "and a small one should still fit across"
+        );
+        assert!(
+            u16::try_from(short + CAPTION_ROWS).unwrap() <= 8,
+            "and down"
+        );
+    }
+
+    /// The picture is drawn to be watched, so growing it must not turn the loop
+    /// into a slideshow: the marker's pace is one commit per so long, whatever
+    /// scale the commits are drawn at.
+    #[test]
+    fn a_bigger_picture_is_not_a_slower_one() {
+        let state = state_with_deploy_branches();
+        let mut preview = preview(&state, &run(&state, FlowAction::MergeMain)).expect("preview");
+        let loop_ms = |preview: &Preview| preview.path().len() as u64 * preview.cell_ms();
+        preview.fit(10, 25, 8);
+        let small = loop_ms(&preview);
+        preview.fit(10, 90, 40);
+        let big = loop_ms(&preview);
+        assert!(
+            big < small * 2,
+            "a diagram {} times the size should not loop {} times slower",
+            preview.stride,
+            big / small.max(1)
+        );
+    }
+
+    /// Room left under a diagram that could have used it is room wasted: the
+    /// lanes run to the edge of the pane rather than stopping short of it.
+    #[test]
+    fn the_lanes_run_the_width_of_the_pane() {
+        let state = state_with_deploy_branches();
+        let mut preview = preview(&state, &run(&state, FlowAction::TransferDiff)).expect("preview");
+        preview.fit(10, 90, 40);
+        assert!(
+            preview.grid_cols() + 10 + 1 > 90 - preview.stride,
+            "{} columns leaves more than a commit of the 90 unused",
+            preview.grid_cols()
         );
     }
 }

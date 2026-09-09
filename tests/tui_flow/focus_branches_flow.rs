@@ -1196,6 +1196,53 @@ fn the_flow_preview_animates_as_the_clock_ticks() {
     );
 }
 
+/// The preview pane is far bigger than the few rows and columns a graph needs
+/// at its smallest, and a diagram drawn at its smallest in the corner of it
+/// wastes the room that would make it readable. So the picture is drawn to the
+/// pane it has: a bigger pane, a bigger picture, across and down.
+#[test]
+fn the_flow_preview_is_drawn_to_the_size_of_its_pane() {
+    let mut state = flow_menu_state();
+    state.flow_idx = FlowAction::ALL
+        .iter()
+        .position(|action| *action == FlowAction::ReleaseTest)
+        .unwrap();
+
+    /// How far the drawn graph reaches: the dashes along one lane's track, and
+    /// the rows from the first lane to the last.
+    fn extent(text: &str) -> (usize, usize) {
+        let rows: Vec<&str> = text.lines().collect();
+        let across = rows
+            .iter()
+            .find(|row| row.contains("origin/main"))
+            .map_or(0, |row| row.matches('\u{2500}').count());
+        let lanes: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.contains('\u{25cf}'))
+            .map(|(idx, _)| idx)
+            .collect();
+        let down = match (lanes.first(), lanes.last()) {
+            (Some(first), Some(last)) => last - first,
+            _ => 0,
+        };
+        (across, down)
+    }
+
+    let (wide, tall) = extent(&flow_menu_text(&state, 160, 50));
+    let (narrow, short) = extent(&flow_menu_text(&state, 100, 30));
+
+    assert!(narrow > 0 && short > 0, "both panes should draw a graph");
+    assert!(
+        wide > narrow,
+        "a wider pane should draw a wider graph: {wide} vs {narrow}"
+    );
+    assert!(
+        tall > short,
+        "a taller pane should spread the lanes further apart: {tall} vs {short}"
+    );
+}
+
 /// A terminal with no room for the graph still gets the menu; the preview is
 /// what gives way, not the thing being chosen from.
 #[test]
