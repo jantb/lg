@@ -5,7 +5,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph},
+    widgets::Paragraph,
 };
 
 use crate::{
@@ -17,12 +17,10 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let w = 92.min(area.width);
     let h = 30.min(area.height);
     let modal = ui::centered(area, w, h);
-    frame.render_widget(Clear, modal);
     if modal.width < 40 || modal.height < 16 {
-        frame.render_widget(
-            Paragraph::new("Terminal too small for settings").block(ui::bordered("Settings")),
-            modal,
-        );
+        let inner = ui::modal_frame(frame, modal, "Settings");
+        frame.render_widget(Paragraph::new("Terminal too small for settings"), inner);
+        ui::animate_modal_border(state.animation_ms, modal, &[], frame);
         return;
     }
 
@@ -225,7 +223,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     };
     lines.extend(key_hint_lines(keys, modal.width.saturating_sub(2)));
 
-    frame.render_widget(Paragraph::new(lines).block(ui::bordered("Settings")), modal);
+    let inner = ui::modal_frame(frame, modal, "Settings");
+    frame.render_widget(Paragraph::new(lines), inner);
+    ui::animate_modal_border(state.animation_ms, modal, &[], frame);
 }
 
 /// Lays the key hints out across as many lines as the modal is wide enough for,

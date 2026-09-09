@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph},
+    widgets::Paragraph,
 };
 
 use crate::{
@@ -20,12 +20,11 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let w = 76.min(area.width);
     let h = 11.min(area.height);
     let modal = ui::centered(area, w, h);
-    frame.render_widget(Clear, modal);
     if modal.width < 28 || modal.height < 9 {
+        let inner = ui::modal_frame(frame, modal, "New Worktree");
         frame.render_widget(
-            Paragraph::new("Terminal too small for the worktree form")
-                .block(ui::bordered("New Worktree")),
-            modal,
+            Paragraph::new("Terminal too small for the worktree form"),
+            inner,
         );
         return;
     }
@@ -89,52 +88,11 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         ]),
     ];
 
-    frame.render_widget(
-        Paragraph::new(lines).block(ui::bordered("New Worktree")),
-        modal,
-    );
-    animate_border(state.animation_ms, modal, frame);
+    let inner = ui::modal_frame(frame, modal, "New Worktree");
+    frame.render_widget(Paragraph::new(lines), inner);
+    ui::animate_modal_border(state.animation_ms, modal, &[], frame);
     if let Some((x, y)) = active_field_cursor(state, modal) {
         frame.set_cursor_position(Position::new(x, y));
-    }
-}
-
-/// Two soft light trails orbit the frame. Only tint border cells so the form
-/// and cursor remain still; continuous colour interpolation avoids cell jumps.
-fn animate_border(clock_ms: u64, area: Rect, frame: &mut Frame) {
-    let horizontal = area.width - 1;
-    let vertical = area.height - 1;
-    let perimeter = 2 * (u32::from(horizontal) + u32::from(vertical));
-    let phase = (clock_ms % 4_800) as f64 / 4_800.0;
-    for step in 0..perimeter {
-        let position = f64::from(step) / f64::from(perimeter);
-        let glow = |offset: f64| {
-            let distance = (position - phase - offset + 0.5).rem_euclid(1.0) - 0.5;
-            (-((distance / 0.085).powi(2))).exp()
-        };
-        let cyan = glow(0.0);
-        let violet = glow(0.5);
-        let color = Color::Rgb(
-            (85.0 + 35.0 * cyan + 150.0 * violet).min(255.0) as u8,
-            (75.0 + 170.0 * cyan + 45.0 * violet).min(255.0) as u8,
-            (135.0 + 115.0 * cyan + 120.0 * violet).min(255.0) as u8,
-        );
-        let w = u32::from(horizontal);
-        let h = u32::from(vertical);
-        let (x, y) = if step < w {
-            (step, 0)
-        } else if step < w + h {
-            (w, step - w)
-        } else if step < 2 * w + h {
-            (2 * w + h - step, h)
-        } else {
-            (0, perimeter - step)
-        };
-        // Leave the title at its steady, readable accent colour.
-        if y == 0 && (1..=12).contains(&x) {
-            continue;
-        }
-        frame.buffer_mut()[(area.x + x as u16, area.y + y as u16)].set_fg(color);
     }
 }
 
@@ -238,7 +196,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char(c) if !ctrl => match state.worktree_field {
             WorktreeField::Branch => {
-                state.worktree_branch_input.push(c);
+                push_branch_char(&mut state.worktree_branch_input, c);
                 state.sync_worktree_path();
             }
             WorktreeField::Base => state.worktree_base_input.push(c),
@@ -250,6 +208,19 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// Git rejects a branch name with a space in it, and the directory the branch
+/// gets is a slug anyway, so a typed space becomes the dash it would have
+/// turned into. Runs of spaces collapse, and a leading one is dropped.
+fn push_branch_char(branch: &mut String, c: char) {
+    if c.is_whitespace() {
+        if !branch.is_empty() && !branch.ends_with('-') {
+            branch.push('-');
+        }
+        return;
+    }
+    branch.push(c);
 }
 
 fn submit(state: &mut AppState) {

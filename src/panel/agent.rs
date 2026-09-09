@@ -11,10 +11,10 @@ use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{List, ListItem, Paragraph},
 };
 
 use crate::{
@@ -25,10 +25,11 @@ use crate::{
 
 use super::scroll;
 
-/// The two control lines and their border.
-const CONTROLS_HEIGHT: u16 = 4;
-/// One row per agent, the list's border, and the controls under it.
-const MODAL_HEIGHT: u16 = SessionKind::AGENTS.len() as u16 + 2 + CONTROLS_HEIGHT;
+/// The two control lines at the foot of the modal.
+const CONTROLS_HEIGHT: u16 = 2;
+/// One row per agent, the modal's frame, the divider above the controls, and
+/// the controls themselves.
+const MODAL_HEIGHT: u16 = SessionKind::AGENTS.len() as u16 + 3 + CONTROLS_HEIGHT;
 const MODAL_WIDTH: u16 = 48;
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
@@ -37,22 +38,22 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         MODAL_WIDTH.min(area.width),
         MODAL_HEIGHT.min(area.height),
     );
-    frame.render_widget(Clear, modal);
+    let inner = ui::modal_frame(frame, modal, &title(state));
+    let (chunks, dividers) = ui::modal_rows(
+        frame,
+        inner,
+        &[Constraint::Min(3), Constraint::Length(CONTROLS_HEIGHT)],
+    );
 
     let items: Vec<ListItem> = SessionKind::AGENTS
         .iter()
         .map(|kind| ListItem::new(agent_line(*kind, *kind == state.preferred_agent)))
         .collect();
     let rows = items.len();
-    let title = title(state);
     let list = List::new(items)
-        .block(ui::bordered(&title))
         .highlight_style(crate::ui::palette::selection())
         .highlight_symbol("\u{203a} ");
     let mut list_state = scroll::list_state(Some(state.agent_pick_idx.min(rows - 1)), 0);
-
-    let chunks =
-        Layout::vertical([Constraint::Min(3), Constraint::Length(CONTROLS_HEIGHT)]).split(modal);
     frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let controls = vec![
@@ -76,10 +77,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             Span::raw(" start that one outright"),
         ]),
     ];
-    frame.render_widget(
-        Paragraph::new(controls).block(Block::default().borders(Borders::ALL)),
-        chunks[1],
-    );
+    frame.render_widget(Paragraph::new(controls), chunks[1]);
+    ui::animate_modal_border(state.animation_ms, modal, &dividers, frame);
 }
 
 /// The frame's title says where the session will land and whether it will be

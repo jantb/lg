@@ -4,10 +4,10 @@ use ratatui::crossterm::event::{
 };
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{List, ListItem, Paragraph, Wrap},
 };
 
 use crate::{
@@ -20,12 +20,14 @@ use super::scroll;
 
 mod merge;
 
-/// The dialog's regions: header, file list, merge view, controls.
+/// The dialog's regions: header, file list, merge view, controls, and the
+/// dividers that tell them apart inside the one frame.
 struct Regions {
     header: Rect,
     files: Rect,
     preview: Rect,
     controls: Rect,
+    dividers: Vec<Rect>,
 }
 
 /// Room for the file list: every path in full when the dialog can spare it,
@@ -42,43 +44,66 @@ fn files_width(state: &AppState, width: u16) -> u16 {
         .max()
         .unwrap_or(0)
         .min(u16::MAX as usize) as u16;
-    // Selection marker and resolved mark, then the borders.
-    (longest + 4 + 2).clamp(24, width / 3)
+    // Selection marker and resolved mark, then a column of air before the
+    // divider.
+    (longest + 4 + 1).clamp(24, width / 3)
+}
+
+/// The whole dialog, all but a row of the screen.
+fn modal_area(area: Rect) -> Rect {
+    let w = area.width.saturating_sub(2).max(1).min(area.width);
+    let h = area.height.saturating_sub(2).max(1).min(area.height);
+    ui::centered(area, w, h)
 }
 
 fn regions(state: &AppState, area: Rect) -> Regions {
-    let w = area.width.saturating_sub(2).max(1).min(area.width);
-    let h = area.height.saturating_sub(2).max(1).min(area.height);
-    let modal = ui::centered(area, w, h);
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(5),
-            Constraint::Min(7),
-            Constraint::Length(5),
-        ])
-        .split(modal);
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(files_width(state, area.width)),
-            Constraint::Min(1),
-        ])
-        .split(chunks[1]);
+    let inner = ui::modal_inner(modal_area(area));
+    let (chunks, row_gaps) = ui::modal_row_areas(
+        inner,
+        &[
+            Constraint::Length(3),
+            Constraint::Min(5),
+            Constraint::Length(3),
+        ],
+    );
+    let files_width = files_width(state, area.width);
+    if files_width == 0 {
+        return Regions {
+            header: chunks[0],
+            files: Rect {
+                width: 0,
+                ..chunks[1]
+            },
+            preview: chunks[1],
+            controls: chunks[2],
+            dividers: row_gaps,
+        };
+    }
+    let (body, col_gaps) = ui::modal_column_areas(
+        chunks[1],
+        &[Constraint::Length(files_width), Constraint::Min(1)],
+    );
     Regions {
         header: chunks[0],
         files: body[0],
         preview: body[1],
         controls: chunks[2],
+        dividers: [row_gaps, col_gaps].concat(),
     }
 }
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
-    let w = area.width.saturating_sub(2).max(1).min(area.width);
-    let h = area.height.saturating_sub(2).max(1).min(area.height);
-    let modal = ui::centered(area, w, h);
-    frame.render_widget(Clear, modal);
+    let modal = modal_area(area);
     let regions = regions(state, area);
+    ui::modal_frame(
+        frame,
+        modal,
+        state
+            .conflicts
+            .get(state.conflict_idx)
+            .map_or("Conflict", String::as_str),
+    );
+    ui::draw_dividers(frame, &regions.dividers);
 
     let header = vec![
         Line::from(Span::styled(
@@ -99,15 +124,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             local_pass_line(state)
         },
     ];
-    frame.render_widget(
-        Paragraph::new(header).block(ui::bordered(
-            state
-                .conflicts
-                .get(state.conflict_idx)
-                .map_or("Conflict", String::as_str),
-        )),
-        regions.header,
-    );
+    frame.render_widget(Paragraph::new(header), regions.header);
 
     let items: Vec<ListItem> = state
         .conflicts
@@ -115,18 +132,18 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         .map(|path| ListItem::new(conflict_row(state, path)))
         .collect();
     let list = List::new(items)
-        .block(ui::bordered("Files"))
         .highlight_style(crate::ui::palette::selection())
         .highlight_symbol("\u{203a} ");
     let selected_idx = clamp_index(state.conflict_idx, state.conflicts.len());
     let offset = scroll::selection_scroll_offset(
         selected_idx,
         state.conflicts.len(),
-        scroll::list_viewport_height(regions.files.height),
+        regions.files.height as usize,
         state.conflict_scroll_offset,
     );
     let mut list_state = scroll::list_state(selected_idx, offset);
     frame.render_stateful_widget(list, regions.files, &mut list_state);
+    ui::section_title(frame, regions.files, "Files");
 
     match state
         .conflict_preview
@@ -146,11 +163,10 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 _ => "Select a conflicted file. Press o to open externally, l for the local model, or v to validate resolved/staged/merged state.".into(),
             };
             frame.render_widget(
-                Paragraph::new(detail)
-                    .block(ui::bordered("Merge preview"))
-                    .wrap(Wrap { trim: false }),
+                Paragraph::new(detail).wrap(Wrap { trim: false }),
                 regions.preview,
             );
+            ui::section_title(frame, regions.preview, "Merge preview");
         }
     }
 
@@ -185,10 +201,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             ),
         ]
     };
-    frame.render_widget(
-        Paragraph::new(controls).block(Block::default().borders(Borders::ALL)),
-        regions.controls,
-    );
+    frame.render_widget(Paragraph::new(controls), regions.controls);
+    ui::animate_modal_border(state.animation_ms, modal, &regions.dividers, frame);
 }
 
 /// The header's third line: what the local pass is doing, or what it did, or
@@ -237,7 +251,7 @@ pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
     state.conflict_scroll_offset = scroll::selection_scroll_offset(
         clamp_index(state.conflict_idx, state.conflicts.len()),
         state.conflicts.len(),
-        scroll::list_viewport_height(regions.files.height),
+        regions.files.height as usize,
         state.conflict_scroll_offset,
     );
     if let Some(Ok(editor)) = state.conflict_preview.as_mut().map(|p| &mut p.editor) {
@@ -431,11 +445,7 @@ pub(crate) fn handle_mouse(state: &mut AppState, area: Rect, event: &MouseEvent)
     let regions = regions(state, area);
     let files = regions.files;
     let point = ratatui::layout::Position::new(event.column, event.row);
-    if files.contains(point)
-        && event.kind == MouseEventKind::Down(MouseButton::Left)
-        && event.row > files.y
-        && event.row < files.bottom().saturating_sub(1)
-    {
+    if files.contains(point) && event.kind == MouseEventKind::Down(MouseButton::Left) {
         let dirty = state
             .conflict_preview
             .as_ref()
@@ -447,7 +457,7 @@ pub(crate) fn handle_mouse(state: &mut AppState, area: Rect, event: &MouseEvent)
             );
             return;
         }
-        let index = state.conflict_scroll_offset + (event.row - files.y - 1) as usize;
+        let index = state.conflict_scroll_offset + (event.row - files.y) as usize;
         if index < state.conflicts.len() {
             state.conflict_idx = index;
         }
@@ -469,4 +479,51 @@ pub(crate) fn handle_mouse(state: &mut AppState, area: Rect, event: &MouseEvent)
         editor.apply(hunk, action);
     }
     autosave(state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    /// Clicking a file in the list opens that file, not its neighbour: the
+    /// row the reader aimed at is the row the dialog drew the name on.
+    #[test]
+    fn clicking_a_file_in_the_list_selects_the_one_that_was_clicked() {
+        let area = Rect::new(0, 0, 120, 26);
+        let mut state = AppState::default();
+        state.conflicts = vec![
+            "src/first.rs".to_owned(),
+            "src/second.rs".to_owned(),
+            "src/third.rs".to_owned(),
+        ];
+
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal
+            .draw(|frame| render(&state, frame.area(), frame))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row = (0..area.height)
+            .find(|y| {
+                (0..area.width)
+                    .map(|x| buffer[(x, *y)].symbol())
+                    .collect::<String>()
+                    .contains("src/third.rs")
+            })
+            .expect("the third file is drawn somewhere");
+
+        let column = regions(&state, area).files.x + 4;
+        handle_mouse(
+            &mut state,
+            area,
+            &MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+
+        assert_eq!(state.conflict_idx, 2);
+    }
 }

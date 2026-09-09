@@ -5,7 +5,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph},
+    widgets::Paragraph,
 };
 
 use crate::{
@@ -13,12 +13,11 @@ use crate::{
     ui,
 };
 
-pub fn render(_state: &AppState, area: Rect, frame: &mut Frame) {
+pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let w = area.width.clamp(48, 72).min(area.width);
     let h = area.height.clamp(7, 9).min(area.height);
     let modal = ui::centered(area, w, h);
 
-    frame.render_widget(Clear, modal);
     let text = vec![
         Line::from(Span::styled(
             "No staged changes",
@@ -37,7 +36,9 @@ pub fn render(_state: &AppState, area: Rect, frame: &mut Frame) {
         ]),
     ];
 
-    frame.render_widget(Paragraph::new(text).block(ui::bordered("Commit")), modal);
+    let inner = ui::modal_frame(frame, modal, "Commit");
+    frame.render_widget(Paragraph::new(text), inner);
+    ui::animate_modal_border(state.animation_ms, modal, &[], frame);
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {

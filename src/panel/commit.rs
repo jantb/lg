@@ -2,10 +2,10 @@ use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Position, Rect},
+    layout::{Constraint, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, List, ListItem, Paragraph},
+    widgets::{List, ListItem, Paragraph},
 };
 use std::collections::HashSet;
 
@@ -40,41 +40,55 @@ fn modal_area(area: Rect) -> Rect {
     ui::centered(area, w, h)
 }
 
+/// The modal's rooms: the message being written, the staged files beside it,
+/// and the key hints along the bottom, with the dividers that tell them apart.
+struct Regions {
+    editor: Rect,
+    staged: Rect,
+    footer: Rect,
+    dividers: Vec<Rect>,
+}
+
+fn regions(area: Rect) -> Regions {
+    let inner = ui::modal_inner(modal_area(area));
+    let (rows, row_gaps) = ui::modal_row_areas(inner, &[Constraint::Min(3), Constraint::Length(1)]);
+    let (cols, col_gaps) = ui::modal_column_areas(
+        rows[0],
+        &[Constraint::Percentage(65), Constraint::Percentage(35)],
+    );
+    Regions {
+        editor: cols[0],
+        staged: cols[1],
+        footer: rows[1],
+        dividers: [row_gaps, col_gaps].concat(),
+    }
+}
+
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let modal = modal_area(area);
+    let regions = regions(area);
 
-    frame.render_widget(Clear, modal);
-
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-        .split(modal);
-
-    let left_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(1)])
-        .split(chunks[0]);
-
-    // The title names the mode and the keys, nothing more: how far the model
-    // has got is a long and changing figure that would push the keys off the
-    // right edge of the frame, so it goes below the box instead.
+    // The title names the pane and what is happening in it. The keys are along
+    // the foot of the modal and how far the model has got is beside them, both
+    // of which would run off the right edge of the top border if they were put
+    // there instead.
     let (msg_view, msg_cursor, title_text, editable) = match &state.generation {
         Some(g) => {
             let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
-            let title = format!("Commit message  {spinner} generating\u{2026}  (Ctrl+R=restart  Esc=cancel)");
+            let title = format!("Commit message  {spinner} generating\u{2026}");
             (g.output.clone(), g.output.chars().count(), title, false)
         }
         None => (
             state.commit_message.clone(),
             state.commit_cursor,
-            "Commit message  (Ctrl+S=commit  Ctrl+P=commit&push  Enter=newline  Ctrl+R=regenerate  Ctrl+U=clear  Esc=back)"
-                .to_owned(),
+            "Commit message".to_owned(),
             true,
         ),
     };
 
-    let body_area = editor_body_area(area);
-    let block = ui::bordered(&title_text);
+    let body_area = regions.editor;
+    ui::modal_frame(frame, modal, &title_text);
+    ui::draw_dividers(frame, &regions.dividers);
     if let Some(generation) = &state.generation {
         // While the model works the box is a stage: the language's mascot
         // feeding the diff into a network. Before the first token it has the
@@ -124,7 +138,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             &text,
             &flights,
         );
-        frame.render_widget(Paragraph::new(lines).block(block), left_chunks[0]);
+        frame.render_widget(Paragraph::new(lines), body_area);
     } else {
         let (visible_text, cursor) = visible_message_view(
             &msg_view,
@@ -133,8 +147,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             body_area.height,
             state.commit_scroll_offset,
         );
-        let input = Paragraph::new(visible_text).block(block);
-        frame.render_widget(input, left_chunks[0]);
+        frame.render_widget(Paragraph::new(visible_text), body_area);
         if editable && body_area.width > 0 && body_area.height > 0 {
             frame.set_cursor_position(Position::new(
                 body_area.x.saturating_add(cursor.0),
@@ -174,7 +187,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             Span::raw(" back"),
         ]))
     };
-    frame.render_widget(hints, left_chunks[1]);
+    frame.render_widget(hints, regions.footer);
 
     let staged_entries: Vec<FileEntry> = state
         .files
@@ -217,7 +230,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 
     // The list scrolls rather than stopping at the bottom of the pane; the
     // offset is clamped so the last rows are never scrolled out of sight.
-    let visible = chunks[1].height.saturating_sub(2) as usize;
+    let visible = regions.staged.height as usize;
     let offset = files_scroll_clamped(state.commit_files_scroll, items.len(), visible);
     let items: Vec<ListItem> = items.into_iter().skip(offset).collect();
     let title = if offset > 0 {
@@ -225,17 +238,14 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     } else {
         "Staged".to_owned()
     };
-    let sidebar = List::new(items).block(ui::bordered(&title));
-    frame.render_widget(sidebar, chunks[1]);
+    frame.render_widget(List::new(items), regions.staged);
+    ui::section_title(frame, regions.staged, &title);
+    ui::animate_modal_border(state.animation_ms, modal, &regions.dividers, frame);
 }
 
-/// The staged-files pane of the commit modal, borders included.
+/// The staged-files pane of the commit modal.
 pub fn staged_area(area: Rect) -> Rect {
-    let modal = modal_area(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-        .split(modal)[1]
+    regions(area).staged
 }
 
 fn files_scroll_clamped(offset: usize, rows: usize, visible: usize) -> usize {
@@ -256,7 +266,7 @@ fn staged_row_count(state: &AppState) -> usize {
 
 /// Scroll the staged-files list by `n` rows, stopping at either end.
 pub fn scroll_files(state: &mut AppState, area: Rect, down: bool, n: usize) {
-    let visible = staged_area(area).height.saturating_sub(2) as usize;
+    let visible = staged_area(area).height as usize;
     let rows = staged_row_count(state);
     let offset = if down {
         state.commit_files_scroll.saturating_add(n)
@@ -291,22 +301,7 @@ pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
 }
 
 pub fn editor_body_area(area: Rect) -> Rect {
-    let modal = modal_area(area);
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-        .split(modal);
-    let left_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(1)])
-        .split(chunks[0]);
-    let input_area = left_chunks[0];
-    Rect {
-        x: input_area.x.saturating_add(1),
-        y: input_area.y.saturating_add(1),
-        width: input_area.width.saturating_sub(2),
-        height: input_area.height.saturating_sub(2),
-    }
+    regions(area).editor
 }
 
 fn visible_message_view(

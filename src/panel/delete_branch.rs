@@ -2,10 +2,10 @@ use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
 };
 
 use crate::{
@@ -15,18 +15,18 @@ use crate::{
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let w = (area.width * 6 / 10).clamp(56, 96).min(area.width);
-    let h = 14u16.min(area.height);
+    let h = 12u16.min(area.height);
     let modal = ui::centered(area, w, h);
-    frame.render_widget(Clear, modal);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(6),
-            Constraint::Length(3),
-        ])
-        .split(modal);
+    let inner = ui::modal_frame(frame, modal, "Confirm");
+    let (chunks, dividers) = ui::modal_rows(
+        frame,
+        inner,
+        &[
+            Constraint::Length(1),
+            Constraint::Min(4),
+            Constraint::Length(1),
+        ],
+    );
 
     let header = vec![Line::from(vec![
         Span::styled("Delete branch ", Style::default().fg(Color::Gray)),
@@ -37,10 +37,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 .add_modifier(Modifier::BOLD),
         ),
     ])];
-    frame.render_widget(
-        Paragraph::new(header).block(ui::bordered("Confirm")),
-        chunks[0],
-    );
+    frame.render_widget(Paragraph::new(header), chunks[0]);
 
     let mut body = if state.delete_branch_remote_available {
         vec![toggle_line(
@@ -61,37 +58,26 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             state.delete_branch_field == DeleteBranchField::Remote,
         ));
     }
-    body.extend([
-        toggle_line(
-            "force local delete (-D, for unmerged branches)",
-            state.delete_branch_force,
-            state.delete_branch_field == DeleteBranchField::Force,
-        ),
-        Line::from(""),
-        Line::from(Span::styled(
-            "j/k or Tab to move  Space toggles  Enter confirms  Esc cancels",
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::DIM),
-        )),
-    ]);
-    frame.render_widget(
-        Paragraph::new(body)
-            .block(ui::bordered("Options"))
-            .wrap(Wrap { trim: false }),
-        chunks[1],
-    );
+    body.extend([toggle_line(
+        "force local delete (-D, for unmerged branches)",
+        state.delete_branch_force,
+        state.delete_branch_field == DeleteBranchField::Force,
+    )]);
+    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), chunks[1]);
+    ui::section_title(frame, chunks[1], "Options");
 
     let controls = vec![Line::from(vec![
+        Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+        Span::raw(" move  "),
+        Span::styled("Space", Style::default().fg(Color::Yellow)),
+        Span::raw(" toggle  "),
         Span::styled("Enter", Style::default().fg(Color::Green)),
         Span::raw(" delete  "),
         Span::styled("Esc", Style::default().fg(Color::Gray)),
         Span::raw(" cancel"),
     ])];
-    frame.render_widget(
-        Paragraph::new(controls).block(Block::default().borders(Borders::ALL)),
-        chunks[2],
-    );
+    frame.render_widget(Paragraph::new(controls), chunks[2]);
+    ui::animate_modal_border(state.animation_ms, modal, &dividers, frame);
 }
 
 fn toggle_line(label: &str, on: bool, focused: bool) -> Line<'static> {

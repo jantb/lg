@@ -763,6 +763,36 @@ fn the_worktree_form_derives_a_path_from_the_branch_until_it_is_edited() {
 }
 
 #[test]
+fn the_worktree_form_turns_typed_spaces_into_dashes() {
+    let mut state = AppState::new();
+    state.repo_root = Some("/workspace".into());
+    state.worktrees = vec![Worktree {
+        is_main: true,
+        ..worktree("/dev/lg", "main")
+    }];
+    state.open_worktree_modal("origin/main".into());
+
+    for c in " parse  the   diff ".chars() {
+        panel::worktree::handle_key(&mut state, key(KeyCode::Char(c))).unwrap();
+    }
+    assert_eq!(state.worktree_branch_input, "parse-the-diff-");
+    assert_eq!(
+        state.worktree_path_input,
+        "/dev/lg.worktrees/parse-the-diff"
+    );
+
+    panel::worktree::handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::CreateWorktree {
+            path: "/dev/lg.worktrees/parse-the-diff".into(),
+            branch: "parse-the-diff-".into(),
+            base: "origin/main".into(),
+        })
+    );
+}
+
+#[test]
 fn the_worktree_form_creates_the_worktree_on_enter() {
     let mut state = AppState::new();
     state.repo_root = Some("/dev/lg".into());

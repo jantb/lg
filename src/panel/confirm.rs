@@ -5,7 +5,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph},
+    widgets::Paragraph,
 };
 
 use crate::{
@@ -60,11 +60,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let h = (text.len() as u16 + 2).max(9).min(area.height);
     let modal = ui::centered(area, w, h);
 
-    frame.render_widget(Clear, modal);
-    frame.render_widget(
-        Paragraph::new(text).block(ui::bordered(&prompt.title)),
-        modal,
-    );
+    let inner = ui::modal_frame(frame, modal, &prompt.title);
+    frame.render_widget(Paragraph::new(text), inner);
+    ui::animate_modal_border(state.animation_ms, modal, &[], frame);
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {

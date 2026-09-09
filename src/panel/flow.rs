@@ -2,10 +2,10 @@ use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{List, ListItem, Paragraph, Wrap},
 };
 
 use crate::{
@@ -52,11 +52,16 @@ fn modal_area(area: Rect) -> Rect {
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let modal = modal_area(area);
-    frame.render_widget(Clear, modal);
+    let dividers = render_body(state, modal, frame);
+    // The light is laid on last so every shape the modal takes gets the same
+    // outline, whatever rooms it is divided into underneath.
+    ui::animate_modal_border(state.animation_ms, modal, &dividers, frame);
+}
 
+/// Draws the modal and hands back the dividers it split itself by.
+fn render_body(state: &AppState, modal: Rect, frame: &mut Frame) -> Vec<Rect> {
     if let Some(job) = &state.workflow_job {
-        render_running(state, job, modal, frame);
-        return;
+        return render_running(state, job, modal, frame);
     }
 
     if !state.branch_actions_available() {
@@ -75,8 +80,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 Span::raw(" back"),
             ]),
         ];
-        frame.render_widget(Paragraph::new(text).block(ui::bordered("Flow")), modal);
-        return;
+        let inner = ui::modal_frame(frame, modal, "Flow");
+        frame.render_widget(Paragraph::new(text), inner);
+        return Vec::new();
     }
 
     if let Some(action) = state.flow_input {
@@ -106,11 +112,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             Line::from(""),
         ]);
         text.extend(branch_name_mascot());
-        frame.render_widget(
-            Paragraph::new(text).block(ui::bordered("Branch Actions")),
-            modal,
-        );
-        return;
+        let inner = ui::modal_frame(frame, modal, "Branch Actions");
+        frame.render_widget(Paragraph::new(text), inner);
+        return Vec::new();
     }
 
     if let Some(action) = state.flow_confirm {
@@ -131,44 +135,41 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 Span::raw(" cancel"),
             ]),
         ];
-        frame.render_widget(
-            Paragraph::new(text).block(ui::bordered("Confirm Branch Action")),
-            modal,
-        );
-        return;
+        let inner = ui::modal_frame(frame, modal, "Confirm Branch Action");
+        frame.render_widget(Paragraph::new(text), inner);
+        return Vec::new();
     }
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(modal);
+    let inner = ui::modal_frame(frame, modal, "Branch Actions");
+    let (chunks, mut dividers) =
+        ui::modal_rows(frame, inner, &[Constraint::Length(1), Constraint::Min(0)]);
 
     frame.render_widget(
-        Paragraph::new(vec![Line::from(selected_branch_line(state))])
-            .block(ui::bordered("Selected Branch")),
+        Paragraph::new(vec![Line::from(selected_branch_line(state))]),
         chunks[0],
     );
 
     let actions = available_actions(state);
     let selected_idx = clamp_index(state.flow_idx, actions.len());
-    let (list_area, preview_area) = split_menu(chunks[1]);
+    let ((list_area, preview_area), gaps) = split_menu(frame, chunks[1]);
+    dividers.extend(gaps);
 
     let items: Vec<ListItem> = actions
         .iter()
         .map(|action| ListItem::new(action_line(state, *action)))
         .collect();
     let list = List::new(items)
-        .block(ui::bordered("Branch Actions"))
         .highlight_style(crate::ui::palette::selection())
         .highlight_symbol("\u{203a} ");
     let offset = scroll::selection_scroll_offset(
         selected_idx,
         actions.len(),
-        scroll::list_viewport_height(list_area.height),
+        list_area.height as usize,
         state.flow_scroll_offset,
     );
     let mut list_state = scroll::list_state(selected_idx, offset);
     frame.render_stateful_widget(list, list_area, &mut list_state);
+    ui::section_title(frame, list_area, "Actions");
 
     if let Some(area) = preview_area
         && let Some(action) = selected_idx.and_then(|idx| actions.get(idx).copied())
@@ -184,19 +185,19 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             &run,
             preview::Progress::Menu,
             state.animation_ms,
-            area.width.saturating_sub(2),
-            area.height.saturating_sub(2).saturating_sub(reserved),
+            area.width,
+            area.height.saturating_sub(reserved),
         );
         lines.extend(steps);
         frame.render_widget(
-            Paragraph::new(lines)
-                .block(ui::bordered("What it does"))
-                // The caption is a sentence and runs past the pane; the diagram
-                // lines are built to fit, so only the sentence ever wraps.
-                .wrap(Wrap { trim: false }),
+            // The caption is a sentence and runs past the pane; the diagram
+            // lines are built to fit, so only the sentence ever wraps.
+            Paragraph::new(lines).wrap(Wrap { trim: false }),
             area,
         );
+        ui::section_title(frame, area, "What it does");
     }
+    dividers
 }
 
 /// The modal while a branch action runs: the steps down the left with the one
@@ -209,16 +210,20 @@ fn render_running(
     job: &crate::state::WorkflowJob,
     modal: Rect,
     frame: &mut Frame,
-) {
+) -> Vec<Rect> {
     // Only a branch action has a graph, and only where it has room for one; the
     // jobs that have neither keep the whole modal for their steps.
     let graph = job
         .flow
         .as_ref()
         .filter(|run| preview::preview(state, run).is_some());
-    let (steps_area, graph_area) = match graph {
-        Some(_) => split_menu(modal),
-        None => (modal, None),
+    let inner = ui::modal_frame(frame, modal, "Branch Actions");
+    let (steps_area, graph_area, dividers) = match graph {
+        Some(_) => {
+            let ((steps, graph), gaps) = split_menu(frame, inner);
+            (steps, graph, gaps)
+        }
+        None => (inner, None, Vec::new()),
     };
 
     let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
@@ -246,10 +251,7 @@ fn render_running(
     } else {
         text.extend(workflow_lines(job, state.animation_tick));
     }
-    frame.render_widget(
-        Paragraph::new(text).block(ui::bordered("Branch Actions")),
-        steps_area,
-    );
+    frame.render_widget(Paragraph::new(text), steps_area);
 
     if let Some(area) = graph_area
         && let Some(run) = graph
@@ -261,18 +263,15 @@ fn render_running(
             // which is what the step list beside it shows too.
             preview::Progress::Step(job.current_step.unwrap_or(0)),
             state.animation_ms,
-            area.width.saturating_sub(2),
-            // Nothing shares this pane with the diagram, so all of it but the
-            // border and a row for the caption to wrap into is the diagram's.
-            area.height.saturating_sub(3),
+            area.width,
+            // Nothing shares this pane with the diagram, so all of it but a
+            // row for the caption to wrap into is the diagram's.
+            area.height.saturating_sub(1),
         );
-        frame.render_widget(
-            Paragraph::new(lines)
-                .block(ui::bordered("Where it is"))
-                .wrap(Wrap { trim: false }),
-            area,
-        );
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+        ui::section_title(frame, area, "Where it is");
     }
+    dividers
 }
 
 /// The steps the flow will run, in order, under the diagram. The picture shows
@@ -339,19 +338,32 @@ fn steps_for(run: &FlowRun) -> Vec<String> {
 
 /// The menu on the left and the preview on the right, or the whole width for
 /// the menu when there is not enough of it to show both.
-fn split_menu(area: Rect) -> (Rect, Option<Rect>) {
-    let list_width = 46u16;
-    if area.width < list_width + preview::MIN_WIDTH || area.height < preview::MIN_HEIGHT {
-        return (area, None);
+fn split_menu(frame: &mut Frame, area: Rect) -> ((Rect, Option<Rect>), Vec<Rect>) {
+    let (panes, gaps) = menu_areas_with_gaps(area);
+    ui::draw_dividers(frame, &gaps);
+    (panes, gaps)
+}
+
+/// Where the two panes land, without drawing the divider between them.
+fn menu_areas(area: Rect) -> (Rect, Option<Rect>) {
+    menu_areas_with_gaps(area).0
+}
+
+fn menu_areas_with_gaps(area: Rect) -> ((Rect, Option<Rect>), Vec<Rect>) {
+    // The steps and the menu rows both fit in this, and the divider between
+    // the two panes costs a column of its own.
+    let list_width = 44u16;
+    if area.width < list_width + 1 + preview::MIN_WIDTH || area.height < preview::MIN_HEIGHT {
+        return ((area, None), Vec::new());
     }
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
+    let (chunks, gaps) = ui::modal_column_areas(
+        area,
+        &[
             Constraint::Length(list_width),
             Constraint::Min(preview::MIN_WIDTH),
-        ])
-        .split(area);
-    (chunks[0], Some(chunks[1]))
+        ],
+    );
+    ((chunks[0], Some(chunks[1])), gaps)
 }
 
 /// A menu row: a glyph and a colour for what kind of change it is, so the
@@ -398,17 +410,15 @@ pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
     state.flow_scroll_offset = scroll::selection_scroll_offset(
         clamp_index(state.flow_idx, actions_len),
         actions_len,
-        scroll::list_viewport_height(actions_area(area).height),
+        actions_area(area).height as usize,
         state.flow_scroll_offset,
     );
 }
 
 fn actions_area(area: Rect) -> Rect {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(modal_area(area));
-    split_menu(chunks[1]).0
+    let inner = ui::modal_inner(modal_area(area));
+    let (chunks, _) = ui::modal_row_areas(inner, &[Constraint::Length(1), Constraint::Min(0)]);
+    menu_areas(chunks[1]).0
 }
 
 /// The one line of typing that names a branch sits in a pane the size of the

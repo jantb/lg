@@ -5,14 +5,14 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Paragraph},
 };
 
 use crate::{
     config::BORDER_COLOR,
     panel::keys::{self, SECTIONS},
     state::{AppState, Modal},
-    ui::centered,
+    ui::{animate_modal_border, centered, modal_frame_with},
 };
 
 /// The overlay is a fixed width and never wraps, so anything wider than it is
@@ -74,8 +74,6 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let overlay = centered(area, OVERLAY_WIDTH, height);
     let offset = state.help_offset.min(max_offset(area));
 
-    frame.render_widget(Clear, overlay);
-
     let active = active_title(state);
     let mut lines: Vec<Line> = Vec::new();
     for (i, section) in SECTIONS.iter().enumerate() {
@@ -106,35 +104,43 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         }
     }
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(BORDER_COLOR))
-        .title(format!(
-            "Help \u{2014} {}",
-            active_title(state)
-                .and_then(keys::section)
-                .map_or("lg", keys::footer_label)
+    // Plain corners, like every other modal: the overlay is one of the same
+    // family of boxes, not a shape of its own.
+    let block = bordered_owned(format!(
+        "Help \u{2014} {}",
+        active_title(state)
+            .and_then(keys::section)
+            .map_or("lg", keys::footer_label)
+    ))
+    .title_bottom(
+        Line::from(Span::styled(
+            if max_offset(area) > 0 {
+                format!(
+                    "j/k scroll \u{2022} {}%  \u{2022} q/Esc close",
+                    scroll_percent(offset, max_offset(area))
+                )
+            } else {
+                "q/Esc close".to_owned()
+            },
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM),
         ))
-        .title_bottom(
-            Line::from(Span::styled(
-                if max_offset(area) > 0 {
-                    format!(
-                        "j/k scroll \u{2022} {}%  \u{2022} q/Esc close",
-                        scroll_percent(offset, max_offset(area))
-                    )
-                } else {
-                    "q/Esc close".to_owned()
-                },
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM),
-            ))
-            .alignment(Alignment::Right),
-        );
+        .alignment(Alignment::Right),
+    );
 
-    let para = Paragraph::new(lines).block(block).scroll((offset, 0));
-    frame.render_widget(para, overlay);
+    let inner = modal_frame_with(frame, overlay, block);
+    frame.render_widget(Paragraph::new(lines).scroll((offset, 0)), inner);
+    animate_modal_border(state.animation_ms, overlay, &[], frame);
+}
+
+/// [`crate::ui::bordered`] for a title the caller built, which outlives no
+/// borrow it could lend.
+fn bordered_owned(title: String) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BORDER_COLOR))
+        .title(title)
 }
 
 fn scroll_percent(offset: u16, max: u16) -> u16 {

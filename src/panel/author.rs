@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph},
+    widgets::Paragraph,
 };
 
 use crate::{
@@ -17,12 +17,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let w = 72.min(area.width);
     let h = 10.min(area.height);
     let modal = ui::centered(area, w, h);
-    frame.render_widget(Clear, modal);
     if modal.width < 24 || modal.height < 8 {
+        let inner = ui::modal_frame(frame, modal, "Author");
         frame.render_widget(
-            Paragraph::new("Terminal too small for author settings").block(ui::bordered("Author")),
-            modal,
+            Paragraph::new("Terminal too small for author settings"),
+            inner,
         );
+        ui::animate_modal_border(state.animation_ms, modal, &[], frame);
         return;
     }
 
@@ -71,10 +72,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         ]),
     ];
 
-    frame.render_widget(
-        Paragraph::new(lines).block(ui::bordered("Author Settings")),
-        modal,
-    );
+    let inner = ui::modal_frame(frame, modal, "Author Settings");
+    frame.render_widget(Paragraph::new(lines), inner);
+    ui::animate_modal_border(state.animation_ms, modal, &[], frame);
     if let Some((x, y)) = active_field_cursor(state, modal) {
         frame.set_cursor_position(Position::new(x, y));
     }

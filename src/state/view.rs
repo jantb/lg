@@ -194,15 +194,18 @@ impl AppState {
     /// Whether something on screen is animating and so wants redrawing at the
     /// animation clock's rate rather than the idle one.
     ///
-    /// The branch-action menu does: its preview draws a marker travelling the
-    /// route the flow would take, and a picture redrawn slower than it moves
-    /// reads as a stutter rather than a motion. So does a status message that
-    /// is still settling or flashing, and a working session, whose yellow
-    /// dot pulses until it finishes or needs input. Jobs are not listed here:
-    /// they already poll at their own faster rate.
+    /// Any open modal does: light travels its frame, and the branch-action
+    /// menu also draws a marker along the route the flow would take — a
+    /// picture redrawn slower than it moves reads as a stutter rather than a
+    /// motion. So does a status message that is still settling or flashing,
+    /// and a working session, whose yellow dot pulses until it finishes or
+    /// needs input. Jobs are not listed here: they already poll at their own
+    /// faster rate.
     pub fn wants_animation(&self) -> bool {
-        (self.modal == Modal::Flow && self.workflow_job.is_none())
-            || self.modal == Modal::Worktree
+        // Every modal carries the orbiting frame, so an open one keeps the
+        // screen repainting. The review chat is docked into the main pane
+        // rather than drawn as a box, so it has no frame to move.
+        !matches!(self.modal, Modal::None | Modal::ReviewChat)
             || self.status.as_ref().is_some_and(|status| {
                 crate::ui::palette::status_animating(status.age_ms(), status.is_error)
             })

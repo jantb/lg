@@ -957,7 +957,7 @@ mod tests {
         for _ in 0..1_000 {
             handle_modal_mouse(&mut state, area, &wheel(MouseEventKind::ScrollDown));
         }
-        let visible = pane.height.saturating_sub(2) as usize;
+        let visible = pane.height as usize;
         // 80 files plus the folder row, and the last of them stays on screen.
         assert_eq!(state.commit_files_scroll, 81 - visible);
 

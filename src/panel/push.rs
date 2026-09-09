@@ -5,7 +5,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph},
+    widgets::Paragraph,
 };
 
 use crate::{
@@ -17,7 +17,6 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let w = 60.min(area.width);
     let h = 8.min(area.height);
     let modal = ui::centered(area, w, h);
-    frame.render_widget(Clear, modal);
 
     let diverged = state.branch_diverged_from_remote();
     let text = if let Some(job) = &state.push_job {
@@ -94,8 +93,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     } else {
         "Push"
     };
-    let para = Paragraph::new(text).block(ui::bordered(title));
-    frame.render_widget(para, modal);
+    let inner = ui::modal_frame(frame, modal, title);
+    frame.render_widget(Paragraph::new(text), inner);
+    ui::animate_modal_border(state.animation_ms, modal, &[], frame);
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {

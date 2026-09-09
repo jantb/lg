@@ -5,7 +5,11 @@ mod log;
 pub mod palette;
 mod selection;
 
-pub use chrome::{bordered, framed, framed_with_activity};
+pub use chrome::{
+    animate_modal_border, bordered, draw_dividers, framed, framed_with_activity,
+    modal_column_areas, modal_columns, modal_frame, modal_frame_with, modal_inner, modal_row_areas,
+    modal_rows, section_title,
+};
 pub use diff::{
     Token, diff_header_path, diff_line_tokens, diff_text_line_count, highlight_diff_line,
     highlight_diff_line_for_path, highlight_diff_line_wrapped_for_path, highlight_diff_text,
