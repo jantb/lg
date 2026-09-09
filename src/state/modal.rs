@@ -22,6 +22,23 @@ pub struct ConflictFollowup {
     pub resume: Option<Box<PendingAction>>,
 }
 
+impl ConflictFollowup {
+    /// What a sync of every branch still owes when it stops on a conflict.
+    ///
+    /// The sync stops at the first branch that will not merge, and that branch
+    /// is then unpushed with every branch after it untouched, so continuing
+    /// runs the sync again. `started_on` is the branch the sync was launched
+    /// from: it is where the auto-stash was taken and where the work belongs,
+    /// and the conflict left the checkout on another branch entirely.
+    pub fn for_branch_sync(started_on: Option<String>) -> Self {
+        Self {
+            return_branch: started_on,
+            resume: Some(Box::new(PendingAction::MergeMainAllBranches)),
+            ..Self::default()
+        }
+    }
+}
+
 impl AppState {
     /// Put a conflict to rest once it has been validated or aborted, and queue
     /// whatever flow it was holding up.

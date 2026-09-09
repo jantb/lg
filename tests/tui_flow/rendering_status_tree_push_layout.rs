@@ -2161,11 +2161,27 @@ fn stopped_sync() -> AppState {
     let mut state = AppState::new();
     state.modal = Modal::Conflict;
     state.conflicts = vec!["src/a.rs".into()];
-    state.conflict_followup = Some(lg::state::ConflictFollowup {
-        resume: Some(Box::new(PendingAction::MergeMainAllBranches)),
-        ..Default::default()
-    });
+    state.conflict_followup = Some(lg::state::ConflictFollowup::for_branch_sync(Some(
+        "main".to_string(),
+    )));
     state
+}
+
+/// The sync stashed the work on the branch it was launched from and the
+/// conflict left the checkout on another branch, so settling it has to come
+/// back before the stash does.
+#[test]
+fn a_stopped_sync_comes_back_to_the_branch_it_was_launched_from() {
+    let state = stopped_sync();
+
+    assert_eq!(
+        state
+            .conflict_followup
+            .as_ref()
+            .and_then(|followup| followup.return_branch.as_deref()),
+        Some("main"),
+        "the work is stashed on the branch the sync started on, not the conflicted one"
+    );
 }
 
 #[test]

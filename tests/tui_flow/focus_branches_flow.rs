@@ -1057,6 +1057,21 @@ fn branch_actions_show_transfer_diff_for_selected_feature_branch() {
     );
 }
 
+/// A branch name gets typed the way it is spoken, and git will not take a
+/// space in a ref. Typing one is a dash rather than a name the create rejects.
+#[test]
+fn a_space_typed_into_a_branch_name_becomes_a_dash() {
+    let mut state = flow_menu_state();
+    state.flow_input = Some(FlowAction::NewFeature);
+    state.flow_text.clear();
+
+    for typed in "feature/update cv s".chars() {
+        panel::flow::handle_key(&mut state, key(KeyCode::Char(typed))).unwrap();
+    }
+
+    assert_eq!(state.flow_text, "feature/update-cv-s");
+}
+
 /// A checkout where every branch action applies, for exercising the menu.
 fn flow_menu_state() -> AppState {
     let mut state = AppState::new();

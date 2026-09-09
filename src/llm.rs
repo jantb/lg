@@ -41,9 +41,14 @@ use reply::{
 use stream::{ChatMessage, ChatTask, stream_messages, stream_prompt};
 use think::strip_think_tags;
 
-/// Generation budget for a commit message. Reasoning is off for this task, so
-/// the budget only has to cover the message itself.
-const COMMIT_NUM_PREDICT: i32 = 512;
+/// The commit message is written without a budget. A message cut off at one
+/// reads as a finished message and gets committed as it stands, and the length
+/// worth enforcing is the subject and body limits this checkout configures —
+/// applied to a whole message afterwards, not a token count the server stops
+/// mid-word on. Reasoning a model does anyway spends from the same budget,
+/// which is how a short message ran out of one. Zero leaves the cap off the
+/// request.
+const COMMIT_NUM_PREDICT: i32 = 0;
 const CONVENTIONS_NUM_PREDICT: i32 = 300;
 const REVIEW_ASSIST_NUM_PREDICT: i32 = 16_000;
 /// The one task worth waiting for reasoning on: the whole point of the
@@ -203,17 +208,25 @@ pub fn stream_review_chat(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::LLM_NUM_PREDICT;
 
     #[test]
     fn a_commit_message_is_written_without_reasoning_first() {
         let task = ChatTask::new("lg-commit", COMMIT_NUM_PREDICT, false);
 
         assert!(!task.thinking);
-        const { assert!(COMMIT_NUM_PREDICT > LLM_NUM_PREDICT) };
-        if std::env::var_os("LG_LLM_NUM_PREDICT").is_none() {
-            assert_eq!(task.num_predict, COMMIT_NUM_PREDICT);
+    }
+
+    /// A commit message that stops mid-word is committed as it stands, so
+    /// nothing cuts one off part-way: the message is bounded by the limits the
+    /// checkout configures, which apply to the finished message.
+    #[test]
+    fn a_commit_message_is_written_to_no_token_budget() {
+        if std::env::var_os("LG_LLM_NUM_PREDICT").is_some() {
+            return;
         }
+        let task = ChatTask::new("lg-commit", COMMIT_NUM_PREDICT, false);
+
+        assert_eq!(task.num_predict, 0, "the commit message has no cap");
     }
 
     #[test]

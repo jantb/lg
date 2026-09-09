@@ -163,6 +163,32 @@ fn left_column_width(total_width: u16, requested_width: Option<u16>) -> u16 {
     clamp_left_column_width(total_width, requested_width.unwrap_or(LEFT_COLUMN_WIDTH))
 }
 
+/// The rows the status panel always takes at the top of the left column.
+const STATUS_PANEL_HEIGHT: u16 = 5;
+
+/// The height the repositories panel had before it was given a share of the
+/// column, and the least it is ever opened at.
+const REPOSITORIES_MIN_HEIGHT: u16 = 13;
+
+/// What the panels under the repositories panel keep between them, whatever
+/// share it would otherwise take.
+const PANEL_BELOW_MIN_HEIGHT: u16 = 6;
+
+/// How tall the repositories panel opens.
+///
+/// It holds a row per checkout, worktree and session with the deployment box
+/// under them, so a workspace of a dozen repositories scrolled inside a fixed
+/// thirteen rows while the panels below it sat half empty. A share of the
+/// column grows with the terminal instead, floored a few rows above the height
+/// it used to have and capped so the three panels under it keep a few rows
+/// each — a column with nothing to give falls back to that old height.
+fn repositories_default_height(total_height: u16) -> u16 {
+    let room = total_height.saturating_sub(STATUS_PANEL_HEIGHT + 3 * PANEL_BELOW_MIN_HEIGHT);
+    (total_height / 3)
+        .max(REPOSITORIES_MIN_HEIGHT + 3)
+        .min(room.max(REPOSITORIES_MIN_HEIGHT))
+}
+
 pub fn default_left_panel_heights(total_height: u16, show_environments: bool) -> LeftPanelHeights {
     let area = Rect {
         x: 0,
@@ -170,9 +196,14 @@ pub fn default_left_panel_heights(total_height: u16, show_environments: bool) ->
         width: 1,
         height: total_height,
     };
+    let repositories = if show_environments {
+        repositories_default_height(total_height)
+    } else {
+        REPOSITORIES_MIN_HEIGHT
+    };
     let lefts = Layout::vertical([
-        Constraint::Length(5),
-        Constraint::Length(13),
+        Constraint::Length(STATUS_PANEL_HEIGHT),
+        Constraint::Length(repositories),
         Constraint::Ratio(1, 3),
         Constraint::Ratio(1, 3),
         Constraint::Ratio(1, 3),
@@ -257,5 +288,50 @@ pub fn left_panel_min_height(total_height: u16, show_environments: bool) -> u16 
         1
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A workspace is a dozen checkouts and the sessions under them. On a
+    /// terminal with room for it the panel opens onto more of them than the
+    /// fixed height it used to have, without leaving the panels under it
+    /// without rows.
+    #[test]
+    fn the_repositories_panel_opens_onto_more_rows_on_a_tall_terminal() {
+        let heights = default_left_panel_heights(60, true);
+
+        assert!(
+            heights[1] > REPOSITORIES_MIN_HEIGHT,
+            "the repositories panel should take a share of a tall column: {heights:?}"
+        );
+        for below in &heights[2..] {
+            assert!(
+                *below >= PANEL_BELOW_MIN_HEIGHT,
+                "the panels under it still need rows: {heights:?}"
+            );
+        }
+    }
+
+    /// Growing the panel cannot come out of a column that has nothing to give:
+    /// a short terminal keeps the panel it always had.
+    #[test]
+    fn a_short_terminal_keeps_the_repositories_panel_it_had() {
+        let heights = default_left_panel_heights(30, true);
+
+        assert_eq!(heights[1], REPOSITORIES_MIN_HEIGHT, "{heights:?}");
+    }
+
+    /// However the column is shared out, the panels have to fit in it.
+    #[test]
+    fn the_left_panels_fit_the_column_they_are_opened_in() {
+        for total in 12u16..=120 {
+            let heights = normalize_left_panel_heights(total, true, None);
+            let sum: u16 = heights.iter().sum();
+
+            assert!(sum <= total, "{total} rows overflowed: {heights:?}");
+        }
     }
 }

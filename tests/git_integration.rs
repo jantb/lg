@@ -2713,6 +2713,63 @@ fn merge_main_all_branches_reports_git_conflict_output() {
     );
 }
 
+/// A sync that stopped on a conflict has the checkout on the branch it could
+/// not merge, and the work it stashed belongs to the branch it started from.
+/// Validating has to put both back: without the return leg the stash comes
+/// back on top of the conflicted branch and the branch the work was written on
+/// is left behind.
+#[test]
+fn sync_conflict_validation_returns_to_the_branch_the_sync_started_on() {
+    let dir = init_repo();
+    fs::write(dir.path().join("conflict.txt"), "base\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let feature = "feature/sync-stash";
+    git_ok(dir.path(), &["checkout", "-b", feature]);
+    fs::write(dir.path().join("conflict.txt"), "feature\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "feature side");
+
+    git_ok(dir.path(), &["checkout", "main"]);
+    fs::write(dir.path().join("conflict.txt"), "main\n").unwrap();
+    stage_in(dir.path(), "conflict.txt");
+    commit_in(dir.path(), "main side");
+
+    fs::write(dir.path().join("dirty.txt"), "dirty work").unwrap();
+
+    let _cwd = CwdGuard::new(dir.path());
+    lg::git::flow_merge_main_into_all_local_branches()
+        .expect_err("the sync should stop on the branch that will not merge");
+    assert_eq!(head_branch(dir.path()), feature);
+    assert!(
+        !dir.path().join("dirty.txt").exists(),
+        "the work stays stashed while the merge is conflicted"
+    );
+
+    fs::write(dir.path().join("conflict.txt"), "resolved\n").unwrap();
+    let out = lg::git::validate_conflict_resolution(lg::git::Followup {
+        return_branch: Some("main"),
+        ..Default::default()
+    })
+    .expect("continue the sync conflict");
+
+    assert_eq!(
+        head_branch(dir.path()),
+        "main",
+        "validation should come back to the branch the sync started on: {out}"
+    );
+    assert!(
+        dir.path().join("dirty.txt").exists(),
+        "the stashed work should be back on the branch it was written on: {out}"
+    );
+    assert!(
+        stash_list(dir.path()).is_empty(),
+        "nothing should be left stashed: {}",
+        stash_list(dir.path())
+    );
+}
+
 #[test]
 fn delete_current_feature_branch_checks_out_main_first() {
     let dir = init_repo();

@@ -103,7 +103,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 Span::styled("Esc", Style::default().fg(Color::Gray)),
                 Span::raw(" back"),
             ]),
+            Line::from(""),
         ]);
+        text.extend(branch_name_mascot());
         frame.render_widget(
             Paragraph::new(text).block(ui::bordered("Branch Actions")),
             modal,
@@ -409,6 +411,31 @@ fn actions_area(area: Rect) -> Rect {
     split_menu(chunks[1]).0
 }
 
+/// The one line of typing that names a branch sits in a pane the size of the
+/// screen. A small friend fills the rest of it and says the one thing worth
+/// knowing about the prompt: a space is not a branch name character, so it is
+/// typed as a dash.
+fn branch_name_mascot() -> Vec<Line<'static>> {
+    let fur = Style::default().fg(Color::Magenta);
+    let whisper = Style::default().fg(Color::DarkGray);
+    vec![
+        Line::from(Span::styled("    /\\_/\\", fur)),
+        Line::from(vec![
+            Span::styled("   ( o.o )", fur),
+            Span::styled("   \u{2500}\u{2500} spaces become dashes", whisper),
+        ]),
+        Line::from(Span::styled("    > ^ <", fur)),
+        Line::from(Span::styled("   (\")_(\")", fur)),
+    ]
+}
+
+/// What a keystroke puts into a branch name. Git will not take a space in a
+/// ref, and the name typed with spaces is the name that was meant, so the
+/// space is the dash the reader would have typed.
+fn branch_name_char(typed: char) -> char {
+    if typed == ' ' { '-' } else { typed }
+}
+
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     if state.workflow_job.is_some() {
         return Ok(());
@@ -444,7 +471,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.flow_text.pop();
             }
             KeyCode::Char(c) => {
-                state.flow_text.push(c);
+                state.flow_text.push(branch_name_char(c));
             }
             _ => {}
         }

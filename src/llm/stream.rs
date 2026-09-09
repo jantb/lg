@@ -772,6 +772,30 @@ mod tests {
         assert!(matches!(&msgs[3], GenMsg::Done { text: s, .. } if s == "real answer"));
     }
 
+    /// Zero is lg saying "no cap", not "write nothing": the field has to be
+    /// left off the request rather than sent as a zero the server would honour.
+    #[test]
+    fn a_task_without_a_budget_asks_for_no_cap() {
+        let body = chat_request_body(
+            "qwen-local",
+            vec![ChatMessage {
+                role: "user",
+                content: "hi".into(),
+            }],
+            ChatTask {
+                session: "lg-test",
+                num_predict: 0,
+                thinking: false,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            body.get("max_tokens").is_none(),
+            "a budgetless task must not send a cap: {body}"
+        );
+    }
+
     #[test]
     fn chat_request_uses_the_openai_completions_shape() {
         let body = chat_request_body(
