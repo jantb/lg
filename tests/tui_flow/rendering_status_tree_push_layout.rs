@@ -285,12 +285,14 @@ fn repository_panel_marks_the_active_repository() {
             branch: Some("feature/api".into()),
             detached_at: None,
             has_changes: false,
+            worktree_of: None,
         },
         NestedRepo {
             path: "services/web".into(),
             branch: Some("main".into()),
             detached_at: None,
             has_changes: false,
+            worktree_of: None,
         },
     ];
 
@@ -395,12 +397,14 @@ fn repository_panel_shows_nested_repository_branches() {
             branch: Some("feature/api".into()),
             detached_at: None,
             has_changes: true,
+            worktree_of: None,
         },
         NestedRepo {
             path: "libs/core".into(),
             branch: None,
             detached_at: Some("abc1234".into()),
             has_changes: false,
+            worktree_of: None,
         },
     ];
 
@@ -441,12 +445,14 @@ fn repository_panel_highlights_active_nested_repository_background() {
             branch: Some("main".into()),
             detached_at: None,
             has_changes: false,
+            worktree_of: None,
         },
         NestedRepo {
             path: "libs/core".into(),
             branch: Some("main".into()),
             detached_at: None,
             has_changes: false,
+            worktree_of: None,
         },
     ];
 
@@ -497,6 +503,7 @@ fn repository_panel_tree_shows_nested_branch_lists() {
         branch: Some("main".into()),
         detached_at: None,
         has_changes: false,
+        worktree_of: None,
     }];
     state.nested_repo_detail_path = Some("services/api".into());
     state.nested_repo_branches = vec![
@@ -662,6 +669,7 @@ fn worktrees_hang_under_the_repository_they_belong_to() {
         branch: Some("main".into()),
         detached_at: None,
         has_changes: false,
+        worktree_of: None,
     }];
     state.worktrees = vec![
         Worktree {
@@ -865,7 +873,7 @@ fn removing_a_dirty_worktree_confirms_and_forces() {
 }
 
 #[test]
-fn the_active_and_main_checkouts_are_not_removable() {
+fn the_main_checkout_is_not_removable_but_the_active_one_is() {
     // lg is showing a worktree whose main checkout sits outside the workspace,
     // so the main checkout gets a row of its own rather than being the root.
     let mut state = AppState::new();
@@ -892,17 +900,87 @@ fn the_active_and_main_checkouts_are_not_removable() {
             .contains("main checkout")
     );
 
-    // Row 2 is the checkout lg is showing, which cannot go either.
+    // Row 2 is the checkout lg is showing. Removing it is allowed: the
+    // removal moves lg back to the main checkout before the directory goes.
     panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
     panel::environments::handle_key(&mut state, key(KeyCode::Char('D'))).unwrap();
-    assert_eq!(state.modal, Modal::None);
+    assert_eq!(state.modal, Modal::ConfirmDestructive);
+    let prompt = state.confirm.as_ref().expect("confirm prompt");
+    assert_eq!(
+        prompt.action,
+        PendingAction::RemoveWorktree {
+            path: "/elsewhere/repo.worktrees/feat-x".into(),
+            force: false,
+        }
+    );
+}
+
+#[test]
+fn a_scanned_worktree_of_the_active_repository_acts_as_a_worktree_row() {
+    // The workspace scan finds the worktree directory like any repository. It
+    // belongs to the active repository, so its row must offer the worktree
+    // keys and sit under that repository rather than beside it.
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace/alviter.worktrees/worktree".into());
+    state.nested_repositories = vec![
+        NestedRepo {
+            path: "alviter".into(),
+            branch: Some("main".into()),
+            detached_at: None,
+            has_changes: false,
+            worktree_of: None,
+        },
+        NestedRepo {
+            path: "alviter.worktrees/worktree".into(),
+            branch: Some("worktree".into()),
+            detached_at: None,
+            has_changes: false,
+            worktree_of: Some("alviter".into()),
+        },
+    ];
+    state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace/alviter", "main")
+        },
+        worktree("/workspace/alviter.worktrees/worktree", "worktree"),
+    ];
+
+    let backend = TestBackend::new(60, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::environments::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for row in 0..buf.area.height {
+        for col in 0..buf.area.width {
+            text.push_str(buf[(col, row)].symbol());
+        }
+    }
     assert!(
-        state
-            .status
-            .as_ref()
-            .expect("status")
-            .text
-            .contains("switch to another checkout")
+        text.contains("\u{2387}"),
+        "the worktree is drawn as a worktree, not as a repository: {text}"
+    );
+    assert!(
+        !text.contains("alviter.worktrees/worktree"),
+        "the worktree is named by its branch and directory, not its full path: {text}"
+    );
+
+    // Root, alviter, then the worktree row.
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('D'))).unwrap();
+    assert_eq!(state.modal, Modal::ConfirmDestructive);
+    assert_eq!(
+        state.confirm.as_ref().expect("confirm prompt").action,
+        PendingAction::RemoveWorktree {
+            path: "/workspace/alviter.worktrees/worktree".into(),
+            force: false,
+        }
     );
 }
 
@@ -1079,6 +1157,7 @@ fn clicking_repository_row_switches_repository() {
         branch: Some("feature/api".into()),
         detached_at: None,
         has_changes: false,
+        worktree_of: None,
     }];
 
     let area = Rect::new(0, 0, 120, 32);
@@ -1112,6 +1191,7 @@ fn repositories_o_opens_selected_repo_or_branch_project() {
         branch: Some("main".into()),
         detached_at: None,
         has_changes: false,
+        worktree_of: None,
     }];
     state.nested_repo_detail_path = Some("services/api".into());
     state.nested_repo_branches = vec![Branch {
@@ -1157,6 +1237,7 @@ fn repository_panel_keeps_deployment_status_visible_in_full_layout() {
         branch: Some("feature/api".into()),
         detached_at: None,
         has_changes: false,
+        worktree_of: None,
     }];
     app.state.current_branch_releases = BranchReleaseStatus {
         main: None,
@@ -1203,6 +1284,7 @@ fn repository_panel_accepts_mouse_focus_without_flow_branches() {
         branch: Some("feature/api".into()),
         detached_at: None,
         has_changes: false,
+        worktree_of: None,
     }];
 
     app.render().unwrap();
@@ -1227,6 +1309,7 @@ fn repository_panel_divider_can_be_dragged_without_flow_branches() {
         branch: Some("feature/api".into()),
         detached_at: None,
         has_changes: false,
+        worktree_of: None,
     }];
 
     app.render().unwrap();
@@ -1263,6 +1346,7 @@ fn repository_panel_tree_esc_collapses_expanded_repo() {
         branch: Some("main".into()),
         detached_at: None,
         has_changes: false,
+        worktree_of: None,
     }];
     app.state.nested_repo_detail_path = Some("services/api".into());
     app.state.nested_repo_branches = vec![Branch {

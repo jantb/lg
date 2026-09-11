@@ -106,7 +106,14 @@ pub(super) fn nested_repo_tree_rows(state: &AppState) -> Vec<NestedRepoTreeRow> 
         push_checkout(&mut rows, state, row);
     }
     for (repo_idx, repo) in state.nested_repositories.iter().enumerate() {
-        push_checkout(&mut rows, state, NestedRepoTreeRow::Repo { repo_idx });
+        // A scanned directory that is one of the active repository's linked
+        // worktrees is that worktree: its row has to offer the worktree keys,
+        // not the repository ones.
+        let row = match worktree_index_for_repo(state, repo) {
+            Some(wt_idx) => NestedRepoTreeRow::Worktree { wt_idx },
+            None => NestedRepoTreeRow::Repo { repo_idx },
+        };
+        push_checkout(&mut rows, state, row);
         for row in worktree_rows_for(Some(repo_idx)) {
             push_checkout(&mut rows, state, row);
         }
@@ -174,6 +181,17 @@ pub(super) fn row_checkout_dir(state: &AppState, row: NestedRepoTreeRow) -> Opti
         | NestedRepoTreeRow::Branch { .. }
         | NestedRepoTreeRow::Remote { .. } => None,
     }
+}
+
+/// The active repository's linked worktree that a scanned nested repository
+/// stands for, if it is one.
+fn worktree_index_for_repo(state: &AppState, repo: &crate::git::NestedRepo) -> Option<usize> {
+    repo.worktree_of.as_ref()?;
+    let root = std::path::Path::new(state.workspace_root.as_deref()?);
+    let dir = root.join(&repo.path);
+    state.worktrees.iter().position(|worktree| {
+        !worktree.is_main && same_dir(&dir, std::path::Path::new(&worktree.path))
+    })
 }
 
 /// Worktrees that need a row of their own. The tree already shows the

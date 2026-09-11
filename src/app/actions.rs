@@ -392,6 +392,7 @@ impl App {
                 );
             }
             PendingAction::RemoveWorktree { path, force } => {
+                self.leave_checkout_before_removal(&path);
                 spawn_operation(
                     &mut self.state,
                     "removing worktree",

@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use std::path::{Component, Path, PathBuf};
 
-use super::{git_command_in_dir, repo_root, run_in_dir};
+use super::{git_command_in_dir, repo_root, run_in_dir, worktree::same_dir};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NestedRepo {
@@ -11,6 +11,11 @@ pub struct NestedRepo {
     pub branch: Option<String>,
     pub detached_at: Option<String>,
     pub has_changes: bool,
+    /// The nested repository this directory is a linked worktree of, as a
+    /// workspace-relative path, when its main checkout is in the workspace
+    /// too. A worktree is not a repository of its own and is listed under the
+    /// one it belongs to.
+    pub worktree_of: Option<String>,
 }
 
 pub fn nested_repositories() -> Result<Vec<NestedRepo>> {
@@ -23,9 +28,30 @@ pub fn nested_repositories_at(root: &Path) -> Result<Vec<NestedRepo>> {
     collect_nested_repo_dirs(root, root, &mut dirs);
     dirs.sort();
 
-    dirs.into_iter()
+    let mut repos = dirs
+        .into_iter()
         .map(|dir| nested_repo_status(root, &dir))
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    group_worktrees_under_their_repository(&mut repos);
+    Ok(repos)
+}
+
+/// Put every linked worktree right after the repository it belongs to, so the
+/// tree can show it as a child rather than as a sibling repository that
+/// happens to share a name prefix.
+fn group_worktrees_under_their_repository(repos: &mut [NestedRepo]) {
+    let known = repos
+        .iter()
+        .map(|repo| repo.path.clone())
+        .collect::<std::collections::HashSet<_>>();
+    repos.sort_by_cached_key(|repo| {
+        let anchor = repo
+            .worktree_of
+            .as_deref()
+            .filter(|main| known.contains(*main))
+            .unwrap_or(&repo.path);
+        (anchor.to_owned(), anchor != repo.path, repo.path.clone())
+    });
 }
 
 pub fn checkout_nested_branch(repo_path: &str, branch: &str) -> Result<String> {
@@ -114,12 +140,35 @@ fn nested_repo_status(root: &Path, dir: &Path) -> Result<NestedRepo> {
         None
     };
     let has_changes = nested_repo_has_changes(dir).unwrap_or(false);
+    let worktree_of = linked_worktree_main(root, dir);
     Ok(NestedRepo {
         path,
         branch,
         detached_at,
         has_changes,
+        worktree_of,
     })
+}
+
+/// The workspace-relative path of the main checkout when `dir` is a linked
+/// worktree of a repository inside the workspace. A plain repository keeps its
+/// git directory under itself; a linked worktree's common git directory lives
+/// in the main checkout, which is what gives that checkout away.
+fn linked_worktree_main(root: &Path, dir: &Path) -> Option<String> {
+    let out = run_in_dir(
+        dir,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .ok()?;
+    let common = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    let main = common.parent()?;
+    if same_dir(main, dir) {
+        return None;
+    }
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let main = main.canonicalize().unwrap_or_else(|_| main.to_path_buf());
+    let rel = main.strip_prefix(&root).ok()?;
+    (!rel.as_os_str().is_empty()).then(|| rel.to_string_lossy().into_owned())
 }
 
 fn nested_head_branch(dir: &Path) -> Result<Option<String>> {

@@ -206,6 +206,54 @@ fn project_open_command_opens_rust_repo_root() {
 }
 
 #[test]
+fn a_linked_worktree_in_the_workspace_is_listed_under_its_repository() {
+    let dir = init_repo();
+    let _cwd = CwdGuard::new(dir.path());
+
+    // Sorted by path alone, `app-tools` would sit between `app` and its
+    // worktree; the worktree must still come right after `app`.
+    for name in ["app", "app-tools"] {
+        let repo = dir.path().join(name);
+        fs::create_dir_all(&repo).unwrap();
+        git_ok(&repo, &["init", "-b", "main"]);
+        git_ok(&repo, &["config", "user.email", "test@example.com"]);
+        git_ok(&repo, &["config", "user.name", "Test User"]);
+        fs::write(repo.join("README.md"), format!("{name}\n")).unwrap();
+        git_ok(&repo, &["add", "README.md"]);
+        commit_in(&repo, "initial");
+    }
+    let app = dir.path().join("app");
+    let worktree = dir.path().join("app.worktrees/feat");
+    git_ok(
+        &app,
+        &["worktree", "add", "-b", "feat", worktree.to_str().unwrap()],
+    );
+
+    let repos = lg::git::nested_repositories().unwrap();
+    let paths = repos
+        .iter()
+        .map(|repo| repo.path.as_str())
+        .collect::<Vec<_>>();
+    let app_at = paths.iter().position(|p| *p == "app").expect("app row");
+    assert_eq!(
+        paths.get(app_at + 1).copied(),
+        Some("app.worktrees/feat"),
+        "the worktree follows its repository: {paths:?}"
+    );
+
+    let linked = repos
+        .iter()
+        .find(|repo| repo.path == "app.worktrees/feat")
+        .expect("worktree row");
+    assert_eq!(linked.worktree_of.as_deref(), Some("app"));
+    assert_eq!(linked.branch.as_deref(), Some("feat"));
+    for plain in ["app", "app-tools"] {
+        let repo = repos.iter().find(|repo| repo.path == plain).unwrap();
+        assert_eq!(repo.worktree_of, None, "{plain} is a repository of its own");
+    }
+}
+
+#[test]
 fn nested_repositories_report_branch_detached_head_and_dirty_state() {
     let dir = init_repo();
     let _cwd = CwdGuard::new(dir.path());

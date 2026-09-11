@@ -5,9 +5,7 @@ use crate::{
     state::{AppState, BranchView},
 };
 
-use super::tree::{
-    NestedRepoTreeRow, selected_tree_row, tree_idx_for_repo_path, worktree_selected,
-};
+use super::tree::{NestedRepoTreeRow, selected_tree_row, tree_idx_for_repo_path};
 
 pub(crate) fn activate_selected_repository_row(state: &mut AppState) -> bool {
     match selected_tree_row(state) {
@@ -156,8 +154,9 @@ pub(super) fn open_new_worktree_form(state: &mut AppState) {
 }
 
 /// Remove the selected worktree, or forget one whose directory is already
-/// gone. The checkout lg is showing cannot be removed from under itself, and
-/// neither can the main worktree — git refuses that too.
+/// gone. The main worktree cannot be removed — git refuses that. Removing the
+/// checkout lg is showing is fine: the removal moves lg to the main checkout
+/// first, the same way landing does.
 pub(super) fn remove_selected_worktree(state: &mut AppState) {
     let Some(NestedRepoTreeRow::Worktree { wt_idx }) = selected_tree_row(state) else {
         state.set_status("select a worktree row to remove it", false);
@@ -172,10 +171,6 @@ pub(super) fn remove_selected_worktree(state: &mut AppState) {
     }
     if worktree.is_main {
         state.set_status("the main checkout cannot be removed", true);
-        return;
-    }
-    if worktree_selected(state, worktree) {
-        state.set_status("switch to another checkout first", true);
         return;
     }
     if worktree.locked.is_some() {

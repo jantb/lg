@@ -249,6 +249,9 @@ fn nested_repo_line(
     expanded: bool,
     active: bool,
 ) -> Line<'static> {
+    if repo.worktree_of.is_some() {
+        return linked_repo_line(repo, row_width, active);
+    }
     let branch = repo
         .branch
         .clone()
@@ -303,6 +306,63 @@ fn nested_repo_line(
                 Color::LightMagenta
             })
             .add_modifier(Modifier::BOLD),
+    ));
+    Line::from(spans)
+}
+
+/// A scanned directory that is a linked worktree of another repository in the
+/// workspace, drawn the way the active repository's own worktrees are: under
+/// its repository, by branch, with the directory name after it.
+fn linked_repo_line(repo: &NestedRepo, row_width: usize, active: bool) -> Line<'static> {
+    let dir_name = std::path::Path::new(&repo.path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| repo.path.clone());
+    let label = repo
+        .branch
+        .clone()
+        .or_else(|| {
+            repo.detached_at
+                .as_ref()
+                .map(|sha| format!("detached@{sha}"))
+        })
+        .unwrap_or_else(|| dir_name.clone());
+    let used = 4 + if repo.has_changes { 2 } else { 0 };
+    let label_width = row_width
+        .saturating_sub(used)
+        .saturating_sub(dir_name.chars().count() + 1);
+
+    let mut spans = vec![
+        Span::styled("  \u{2387} ", Style::default().fg(Color::LightMagenta)),
+        Span::styled(
+            if active { "* " } else { "  " },
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if repo.has_changes {
+        spans.push(Span::styled(
+            "! ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    spans.push(Span::styled(
+        truncate_chars(&label, label_width.max(4)),
+        Style::default()
+            .fg(if repo.branch.is_some() {
+                Color::Green
+            } else {
+                Color::LightMagenta
+            })
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(
+        truncate_chars(&dir_name, row_width.saturating_sub(used + 1)),
+        Style::default().fg(Color::DarkGray),
     ));
     Line::from(spans)
 }
