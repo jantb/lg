@@ -66,6 +66,12 @@ pub const LANE_MAIN: Color = Color::Rgb(214, 134, 255);
 pub const LANE_DEV: Color = ACCENT;
 pub const LANE_TEST: Color = Color::Rgb(247, 201, 92);
 pub const LANE_FEATURE: Color = Color::Rgb(126, 224, 142);
+/// The key in a "key does this" hint, so the eye finds the letters to press.
+pub const HINT_KEY: Color = LANE_TEST;
+/// Something that is fine: an included branch, a saved file, a true flag.
+pub const OK: Color = LANE_FEATURE;
+/// Something that is wrong: an error, a false flag, history thrown away.
+pub const BAD: Color = LANE_LOST;
 /// A move the running flow has not reached yet.
 pub const LANE_PENDING: Color = FRAME_IDLE;
 /// History a move throws away.

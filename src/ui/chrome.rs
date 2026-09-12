@@ -146,6 +146,28 @@ fn divider_h(frame: &mut Frame, gap: Rect) {
     join(frame, gap.x.saturating_add(gap.width), gap.y, ARM_LEFT);
 }
 
+/// One line of `key what-it-does` pairs, the key in the hint colour and the
+/// words muted, so a footer reads as a keyboard and not as a paragraph.
+pub fn key_hints(keys: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (i, (key, what)) in keys.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ", Style::default().fg(palette::TEXT_IDLE)));
+        }
+        spans.push(Span::styled(
+            key.to_string(),
+            Style::default()
+                .fg(palette::HINT_KEY)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            format!(" {what}"),
+            Style::default().fg(palette::TEXT_IDLE),
+        ));
+    }
+    Line::from(spans)
+}
+
 /// Names a pane, written onto the line directly above it. A pane inside a
 /// modal has no frame of its own to hang a title on, so it borrows the one
 /// the modal already draws there.

@@ -50,9 +50,18 @@ const MAX_VALUE_LINES: usize = 4;
 const GROUP_COLORS: [Color; 2] = [palette::ACCENT, palette::LANE_MAIN];
 const KEY_COLOR: Color = Color::Rgb(220, 224, 232);
 const MUTED: Color = palette::TEXT_IDLE;
-const HINT_KEY: Color = palette::LANE_TEST;
-const OK: Color = palette::LANE_FEATURE;
-const BAD: Color = palette::LANE_LOST;
+const HINT_KEY: Color = palette::HINT_KEY;
+const OK: Color = palette::OK;
+const BAD: Color = palette::BAD;
+
+/// Editors worth offering when one is found on PATH. `$VISUAL` and `$EDITOR`
+/// go in front of these, since they are what the person already chose.
+const KNOWN_EDITORS: &[&str] = &[
+    "code", "cursor", "zed", "windsurf", "subl", "idea", "nvim", "vim", "vi", "hx", "micro",
+    "nano", "emacs", "kak",
+];
+/// Shells worth offering for a terminal session; `$SHELL` goes in front.
+const KNOWN_SHELLS: &[&str] = &["zsh", "bash", "fish", "nu", "sh", "dash", "ksh", "tcsh"];
 
 /// Which pane the arrow keys move: the category list or its fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +93,10 @@ pub struct Settings {
     branches: Vec<String>,
     /// The models the endpoint serves, offered when a field names a model.
     models: Vec<String>,
+    /// Editors found on this machine, offered for the editor field.
+    editors: Vec<String>,
+    /// Shells found on this machine, offered for the terminal field.
+    shells: Vec<String>,
     /// The highlighted option in the picker, an index into `choices`.
     choice: Option<usize>,
     /// Whether the picker's text has been typed rather than carried over from
@@ -118,6 +131,8 @@ impl Default for Settings {
             cursor: 0,
             branches: Vec::new(),
             models: Vec::new(),
+            editors: Vec::new(),
+            shells: Vec::new(),
             choice: None,
             typed: false,
             scroll: Cell::new(0),
@@ -179,6 +194,8 @@ pub fn open(state: &mut AppState, category: usize) {
         crate::llm::prime_models_async();
     }
     state.settings_hub.models = crate::llm::available_models();
+    state.settings_hub.editors = programs_on_path(&["VISUAL", "EDITOR"], KNOWN_EDITORS);
+    state.settings_hub.shells = programs_on_path(&["SHELL"], KNOWN_SHELLS);
     state.settings_hub.reload();
     load_sessions(state);
     state.modal = Modal::Settings;
@@ -230,19 +247,103 @@ fn names_branch(hub: &Settings, field: &Field) -> bool {
 fn names_model(hub: &Settings, field: &Field) -> bool {
     hub.key() == "models" && field.path == "/model"
 }
-/// What a field may be picked from: local branches for a branch, the
-/// endpoint's models for the model. Fields that take free text have none.
-fn options<'a>(hub: &'a Settings, field: &Field) -> Option<(&'a [String], &'static str)> {
-    if names_branch(hub, field) {
-        Some((&hub.branches, "local branch"))
-    } else if names_model(hub, field) {
-        Some((&hub.models, "model"))
-    } else {
-        None
+/// The programs named by `env` variables and found on PATH out of `known`,
+/// in that order, each once. What the editor and terminal fields offer: the
+/// value has to be a program on this machine, so the list is what is here.
+fn programs_on_path(env: &[&str], known: &[&str]) -> Vec<String> {
+    let dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    let mut found = Vec::new();
+    for name in env.iter().filter_map(|var| std::env::var(var).ok()) {
+        let name = name.trim().to_string();
+        if !name.is_empty() && !found.contains(&name) {
+            found.push(name);
+        }
+    }
+    for name in known {
+        if dirs.iter().any(|dir| dir.join(name).is_file()) && !found.iter().any(|f| f == name) {
+            found.push((*name).to_string());
+        }
+    }
+    found
+}
+/// The ids of the environments in the draft, for the promotion fields that
+/// name one.
+fn environment_ids(hub: &Settings) -> Vec<String> {
+    hub.draft["environments"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|e| e["id"].as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+/// What a field is chosen from.
+struct Picker {
+    options: Vec<String>,
+    /// What one option is called in the hints: "local branch", "strategy".
+    noun: &'static str,
+    /// Whether the value must be one of the options. An enumeration is; a
+    /// branch or a program is a suggestion, and a typed name is kept.
+    fixed: bool,
+}
+impl Picker {
+    fn fixed(options: &[&str], noun: &'static str) -> Self {
+        Self {
+            options: options.iter().map(|o| (*o).to_string()).collect(),
+            noun,
+            fixed: true,
+        }
+    }
+    fn suggested(options: &[String], noun: &'static str) -> Self {
+        Self {
+            options: options.to_vec(),
+            noun,
+            fixed: false,
+        }
     }
 }
+/// What a field may be picked from: local branches for a branch, the
+/// endpoint's models for the model, the programs on this machine for the
+/// editor and terminal, and the allowed words for a field that takes one of a
+/// few. Fields that take free text have none.
+fn options(hub: &Settings, field: &Field) -> Option<Picker> {
+    if names_branch(hub, field) {
+        return Some(Picker::suggested(&hub.branches, "local branch"));
+    }
+    if names_model(hub, field) {
+        return Some(Picker::suggested(&hub.models, "model"));
+    }
+    let group = field.groups.first().map(String::as_str).unwrap_or_default();
+    Some(match (hub.key(), group, field.key.as_str()) {
+        ("agents", _, "adapter") => Picker::fixed(preferences::ADAPTERS, "adapter"),
+        ("agents", _, "confinement") => Picker::fixed(preferences::CONFINEMENTS, "confinement"),
+        ("branches", "promotions", "strategy") => {
+            Picker::fixed(preferences::STRATEGIES, "strategy")
+        }
+        ("branches", "promotions", "from") => Picker {
+            options: std::iter::once("feature".to_string())
+                .chain(environment_ids(hub))
+                .collect(),
+            noun: "source",
+            fixed: true,
+        },
+        ("branches", "promotions", "to") => Picker {
+            options: environment_ids(hub),
+            noun: "environment",
+            fixed: true,
+        },
+        ("tools", _, "editor") => Picker::suggested(&hub.editors, "editor"),
+        ("tools", _, "terminal") => Picker::suggested(&hub.shells, "shell"),
+        _ => return None,
+    })
+}
 /// The picker over the selected field, if that field has one.
-fn picker(hub: &Settings) -> Option<(&[String], &'static str)> {
+fn picker(hub: &Settings) -> Option<Picker> {
     if hub.editing_folder {
         return None;
     }
@@ -257,11 +358,10 @@ fn choices(hub: &Settings) -> Vec<String> {
         String::new()
     };
     picker(hub)
-        .map(|(options, _)| options)
+        .map(|p| p.options)
         .unwrap_or_default()
-        .iter()
+        .into_iter()
         .filter(|b| b.to_lowercase().contains(&query))
-        .cloned()
         .collect()
 }
 /// Whether the field being edited offers a picker.
@@ -297,8 +397,13 @@ fn start_edit(hub: &mut Settings) {
     hub.cursor = hub.input.chars().count();
     hub.choice = None;
     hub.typed = false;
-    if let Some((options, _)) = options(hub, &f) {
-        hub.choice = options.iter().position(|b| *b == hub.input);
+    if let Some(p) = options(hub, &f) {
+        hub.choice = p.options.iter().position(|b| *b == hub.input);
+        // A fixed list always has something highlighted, so Enter always
+        // lands on an allowed value.
+        if p.fixed && hub.choice.is_none() && !p.options.is_empty() {
+            hub.choice = Some(0);
+        }
     }
     hub.editing = true;
 }
@@ -464,7 +569,7 @@ fn describe(category: &str, field: &Field) -> Option<&'static str> {
         ("models", _, "endpoint") => "Chat completions endpoint the model is reached at.",
         ("agents", _, "name") => "How the agent is listed in the session picker.",
         ("agents", _, "adapter") => {
-            "Which integration drives it: claude, codex, pi, or terminal for a plain shell with no agent protocol."
+            "Which integration drives it: claude, codex, pi, or terminal for a plain shell with no agent protocol. Enter chooses from the list."
         }
         ("agents", _, "executable") => "Program to launch, found on PATH or given as a full path.",
         ("agents", _, "args") => {
@@ -474,7 +579,7 @@ fn describe(category: &str, field: &Field) -> Option<&'static str> {
             "Model the agent is asked to use. Empty leaves the agent's own default."
         }
         ("agents", _, "confinement") => {
-            "terrarium runs it in the sandbox profile, agent trusts the agent's own harness (the default for claude and codex), direct runs it unconfined. A terminal is never sandboxed."
+            "terrarium runs it in the sandbox profile, agent trusts the agent's own harness (the default for claude and codex), direct runs it unconfined. A terminal is never sandboxed. Enter chooses from the list."
         }
         ("agents", _, "default") => {
             "The agent a new session starts with when none is chosen. One agent should be true."
@@ -510,7 +615,7 @@ fn describe(category: &str, field: &Field) -> Option<&'static str> {
         }
         ("branches", "promotions", "to") => "Environment id the source is promoted into.",
         ("branches", "promotions", "strategy") => {
-            "How the promotion lands: merge (a merge commit), squash (one commit), or ff-only (refuse unless fast-forward)."
+            "How the promotion lands: merge (a merge commit), squash (one commit), or ff-only (refuse unless fast-forward). Enter chooses from the list."
         }
         ("branches", "promotions", "push") => {
             "Push the environment branch to its remote after promoting."
@@ -521,12 +626,16 @@ fn describe(category: &str, field: &Field) -> Option<&'static str> {
         ("tools", _, "quiet_author_emails") => {
             "Authors whose commits are not announced in activity, as a JSON list; * matches any prefix: [\"*@client.com\"]."
         }
-        ("tools", _, "editor") => "Program opened for a file with e. Empty uses $EDITOR.",
+        ("tools", _, "editor") => {
+            "Program opened for a file with e. Enter offers the editors found on this machine; any other program may be typed. Empty uses $EDITOR."
+        }
         ("tools", _, "editor_args") => {
             "Arguments for the editor, as a JSON list. The file path is appended."
         }
-        ("tools", _, "terminal") => "Terminal program used when a session is opened outside lg.",
-        ("tools", _, "terminal_args") => "Arguments for that terminal, as a JSON list.",
+        ("tools", _, "terminal") => {
+            "Shell a terminal session runs. Enter offers the shells found on this machine; any other program may be typed. Empty uses $SHELL."
+        }
+        ("tools", _, "terminal_args") => "Arguments for that shell, as a JSON list.",
         ("sessions", _, "label") => {
             "Name shown for the session in the workspace tree. Ctrl-S renames it."
         }
@@ -713,9 +822,30 @@ fn commit_edit(hub: &mut Settings) -> Result<()> {
         .get(hub.selected)
         .cloned()
         .context("select a field")?;
-    let picked = options(hub, &field)
+    let picker = options(hub, &field);
+    let matching = choices(hub);
+    let mut picked = picker
+        .as_ref()
         .and(hub.choice)
-        .and_then(|i| choices(hub).get(i).cloned());
+        .and_then(|i| matching.get(i).cloned());
+    if let Some(p) = &picker
+        && p.fixed
+    {
+        // Typing the whole word, or enough of it to leave one match, is as
+        // good as highlighting it. Anything else is not a value this field
+        // takes, and is refused here rather than by the file on save.
+        if picked.is_none() {
+            picked = p
+                .options
+                .iter()
+                .find(|o| **o == hub.input)
+                .cloned()
+                .or_else(|| (matching.len() == 1).then(|| matching[0].clone()));
+        }
+        if picked.is_none() {
+            anyhow::bail!("{} must be one of: {}", field.label, p.options.join(", "));
+        }
+    }
     let value = match field.value {
         Value::String(_) => Value::String(picked.clone().unwrap_or_else(|| hub.input.clone())),
         Value::Bool(_) => Value::Bool(hub.input.parse().context("use true or false")?),
@@ -945,8 +1075,8 @@ fn render_editor(hub: &Settings, area: Rect, frame: &mut Frame) {
             .unwrap_or_else(|| "Editing".into())
     };
     ui::section_title(frame, area, &title);
-    if let Some((_, noun)) = picker(hub) {
-        render_picker(hub, noun, area, frame);
+    if let Some(p) = picker(hub) {
+        render_picker(hub, &p, area, frame);
         return;
     }
     let (row, col) = cursor_position(&hub.input, hub.cursor, area.width.max(1) as usize);
@@ -964,16 +1094,19 @@ fn render_editor(hub: &Settings, area: Rect, frame: &mut Frame) {
 
 /// The typed name on the first line, and below it the options that contain
 /// it, with the highlighted one applied by Enter.
-fn render_picker(hub: &Settings, noun: &str, area: Rect, frame: &mut Frame) {
+fn render_picker(hub: &Settings, picker: &Picker, area: Rect, frame: &mut Frame) {
+    let noun = picker.noun;
     let choices = choices(hub);
+    let hint = match (choices.is_empty(), picker.fixed) {
+        (true, true) => format!("   nothing matches; one of {}", picker.options.join(", ")),
+        (true, false) => format!("   no {noun} matches; Enter keeps the typed name"),
+        (false, true) => format!("   \u{2191}/\u{2193} choose a {noun}, Enter applies it"),
+        (false, false) => format!("   \u{2191}/\u{2193} pick a {noun}, or type your own"),
+    };
     let mut lines = vec![Line::from(vec![
         Span::raw(hub.input.clone()),
         Span::styled("\u{258f}", Style::default().fg(palette::ACCENT)),
-        muted(if choices.is_empty() {
-            format!("   no {noun} matches; Enter keeps the typed name")
-        } else {
-            format!("   \u{2191}/\u{2193} pick a {noun}")
-        }),
+        muted(hint),
     ])];
     let room = area.height.saturating_sub(1) as usize;
     let first = hub
@@ -1152,24 +1285,10 @@ fn category_keys(category: &str) -> (&'static [(&'static str, &'static str)], &'
         _ => (&[], ""),
     }
 }
-fn hint_line(keys: &[(&str, &str)]) -> Line<'static> {
-    let mut spans = Vec::new();
-    for (i, (key, what)) in keys.iter().enumerate() {
-        if i > 0 {
-            spans.push(muted("  "));
-        }
-        spans.push(Span::styled(
-            key.to_string(),
-            Style::default().fg(HINT_KEY).add_modifier(Modifier::BOLD),
-        ));
-        spans.push(muted(format!(" {what}")));
-    }
-    Line::from(spans)
-}
 fn render_footer(hub: &Settings, area: Rect, frame: &mut Frame) {
     let mut lines = Vec::new();
     if hub.editing && picking(hub) {
-        lines.push(hint_line(&[
+        lines.push(ui::key_hints(&[
             ("\u{2191}/\u{2193}", "pick"),
             ("Enter", "apply"),
             ("Ctrl-U", "clear"),
@@ -1177,7 +1296,7 @@ fn render_footer(hub: &Settings, area: Rect, frame: &mut Frame) {
             ("Esc", "cancel"),
         ]));
     } else if hub.editing {
-        lines.push(hint_line(&[
+        lines.push(ui::key_hints(&[
             ("Enter", "apply"),
             ("Shift-Enter", "newline"),
             ("Ctrl-U", "clear"),
@@ -1197,7 +1316,7 @@ fn render_footer(hub: &Settings, area: Rect, frame: &mut Frame) {
             ("r", "reset override"),
         ];
         keys.extend_from_slice(extra);
-        lines.push(hint_line(&keys));
+        lines.push(ui::key_hints(&keys));
         if !note.is_empty() {
             lines.push(Line::from(muted(note)));
         }
@@ -1825,6 +1944,114 @@ mod tests {
             .iter()
             .position(|f| f.path == path)
             .unwrap();
+    }
+
+    /// A field that takes one of a few words is chosen from those words, and
+    /// a word that is not one of them never reaches the draft.
+    #[test]
+    fn a_promotion_strategy_is_chosen_from_the_allowed_values() {
+        let mut state = branches_hub();
+        select(&mut state, "/promotions/0/strategy");
+        let before = state.settings_hub.draft["promotions"][0]["strategy"].clone();
+        press(&mut state, KeyCode::Enter);
+        let screen = text(&drawn(&state, Rect::new(0, 0, 120, 40)));
+        for option in preferences::STRATEGIES {
+            assert!(screen.contains(option), "{option} is offered: {screen}");
+        }
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+        assert!(!state.settings_hub.editing);
+        let after = state.settings_hub.draft["promotions"][0]["strategy"].clone();
+        assert_ne!(after, before);
+        assert!(preferences::STRATEGIES.contains(&after.as_str().unwrap()));
+
+        press(&mut state, KeyCode::Enter);
+        for c in "rebase".chars() {
+            press(&mut state, KeyCode::Char(c));
+        }
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(state.settings_hub.draft["promotions"][0]["strategy"], after);
+        assert!(
+            state.settings_hub.notice.contains("one of"),
+            "{}",
+            state.settings_hub.notice
+        );
+    }
+
+    /// Typing the whole word is as good as highlighting it.
+    #[test]
+    fn a_typed_allowed_value_is_applied() {
+        let mut state = branches_hub();
+        select(&mut state, "/promotions/0/strategy");
+        press(&mut state, KeyCode::Enter);
+        for c in "squash".chars() {
+            press(&mut state, KeyCode::Char(c));
+        }
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(
+            state.settings_hub.draft["promotions"][0]["strategy"],
+            Value::String("squash".into())
+        );
+    }
+
+    /// An agent's confinement is one of three words, offered as a list.
+    #[test]
+    fn confinement_is_chosen_from_a_list() {
+        let mut state = AppState::default();
+        state.decorative_animations = false;
+        let config = preferences::Preferences::default();
+        state.settings_hub = Settings {
+            category: 3,
+            draft: serde_json::to_value(&config.agents).unwrap(),
+            ..Settings::default()
+        };
+        state.settings_hub.original = state.settings_hub.draft.clone();
+        select(&mut state, "/0/confinement");
+        press(&mut state, KeyCode::Enter);
+        let screen = text(&drawn(&state, Rect::new(0, 0, 120, 40)));
+        for option in preferences::CONFINEMENTS {
+            assert!(screen.contains(option), "{option} is offered: {screen}");
+        }
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+        let chosen = state.settings_hub.draft[0]["confinement"].clone();
+        assert!(preferences::CONFINEMENTS.contains(&chosen.as_str().unwrap()));
+    }
+
+    /// The editor is picked from the programs on this machine, and a program
+    /// that is not listed may still be typed.
+    #[test]
+    fn the_editor_is_offered_from_the_programs_found() {
+        let mut state = AppState::default();
+        state.decorative_animations = false;
+        let config = preferences::Preferences::default();
+        state.settings_hub = Settings {
+            category: 6,
+            draft: serde_json::to_value(&config.tools).unwrap(),
+            ..Settings::default()
+        };
+        state.settings_hub.original = state.settings_hub.draft.clone();
+        state.settings_hub.editors = vec!["hx".into(), "nvim".into()];
+        select(&mut state, "/editor");
+        press(&mut state, KeyCode::Enter);
+        let screen = text(&drawn(&state, Rect::new(0, 0, 120, 40)));
+        assert!(screen.contains("nvim"), "{screen}");
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(
+            state.settings_hub.draft["editor"],
+            Value::String("hx".into())
+        );
+
+        press(&mut state, KeyCode::Enter);
+        for c in "mate".chars() {
+            press(&mut state, KeyCode::Char(c));
+        }
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(
+            state.settings_hub.draft["editor"],
+            Value::String("mate".into())
+        );
     }
 
     #[test]

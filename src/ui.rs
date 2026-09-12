@@ -6,7 +6,7 @@ pub mod palette;
 mod selection;
 
 pub use chrome::{
-    animate_modal_border, bordered, draw_dividers, framed, framed_with_activity,
+    animate_modal_border, bordered, draw_dividers, framed, framed_with_activity, key_hints,
     modal_column_areas, modal_columns, modal_frame, modal_frame_with, modal_inner, modal_row_areas,
     modal_rows, section_title,
 };

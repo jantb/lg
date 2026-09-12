@@ -368,13 +368,16 @@ fn linked_repo_line(repo: &NestedRepo, row_width: usize, active: bool) -> Line<'
 }
 
 /// The colour of a running session's dot: green when it is ready for a command,
-/// yellow while it works, red when it is blocked on a question.
+/// yellow while it works — breathing while it is seen to do something, held
+/// dim while a quiet command holds the shell — red when it is blocked on a
+/// question.
 fn activity_color(activity: crate::session::SessionActivity, clock_ms: u64) -> Color {
     match activity {
         crate::session::SessionActivity::Idle => Color::Green,
         crate::session::SessionActivity::Working => {
             crate::ui::palette::breathe((150, 112, 24), (255, 222, 95), clock_ms, 1_200)
         }
+        crate::session::SessionActivity::Running => Color::Rgb(150, 112, 24),
         crate::session::SessionActivity::NeedsInput => Color::Red,
     }
 }
@@ -386,6 +389,7 @@ fn activity_word(activity: crate::session::SessionActivity) -> Option<&'static s
     match activity {
         crate::session::SessionActivity::Idle => None,
         crate::session::SessionActivity::Working => Some("working"),
+        crate::session::SessionActivity::Running => Some("running"),
         crate::session::SessionActivity::NeedsInput => Some("needs input"),
     }
 }

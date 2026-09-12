@@ -124,6 +124,17 @@ impl PtyProcess {
         self.size
     }
 
+    /// Whether something other than the process itself holds the terminal's
+    /// foreground: for a shell, that a command is running. Read from the pty
+    /// the way tmux names a pane's command, so it is true for a build that
+    /// has fallen silent and false at a prompt. `None` when the pty cannot
+    /// say, which is the case on a platform without process groups.
+    pub fn running_command(&self) -> Option<bool> {
+        let leader = self.master.process_group_leader()?;
+        let pid = self.pid?;
+        Some(u32::try_from(leader).ok() != Some(pid))
+    }
+
     pub fn try_recv(&self) -> std::result::Result<PtyMsg, TryRecvError> {
         self.rx.try_recv()
     }
@@ -197,6 +208,46 @@ mod tests {
             env: vec![("TERM".to_string(), "xterm-256color".to_string())],
             env_remove: Vec::new(),
         }
+    }
+
+    /// The foreground group is the shell at its prompt and something else
+    /// while a command runs — the difference between ready and busy for a
+    /// session that never says a word about itself.
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_at_its_prompt_is_told_from_one_running_a_command() {
+        let mut process = PtyProcess::start(
+            &Spawn {
+                program: "/bin/sh".to_string(),
+                args: vec!["-i".to_string()],
+                cwd: std::env::temp_dir(),
+                env: vec![
+                    ("TERM".to_string(), "xterm-256color".to_string()),
+                    ("PS1".to_string(), "$ ".to_string()),
+                ],
+                env_remove: Vec::new(),
+            },
+            (24, 80),
+        )
+        .unwrap();
+        let settled = |process: &PtyProcess, want: bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while process.try_recv().is_ok() {}
+                if process.running_command() == Some(want) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        };
+        assert!(settled(&process, false), "a fresh shell sits at its prompt");
+        process.write(b"sleep 3\n");
+        assert!(
+            settled(&process, true),
+            "a running command holds the foreground"
+        );
+        process.kill();
     }
 
     /// Collect messages until the process reports its exit, or the wait is up.

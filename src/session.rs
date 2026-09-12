@@ -48,8 +48,8 @@ pub enum SessionStatus {
 /// Every kind is the same thing to lg — a program on a pseudo terminal in one
 /// checkout — and they differ only in what is started and how much each says
 /// about itself. claude reports what it is doing through hooks; the others
-/// report nothing, so their dot stays green unless something they run puts a
-/// question on screen.
+/// are read off the terminal: writing to the screen is working, and a choice
+/// list waiting on an answer is a question.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SessionKind {
     Claude,
@@ -101,22 +101,44 @@ impl SessionKind {
 /// Busy or ready comes from claude itself, through the hooks lg starts it with
 /// (see [`crate::hooks`]). Being asked a question is still read off the screen:
 /// the questions worth a red dot include the ones claude puts up before it has
-/// run a single hook. A program that neither reports nor asks reads as
-/// [`SessionActivity::Idle`], which is the honest answer for anything that is
-/// not claude.
+/// run a single hook. A program with no hooks — codex, pi, a shell — is busy
+/// while it is still writing to its screen (see [`OUTPUT_ACTIVE_MS`]) and idle
+/// once it has fallen quiet, which is how a person tells the same thing from
+/// across the room. A shell also hands its terminal to whatever it runs, so a
+/// command that is running but silent reads as [`SessionActivity::Running`]
+/// rather than as a prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionActivity {
     /// Sitting at its prompt with nothing to do — ready for a command.
     Idle,
     /// Busy, and interruptible. Nothing is being asked of us.
     Working,
+    /// A shell with a command in the foreground that has fallen quiet: a
+    /// build waiting on the network, or an editor open. Not ready, and not
+    /// visibly doing anything either.
+    Running,
     /// Blocked on a question only the user can answer.
     NeedsInput,
 }
 
-/// Openings of the questions claude blocks on: tool permissions, file edits,
-/// and the trust prompt a new directory gets.
-const QUESTION_MARKERS: &[&str] = &["do you want", "would you like", "do you trust"];
+/// How long after its last output a program without hooks still counts as
+/// working. Long enough to bridge the pauses in streamed text and a build's
+/// quiet stretches, short enough that a prompt reads as ready before the eye
+/// has moved on.
+pub const OUTPUT_ACTIVE_MS: u128 = 1_500;
+
+/// Openings of the questions an agent blocks on: claude's tool permissions,
+/// file edits and the trust prompt a new directory gets, and the approvals
+/// codex asks for before running a command.
+const QUESTION_MARKERS: &[&str] = &[
+    "do you want",
+    "would you like",
+    "do you trust",
+    "allow command",
+    "allow this",
+    "approve command",
+    "approve this",
+];
 
 /// What a chosen option is ticked with once the question has been answered.
 const ANSWERED_MARKS: &[char] = &['\u{2714}', '\u{2713}'];
@@ -233,6 +255,9 @@ pub struct Session {
     asking: bool,
     /// Hooks reporting in, for a session started with them.
     events: Option<crate::hooks::HookEvents>,
+    /// When the program last wrote to its screen, for the kinds that have no
+    /// hooks to say what they are doing.
+    last_output: Option<std::time::Instant>,
     parser: vt100::Parser,
     process: Option<PtyProcess>,
 }
@@ -256,8 +281,31 @@ impl Session {
         match self.status {
             SessionStatus::Ended(_) => SessionActivity::Idle,
             SessionStatus::Running if self.asking => SessionActivity::NeedsInput,
+            SessionStatus::Running if self.events.is_none() && self.still_writing() => {
+                SessionActivity::Working
+            }
+            SessionStatus::Running if self.command_in_foreground() => SessionActivity::Running,
             SessionStatus::Running => self.activity,
         }
+    }
+
+    /// Whether a shell session has a command running, read off the pty. Only
+    /// a shell hands its terminal to what it runs; an agent keeps the
+    /// foreground itself, so the answer would say nothing about it.
+    fn command_in_foreground(&self) -> bool {
+        self.kind == SessionKind::Terminal
+            && self
+                .process
+                .as_ref()
+                .and_then(PtyProcess::running_command)
+                .unwrap_or(false)
+    }
+
+    /// Whether the program wrote to its screen within the last
+    /// [`OUTPUT_ACTIVE_MS`]. The working signal for anything without hooks.
+    fn still_writing(&self) -> bool {
+        self.last_output
+            .is_some_and(|at| at.elapsed().as_millis() < OUTPUT_ACTIVE_MS)
     }
 
     /// Line for the session pane's frame.
@@ -367,6 +415,7 @@ impl Session {
             match process.try_recv() {
                 Ok(PtyMsg::Output(bytes)) => {
                     self.parser.process(&bytes);
+                    self.last_output = Some(std::time::Instant::now());
                     changed = true;
                     if !focused {
                         self.attention = true;
@@ -546,7 +595,9 @@ impl Sessions {
             .fold((0, 0), |(needs_input, working), session| {
                 match session.activity() {
                     SessionActivity::NeedsInput => (needs_input + 1, working),
-                    SessionActivity::Working => (needs_input, working + 1),
+                    SessionActivity::Working | SessionActivity::Running => {
+                        (needs_input, working + 1)
+                    }
                     SessionActivity::Idle => (needs_input, working),
                 }
             })
@@ -649,6 +700,7 @@ impl Sessions {
             activity: SessionActivity::Idle,
             asking: false,
             events: None,
+            last_output: None,
             parser: vt100::Parser::new(size.0, size.1, SCROLLBACK),
             process: None,
         });
@@ -1301,6 +1353,7 @@ mod tests {
             activity: SessionActivity::Idle,
             asking: false,
             events: None,
+            last_output: None,
             parser: vt100::Parser::new(24, 80, 0),
             process: None,
         }
@@ -1347,6 +1400,35 @@ mod tests {
     #[test]
     fn an_answered_question_stops_reading_as_one() {
         assert!(!is_asking("\u{276f} 1. Yes, I trust this folder \u{2714}"));
+    }
+
+    /// A shell or an agent without hooks has only its screen to be judged by:
+    /// while it is writing it is working, and once it has been quiet for a
+    /// moment it is ready again.
+    #[test]
+    fn a_program_without_hooks_is_working_while_it_writes() {
+        let mut session = fake_of(1, "/a", SessionKind::Terminal);
+        assert_eq!(session.activity(), SessionActivity::Idle);
+        session.last_output = Some(std::time::Instant::now());
+        assert_eq!(session.activity(), SessionActivity::Working);
+        session.last_output = Some(
+            std::time::Instant::now()
+                - std::time::Duration::from_millis(OUTPUT_ACTIVE_MS as u64 + 500),
+        );
+        assert_eq!(session.activity(), SessionActivity::Idle);
+    }
+
+    /// codex asks before running a command the way claude does, with a choice
+    /// list under the question, so it gets the same red dot. Prose that merely
+    /// mentions approving something does not.
+    #[test]
+    fn a_codex_approval_prompt_is_a_question() {
+        let screen =
+            "Allow command?\n\u{276f} 1. Yes (y)\n  2. Yes, and don't ask again\n  3. No\n";
+        assert!(is_asking(screen));
+        assert!(!is_asking(
+            "I approve of this change; the reviewer approved it too.\n1. Notes\n"
+        ));
     }
 
     /// A permission prompt comes up mid-turn, so the hooks have the session down

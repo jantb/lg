@@ -83,6 +83,14 @@ impl Agent {
         self.confinement == "terrarium" && self.adapter != "terminal"
     }
 }
+/// The integrations an agent may be driven through. The settings picker offers
+/// exactly these, so a typo cannot reach the file.
+pub const ADAPTERS: &[&str] = &["claude", "codex", "pi", "terminal"];
+/// How tightly an agent is confined: the terrarium sandbox, the agent's own
+/// permission harness, or nothing.
+pub const CONFINEMENTS: &[&str] = &["terrarium", "agent", "direct"];
+/// The ways a promotion may land on an environment branch.
+pub const STRATEGIES: &[&str] = &["merge", "squash", "ff-only"];
 /// The confinement an adapter starts out with: coding agents bring their own
 /// permission harness and run under it, anything else runs unconfined.
 pub fn default_confinement(adapter: &str) -> &'static str {
@@ -535,7 +543,7 @@ impl Preferences {
             {
                 bail!("promotion references an unknown environment");
             }
-            if !["merge", "squash", "ff-only"].contains(&p.strategy.as_str()) {
+            if !STRATEGIES.contains(&p.strategy.as_str()) {
                 bail!("promotion strategy must be merge, squash or ff-only");
             }
             let mut seen = HashSet::new();
@@ -559,10 +567,10 @@ impl Preferences {
             if a.executable.is_empty() || a.executable.contains('\0') {
                 bail!("agent executable must not be empty");
             }
-            if !["claude", "codex", "pi", "terminal"].contains(&a.adapter.as_str()) {
+            if !ADAPTERS.contains(&a.adapter.as_str()) {
                 bail!("unknown agent adapter {}", a.adapter);
             }
-            if !["terrarium", "agent", "direct"].contains(&a.confinement.as_str()) {
+            if !CONFINEMENTS.contains(&a.confinement.as_str()) {
                 bail!("confinement must be terrarium, agent or direct");
             }
             if a.confinement == "agent" && !["claude", "codex"].contains(&a.adapter.as_str()) {
