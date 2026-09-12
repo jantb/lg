@@ -181,8 +181,6 @@ pub fn run(state: &mut AppState, action: RepoAction) {
     }
 }
 
-use super::actions::sync_selected_worktree;
-
 fn title(state: &AppState) -> String {
     let what = match selected_tree_row(state) {
         Some(NestedRepoTreeRow::Session { id }) => state
