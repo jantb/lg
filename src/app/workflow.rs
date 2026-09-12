@@ -1,4 +1,4 @@
-use crate::config::{is_deploy_branch_name, protected_branch_list};
+use crate::config::protected_branch_list;
 use crate::state::{
     AppState, BranchView, ConflictFollowup, FlowAction, FlowRun, Modal, Pane, SafetyRefCleanup,
     WorkflowJob, WorkflowMsg,
@@ -33,7 +33,7 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
     }
     if matches!(action, FlowAction::MergeMain) && !state.merge_main_available() {
         state.modal = Modal::None;
-        let status = merge_main_unavailable_status(&current);
+        let status = merge_main_unavailable_status(state, &current);
         state.set_status(status, true);
         return;
     }
@@ -160,8 +160,8 @@ fn selected_action_branch(state: &AppState, current: &str) -> String {
     current.to_string()
 }
 
-fn merge_main_unavailable_status(current: &str) -> &'static str {
-    if is_deploy_branch_name(current) {
+fn merge_main_unavailable_status(state: &AppState, current: &str) -> &'static str {
+    if state.is_deploy_branch(current) {
         "current branch is not behind origin/main"
     } else {
         "checkout a feature branch before merging main"

@@ -26,8 +26,9 @@ pub use attrs::{
     FileAttrs, SUPPRESSED_DIFF_MARKER, file_attrs, is_suppressed_diff_body, suppress_generated_diff,
 };
 pub use branches::{
-    Branch, RemoteBranch, list_branches, list_remote_branches, nested_repo_branches,
-    nested_repo_branches_at, nested_repo_remote_branches, nested_repo_remote_branches_at,
+    Branch, RemoteBranch, list_branches, list_remote_branches, local_branch_names,
+    nested_repo_branches, nested_repo_branches_at, nested_repo_remote_branches,
+    nested_repo_remote_branches_at,
 };
 use commits::preferred_commit_ref;
 pub use commits::{
@@ -70,7 +71,7 @@ pub use nested::{
 pub use plain::{init_repository, new_file_diff, new_file_entries, new_files_diff};
 pub use release::{
     BranchReleaseStatus, ReleaseBranches, ReleaseEnv, ReleaseTargetStatus, branch_release_status,
-    release_branches,
+    configured_release_branches, release_branches,
 };
 pub use remote::{merge_upstream, pull, push, remote_url, set_branch_upstream};
 pub use review::{

@@ -1,6 +1,5 @@
 //! What the branch lists hold and how the selected branch stands against main.
 
-use crate::config::{BRANCH_TEST, DEV_BRANCH_NAMES, is_deploy_branch_name};
 use crate::git::{ReleaseEnv, RemoteBranch};
 
 use super::AppState;
@@ -89,22 +88,40 @@ impl AppState {
         })
     }
 
-    /// The branch that deploys `env` in this checkout, if it has one. Falls back
-    /// to the local branch list so the panels are right before the first
-    /// refresh snapshot lands.
+    /// The branch that deploys `env` in this checkout, if it has one. Before
+    /// the first refresh snapshot lands, the environments are read from the
+    /// configuration and checked against the local branch list so the panels
+    /// are right from the start.
     pub fn release_branch(&self, env: ReleaseEnv) -> Option<&str> {
-        if self.release_branches.configured {
+        if self.release_branches.configured || self.release_branches.any() {
             return self.release_branches.branch(env);
         }
-        if let Some(branch) = self.release_branches.branch(env) {
-            return Some(branch);
+        let detected = crate::git::configured_release_branches(&self.environments());
+        let name = detected.branch(env)?;
+        self.branches
+            .iter()
+            .map(|b| b.name.as_str())
+            .find(|b| *b == name)
+    }
+
+    /// The environments in force: the saved ones, or the ones this checkout's
+    /// branch list implies when nothing is saved.
+    fn environments(&self) -> Vec<crate::preferences::Environment> {
+        let loaded = crate::preferences::load();
+        if loaded.sources.contains_key("branches") {
+            return loaded.config.branches.environments;
         }
-        match env {
-            ReleaseEnv::Dev => DEV_BRANCH_NAMES
-                .into_iter()
-                .find(|name| self.branch_exists(name)),
-            ReleaseEnv::Test => self.branch_exists(BRANCH_TEST).then_some(BRANCH_TEST),
-        }
+        let names: Vec<String> = self.branches.iter().map(|b| b.name.clone()).collect();
+        crate::preferences::detect_branches(&names).environments
+    }
+
+    /// Whether the branch deploys an environment other than production, so it
+    /// is released into rather than treated as a feature branch.
+    pub fn is_deploy_branch(&self, name: &str) -> bool {
+        let base = crate::preferences::base_branch();
+        self.environments()
+            .iter()
+            .any(|e| !e.branch.is_empty() && e.branch != base && e.branch == name)
     }
 
     pub fn branch_actions_available(&self) -> bool {
@@ -118,7 +135,7 @@ impl AppState {
         };
         match branch {
             value if value == configured_base.as_str() => false,
-            _ if is_deploy_branch_name(branch) => {
+            _ if self.is_deploy_branch(branch) => {
                 self.current_branch_behind_main().is_some_and(|n| n > 0)
             }
             _ => true,

@@ -4,7 +4,7 @@ use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
-use crate::config::{BRANCH_TEST, DEV_BRANCH_NAMES, is_protected_branch_name};
+use crate::config::is_protected_branch_name;
 
 use super::commits::{commit_oid, preferred_commit_ref, rev_list};
 use super::run;
@@ -173,21 +173,10 @@ pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
     Ok(status)
 }
 
-/// The deploy branches this checkout actually has. Each environment is looked
-/// up on its own so a repository with only one of them still gets its release
-/// actions and deployment status.
+/// The deploy branches this checkout has: the saved environments, or the
+/// ones detected from its local branches when nothing is saved.
 pub fn release_branches() -> ReleaseBranches {
-    let loaded = crate::preferences::load();
-    if loaded.sources.contains_key("branches") {
-        return configured_release_branches(&loaded.config.branches.environments);
-    }
-    ReleaseBranches::new(
-        DEV_BRANCH_NAMES
-            .into_iter()
-            .find(|name| release_branch_ref(Some(name)).is_some())
-            .map(str::to_string),
-        release_branch_ref(Some(BRANCH_TEST)).map(|_| BRANCH_TEST.to_string()),
-    )
+    configured_release_branches(&crate::preferences::load().config.branches.environments)
 }
 
 /// The release slots of a configured environment list. An environment named
@@ -204,10 +193,9 @@ pub fn configured_release_branches(
     let by_id = |id: &str| with_branch.iter().find(|e| e.id == id).copied();
     let named_dev = by_id("dev");
     let named_test = by_id("test");
-    let mut rest = with_branch
-        .iter()
-        .copied()
-        .filter(|e| Some(*e) != named_dev && Some(*e) != named_test);
+    let mut rest = with_branch.iter().copied().filter(|e| {
+        Some(*e) != named_dev && Some(*e) != named_test && e.id != crate::preferences::PROD_ENV_ID
+    });
     let dev = named_dev.or_else(|| rest.next());
     let test = named_test.or_else(|| rest.next());
     let mut branches = ReleaseBranches::new(
@@ -324,5 +312,13 @@ mod tests {
         assert_eq!(branches.branch(ReleaseEnv::Test), Some("test"));
         let empty = configured_release_branches(&[env("staging", "")]);
         assert!(!empty.any());
+    }
+
+    #[test]
+    fn production_never_takes_a_release_slot() {
+        let detected = crate::preferences::detect_branches(&["main".into(), "test".into()]);
+        let branches = configured_release_branches(&detected.environments);
+        assert_eq!(branches.branch(ReleaseEnv::Dev), None);
+        assert_eq!(branches.branch(ReleaseEnv::Test), Some("test"));
     }
 }

@@ -27,6 +27,21 @@ pub struct RemoteBranch {
     pub last_commit_unix: Option<i64>,
 }
 
+/// The names of the local branches, without any status. Empty outside a
+/// repository, so callers that only need to know what exists never fail.
+pub fn local_branch_names() -> Vec<String> {
+    run(&["branch", "--format=%(refname:short)"])
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn list_branches() -> Result<Vec<Branch>> {
     let configured_base = crate::preferences::base_branch();
     let configured_remote = crate::preferences::remote();

@@ -87,21 +87,24 @@ pub const BRANCH_TEST: &str = "test";
 /// Dev deploy branch names in preference order.
 pub const DEV_BRANCH_NAMES: [&str; 2] = [BRANCH_DEV, BRANCH_DEV_SHORT];
 
+/// The branches the environments deploy from, other than the integration
+/// branch: the ones a feature branch is released into. Read from the saved
+/// configuration, or detected from the checkout's own branches when nothing
+/// is saved, so a branch the checkout does not have is never one of them.
+pub fn deploy_branches() -> Vec<String> {
+    let branches = crate::preferences::load().config.branches;
+    branches
+        .environments
+        .into_iter()
+        .filter(|e| !e.branch.is_empty() && e.branch != branches.base)
+        .map(|e| e.branch)
+        .collect()
+}
+
 /// Whether the name is one lg deploys from rather than treating as a feature
-/// branch. A repository needs only one of them: alv.no deploys `test` and has
-/// no develop branch, so the names are checked one at a time.
+/// branch.
 pub fn is_deploy_branch_name(name: &str) -> bool {
-    let loaded = crate::preferences::load();
-    if loaded.sources.contains_key("branches") {
-        loaded
-            .config
-            .branches
-            .environments
-            .iter()
-            .any(|e| !e.branch.is_empty() && e.branch == name)
-    } else {
-        name == BRANCH_TEST || DEV_BRANCH_NAMES.contains(&name)
-    }
+    deploy_branches().iter().any(|b| b == name)
 }
 
 /// Deploy branches plus `main`, the branches lg refuses to treat as a feature
@@ -113,21 +116,7 @@ pub fn is_protected_branch_name(name: &str) -> bool {
 
 /// Deploy branch names for error messages, in promotion order.
 pub fn deploy_branch_list() -> String {
-    let loaded = crate::preferences::load();
-    if loaded.sources.contains_key("branches") {
-        return loaded
-            .config
-            .branches
-            .environments
-            .iter()
-            .filter(|e| !e.branch.is_empty())
-            .map(|e| e.branch.clone())
-            .collect::<Vec<_>>()
-            .join(", ");
-    }
-    let mut names = DEV_BRANCH_NAMES.to_vec();
-    names.push(BRANCH_TEST);
-    names.join(", ")
+    deploy_branches().join(", ")
 }
 
 /// Protected branch names for error messages, in promotion order.

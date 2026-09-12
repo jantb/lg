@@ -2,8 +2,6 @@
 
 use anyhow::{Context, Result};
 
-use crate::config::{BRANCH_TEST, DEV_BRANCH_NAMES};
-
 use super::super::{head_branch, run, run_combined};
 use super::*;
 
@@ -75,8 +73,8 @@ fn ensure_target_matches_remote(target_branch: &str) -> Result<()> {
     )
 }
 
-/// What the deploy branch is called as an environment: the configured
-/// environment fed by that branch, or the built-in spelling.
+/// What the deploy branch is called as an environment: the environment fed
+/// by that branch, or the branch's own name.
 fn release_environment(target_branch: &str) -> String {
     let loaded = crate::preferences::load();
     if loaded.sources.contains_key("branches")
@@ -89,13 +87,7 @@ fn release_environment(target_branch: &str) -> String {
     {
         return env.id.clone();
     }
-    if DEV_BRANCH_NAMES.contains(&target_branch) {
-        "dev".into()
-    } else if target_branch == BRANCH_TEST {
-        "test".into()
-    } else {
-        target_branch.into()
-    }
+    target_branch.into()
 }
 
 fn release_current_branch(

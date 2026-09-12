@@ -82,7 +82,9 @@ pub struct Settings {
     cursor: usize,
     /// Local branch names, offered when a field names a branch.
     branches: Vec<String>,
-    /// The highlighted branch in the picker, an index into `choices`.
+    /// The models the endpoint serves, offered when a field names a model.
+    models: Vec<String>,
+    /// The highlighted option in the picker, an index into `choices`.
     choice: Option<usize>,
     /// Whether the picker's text has been typed rather than carried over from
     /// the field; only typed text narrows the list.
@@ -115,6 +117,7 @@ impl Default for Settings {
             diagnostics: None,
             cursor: 0,
             branches: Vec::new(),
+            models: Vec::new(),
             choice: None,
             typed: false,
             scroll: Cell::new(0),
@@ -138,11 +141,13 @@ impl Settings {
             value.get(self.key()).cloned().unwrap_or(json!({}))
         };
         self.original = self.draft.clone();
-        self.source = loaded
-            .sources
-            .get(self.key())
-            .cloned()
-            .unwrap_or_else(|| "Built-in defaults / inherited Git configuration".into());
+        self.source = loaded.sources.get(self.key()).cloned().unwrap_or_else(|| {
+            if self.key() == "branches" {
+                preferences::DETECTED_SOURCE.into()
+            } else {
+                "Built-in defaults / inherited Git configuration".into()
+            }
+        });
         let prefix = format!("{}.", self.key());
         for (key, source) in loaded
             .sources
@@ -170,6 +175,10 @@ pub fn open(state: &mut AppState, category: usize) {
     };
     state.settings_hub.folder = preferences::default_folder().display().to_string();
     state.settings_hub.branches = local_branches(state);
+    if crate::llm::available_models().is_empty() {
+        crate::llm::prime_models_async();
+    }
+    state.settings_hub.models = crate::llm::available_models();
     state.settings_hub.reload();
     load_sessions(state);
     state.modal = Modal::Settings;
@@ -217,26 +226,47 @@ fn names_branch(hub: &Settings, field: &Field) -> bool {
         && (field.path == "/base"
             || (field.path.starts_with("/environments/") && field.key == "branch"))
 }
-/// The local branches matching what has been typed so far; all of them
-/// while the text is still the field's own value.
+/// Whether the field names the model requests are sent to.
+fn names_model(hub: &Settings, field: &Field) -> bool {
+    hub.key() == "models" && field.path == "/model"
+}
+/// What a field may be picked from: local branches for a branch, the
+/// endpoint's models for the model. Fields that take free text have none.
+fn options<'a>(hub: &'a Settings, field: &Field) -> Option<(&'a [String], &'static str)> {
+    if names_branch(hub, field) {
+        Some((&hub.branches, "local branch"))
+    } else if names_model(hub, field) {
+        Some((&hub.models, "model"))
+    } else {
+        None
+    }
+}
+/// The picker over the selected field, if that field has one.
+fn picker(hub: &Settings) -> Option<(&[String], &'static str)> {
+    if hub.editing_folder {
+        return None;
+    }
+    fields(hub).get(hub.selected).and_then(|f| options(hub, f))
+}
+/// The options matching what has been typed so far; all of them while the
+/// text is still the field's own value.
 fn choices(hub: &Settings) -> Vec<String> {
     let query = if hub.typed {
         hub.input.to_lowercase()
     } else {
         String::new()
     };
-    hub.branches
+    picker(hub)
+        .map(|(options, _)| options)
+        .unwrap_or_default()
         .iter()
         .filter(|b| b.to_lowercase().contains(&query))
         .cloned()
         .collect()
 }
-/// Whether the field being edited offers the branch picker.
-fn picking_branch(hub: &Settings) -> bool {
-    !hub.editing_folder
-        && fields(hub)
-            .get(hub.selected)
-            .is_some_and(|f| names_branch(hub, f))
+/// Whether the field being edited offers a picker.
+fn picking(hub: &Settings) -> bool {
+    picker(hub).is_some()
 }
 fn move_choice(hub: &mut Settings, down: bool) {
     let count = choices(hub).len();
@@ -267,8 +297,8 @@ fn start_edit(hub: &mut Settings) {
     hub.cursor = hub.input.chars().count();
     hub.choice = None;
     hub.typed = false;
-    if names_branch(hub, &f) {
-        hub.choice = hub.branches.iter().position(|b| *b == hub.input);
+    if let Some((options, _)) = options(hub, &f) {
+        hub.choice = options.iter().position(|b| *b == hub.input);
     }
     hub.editing = true;
 }
@@ -429,7 +459,7 @@ fn describe(category: &str, field: &Field) -> Option<&'static str> {
         }
         ("writing", _, "review_style") => "House rules the reviewer checks changes against.",
         ("models", _, "model") => {
-            "Model used for commit messages, reviews and summaries. L opens the model picker with connectivity checks."
+            "Model used for commit messages, reviews and summaries. Enter picks from the models the endpoint serves; L opens the model modal with connectivity checks."
         }
         ("models", _, "endpoint") => "Chat completions endpoint the model is reached at.",
         ("agents", _, "name") => "How the agent is listed in the session picker.",
@@ -683,9 +713,9 @@ fn commit_edit(hub: &mut Settings) -> Result<()> {
         .get(hub.selected)
         .cloned()
         .context("select a field")?;
-    let picked = names_branch(hub, &field)
-        .then(|| hub.choice.and_then(|i| choices(hub).get(i).cloned()))
-        .flatten();
+    let picked = options(hub, &field)
+        .and(hub.choice)
+        .and_then(|i| choices(hub).get(i).cloned());
     let value = match field.value {
         Value::String(_) => Value::String(picked.clone().unwrap_or_else(|| hub.input.clone())),
         Value::Bool(_) => Value::Bool(hub.input.parse().context("use true or false")?),
@@ -915,8 +945,8 @@ fn render_editor(hub: &Settings, area: Rect, frame: &mut Frame) {
             .unwrap_or_else(|| "Editing".into())
     };
     ui::section_title(frame, area, &title);
-    if picking_branch(hub) {
-        render_branch_picker(hub, area, frame);
+    if let Some((_, noun)) = picker(hub) {
+        render_picker(hub, noun, area, frame);
         return;
     }
     let (row, col) = cursor_position(&hub.input, hub.cursor, area.width.max(1) as usize);
@@ -932,17 +962,17 @@ fn render_editor(hub: &Settings, area: Rect, frame: &mut Frame) {
     }
 }
 
-/// The typed name on the first line, and below it the local branches that
-/// contain it, with the highlighted one applied by Enter.
-fn render_branch_picker(hub: &Settings, area: Rect, frame: &mut Frame) {
+/// The typed name on the first line, and below it the options that contain
+/// it, with the highlighted one applied by Enter.
+fn render_picker(hub: &Settings, noun: &str, area: Rect, frame: &mut Frame) {
     let choices = choices(hub);
     let mut lines = vec![Line::from(vec![
         Span::raw(hub.input.clone()),
         Span::styled("\u{258f}", Style::default().fg(palette::ACCENT)),
         muted(if choices.is_empty() {
-            "   no local branch matches; Enter keeps the typed name"
+            format!("   no {noun} matches; Enter keeps the typed name")
         } else {
-            "   \u{2191}/\u{2193} pick a local branch"
+            format!("   \u{2191}/\u{2193} pick a {noun}")
         }),
     ])];
     let room = area.height.saturating_sub(1) as usize;
@@ -978,6 +1008,7 @@ fn render_detail(hub: &Settings, area: Rect, frame: &mut Frame) {
     };
     let kind = match field.value {
         _ if names_branch(hub, field) => "a local branch; Enter opens the picker",
+        _ if names_model(hub, field) => "a model the endpoint serves; Enter opens the picker",
         Value::Bool(_) => "true or false; Enter toggles",
         Value::Number(_) => "a whole number",
         Value::String(_) => "text; Shift-Enter adds a line",
@@ -1105,9 +1136,9 @@ fn category_keys(category: &str) -> (&'static [(&'static str, &'static str)], &'
                 ("p", "add promotion"),
                 ("D", "remove entry"),
                 ("t", "trunk template"),
-                ("b", "environment template"),
+                ("b", "detect from branches"),
             ],
-            "Environments with id dev or test drive the release actions and the deployment block. An environment with an empty branch is hidden.",
+            "Nothing saved means the environments are read off the local branches: develop or dev, test, and main as production. Environments with id dev or test drive the release actions. An environment with an empty branch is hidden.",
         ),
         "tools" => (&[], "Folder scope applies below the folder chosen with f."),
         "activity" => (
@@ -1137,9 +1168,9 @@ fn hint_line(keys: &[(&str, &str)]) -> Line<'static> {
 }
 fn render_footer(hub: &Settings, area: Rect, frame: &mut Frame) {
     let mut lines = Vec::new();
-    if hub.editing && picking_branch(hub) {
+    if hub.editing && picking(hub) {
         lines.push(hint_line(&[
-            ("\u{2191}/\u{2193}", "pick branch"),
+            ("\u{2191}/\u{2193}", "pick"),
             ("Enter", "apply"),
             ("Ctrl-U", "clear"),
             ("Ctrl-S", "apply and save"),
@@ -1254,6 +1285,10 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
 }
 fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
     state.settings_hub.branches = local_branches(state);
+    let models = crate::llm::available_models();
+    if !models.is_empty() {
+        state.settings_hub.models = models;
+    }
     let hub = &mut state.settings_hub;
     hub.notice_error = false;
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -1270,7 +1305,7 @@ fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
     if hub.editing && !(ctrl && key.code == KeyCode::Char('s')) {
-        let picking = picking_branch(hub);
+        let picking = picking(hub);
         match key.code {
             KeyCode::Esc => hub.editing = false,
             KeyCode::Down | KeyCode::Up if picking => {
@@ -1498,15 +1533,10 @@ fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
             hub.selected = 0;
         }
         KeyCode::Char('t') if hub.key() == "branches" => {
-            hub.draft = serde_json::to_value(preferences::Branches {
-                environments: vec![],
-                promotions: vec![],
-                protected: vec!["main".into()],
-                ..preferences::Branches::default()
-            })?
+            hub.draft = serde_json::to_value(preferences::Branches::default())?
         }
         KeyCode::Char('b') if hub.key() == "branches" => {
-            hub.draft = serde_json::to_value(preferences::Branches::default())?
+            hub.draft = serde_json::to_value(preferences::detect_branches(&hub.branches))?
         }
         KeyCode::Char('i') if hub.key() == "sandbox" => {
             crate::terrarium::initialize_current(hub.draft["preset"].as_str().unwrap_or("none"))?;
@@ -1617,7 +1647,7 @@ pub fn handle_paste(state: &mut AppState, text: &str) -> bool {
         return false;
     }
     let hub = &mut state.settings_hub;
-    if picking_branch(hub) && !hub.typed {
+    if picking(hub) && !hub.typed {
         hub.input.clear();
         hub.cursor = 0;
     }
@@ -1632,13 +1662,16 @@ mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 
-    /// A hub over the built-in branches configuration, with no file read.
+    /// A hub over the configuration detected for a checkout with develop and
+    /// test branches, with no file read.
     fn branches_hub() -> AppState {
         let mut state = AppState::default();
         state.decorative_animations = false;
+        let detected =
+            preferences::detect_branches(&["main".into(), "develop".into(), "test".into()]);
         state.settings_hub = Settings {
             category: 5,
-            draft: serde_json::to_value(preferences::Branches::default()).unwrap(),
+            draft: serde_json::to_value(detected).unwrap(),
             ..Settings::default()
         };
         state.settings_hub.original = state.settings_hub.draft.clone();
@@ -1665,7 +1698,7 @@ mod tests {
     #[test]
     fn nested_entries_are_shown_under_their_own_heading() {
         let state = branches_hub();
-        let screen = text(&drawn(&state, Rect::new(0, 0, 120, 40)));
+        let screen = text(&drawn(&state, Rect::new(0, 0, 120, 60)));
         assert!(screen.contains("#1 Development"), "{screen}");
         assert!(screen.contains("#1 feature \u{2192} dev"), "{screen}");
         assert!(
@@ -1812,6 +1845,34 @@ mod tests {
         assert_eq!(
             state.settings_hub.draft["environments"][1]["branch"],
             Value::String("staging".into())
+        );
+    }
+
+    #[test]
+    fn the_model_is_picked_from_what_the_endpoint_serves() {
+        let mut state = AppState::default();
+        state.decorative_animations = false;
+        state.settings_hub = Settings {
+            category: 2,
+            draft: json!({"endpoint": "http://localhost:8000/v1/chat/completions", "model": "old"}),
+            models: vec!["Qwen3-27B".into(), "gpt-oss-120b".into()],
+            ..Settings::default()
+        };
+        state.settings_hub.original = state.settings_hub.draft.clone();
+        select(&mut state, "/model");
+        press(&mut state, KeyCode::Enter);
+        let screen = text(&drawn(&state, Rect::new(0, 0, 120, 40)));
+        assert!(screen.contains("Qwen3-27B"), "{screen}");
+        assert!(screen.contains("gpt-oss-120b"), "{screen}");
+        for c in "gpt".chars() {
+            press(&mut state, KeyCode::Char(c));
+        }
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+        assert!(!state.settings_hub.editing);
+        assert_eq!(
+            state.settings_hub.draft["model"],
+            Value::String("gpt-oss-120b".into())
         );
     }
 

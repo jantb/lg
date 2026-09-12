@@ -86,13 +86,6 @@ impl AppState {
     /// Whether this checkout deploys from any branch at all. One deploy branch
     /// is enough — the release actions for the missing one stay hidden.
     pub fn flow_available(&self) -> bool {
-        if self.release_branches.configured {
-            return !crate::preferences::load()
-                .config
-                .branches
-                .environments
-                .is_empty();
-        }
         self.release_branch(ReleaseEnv::Dev).is_some()
             || self.release_branch(ReleaseEnv::Test).is_some()
     }

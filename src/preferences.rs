@@ -151,36 +151,74 @@ impl Default for Promotion {
         }
     }
 }
+/// A checkout with nothing saved has no environments of its own; what it
+/// deploys is read off its branches by [`detect_branches`].
 impl Default for Branches {
     fn default() -> Self {
         Self {
-            base: "main".into(),
-            remote: "origin".into(),
-            protected: vec!["main".into(), "develop".into(), "dev".into(), "test".into()],
-            environments: vec![
-                Environment {
-                    id: "dev".into(),
-                    name: "Development".into(),
-                    remote: "origin".into(),
-                    branch: "develop".into(),
-                    url: String::new(),
-                },
-                Environment {
-                    id: "test".into(),
-                    name: "Test".into(),
-                    remote: "origin".into(),
-                    branch: "test".into(),
-                    url: String::new(),
-                },
-            ],
-            promotions: vec![
-                Promotion::default(),
-                Promotion {
-                    to: "test".into(),
-                    ..Promotion::default()
-                },
-            ],
+            base: crate::config::BRANCH_MAIN.into(),
+            remote: crate::config::DEFAULT_PUSH_REMOTE.into(),
+            protected: vec![crate::config::BRANCH_MAIN.into()],
+            environments: vec![],
+            promotions: vec![],
         }
+    }
+}
+/// The id of the environment the integration branch deploys.
+pub const PROD_ENV_ID: &str = "prod";
+/// Where the detected configuration is said to come from.
+pub const DETECTED_SOURCE: &str = "Detected from local branches";
+/// The branch configuration a checkout implies. `develop` or `dev` is the
+/// development environment and `test` the test environment, when those
+/// branches exist; the integration branch is production unless a `prod`
+/// branch exists to take that place.
+pub fn detect_branches(local: &[String]) -> Branches {
+    let has = |name: &str| local.iter().any(|b| b == name);
+    let base = if !has(crate::config::BRANCH_MAIN) && has("master") {
+        "master".to_string()
+    } else {
+        crate::config::BRANCH_MAIN.to_string()
+    };
+    let remote = crate::config::DEFAULT_PUSH_REMOTE.to_string();
+    let environment = |id: &str, name: &str, branch: &str| Environment {
+        id: id.into(),
+        name: name.into(),
+        remote: remote.clone(),
+        branch: branch.into(),
+        url: String::new(),
+    };
+    let mut environments = Vec::new();
+    if let Some(dev) = crate::config::DEV_BRANCH_NAMES
+        .into_iter()
+        .find(|name| has(name))
+    {
+        environments.push(environment("dev", "Development", dev));
+    }
+    if has(crate::config::BRANCH_TEST) {
+        environments.push(environment("test", "Test", crate::config::BRANCH_TEST));
+    }
+    let prod = if has(PROD_ENV_ID) { PROD_ENV_ID } else { &base };
+    environments.push(environment(PROD_ENV_ID, "Production", prod));
+    let promotions = environments
+        .iter()
+        .filter(|e| e.id != PROD_ENV_ID)
+        .map(|e| Promotion {
+            to: e.id.clone(),
+            ..Promotion::default()
+        })
+        .collect();
+    let mut protected = vec![base.clone()];
+    for e in &environments {
+        if !protected.contains(&e.branch) {
+            protected.push(e.branch.clone());
+        }
+    }
+    Branches {
+        base,
+        remote,
+        protected,
+        environments,
+        promotions,
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -369,6 +407,11 @@ fn load_uncached() -> Loaded {
             }
             Err(e) => errors.push(format!("{}: {e}", path.display())),
         }
+    }
+    if !sources.contains_key("branches") {
+        config["branches"] =
+            serde_json::to_value(detect_branches(&crate::git::local_branch_names()))
+                .expect("serializable branches");
     }
     if let Ok(v) = std::env::var("LG_LLM_MODEL") {
         config["models"]["model"] = v.into();
@@ -584,7 +627,36 @@ pub fn configured_category(category: &str) -> bool {
 }
 
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-thread_local! { static CACHE: std::cell::RefCell<Option<(std::time::Instant, PathBuf, u64, Loaded)>> = const { std::cell::RefCell::new(None) }; }
+/// One loaded configuration, kept for a moment so the many readers in a frame
+/// share a single read.
+struct Cached {
+    at: std::time::Instant,
+    root: PathBuf,
+    generation: u64,
+    /// The repository's shared Git directory, where its branches are kept.
+    common_dir: Option<PathBuf>,
+    refs: RefsFingerprint,
+    loaded: Loaded,
+}
+/// When the top-level branches last changed: the modification times of the
+/// loose-refs directory and the packed-refs file. Branches are detected from
+/// the checkout, so a branch made or deleted a moment ago must show up at once
+/// rather than after the cache expires.
+type RefsFingerprint = (Option<std::time::SystemTime>, Option<std::time::SystemTime>);
+fn refs_fingerprint(common_dir: Option<&Path>) -> RefsFingerprint {
+    let modified = |name: &str| {
+        common_dir
+            .and_then(|dir| std::fs::metadata(dir.join(name)).ok())
+            .and_then(|meta| meta.modified().ok())
+    };
+    (modified("refs/heads"), modified("packed-refs"))
+}
+fn common_dir() -> Option<PathBuf> {
+    let out = crate::git::run(&["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok()?;
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+thread_local! { static CACHE: std::cell::RefCell<Option<Cached>> = const { std::cell::RefCell::new(None) }; }
 pub fn invalidate() {
     GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
@@ -593,15 +665,25 @@ pub fn load() -> Loaded {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
     let generation = GENERATION.load(std::sync::atomic::Ordering::Relaxed);
     CACHE.with(|cache| {
-        if let Some((at, key, stored, loaded)) = cache.borrow().as_ref()
-            && key == &root
-            && *stored == generation
-            && at.elapsed() < std::time::Duration::from_secs(2)
+        if let Some(cached) = cache.borrow().as_ref()
+            && cached.root == root
+            && cached.generation == generation
+            && cached.at.elapsed() < std::time::Duration::from_secs(2)
+            && cached.refs == refs_fingerprint(cached.common_dir.as_deref())
         {
-            return loaded.clone();
+            return cached.loaded.clone();
         }
+        let common_dir = common_dir();
+        let refs = refs_fingerprint(common_dir.as_deref());
         let loaded = load_uncached();
-        *cache.borrow_mut() = Some((std::time::Instant::now(), root, generation, loaded.clone()));
+        *cache.borrow_mut() = Some(Cached {
+            at: std::time::Instant::now(),
+            root,
+            generation,
+            common_dir,
+            refs,
+            loaded: loaded.clone(),
+        });
         loaded
     })
 }
@@ -671,4 +753,67 @@ pub fn import_document(scope: Scope, patch: serde_json::Value) -> Result<()> {
     atomic_write(&path, toml::to_string_pretty(&document)?.as_bytes())?;
     invalidate();
     Ok(())
+}
+
+#[cfg(test)]
+mod detect_tests {
+    use super::*;
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_string()).collect()
+    }
+    fn valid(b: &Branches) {
+        Preferences {
+            branches: b.clone(),
+            ..Preferences::default()
+        }
+        .validate()
+        .unwrap();
+    }
+    fn branch_of<'a>(b: &'a Branches, id: &str) -> Option<&'a str> {
+        b.environments
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| e.branch.as_str())
+    }
+
+    #[test]
+    fn a_checkout_without_deploy_branches_only_has_production_on_main() {
+        let b = detect_branches(&names(&["main", "feature/x"]));
+        assert_eq!(branch_of(&b, "prod"), Some("main"));
+        assert_eq!(branch_of(&b, "dev"), None);
+        assert_eq!(branch_of(&b, "test"), None);
+        assert!(b.promotions.is_empty());
+        valid(&b);
+    }
+
+    #[test]
+    fn dev_and_test_branches_become_environments_with_promotions() {
+        let b = detect_branches(&names(&["main", "dev", "test"]));
+        assert_eq!(branch_of(&b, "dev"), Some("dev"));
+        assert_eq!(branch_of(&b, "test"), Some("test"));
+        assert_eq!(branch_of(&b, "prod"), Some("main"));
+        let targets: Vec<_> = b.promotions.iter().map(|p| p.to.as_str()).collect();
+        assert!(targets.contains(&"dev") && targets.contains(&"test"));
+        assert!(!targets.contains(&"prod"));
+        for e in &b.environments {
+            assert!(b.protected.contains(&e.branch), "{} unprotected", e.branch);
+        }
+        valid(&b);
+    }
+
+    #[test]
+    fn a_local_prod_branch_is_production_instead_of_main() {
+        let b = detect_branches(&names(&["main", "prod", "develop"]));
+        assert_eq!(branch_of(&b, "prod"), Some("prod"));
+        assert_eq!(branch_of(&b, "dev"), Some("develop"));
+        assert_eq!(b.base, "main");
+    }
+
+    #[test]
+    fn master_is_the_integration_branch_when_there_is_no_main() {
+        let b = detect_branches(&names(&["master", "test"]));
+        assert_eq!(b.base, "master");
+        assert_eq!(branch_of(&b, "prod"), Some("master"));
+    }
 }
