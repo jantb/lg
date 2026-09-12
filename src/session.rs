@@ -994,7 +994,8 @@ pub fn size_for_pane(area: ratatui::layout::Rect) -> (u16, u16) {
     (rows, cols)
 }
 
-fn same_dir(a: &Path, b: &Path) -> bool {
+/// Whether two paths name the same directory, by spelling or once resolved.
+pub(crate) fn same_dir(a: &Path, b: &Path) -> bool {
     if a == b {
         return true;
     }

@@ -34,9 +34,15 @@ pub fn available_actions(state: &AppState) -> Vec<FlowAction> {
         .into_iter()
         .filter(|action| match action {
             FlowAction::MergeMain => merge_main_available(state),
-            FlowAction::ReleaseDev | FlowAction::ReleaseTest => action
-                .release_env()
-                .is_some_and(|env| state.release_branch(env).is_some()),
+            // Only a feature branch is released. An environment is not merged
+            // into another one — trunk or deploy branch, the checkout stays
+            // where it is.
+            FlowAction::ReleaseDev | FlowAction::ReleaseTest => {
+                feature
+                    && action
+                        .release_env()
+                        .is_some_and(|env| state.release_branch(env).is_some())
+            }
             FlowAction::ResetDev | FlowAction::ResetTest => action
                 .release_env()
                 .and_then(|env| state.release_branch(env))
@@ -737,6 +743,23 @@ mod tests {
         let offered = available_actions(&state);
         assert!(offered.contains(&FlowAction::ResetTest), "{offered:?}");
         assert!(!offered.contains(&FlowAction::ResetDev), "{offered:?}");
+    }
+
+    /// An environment is not merged into another one: standing on test or
+    /// on the trunk there is nothing to release, only environments to reset.
+    #[test]
+    fn environments_are_not_released_into_each_other() {
+        for checkout in ["test", "develop", "main"] {
+            let mut state = state();
+            state.branch = Some(checkout.into());
+            state.branches[0].name = checkout.into();
+            let offered = available_actions(&state);
+            assert!(
+                !offered.contains(&FlowAction::ReleaseTest)
+                    && !offered.contains(&FlowAction::ReleaseDev),
+                "{checkout} must not be released: {offered:?}"
+            );
+        }
     }
 
     /// The steps shown are the steps run: both come from `workflow_steps`, so

@@ -159,11 +159,12 @@ fn push_checkout(rows: &mut Vec<NestedRepoTreeRow>, state: &AppState, row: Neste
             .for_dir(std::path::Path::new(&dir))
             .map(|session| NestedRepoTreeRow::Session { id: session.id }),
     );
-    if state
-        .commit_draft
-        .as_ref()
-        .is_some_and(|draft| draft.dir == dir)
-    {
+    // Matched like sessions are: the draft records the checkout as git names
+    // it, the tree as the workspace scan does, and a symlink or a resolved
+    // path between them must not lose the row.
+    if state.commit_draft.as_ref().is_some_and(|draft| {
+        crate::session::same_dir(std::path::Path::new(&draft.dir), std::path::Path::new(&dir))
+    }) {
         rows.push(NestedRepoTreeRow::CommitDraft);
     }
 }

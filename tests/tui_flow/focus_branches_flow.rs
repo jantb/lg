@@ -864,9 +864,11 @@ fn pressing_f_opens_branch_actions_from_branches_pane() {
         text.contains("Branch Actions"),
         "missing branch actions title: {text}"
     );
+    // Nothing but a feature branch is released: with no feature checked out
+    // the menu is trunk housekeeping, and develop is not offered as a target.
     assert!(
-        text.contains("Release current branch into develop"),
-        "missing develop release action: {text}"
+        !text.contains("Release current branch into develop"),
+        "release offered without a feature branch: {text}"
     );
     assert!(
         text.contains("Start new feature from origin/main"),
