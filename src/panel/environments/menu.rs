@@ -26,6 +26,7 @@ use super::actions::{
     bring_selected_worktree_home, close_selected_session, init_available, init_selected_checkout,
     land_selected_worktree, open_new_worktree_form, remove_selected_worktree, selected_checkout,
     selected_linked_worktree, selected_repository_project_path, start_session_for_selection,
+    sync_selected_worktree,
 };
 use super::tree::{NestedRepoTreeRow, selected_tree_row};
 
