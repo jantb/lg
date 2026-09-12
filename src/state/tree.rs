@@ -160,12 +160,10 @@ fn compact_single_subdir_chain<'a>(
         return (label, path, node);
     }
 
-    while node.files.is_empty() && node.subdirs.len() == 1 {
-        let (child_name, child) = node
-            .subdirs
-            .iter()
-            .next()
-            .expect("single subdir must exist");
+    while node.files.is_empty()
+        && node.subdirs.len() == 1
+        && let Some((child_name, child)) = node.subdirs.iter().next()
+    {
         label.push('/');
         label.push_str(child_name);
         path.push('/');

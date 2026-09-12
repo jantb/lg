@@ -88,6 +88,7 @@ impl App {
             PendingAction::ReviewStyleFlags => {
                 spawn_review_style_flags(&mut self.state);
             }
+            PendingAction::ReviewAgent => self.start_review_agent(),
             PendingAction::ReviewChat(prompt) => {
                 spawn_review_chat(&mut self.state, prompt);
             }
@@ -667,7 +668,7 @@ impl App {
 /// Give `cwd` a terrarium profile confined to it, deriving one from the
 /// repository's own profile when the checkout is a worktree. Returns a note
 /// worth showing when something was written.
-fn prepare_sandbox(cwd: &Path) -> Result<Option<String>> {
+pub(super) fn prepare_sandbox(cwd: &Path) -> Result<Option<String>> {
     let (main_worktree, git_dir) = crate::git::with_repo(cwd, || {
         Ok::<_, anyhow::Error>((crate::git::main_worktree()?, crate::git::common_git_dir()?))
     })?;

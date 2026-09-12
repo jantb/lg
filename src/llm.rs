@@ -30,6 +30,7 @@ pub const TRUNCATED_NOTE: &str = "\u{2026} [cut off at the token budget]";
 pub use stats::{GenStats, LlmPhase, forget_last_stats, last_stats, phase, progress};
 pub use stream::error_means_unreachable;
 
+pub use prompt::build_review_agent_prompt;
 use prompt::{
     build_commit_prompt, build_conventions_prompt, build_review_assist_prompt,
     build_review_chat_system_prompt, build_review_pr_text_prompt, build_review_style_flag_prompt,

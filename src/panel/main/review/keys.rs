@@ -97,6 +97,9 @@ pub(in crate::panel::main) fn handle_key(state: &mut AppState, key: KeyEvent) ->
         KeyCode::Char('f') => {
             state.pending_action = Some(PendingAction::ReviewStyleFlags);
         }
+        KeyCode::Char('A') => {
+            state.pending_action = Some(PendingAction::ReviewAgent);
+        }
         KeyCode::Char('y') => {
             if let Some((label, text)) = selected_review_copy_text(state) {
                 state.pending_action = Some(PendingAction::CopyToClipboard { label, text });
@@ -451,6 +454,8 @@ pub(in crate::panel::main) fn selected_review_copy_text(
     let node = review.nodes.get(state.review_idx)?;
     let label = if node.id == crate::git::REVIEW_PR_TEXT_NODE_ID {
         "PR text"
+    } else if node.id == crate::git::REVIEW_AGENT_NODE_ID {
+        "agent review"
     } else {
         "LLM assessment"
     };

@@ -1,6 +1,7 @@
 //! Turning a diff into the entry points worth reading first.
 
-use super::source::{infer_entry_symbol, matches_csharp_path, matches_kotlin_path, source_context};
+use super::language::Language;
+use super::source::{infer_entry_symbol, source_context};
 use super::{ReviewEntryPoint, truncate_review_text};
 
 pub(super) fn review_entry_points(diff: &str) -> Vec<ReviewEntryPoint> {
@@ -114,18 +115,13 @@ fn is_import_only_hunk(path: &str, patch: &[String]) -> bool {
 }
 
 fn is_import_line(path: &str, line: &str) -> bool {
-    let line = line
-        .strip_prefix("pub ")
-        .or_else(|| line.strip_prefix("public "))
-        .unwrap_or(line);
-    if path.ends_with(".rs") {
-        line.starts_with("use ") || line.starts_with("extern crate ")
-    } else if matches_kotlin_path(path) || path.ends_with(".java") {
-        line.starts_with("import ") || line.starts_with("package ")
-    } else if matches_csharp_path(path) {
-        line.starts_with("using ") || line.starts_with("namespace ")
-    } else {
-        line.starts_with("import ") || line.starts_with("from ") || line.starts_with("export ")
+    match Language::of_path(path) {
+        Some(language) => language.is_import_line(line),
+        // Python, Go and the rest: the common spellings, without claiming to
+        // know the language.
+        None => {
+            line.starts_with("import ") || line.starts_with("from ") || line.starts_with("package ")
+        }
     }
 }
 

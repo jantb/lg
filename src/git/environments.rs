@@ -110,7 +110,9 @@ pub fn promote(preview: &PromotionPreview) -> Result<String> {
     ])?;
     let safety = format!(
         "refs/lg/promotions/{}",
-        dir.file_name().unwrap().to_string_lossy()
+        dir.file_name()
+            .context("promotion worktree has a directory name")?
+            .to_string_lossy()
     );
     run(&["update-ref", &safety, &preview.target_oid])?;
     let merged = super::with_repo(&dir, || -> Result<String> {

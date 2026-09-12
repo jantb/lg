@@ -7,6 +7,7 @@ use super::{head_branch, preferred_commit_ref, run};
 mod category;
 mod collect;
 mod entry;
+pub(crate) mod language;
 mod report;
 mod source;
 mod tree;
@@ -17,6 +18,9 @@ use collect::{
 use entry::review_entry_points;
 use report::render_assisted_review;
 use tree::build_review_nodes;
+
+pub use category::is_test_path;
+pub use language::Language;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReviewFile {
@@ -55,6 +59,8 @@ pub struct ReviewNode {
 }
 
 pub const REVIEW_PR_TEXT_NODE_ID: &str = "checklist:pr-text";
+/// The checklist row a Claude Code session's review of the branch lands under.
+pub const REVIEW_AGENT_NODE_ID: &str = "checklist:agent-review";
 
 struct ReviewRender<'a> {
     branch: &'a str,

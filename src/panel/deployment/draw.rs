@@ -453,11 +453,11 @@ fn detail_lines(
 
     lines.push(label("Promotion"));
     let route = pipeline.route(sel);
-    match (&stage.inclusion, route.as_slice()) {
-        (Inclusion::Source, _) => lines.push(Line::from(muted(
+    match (&stage.inclusion, route.as_slice(), stage.rule.as_ref()) {
+        (Inclusion::Source, _, _) => lines.push(Line::from(muted(
             "Choose another environment to see how this branch is promoted into it.",
         ))),
-        (_, []) => {
+        (_, [], _) => {
             lines.push(Line::from(Span::styled(
                 format!("No rule promotes {} into {}.", root.role, stage.name),
                 Style::default().fg(palette::BAD),
@@ -467,8 +467,7 @@ fn detail_lines(
                 root.role, stage.role
             ))));
         }
-        (_, [_]) => {
-            let rule = stage.rule.as_ref().expect("a one-hop route has a rule");
+        (_, [_], Some(rule)) => {
             let mut spans = vec![
                 Span::styled(
                     root.name.clone(),
@@ -506,7 +505,7 @@ fn detail_lines(
                 muted(" lists exactly which commits would move before anything happens."),
             ]));
         }
-        (_, hops) => {
+        (_, hops, _) => {
             let names: Vec<String> = std::iter::once(root.name.clone())
                 .chain(hops.iter().map(|&h| pipeline.stages[h].name.clone()))
                 .collect();

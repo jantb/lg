@@ -343,6 +343,17 @@ pub struct ReviewJob {
     pub spinner: usize,
 }
 
+/// A Claude Code session reviewing the branch. It reports by writing a file,
+/// which is read back each frame until the session goes away.
+#[derive(Debug)]
+pub struct ReviewAgentJob {
+    pub session: crate::session::SessionId,
+    pub findings: std::path::PathBuf,
+    /// What the file said when last read, so the tree is only touched when it
+    /// has changed.
+    pub seen: String,
+}
+
 #[derive(Debug)]
 pub struct ReviewAssistJob {
     pub rx: Receiver<GenMsg>,

@@ -184,7 +184,8 @@ fn name_of(path: &Path) -> String {
 
 /// Use the installed host binary, never an independently installed Terrarium.
 pub fn executable() -> PathBuf {
-    std::env::current_exe().expect("the running executable has a path")
+    // Without a path of its own, trust PATH to find the same installation.
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("lg"))
 }
 
 pub fn initialize_current(preset: &str) -> anyhow::Result<()> {

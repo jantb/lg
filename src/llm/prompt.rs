@@ -1,5 +1,8 @@
 //! The prompt each task sends, and the repo style guide they share.
 
+use std::path::Path;
+
+use crate::git::Language;
 use crate::settings::RepoSettings;
 
 use super::diff::{diff_excerpt, summarize_diff};
@@ -33,9 +36,66 @@ pub fn build_review_assist_prompt(context: &str, settings: &RepoSettings) -> Str
          {}\n\n\
          {}\n\
          Selected review subtree:\n{context}",
-        settings.review_style.trim_end(),
+        review_style(settings, context),
         crate::settings::language_instruction(settings)
     )
+}
+
+/// What a Claude Code session is asked when it reviews the branch. Unlike the
+/// local model it has the checkout in front of it, so the assisted review is
+/// its starting point rather than its whole evidence, and it is told where to
+/// write so lg can read the findings back under the review tree.
+pub fn build_review_agent_prompt(
+    context: &str,
+    base_ref: &str,
+    findings_path: &Path,
+    settings: &RepoSettings,
+) -> String {
+    format!(
+        "Review this branch against {base_ref} as a senior engineer would before approving a pull request.\n\
+         Start from the assisted review below, then read the actual code: run `git diff {base_ref}...HEAD`\n\
+         and open the changed files and their callers and tests. Do not change any file in the checkout.\n\n\
+         Look for: behavior that contradicts the stated intent or an existing invariant, error paths that\n\
+         are swallowed or unreachable, concurrency and lifecycle problems, missing or misleading tests,\n\
+         compatibility risks for callers and stored data, and concrete violations of the repo style below.\n\
+         Prefer a few findings you have verified in the code over many you suspect. For each finding give\n\
+         the file and line, what is wrong, why it matters, and what to do instead.\n\n\
+         When you are done, write your findings as Markdown to this file and nothing else:\n\
+         {findings}\n\
+         Use this structure:\n\
+         ## Verdict\n\
+         - One line: approve, approve with nits, or request changes, and why.\n\
+         ## Findings\n\
+         - One bullet per finding, most severe first, starting with `path:line`.\n\
+         ## Tests\n\
+         - What the changed tests cover and the precise cases they miss, or that none changed.\n\
+         ## Questions\n\
+         - Only what you could not settle from the code; omit the section if there is nothing.\n\n\
+         Write the file even when you find nothing wrong, saying so. Then stop.\n\n\
+         {style}\n\n\
+         {language}\
+         Assisted review:\n{context}",
+        findings = findings_path.display(),
+        style = review_style(settings, context),
+        language = crate::settings::language_instruction(settings),
+    )
+}
+
+/// The style guide a review prompt carries: the checkout's own, verbatim, or
+/// the built-in one followed by notes for every language the reviewed text
+/// names a file of. A checkout that wrote its own guide said what it wants
+/// measured, so nothing is added to that.
+pub fn review_style(settings: &RepoSettings, reviewed: &str) -> String {
+    let guide = settings.review_style.trim_end();
+    if settings.review_style_is_custom() {
+        return guide.to_string();
+    }
+    let mut out = guide.to_string();
+    for language in Language::mentioned_in(reviewed) {
+        out.push_str("\n\n");
+        out.push_str(language.review_notes());
+    }
+    out
 }
 
 pub fn build_review_chat_system_prompt(context: &str, settings: &RepoSettings) -> String {
@@ -52,7 +112,7 @@ pub fn build_review_chat_system_prompt(context: &str, settings: &RepoSettings) -
          {}\n\n\
          {}\n\
          Review context:\n{context}",
-        settings.review_style.trim_end(),
+        review_style(settings, context),
         crate::settings::language_instruction(settings)
     )
 }
@@ -98,15 +158,12 @@ pub fn build_review_style_flag_prompt(
          reason: <one concise reason, or \"No style issue found.\">\n\n\
          Use OK for files that look consistent or where there is insufficient evidence.\n\
          Use WARN for likely style issues that deserve manual attention, including vague or misleading names.\n\
-         Use FAIL for clear violations such as business logic in controllers or other non-Service/non-flow files,\n\
-         direct Kafka side effects, Jackson app-code usage, Mockito, java.time away from interop edges,\n\
-         or generated code edits.\n\n\
-         Do not flag repository/service calls used to build the initial/start state before a flow begins;\n\
-         only flag direct repository/service calls in later states or steps after the flow has started.\n\n\
-         Treat the File role below as authoritative. For service-layer or flow files, repository/service calls\n\
-         and business rule orchestration are allowed by layer placement; do not flag them merely as\n\
-         non-Service/non-flow violations. Return OK for that concern unless another concrete style rule is violated.\n\
-         A role of unclassified means this codebase does not use those layers at all: never flag layer\n\
+         Use FAIL for clear violations of a rule stated in the style guide below, such as business rules\n\
+         in a controller or handler, swallowed errors, shared mutable state, or edits to generated code.\n\n\
+         Treat the File role below as authoritative. A service-layer or persistence-layer file may call\n\
+         repositories and hold business rules by its placement; do not flag that. Return OK for that\n\
+         concern unless another concrete style rule is violated.\n\
+         A role of unclassified means lg could not read a layer from the path: never flag layer\n\
          placement for such a file, and apply only rules that are about the code itself.\n\n\
          For naming issues, include a concrete rename suggestion in the reason.\n\n\
          {}\n\n\
@@ -114,38 +171,41 @@ pub fn build_review_style_flag_prompt(
          File: {path}\n\
          File role: {file_role}\n\
          Review context:\n{context}",
-        settings.review_style.trim_end(),
+        review_style(settings, &format!("{path}\n{context}")),
         crate::settings::language_instruction(settings)
     )
 }
 
 /// Where a file sits in a layered codebase, as far as its path gives that away.
 ///
-/// Service and flow are Kotlin/Spring layering, which is what the built-in
-/// guide describes, so the third answer is only ever given about a file written
-/// in that language. Anything else is unclassified: reporting every Rust or Go
-/// file as "non-service/non-flow" told the model that business logic in it was
-/// a violation by placement, and that is a verdict about a convention the
+/// Only languages that are written in layers get one, and only when the path
+/// names the layer. Anything else is unclassified: reporting a Rust or Go file
+/// as being in the wrong layer told the model that business logic in it was a
+/// violation by placement, and that is a verdict about a convention the
 /// checkout does not use.
 pub fn review_style_file_role(path: &str) -> &'static str {
-    if !LAYERED_LANGUAGE_EXTENSIONS
-        .iter()
-        .any(|extension| path.ends_with(extension))
-    {
+    if !Language::of_path(path).is_some_and(Language::is_layered) {
         return "unclassified";
     }
     let lower = path.to_ascii_lowercase();
-    if lower.contains("service") {
+    let has = |words: &[&str]| words.iter().any(|w| lower.contains(w));
+    if has(&[
+        "controller",
+        "endpoint",
+        "handler",
+        "resource",
+        "router",
+        "routes",
+    ]) {
+        "controller"
+    } else if has(&["service", "usecase", "use_case", "flow", "domain"]) {
         "service-layer"
-    } else if lower.contains("flow") {
-        "flow"
+    } else if has(&["repository", "repositories", "dao", "persistence", "store"]) {
+        "persistence-layer"
     } else {
-        "non-service/non-flow"
+        "unclassified"
     }
 }
-
-/// The languages the built-in guide's layering vocabulary is about.
-const LAYERED_LANGUAGE_EXTENSIONS: [&str; 2] = [".kt", ".java"];
 
 /// What the local model is asked to do about one conflict: write the merged
 /// lines for that region and nothing else.
@@ -266,11 +326,25 @@ mod tests {
         assert!(prompt.contains("whether the patch appears minimal"));
         assert!(prompt.contains("simpler alternatives"));
         assert!(prompt.contains("refactors that would reduce complexity"));
-        assert!(prompt.contains("Constructor injection only"));
-        assert!(prompt.contains("configuredJson"));
-        assert!(prompt.contains("path or name contains Service"));
-        assert!(prompt.contains("Flow start state construction may call repositories/services"));
+        assert!(prompt.contains("Established repo style:"));
+        assert!(prompt.contains("Layers stay honest"));
         assert!(prompt.contains("Selected review subtree:\nsrc/main/kotlin/App.kt"));
+    }
+
+    /// The built-in guide is about code in general; what a Kotlin reviewer
+    /// checks that a TypeScript reviewer does not is appended per language,
+    /// and only for the languages the reviewed text names files of.
+    #[test]
+    fn the_built_in_guide_gains_notes_for_each_language_under_review() {
+        let prompt = build_review_assist_prompt(
+            "Files changed:\n- src/main/kotlin/App.kt\n- web/src/App.tsx",
+            &RepoSettings::default(),
+        );
+
+        assert!(prompt.contains("\nKotlin:\n"), "{prompt}");
+        assert!(prompt.contains("\nTypeScript:\n"), "{prompt}");
+        assert!(!prompt.contains("\nRust:\n"), "{prompt}");
+        assert!(!prompt.contains("\nC# / .NET:\n"), "{prompt}");
     }
 
     #[test]
@@ -281,8 +355,7 @@ mod tests {
         assert!(prompt.contains("commit subjects/bodies"));
         assert!(prompt.contains("patch intent"));
         assert!(prompt.contains("intentional behavior change"));
-        assert!(prompt.contains("Ktor CIO adapters"));
-        assert!(prompt.contains("never Mockito"));
+        assert!(prompt.contains("Established repo style:"));
         assert!(prompt.contains("Review context:\nfull review context"));
     }
 
@@ -313,13 +386,13 @@ mod tests {
         assert!(prompt.contains("line: <new-file line number, or unknown>"));
         assert!(prompt.contains("relevant to this file's language"));
         assert!(prompt.contains("concrete rename suggestion"));
-        assert!(prompt.contains("non-Service/non-flow files"));
-        assert!(prompt.contains(
-            "Do not flag repository/service calls used to build the initial/start state"
-        ));
-        assert!(prompt.contains("after the flow has started"));
+        assert!(prompt.contains("never flag layer\nplacement"));
         assert!(prompt.contains("File: src/main/kotlin/App.kt"));
-        assert!(prompt.contains("File role: non-service/non-flow"));
+        assert!(prompt.contains("File role: unclassified"));
+        assert!(
+            prompt.contains("\nKotlin:\n"),
+            "notes for the file's language"
+        );
         assert!(prompt.contains("updates controller logic"));
     }
 
@@ -339,27 +412,45 @@ mod tests {
         ] {
             assert!(prompt.contains("no unwrap outside tests"), "{prompt}");
             assert!(
-                !prompt.contains("never Mockito"),
+                !prompt.contains("Layers stay honest"),
                 "the built-in guide leaked into a checkout that replaced it"
+            );
+            assert!(
+                !prompt.contains("\nRust:\n"),
+                "language notes are part of the built-in guide, not of the checkout's"
             );
         }
     }
 
-    /// Service and flow are Kotlin/Spring layering. Telling the model that a
-    /// Rust file is "non-service/non-flow" reads as a verdict about where its
-    /// logic lives, under a convention the checkout does not use.
+    /// A layer is read from the path, and only for languages written in
+    /// layers. Telling the model that a Rust file is in the wrong layer reads
+    /// as a verdict about where its logic lives, under a convention the
+    /// checkout does not use.
     #[test]
-    fn a_file_outside_the_guides_languages_is_not_given_a_layer() {
+    fn a_file_role_is_read_from_the_path_of_a_layered_language() {
         assert_eq!(review_style_file_role("src/app/actions.rs"), "unclassified");
         assert_eq!(review_style_file_role("cmd/server/main.go"), "unclassified");
+        assert_eq!(
+            review_style_file_role("src/main/kotlin/App.kt"),
+            "unclassified"
+        );
         assert_eq!(
             review_style_file_role("src/main/kotlin/BalanceService.kt"),
             "service-layer"
         );
         assert_eq!(
-            review_style_file_role("src/main/java/Controller.java"),
-            "non-service/non-flow"
+            review_style_file_role("src/main/java/OrderController.java"),
+            "controller"
         );
+        assert_eq!(
+            review_style_file_role("Api/Controllers/OrdersController.cs"),
+            "controller"
+        );
+        assert_eq!(
+            review_style_file_role("src/orders/orders.repository.ts"),
+            "persistence-layer"
+        );
+        assert_eq!(review_style_file_role("src/routes/orders.js"), "controller");
     }
 
     #[test]
@@ -372,7 +463,7 @@ mod tests {
 
         assert!(prompt.contains("File role: service-layer"));
         assert!(prompt.contains("Treat the File role below as authoritative"));
-        assert!(prompt.contains("business rule orchestration are allowed"));
+        assert!(prompt.contains("hold business rules by its placement"));
     }
 
     fn no_sides() -> crate::git::ConflictSides {

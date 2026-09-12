@@ -163,13 +163,11 @@ fn format_review_style_finding(finding: &ReviewStyleFinding) -> String {
 }
 
 fn suppress_layer_misclassification(path: &str, finding: &mut ReviewStyleFinding) {
-    // A layer complaint is wrong about a service or flow file, which is allowed
-    // to hold business rules, and equally wrong about a file whose layering lg
-    // cannot read at all — there is no layer for it to be in the wrong one of.
-    if !matches!(
-        review_style_file_role(path),
-        "service-layer" | "flow" | "unclassified"
-    ) {
+    // A layer complaint is wrong about a service or persistence file, which is
+    // allowed to hold business rules and call repositories, and equally wrong
+    // about a file whose layering lg cannot read at all — there is no layer
+    // for it to be in the wrong one of. Only a controller can be told off.
+    if review_style_file_role(path) == "controller" {
         return;
     }
     if !matches!(
@@ -182,6 +180,9 @@ fn suppress_layer_misclassification(path: &str, finding: &mut ReviewStyleFinding
     let calls_out_wrong_layer = reason.contains("non-service")
         || reason.contains("non service")
         || reason.contains("service layer")
+        || reason.contains("service-layer")
+        || reason.contains("business logic belongs")
+        || reason.contains("business rules belong")
         || reason.contains("direct repository call")
         || reason.contains("repository call");
     if calls_out_wrong_layer && !reason_mentions_other_style_rule(&reason) {
@@ -193,15 +194,18 @@ fn suppress_layer_misclassification(path: &str, finding: &mut ReviewStyleFinding
 
 fn reason_mentions_other_style_rule(reason: &str) -> bool {
     [
-        "kafka",
-        "jackson",
-        "java.time",
-        "mockito",
-        "loggerfactory",
-        "ktor",
         "generated",
-        "var ",
         "mutable",
+        "mutation",
+        "swallow",
+        "global",
+        "singleton",
+        "rename",
+        "naming",
+        "unwrap",
+        ": any",
+        "as any",
+        ".result",
     ]
     .iter()
     .any(|needle| reason.contains(needle))

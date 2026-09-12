@@ -51,31 +51,24 @@ Staged changes:
 /// The style guide the review tasks measure a change against, when a checkout
 /// has not written one of its own.
 ///
-/// It describes one team's Kotlin/Spring codebase, which is what these features
-/// were built for. It is the default rather than the rule: a checkout drops a
-/// `review-style.md` next to its commit prompt and that replaces this verbatim,
-/// because telling a model to check Rust for Mockito usage is worse than
-/// telling it nothing.
+/// It is deliberately about code in general rather than one stack: lg appends
+/// notes for each language a review touches (see `git::Language`), and a
+/// checkout that wants its own conventions drops a `review-style.md` next to
+/// its commit prompt, which replaces this verbatim and turns the language
+/// notes off.
 pub const REVIEW_STYLE_GUIDE: &str = "\
 Established repo style:
-- Kotlin/Spring, but immutable code by default: prefer val, immutable collections, data-class .copy(), focused functions, and pure helper functions.
-- Constructor injection only. Inject narrow interfaces/services, not broad infrastructure.
-- Controllers stay thin: auth, validation, DTO assembly, ResponseEntity. Business decisions go in service-layer files/classes whose path or name contains Service, or in explicit hub flow code.
-- Treat business rules in controllers, adapters, Kafka consumers/listeners, repositories, DTOs, configuration, or other non-Service/non-flow files as a style issue unless the shown code only delegates or translates data.
-- Flow start state construction may call repositories/services to load initial data before the flow begins. Once a flow has started, later state constructors/steps should stay pure; flag direct repository/service calls there.
-- Domain IDs use inline value classes like UserId, MembershipId; wrap raw primitives at repository boundaries.
-- Names should describe domain intent and behavior. Flag vague, misleading, or overly generic names and suggest a concrete replacement.
-- Use sealed interfaces/classes for variants with different data; enums only for simple tags.
-- JSON uses the shared configuredJson; avoid Jackson in app code except generated/Spring/Avro internals.
-- Time uses kotlinx.datetime; java.time only at interop edges.
-- Logging uses private val log by Logger(), not direct LoggerFactory.
-- Outbound HTTP uses Ktor CIO adapters. Each external system gets one adapter.
-- Persistence is PostgreSQL via Exposed + Flyway.
-- Kafka/outbound side effects from flows go through the outbox, not direct Kafka publishing.
-- Tests prefer real small fakes over mocks. Use Mockk only when a fake is impractical; never Mockito.
-- Integration tests use @SpringBootTest + TestConfiguration + Testcontainers.
-- Do not edit generated code under target/generated-sources.
-- Run the repo formatter/lint before declaring work done; linter wins on formatting.";
+- Immutable by default: prefer values that are set once, read-only collections, and copies over in-place mutation.
+- Names describe domain intent and behavior. Flag vague, misleading, or overly generic names and suggest a concrete replacement.
+- Functions do one thing and stay short enough to read in one screen; extract helpers with names that say what they decide.
+- Dependencies are passed in (constructor or parameter injection), never reached for through globals, singletons, or service locators.
+- Layers stay honest: request handlers, controllers, adapters, and message consumers translate and validate; business rules live in the service or domain layer.
+- Errors carry context and are handled where something can be done about them; never swallow one silently.
+- Side effects (I/O, messaging, time, randomness) sit at the edges so the rules in the middle can be tested without them.
+- Model variants with sum types (sealed types, enums with data, discriminated unions) rather than flags and nullable fields.
+- Tests assert behavior a caller depends on, not the shape of the implementation; prefer small real fakes over mocks.
+- Generated code is never edited by hand.
+- Run the repo formatter and linter before declaring work done; the linter wins on formatting.";
 
 pub const DEFAULT_PUSH_REMOTE: &str = "origin";
 pub const BRANCH_MAIN: &str = "main";

@@ -1,6 +1,6 @@
 //! In-memory decisions and text editing; disk IO lives in git::MergeSnapshot.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     layout::Rect,
@@ -549,7 +549,7 @@ impl MergeEditor {
         let result = if let Some(parsed) = &self.parsed {
             parsed
                 .render_exact(&resolutions)
-                .expect("one result per hunk")
+                .context("one result per hunk")?
         } else {
             resolutions[0].clone()
         };

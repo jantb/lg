@@ -45,6 +45,15 @@ pub(super) fn build_review_nodes(review: &ReviewRender<'_>) -> Vec<ReviewNode> {
         body: Vec::new(),
         context: Vec::new(),
     });
+    nodes.push(ReviewNode {
+        id: super::REVIEW_AGENT_NODE_ID.to_string(),
+        parent: Some("checklist".to_string()),
+        depth: 1,
+        title: "Agent review - Claude Code session over the whole branch (A run, y copy)"
+            .to_string(),
+        body: Vec::new(),
+        context: Vec::new(),
+    });
     nodes
 }
 

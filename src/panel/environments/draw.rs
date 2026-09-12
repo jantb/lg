@@ -171,15 +171,13 @@ pub(super) fn render_nested_repositories(
                 &state.nested_repo_branches[*branch_idx],
                 row_width,
             )),
-            NestedRepoTreeRow::Remote { branch_idx, .. } => {
-                ListItem::new(nested_remote_branch_line(
-                    state
-                        .visible_nested_repo_remote_branches()
-                        .nth(*branch_idx)
-                        .expect("visible remote row index"),
-                    row_width,
-                ))
-            }
+            NestedRepoTreeRow::Remote { branch_idx, .. } => ListItem::new(
+                state
+                    .visible_nested_repo_remote_branches()
+                    .nth(*branch_idx)
+                    .map(|branch| nested_remote_branch_line(branch, row_width))
+                    .unwrap_or_default(),
+            ),
         })
         .collect::<Vec<_>>();
     let offset = nested_repo_scroll_offset(state, tree_area);

@@ -71,6 +71,22 @@ pub fn install(cwd: &Path) -> Result<HookChannel> {
 /// repository's git directory. That is out of the working tree, so it shows up in
 /// no status listing, and it is the one place outside its own checkout that a
 /// sandboxed session is already allowed to write.
+/// Where a review session is told to write its findings: beside the hook
+/// files, which is a place a sandboxed session is already allowed to write.
+/// Whatever an earlier review left there is removed, so the next one is read
+/// from nothing rather than from stale findings.
+pub fn review_findings_path(cwd: &Path) -> Result<PathBuf> {
+    let dir = channel_dir(cwd)?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let path = dir.join("review-findings.md");
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("clear {}", path.display())),
+    }
+    Ok(path)
+}
+
 fn channel_dir(cwd: &Path) -> Result<PathBuf> {
     let git_dir = crate::git::with_repo(cwd, crate::git::common_git_dir)
         .context("locate the git directory to keep session hooks in")?;

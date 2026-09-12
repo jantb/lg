@@ -237,6 +237,7 @@ mod tests {
                     ("o", "open IDE"),
                     ("l", "explain"),
                     ("C", "chat"),
+                    ("A", "agent"),
                     ("g/G", "top/bot"),
                     ("v", "view"),
                     ("f", "flag"),

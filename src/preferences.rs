@@ -337,9 +337,13 @@ pub(crate) fn merge(base: &mut serde_json::Value, patch: serde_json::Value) {
 }
 /// Missing configuration is fine. Invalid files remain visible and are never overwritten on load.
 fn load_uncached() -> Loaded {
-    let mut config = serde_json::to_value(Preferences::default()).expect("serializable defaults");
     let mut sources = BTreeMap::new();
     let mut errors = Vec::new();
+    let mut config = serialized(
+        &mut errors,
+        "built-in defaults",
+        serde_json::to_value(Preferences::default()),
+    );
     if let Some(model) = crate::llm::legacy_model() {
         config["models"]["model"] = model.into();
         sources.insert(
@@ -349,22 +353,29 @@ fn load_uncached() -> Loaded {
     }
     // Existing files are an explicit compatibility layer; leave originals in place.
     let legacy = crate::settings::load_legacy();
-    config["writing"] = serde_json::to_value(Writing {
-        language: legacy.pr_language,
-        comment_style: legacy.comment_style,
-        subject_max: legacy.commit_subject_max_chars,
-        body_lines: legacy.commit_body_max_lines,
-        commit_prompt: legacy.commit_prompt,
-        review_style: legacy.review_style,
-    })
-    .unwrap();
+    config["writing"] = serialized(
+        &mut errors,
+        "legacy writing settings",
+        serde_json::to_value(Writing {
+            language: legacy.pr_language,
+            comment_style: legacy.comment_style,
+            subject_max: legacy.commit_subject_max_chars,
+            body_lines: legacy.commit_body_max_lines,
+            commit_prompt: legacy.commit_prompt,
+            review_style: legacy.review_style,
+        }),
+    );
     if crate::settings::is_configured() {
         sources.insert(
             "writing".into(),
             "Legacy checkout settings (preserved)".into(),
         );
     }
-    let mut paths = vec![(Scope::User, scope_path(Scope::User).unwrap())];
+    let mut paths = Vec::new();
+    match scope_path(Scope::User) {
+        Ok(path) => paths.push((Scope::User, path)),
+        Err(e) => errors.push(format!("user preferences: {e}")),
+    }
     let root = crate::git::repo_root().ok().map(PathBuf::from);
     let mut folders: Vec<(PathBuf, PathBuf)> = std::fs::read_dir(base_dir().join("folders"))
         .into_iter()
@@ -419,9 +430,11 @@ fn load_uncached() -> Loaded {
         }
     }
     if !sources.contains_key("branches") {
-        config["branches"] =
-            serde_json::to_value(detect_branches(&crate::git::local_branch_names()))
-                .expect("serializable branches");
+        config["branches"] = serialized(
+            &mut errors,
+            "detected branches",
+            serde_json::to_value(detect_branches(&crate::git::local_branch_names())),
+        );
     }
     if let Ok(v) = std::env::var("LG_LLM_MODEL") {
         config["models"]["model"] = v.into();
@@ -436,12 +449,32 @@ fn load_uncached() -> Loaded {
         config["models"]["endpoint"] = v.into();
         sources.insert("models.endpoint".into(), "Environment override".into());
     }
+    let config = serde_json::from_value(config).unwrap_or_else(|e| {
+        errors.push(format!("effective configuration: {e}"));
+        Preferences::default()
+    });
     Loaded {
-        config: serde_json::from_value(config).expect("validated configuration"),
+        config,
         sources,
         errors,
     }
 }
+/// Serializing lg's own types cannot fail in practice; if it ever does, the
+/// configuration screen shows why instead of the app refusing to start.
+fn serialized(
+    errors: &mut Vec<String>,
+    what: &str,
+    value: serde_json::Result<serde_json::Value>,
+) -> serde_json::Value {
+    match value {
+        Ok(value) => value,
+        Err(e) => {
+            errors.push(format!("{what}: {e}"));
+            serde_json::Value::Object(Default::default())
+        }
+    }
+}
+
 fn read_patch(path: &Path) -> Result<serde_json::Value> {
     let text = std::fs::read_to_string(path)?;
     let value: toml::Value = toml::from_str(&text).context("invalid TOML")?;
@@ -476,7 +509,10 @@ fn save_at(
         serde_json::json!({"version":1})
     };
     patch[category] = value;
-    let saved_folder = patch.as_object_mut().unwrap().remove("folder");
+    let saved_folder = patch
+        .as_object_mut()
+        .with_context(|| format!("{}: configuration is not a table", path.display()))?
+        .remove("folder");
     let mut effective = serde_json::to_value(load().config)?;
     merge(&mut effective, patch.clone());
     serde_json::from_value::<Preferences>(effective)?.validate()?;

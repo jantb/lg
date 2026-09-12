@@ -55,6 +55,9 @@ pub(super) fn spawn_assisted_review(state: &mut AppState) {
     if let Some(mut job) = state.review_flag_job.take() {
         state.defer_thread_join(job.handle.take());
     }
+    // The session keeps running; it is only its findings that belong to the
+    // review being replaced.
+    state.review_agent_job = None;
     if let Some(mut job) = state.review_chat_job.take() {
         state.defer_thread_join(job.handle.take());
     }
@@ -483,13 +486,7 @@ fn is_source_path(path: &str) -> bool {
 }
 
 fn is_test_path(path: &str) -> bool {
-    path.starts_with("tests/")
-        || path.contains("/tests/")
-        || path.starts_with("src/test/")
-        || path.contains("/src/test/")
-        || file_stem(path).is_some_and(|stem| {
-            stem.ends_with("Test") || stem.ends_with("Tests") || stem.ends_with("Spec")
-        })
+    crate::git::is_test_path(path)
 }
 
 fn related_test_path(production_path: &str, test_path: &str) -> bool {

@@ -299,6 +299,8 @@ pub enum PendingAction {
     ReviewAssist(String),
     ReviewPrText,
     ReviewStyleFlags,
+    /// Start a Claude Code session reviewing the whole branch.
+    ReviewAgent,
     ReviewChat(String),
     CopyToClipboard {
         label: String,

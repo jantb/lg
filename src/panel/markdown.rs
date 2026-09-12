@@ -402,12 +402,7 @@ fn source_path_style(path: &str, base: Style) -> Style {
 }
 
 fn is_test_path(path: &str) -> bool {
-    path.starts_with("tests/")
-        || path.contains("/tests/")
-        || path.starts_with("test/")
-        || path.contains("/test/")
-        || path.starts_with("src/test/")
-        || path.contains("/src/test/")
+    crate::git::is_test_path(path)
 }
 
 fn code_spans(code: &str, syntax: Option<Syntax>, base: Style) -> Vec<Span<'static>> {

@@ -472,9 +472,8 @@ mod tests {
         assert!(settings.commit_prompt_is_custom());
     }
 
-    /// The review features were written against one team's Kotlin/Spring
-    /// codebase. A checkout that is not that gets to say so, rather than having
-    /// its Rust measured against rules about Mockito and Jackson.
+    /// The built-in guide is about code in general. A checkout with conventions
+    /// of its own gets to state them, and is then measured against those alone.
     #[test]
     fn review_style_file_overrides_the_built_in_guide() {
         let dir = tempfile::tempdir().unwrap();

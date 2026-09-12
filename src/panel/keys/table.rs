@@ -471,6 +471,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("C", "chat")),
             },
             Binding {
+                key: "A",
+                help: "Review branch in a Claude Code session",
+                footer: Some(("A", "agent")),
+            },
+            Binding {
                 key: "g / G",
                 help: "Top / bottom",
                 footer: None,
@@ -506,6 +511,7 @@ pub const SECTIONS: &[Section] = &[
             "o",
             "l",
             "C",
+            "A",
             "g/G",
             "v",
             "f",

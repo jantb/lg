@@ -43,6 +43,7 @@ mod jobs;
 mod mouse;
 mod refresh;
 mod render;
+mod review_agent;
 mod review_assist;
 mod session;
 mod spawn;
@@ -234,6 +235,7 @@ impl App {
             self.drain_generation();
             self.drain_review_assist();
             self.drain_review_pr_text();
+            self.drain_review_agent();
             self.drain_review_flag_job();
             self.drain_conflict_resolve_job();
             self.drain_review_chat();

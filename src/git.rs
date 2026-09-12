@@ -75,8 +75,8 @@ pub use release::{
 };
 pub use remote::{merge_upstream, pull, push, remote_url, set_branch_upstream};
 pub use review::{
-    AssistedReview, REVIEW_PR_TEXT_NODE_ID, ReviewNode, assisted_review_against_main,
-    build_assisted_review_against_main,
+    AssistedReview, Language, REVIEW_AGENT_NODE_ID, REVIEW_PR_TEXT_NODE_ID, ReviewNode,
+    assisted_review_against_main, build_assisted_review_against_main, is_test_path,
 };
 pub use status::{
     FileEntry, parse_porcelain, parse_porcelain_xy, status_entries, status_porcelain,
