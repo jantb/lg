@@ -24,8 +24,8 @@ pub(crate) use draw::{nested_repo_scroll_offset, sync_scroll_offset};
 pub(crate) use tree::{nested_repo_tree_len, select_nested_repo_tree_row};
 
 use actions::{
-    close_selected_session, load_nested_repo_detail, selected_repository_project_path,
-    show_session_row,
+    close_selected_session, load_nested_repo_detail, open_commit_draft,
+    selected_repository_project_path, show_session_row,
 };
 use draw::render_nested_repositories;
 use tree::{NestedRepoTreeRow, move_selection, selected_tree_row};
@@ -80,6 +80,7 @@ pub fn handle_key(
         KeyCode::Char('k') | KeyCode::Up => move_selection(state, false, 1),
         KeyCode::Enter => match selected_tree_row(state) {
             Some(NestedRepoTreeRow::Session { id }) => show_session_row(state, id),
+            Some(NestedRepoTreeRow::CommitDraft) => open_commit_draft(state),
             Some(
                 NestedRepoTreeRow::Root
                 | NestedRepoTreeRow::Repo { .. }

@@ -819,13 +819,7 @@ mod tests {
     #[test]
     fn every_offered_action_has_something_to_show() {
         let state = state_with_deploy_branches();
-        let offered = super::super::available_actions(&state);
-        assert_eq!(
-            offered.len(),
-            FlowAction::ALL.len(),
-            "this checkout should offer every action: {offered:?}"
-        );
-        for action in offered {
+        for action in FlowAction::ALL {
             let lines = lines(
                 &state,
                 &run(&state, action),

@@ -182,6 +182,9 @@ pub struct AppState {
     animation_started: Instant,
 
     pub generation: Option<Generation>,
+    /// The commit message being generated, or generated and not yet looked
+    /// at, that the workspace tree lists under its checkout.
+    pub commit_draft: Option<CommitDraft>,
     pub push_job: Option<PushJob>,
     pub checkout_job: Option<CheckoutJob>,
     pub operation_job: Option<OperationJob>,
@@ -389,6 +392,7 @@ impl AppState {
             animation_started: Instant::now(),
 
             generation: None,
+            commit_draft: None,
             push_job: None,
             checkout_job: None,
             operation_job: None,

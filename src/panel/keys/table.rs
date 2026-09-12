@@ -658,8 +658,8 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "Esc",
-                help: "Cancel",
-                footer: Some(("Esc", "cancel")),
+                help: "Hide; generation continues in the background",
+                footer: Some(("Esc", "hide")),
             },
         ],
         footer_meta: None,

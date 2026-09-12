@@ -551,6 +551,9 @@ impl AppState {
 
     pub fn open_commit_modal(&mut self) {
         self.modal = Modal::Commit;
+        if self.commit_draft.as_ref().is_some_and(|draft| draft.ready) {
+            self.commit_draft = None;
+        }
         self.commit_files_scroll = 0;
         self.commit_cursor = self.commit_message.chars().count();
         if self.commit_message.is_empty() && self.generation.is_none() {

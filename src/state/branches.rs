@@ -124,6 +124,16 @@ impl AppState {
             .any(|e| !e.branch.is_empty() && e.branch != base && e.branch == name)
     }
 
+    /// Whether the checkout is a feature branch: neither the trunk nor a
+    /// deploy branch. Housekeeping that belongs to the trunk is kept off the
+    /// menu there, so what is listed is what concerns this branch.
+    pub fn on_feature_branch(&self) -> bool {
+        let base = crate::preferences::base_branch();
+        self.branch
+            .as_deref()
+            .is_some_and(|branch| branch != base && !self.is_deploy_branch(branch))
+    }
+
     pub fn branch_actions_available(&self) -> bool {
         self.branch.is_some() || !self.branches.is_empty()
     }

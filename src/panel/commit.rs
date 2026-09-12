@@ -31,7 +31,7 @@ struct VisualLine {
 /// The commit modal is widescreen: as wide as it can be, and no taller than
 /// sixteen by nine on screen (cells being twice as tall as wide), so the
 /// scene in the message pane has room to spread out sideways.
-fn modal_area(area: Rect) -> Rect {
+pub(crate) fn modal_area(area: Rect) -> Rect {
     let w = (area.width * 92 / 100).clamp(60, 180).min(area.width);
     let h = (area.height * 9 / 10)
         .clamp(14, 60)
@@ -176,7 +176,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             Span::styled("Ctrl+R", Style::default().fg(Color::Yellow)),
             Span::raw(" restart  "),
             Span::styled("Esc", Style::default().fg(Color::Gray)),
-            Span::raw(" cancel"),
+            Span::raw(" hide, keeps generating"),
             Span::styled(progress, Style::default().fg(Color::DarkGray)),
         ]))
     } else {
@@ -610,17 +610,22 @@ pub fn place_cursor_at(state: &mut AppState, area: Rect, column: u16, row: u16) 
     true
 }
 
+/// What the footer says when the modal is put away mid-generation.
+pub(crate) const BACKGROUND_NOTICE: &str =
+    "generating in the background \u{b7} the commit row under the checkout leads back here";
+
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let generating = state.generation.is_some();
     match key.code {
+        // Closing the modal never stops the model: the message keeps being
+        // written in the background and the workspace tree lists it under
+        // its checkout, so other work can go on meanwhile.
         KeyCode::Esc => {
             if generating {
-                state.cancel_generation();
-                state.set_status("generation cancelled", false);
-            } else {
-                state.modal = Modal::None;
+                state.set_status(BACKGROUND_NOTICE, false);
             }
+            state.modal = Modal::None;
         }
         KeyCode::Char('s') if ctrl => {
             if !generating && !state.commit_message.trim().is_empty() {

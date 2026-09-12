@@ -103,7 +103,16 @@ fn handle_modal_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) -> bool 
             state.row_drag_active = None;
             state.review_chat_drag_active = false;
             let over_files = rect_contains(panel::commit::staged_area(area), m.column, m.row);
+            let inside = rect_contains(panel::commit::modal_area(area), m.column, m.row);
             match m.kind {
+                // A click beside the modal puts it away; a generation in
+                // flight carries on and is listed under its checkout.
+                MouseEventKind::Down(MouseButton::Left) if !inside => {
+                    if state.generation.is_some() {
+                        state.set_status(panel::commit::BACKGROUND_NOTICE, false);
+                    }
+                    state.modal = Modal::None;
+                }
                 MouseEventKind::Down(MouseButton::Left) => {
                     let _ = panel::commit::place_cursor_at(state, area, m.column, m.row);
                 }
@@ -952,6 +961,33 @@ mod tests {
         assert_eq!(state.focus, Pane::Files);
         assert!(!state.column_drag_active);
         assert_eq!(state.row_drag_active, None);
+    }
+
+    /// A commit message can take a minute to write. Clicking beside the
+    /// modal puts it away without stopping the model, so other work can go
+    /// on while the message is written.
+    #[test]
+    fn clicking_beside_the_commit_modal_hides_it_and_keeps_generating() {
+        let area = Rect::new(0, 0, 100, 30);
+        let mut state = AppState::new();
+        state.repo_root = Some("/repo".into());
+        state.modal = Modal::Commit;
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(|| {});
+        state.start_generation(rx, handle, crate::panel::commit_art::Feed::from_diff(""));
+
+        assert!(handle_modal_mouse(&mut state, area, &left_click(0, 0)));
+
+        assert_eq!(state.modal, Modal::None);
+        assert!(state.generation.is_some(), "the model keeps writing");
+        assert!(
+            state
+                .commit_draft
+                .as_ref()
+                .is_some_and(|d| d.dir == "/repo" && !d.ready),
+            "the draft is listed under its checkout"
+        );
+        state.cancel_generation();
     }
 
     #[test]

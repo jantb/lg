@@ -5,7 +5,7 @@ use std::thread::JoinHandle;
 
 use chrono::{DateTime, Utc};
 
-use super::{AppState, BackgroundJob, GenMsg, Generation, PendingAction};
+use super::{AppState, BackgroundJob, CommitDraft, GenMsg, Generation, Modal, PendingAction};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StatusMsg {
@@ -217,6 +217,13 @@ impl AppState {
         handle: JoinHandle<()>,
         feed: crate::panel::commit_art::Feed,
     ) {
+        // With no checkout to hang it under, the draft has no row; the modal
+        // itself is still the way back to it.
+        self.commit_draft = self
+            .repo_root
+            .clone()
+            .or_else(|| self.workspace_root.clone())
+            .map(|dir| CommitDraft { dir, ready: false });
         self.generation = Some(Generation {
             rx,
             handle: Some(handle),
@@ -321,6 +328,18 @@ impl AppState {
     pub fn cancel_generation(&mut self) {
         if let Some(mut generation) = self.generation.take() {
             self.defer_thread_join(generation.handle.take());
+        }
+        self.commit_draft = None;
+    }
+
+    /// The generation has finished. With the modal open the message is on
+    /// screen and the sub-line has done its job; closed, the sub-line keeps
+    /// standing, marked ready, until the message is looked at.
+    pub fn finish_commit_draft(&mut self) {
+        if self.modal == Modal::Commit {
+            self.commit_draft = None;
+        } else if let Some(draft) = self.commit_draft.as_mut() {
+            draft.ready = true;
         }
     }
 

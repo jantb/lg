@@ -30,7 +30,8 @@ pub(crate) fn select_nested_repo_tree_row(state: &mut AppState, idx: usize) {
         Some(
             NestedRepoTreeRow::Root
             | NestedRepoTreeRow::Worktree { .. }
-            | NestedRepoTreeRow::Session { .. },
+            | NestedRepoTreeRow::Session { .. }
+            | NestedRepoTreeRow::CommitDraft,
         )
         | None => {}
     }
@@ -48,7 +49,8 @@ pub(super) fn move_selection(state: &mut AppState, down: bool, amount: usize) {
         Some(
             NestedRepoTreeRow::Root
             | NestedRepoTreeRow::Worktree { .. }
-            | NestedRepoTreeRow::Session { .. },
+            | NestedRepoTreeRow::Session { .. }
+            | NestedRepoTreeRow::CommitDraft,
         )
         | None => {}
     }
@@ -71,6 +73,9 @@ pub(super) enum NestedRepoTreeRow {
     Session {
         id: crate::session::SessionId,
     },
+    /// The commit message being written for a checkout while its modal is
+    /// closed; Enter or a click brings the modal back.
+    CommitDraft,
     /// A checkout of the active repository, listed under the row that stands
     /// for that repository.
     Worktree {
@@ -154,6 +159,13 @@ fn push_checkout(rows: &mut Vec<NestedRepoTreeRow>, state: &AppState, row: Neste
             .for_dir(std::path::Path::new(&dir))
             .map(|session| NestedRepoTreeRow::Session { id: session.id }),
     );
+    if state
+        .commit_draft
+        .as_ref()
+        .is_some_and(|draft| draft.dir == dir)
+    {
+        rows.push(NestedRepoTreeRow::CommitDraft);
+    }
 }
 
 /// Where a row's checkout lives, for rows that stand for one.
@@ -178,6 +190,7 @@ pub(super) fn row_checkout_dir(state: &AppState, row: NestedRepoTreeRow) -> Opti
             )
         }
         NestedRepoTreeRow::Session { .. }
+        | NestedRepoTreeRow::CommitDraft
         | NestedRepoTreeRow::Branch { .. }
         | NestedRepoTreeRow::Remote { .. } => None,
     }
@@ -293,6 +306,52 @@ mod tests {
             workspace.to_string_lossy().into_owned(),
             real.to_string_lossy().into_owned(),
         )
+    }
+
+    /// A commit message written in the background is listed under its
+    /// checkout like a session, and entering the row brings the modal back.
+    #[test]
+    fn a_background_commit_message_is_listed_under_its_checkout_and_reopens() {
+        let mut state = AppState::new();
+        state.repo_root = Some("/repo".into());
+        state.commit_draft = Some(crate::state::CommitDraft {
+            dir: "/repo".into(),
+            ready: true,
+        });
+        state.commit_message = "feat: done".into();
+        let rows = nested_repo_tree_rows(&state);
+        let idx = rows
+            .iter()
+            .position(|row| *row == NestedRepoTreeRow::CommitDraft)
+            .expect("the draft has a row");
+        assert_eq!(rows[idx - 1], NestedRepoTreeRow::Root, "under its checkout");
+
+        select_nested_repo_tree_row(&mut state, idx);
+        crate::panel::environments::handle_key(
+            &mut state,
+            ratatui::crossterm::event::KeyEvent::new(
+                ratatui::crossterm::event::KeyCode::Enter,
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            ),
+        )
+        .unwrap();
+        assert_eq!(state.modal, crate::state::Modal::Commit);
+        assert_eq!(state.commit_message, "feat: done");
+        assert!(
+            state.commit_draft.is_none(),
+            "looked at, so no longer listed"
+        );
+    }
+
+    #[test]
+    fn a_draft_for_another_checkout_is_not_listed_here() {
+        let mut state = AppState::new();
+        state.repo_root = Some("/repo".into());
+        state.commit_draft = Some(crate::state::CommitDraft {
+            dir: "/elsewhere".into(),
+            ready: false,
+        });
+        assert!(!nested_repo_tree_rows(&state).contains(&NestedRepoTreeRow::CommitDraft));
     }
 
     #[test]

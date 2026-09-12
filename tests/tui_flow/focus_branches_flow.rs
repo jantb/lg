@@ -900,6 +900,16 @@ fn flow_menu_offers_release_actions_for_a_test_only_repository() {
         "missing test release action: {text}"
     );
     assert!(
+        !text.contains("Reset test from origin/main"),
+        "resetting test is the trunk's business, not a feature branch's: {text}"
+    );
+
+    // Standing on test, the reset of test is offered.
+    app.state.modal = Modal::None;
+    app.state.branch = Some("test".into());
+    app.send_key(key(KeyCode::Char('F'))).unwrap();
+    let text = buffer_text(&app);
+    assert!(
         text.contains("Reset test from origin/main"),
         "missing test reset action: {text}"
     );
@@ -1019,15 +1029,17 @@ fn flow_modal_hides_merge_main_on_release_next_when_not_behind_main() {
     );
 }
 
+/// Moving a diff onto a new branch is trunk housekeeping: it is offered from
+/// the trunk with a feature branch selected, not from the feature branch.
 #[test]
 fn branch_actions_show_transfer_diff_for_selected_feature_branch() {
     let mut state = AppState::new();
-    state.branch = Some("feature/current".into());
+    state.branch = Some("main".into());
     state.focus = Pane::Branches;
     state.branches = vec![
         Branch {
             name: "main".into(),
-            is_current: false,
+            is_current: true,
             upstream: None,
             upstream_gone: false,
             ahead: 0,
@@ -1037,7 +1049,7 @@ fn branch_actions_show_transfer_diff_for_selected_feature_branch() {
         },
         Branch {
             name: "feature/current".into(),
-            is_current: true,
+            is_current: false,
             upstream: None,
             upstream_gone: false,
             ahead: 0,
@@ -1144,10 +1156,13 @@ fn the_flow_menu_previews_the_highlighted_action() {
 #[test]
 fn the_flow_preview_is_coloured_by_branch() {
     let mut state = flow_menu_state();
-    state.flow_idx = FlowAction::ALL
+    // Resetting an environment is offered on that environment's branch.
+    state.branch = Some("test".into());
+    state.branches[0].name = "test".into();
+    state.flow_idx = panel::flow::available_actions(&state)
         .iter()
         .position(|action| *action == FlowAction::ResetTest)
-        .unwrap();
+        .expect("the test branch offers its reset");
 
     let backend = TestBackend::new(140, 40);
     let mut terminal = Terminal::new(backend).unwrap();

@@ -86,6 +86,8 @@ impl Agent {
 /// The integrations an agent may be driven through. The settings picker offers
 /// exactly these, so a typo cannot reach the file.
 pub const ADAPTERS: &[&str] = &["claude", "codex", "pi", "terminal"];
+/// The languages generated prose may be written in.
+pub const LANGUAGES: &[&str] = &["English", "Norwegian"];
 /// How tightly an agent is confined: the terrarium sandbox, the agent's own
 /// permission harness, or nothing.
 pub const CONFINEMENTS: &[&str] = &["terrarium", "agent", "direct"];

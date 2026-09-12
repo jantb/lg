@@ -23,20 +23,27 @@ fn merge_main_available(state: &AppState) -> bool {
     state.merge_main_available()
 }
 
-pub(crate) fn available_actions(state: &AppState) -> Vec<FlowAction> {
+/// The actions the menu offers for this checkout. On a feature branch only
+/// what concerns that branch is listed: merging the trunk in, releasing it,
+/// and resetting the checkout. Resetting an environment is offered on that
+/// environment's own branch; starting features and cleaning up are the
+/// trunk's business and wait there.
+pub fn available_actions(state: &AppState) -> Vec<FlowAction> {
+    let feature = state.on_feature_branch();
     FlowAction::ALL
         .into_iter()
         .filter(|action| match action {
             FlowAction::MergeMain => merge_main_available(state),
-            FlowAction::ReleaseDev
-            | FlowAction::ReleaseTest
-            | FlowAction::ResetDev
-            | FlowAction::ResetTest => action
+            FlowAction::ReleaseDev | FlowAction::ReleaseTest => action
                 .release_env()
                 .is_some_and(|env| state.release_branch(env).is_some()),
-            FlowAction::TransferDiff => selected_feature_branch(state).is_some(),
+            FlowAction::ResetDev | FlowAction::ResetTest => action
+                .release_env()
+                .and_then(|env| state.release_branch(env))
+                .is_some_and(|deploy| state.branch.as_deref() == Some(deploy)),
+            FlowAction::TransferDiff => !feature && selected_feature_branch(state).is_some(),
             FlowAction::DiscardCheckout => state.branch.is_some(),
-            FlowAction::NewFeature | FlowAction::CleanOrphans => true,
+            FlowAction::NewFeature | FlowAction::CleanOrphans => !feature,
         })
         .collect()
 }
@@ -673,6 +680,63 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// On a feature branch the menu is about that branch: bring the trunk
+    /// in, release it, or throw the checkout away. Trunk housekeeping is not
+    /// offered until the trunk is checked out.
+    #[test]
+    fn a_feature_branch_offers_only_the_actions_about_itself() {
+        let offered = available_actions(&state());
+        assert!(offered.contains(&FlowAction::MergeMain), "{offered:?}");
+        assert!(offered.contains(&FlowAction::ReleaseTest), "{offered:?}");
+        assert!(
+            offered.contains(&FlowAction::DiscardCheckout),
+            "{offered:?}"
+        );
+        for general in [
+            FlowAction::ResetTest,
+            FlowAction::ResetDev,
+            FlowAction::NewFeature,
+            FlowAction::TransferDiff,
+            FlowAction::CleanOrphans,
+        ] {
+            assert!(
+                !offered.contains(&general),
+                "{general:?} is trunk business: {offered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_trunk_offers_the_general_housekeeping_but_no_reset() {
+        let mut state = state();
+        state.branch = Some("main".into());
+        state.branches[0].name = "main".into();
+        let offered = available_actions(&state);
+        for general in [FlowAction::NewFeature, FlowAction::CleanOrphans] {
+            assert!(
+                offered.contains(&general),
+                "{general:?} missing: {offered:?}"
+            );
+        }
+        assert!(
+            !offered.contains(&FlowAction::ResetTest) && !offered.contains(&FlowAction::ResetDev),
+            "resetting an environment belongs on its branch: {offered:?}"
+        );
+    }
+
+    /// Resetting an environment is done standing on it: the test branch
+    /// offers to reset test and nothing else, so the menu cannot be used to
+    /// wipe an environment nobody is looking at.
+    #[test]
+    fn an_environment_branch_offers_to_reset_only_itself() {
+        let mut state = state();
+        state.branch = Some("test".into());
+        state.branches[0].name = "test".into();
+        let offered = available_actions(&state);
+        assert!(offered.contains(&FlowAction::ResetTest), "{offered:?}");
+        assert!(!offered.contains(&FlowAction::ResetDev), "{offered:?}");
     }
 
     /// The steps shown are the steps run: both come from `workflow_steps`, so

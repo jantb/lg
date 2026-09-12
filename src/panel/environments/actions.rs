@@ -34,8 +34,21 @@ pub(crate) fn activate_selected_repository_row(state: &mut AppState) -> bool {
             }
             true
         }
+        Some(NestedRepoTreeRow::CommitDraft) => {
+            open_commit_draft(state);
+            true
+        }
         _ => false,
     }
+}
+
+/// Bring the commit modal back over the message being written, or written,
+/// in the background.
+pub(super) fn open_commit_draft(state: &mut AppState) {
+    if state.commit_draft.is_none() {
+        return;
+    }
+    state.open_commit_modal();
 }
 
 /// Start a session of `kind` in the selected checkout, or show the one already
@@ -82,6 +95,11 @@ pub(crate) fn selected_checkout(state: &AppState) -> Option<(String, String)> {
                 session.cwd.to_string_lossy().into_owned(),
                 session.label.clone(),
             ))
+        }
+        NestedRepoTreeRow::CommitDraft => {
+            let dir = state.commit_draft.as_ref()?.dir.clone();
+            let label = dir_name(&dir).to_string();
+            Some((dir, label))
         }
         NestedRepoTreeRow::Worktree { wt_idx } => {
             let worktree = state.worktrees.get(wt_idx)?;
@@ -211,6 +229,20 @@ pub(crate) fn selected_session(state: &AppState) -> Option<crate::session::Sessi
 /// closing one from the row it is shown on, rather than only from inside the
 /// session pane.
 pub(super) fn close_selected_session(state: &mut AppState) {
+    if selected_tree_row(state) == Some(NestedRepoTreeRow::CommitDraft) {
+        let was_running = state.generation.is_some();
+        state.cancel_generation();
+        state.set_status(
+            if was_running {
+                "commit message generation cancelled"
+            } else {
+                "commit message set aside \u{b7} c reopens it"
+            },
+            false,
+        );
+        state.clamp();
+        return;
+    }
     let Some(NestedRepoTreeRow::Session { id }) = selected_tree_row(state) else {
         state.set_status("select a session row to close it", false);
         return;
@@ -380,6 +412,7 @@ pub(super) fn selected_repository_project_path(state: &AppState) -> Option<Strin
             .sessions
             .get(id)
             .map(|session| session.cwd.to_string_lossy().into_owned()),
+        NestedRepoTreeRow::CommitDraft => state.commit_draft.as_ref().map(|d| d.dir.clone()),
         NestedRepoTreeRow::Worktree { wt_idx } => state
             .worktrees
             .get(wt_idx)

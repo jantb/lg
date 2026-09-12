@@ -35,6 +35,25 @@ const CATEGORIES: &[(&str, &str)] = &[
     ("activity", "Activity & Setup"),
     ("sessions", "Sessions"),
 ];
+/// One line on what each category holds, shown above its fields.
+fn describe_category(key: &str) -> &'static str {
+    match key {
+        "identity" => "Who commits made from lg are attributed to, and how widely that applies.",
+        "writing" => "How commit messages, pull request text and reviews are phrased and sized.",
+        "models" => "The language model lg talks to, and where it is reached.",
+        "agents" => {
+            "The coding agents and shells a session can run, and how tightly each is confined."
+        }
+        "sandbox" => "The macOS Seatbelt profile confined agents run under.",
+        "branches" => {
+            "The trunk, the protected branches, the environments that deploy, and how a change is promoted between them."
+        }
+        "tools" => "The programs lg hands off to, and how the interface behaves.",
+        "activity" => "What lg found on this machine, and the most recent status messages.",
+        "sessions" => "The agent and terminal sessions currently open in this workspace.",
+        _ => "",
+    }
+}
 /// Width of the category column, including its marker.
 const CATEGORY_WIDTH: u16 = 26;
 /// Rows the description pane takes under the field list: a heading line, a
@@ -320,6 +339,7 @@ fn options(hub: &Settings, field: &Field) -> Option<Picker> {
     }
     let group = field.groups.first().map(String::as_str).unwrap_or_default();
     Some(match (hub.key(), group, field.key.as_str()) {
+        ("writing", _, "language") => Picker::fixed(preferences::LANGUAGES, "language"),
         ("agents", _, "adapter") => Picker::fixed(preferences::ADAPTERS, "adapter"),
         ("agents", _, "confinement") => Picker::fixed(preferences::CONFINEMENTS, "confinement"),
         ("branches", "promotions", "strategy") => {
@@ -367,6 +387,26 @@ fn choices(hub: &Settings) -> Vec<String> {
 /// Whether the field being edited offers a picker.
 fn picking(hub: &Settings) -> bool {
     picker(hub).is_some()
+}
+/// Whether the field being edited holds a number, so the arrows step it.
+fn stepping(hub: &Settings) -> bool {
+    fields(hub)
+        .get(hub.selected)
+        .is_some_and(|f| matches!(f.value, Value::Number(_)))
+}
+/// Moves the number being edited by `delta`, never below zero; text that is
+/// not a number yet starts from the field's saved value.
+fn step_number(hub: &mut Settings, delta: i64) {
+    let current = hub
+        .input
+        .trim()
+        .parse::<i64>()
+        .ok()
+        .or_else(|| fields(hub).get(hub.selected).and_then(|f| f.value.as_i64()));
+    let next = current.unwrap_or_default().saturating_add(delta).max(0);
+    hub.input = next.to_string();
+    hub.cursor = hub.input.chars().count();
+    hub.typed = true;
 }
 fn move_choice(hub: &mut Settings, down: bool) {
     let count = choices(hub).len();
@@ -762,6 +802,13 @@ fn field_lines(hub: &Settings, field: &Field, depth: usize, width: usize) -> Vec
         }
         lines.push(Line::from(spans));
     }
+    if let Some(about) = describe(hub.key(), field) {
+        let lead = format!("{indent}  ");
+        let room = width.saturating_sub(lead.chars().count()).max(8);
+        for chunk in super::wrap_words(about, room) {
+            lines.push(Line::from(vec![Span::raw(lead.clone()), muted(chunk)]));
+        }
+    }
     lines
 }
 /// The list drawn as lines, each tagged with the row it belongs to. A row may
@@ -773,6 +820,13 @@ fn list_lines(
     width: usize,
 ) -> Vec<(Line<'static>, Option<usize>)> {
     let mut lines = Vec::new();
+    let about = describe_category(hub.key());
+    if !about.is_empty() {
+        for chunk in super::wrap_words(about, width.max(8)) {
+            lines.push((Line::from(muted(chunk)), None));
+        }
+        lines.push((Line::from(""), None));
+    }
     for row in rows {
         match row {
             Row::Header { label, depth } => {
@@ -1132,7 +1186,7 @@ fn render_detail(hub: &Settings, area: Rect, frame: &mut Frame) {
     let fields = fields(hub);
     let Some(field) = fields.get(hub.selected.min(fields.len().saturating_sub(1))) else {
         let text = if hub.key() == "activity" {
-            "What lg found on this machine, and the most recent status messages."
+            describe_category("activity")
         } else {
             "Select a field to see what it does."
         };
@@ -1143,7 +1197,7 @@ fn render_detail(hub: &Settings, area: Rect, frame: &mut Frame) {
         _ if names_branch(hub, field) => "a local branch; Enter opens the picker",
         _ if names_model(hub, field) => "a model the endpoint serves; Enter opens the picker",
         Value::Bool(_) => "true or false; Enter toggles",
-        Value::Number(_) => "a whole number",
+        Value::Number(_) => "a whole number; \u{2191}/\u{2193} step it while editing",
         Value::String(_) => "text; Shift-Enter adds a line",
         Value::Array(_) => "a JSON list, for example [\"--wait\"]",
         _ => "JSON",
@@ -1430,6 +1484,15 @@ fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
             KeyCode::Down | KeyCode::Up if picking => {
                 move_choice(hub, key.code == KeyCode::Down);
                 return Ok(());
+            }
+            KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown if stepping(hub) => {
+                let size = match key.code {
+                    KeyCode::PageUp | KeyCode::PageDown => 10,
+                    _ if key.modifiers.contains(KeyModifiers::SHIFT) => 10,
+                    _ => 1,
+                };
+                let up = matches!(key.code, KeyCode::Up | KeyCode::PageUp);
+                step_number(hub, if up { size } else { -size });
             }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => insert(hub, "\n"),
             KeyCode::Enter => commit_edit(hub)?,
@@ -1817,7 +1880,7 @@ mod tests {
     #[test]
     fn nested_entries_are_shown_under_their_own_heading() {
         let state = branches_hub();
-        let screen = text(&drawn(&state, Rect::new(0, 0, 120, 60)));
+        let screen = text(&drawn(&state, Rect::new(0, 0, 120, 120)));
         assert!(screen.contains("#1 Development"), "{screen}");
         assert!(screen.contains("#1 feature \u{2192} dev"), "{screen}");
         assert!(
@@ -1841,7 +1904,7 @@ mod tests {
     #[test]
     fn clicking_a_field_selects_it_and_clicking_again_edits_it() {
         let mut state = branches_hub();
-        let area = Rect::new(0, 0, 120, 60);
+        let area = Rect::new(0, 0, 120, 120);
         let r = regions(area);
         // Draw once so the scroll position is settled, then find `remote` on screen.
         let buf = drawn(&state, area);
@@ -1889,6 +1952,76 @@ mod tests {
 
     fn press(state: &mut AppState, code: KeyCode) {
         handle_key(state, KeyEvent::new(code, KeyModifiers::NONE)).unwrap();
+    }
+
+    /// A hub over the writing category with the default preferences.
+    fn writing_hub() -> AppState {
+        let mut state = AppState::default();
+        state.decorative_animations = false;
+        state.settings_hub = Settings {
+            category: 1,
+            draft: serde_json::to_value(preferences::Preferences::default()).unwrap(),
+            ..Settings::default()
+        };
+        state.settings_hub.original = state.settings_hub.draft.clone();
+        state
+    }
+
+    #[test]
+    fn arrows_step_a_number_while_editing_it() {
+        let mut state = writing_hub();
+        select(&mut state, "/writing/body_lines");
+        press(&mut state, KeyCode::Enter);
+        press(&mut state, KeyCode::Up);
+        press(&mut state, KeyCode::Up);
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::PageUp);
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(state.settings_hub.draft["writing"]["body_lines"], json!(19));
+        assert!(!state.settings_hub.editing);
+    }
+
+    #[test]
+    fn a_number_never_steps_below_zero() {
+        let mut state = writing_hub();
+        select(&mut state, "/writing/subject_max");
+        press(&mut state, KeyCode::Enter);
+        for _ in 0..10 {
+            press(&mut state, KeyCode::PageDown);
+        }
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(state.settings_hub.draft["writing"]["subject_max"], json!(0));
+    }
+
+    #[test]
+    fn language_is_picked_from_the_supported_languages() {
+        let mut state = writing_hub();
+        select(&mut state, "/writing/language");
+        press(&mut state, KeyCode::Enter);
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(
+            state.settings_hub.draft["writing"]["language"],
+            json!("Norwegian")
+        );
+        press(&mut state, KeyCode::Enter);
+        for c in "Klingon".chars() {
+            press(&mut state, KeyCode::Char(c));
+        }
+        press(&mut state, KeyCode::Enter);
+        assert!(
+            state.settings_hub.editing,
+            "an unsupported language is refused"
+        );
+        assert!(
+            state.settings_hub.notice_error,
+            "{}",
+            state.settings_hub.notice
+        );
+        assert_eq!(
+            state.settings_hub.draft["writing"]["language"],
+            json!("Norwegian")
+        );
     }
 
     #[test]

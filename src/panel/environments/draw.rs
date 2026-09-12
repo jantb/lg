@@ -148,6 +148,9 @@ pub(super) fn render_nested_repositories(
                 }
                 None => ListItem::new(Line::from("")),
             },
+            NestedRepoTreeRow::CommitDraft => {
+                repository_list_item(commit_draft_line(state, row_width), false)
+            }
             NestedRepoTreeRow::Worktree { wt_idx } => {
                 let worktree = &state.worktrees[*wt_idx];
                 let active = worktree_selected(state, worktree);
@@ -392,6 +395,37 @@ fn activity_word(activity: crate::session::SessionActivity) -> Option<&'static s
         crate::session::SessionActivity::Running => Some("running"),
         crate::session::SessionActivity::NeedsInput => Some("needs input"),
     }
+}
+
+/// The commit message under its checkout: a spinner while the model writes
+/// it, a steady green dot once it is ready to be read.
+fn commit_draft_line(state: &AppState, row_width: usize) -> Line<'static> {
+    let ready = state.commit_draft.as_ref().is_some_and(|d| d.ready);
+    let (glyph, color, word) = if ready {
+        ("\u{25cf} ".to_string(), Color::Green, "ready \u{25b4}")
+    } else {
+        let frame = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
+        (
+            format!("{frame} "),
+            crate::ui::palette::breathe((150, 112, 24), (255, 222, 95), state.animation_ms, 1_200),
+            "generating",
+        )
+    };
+    let text = format!("commit message \u{b7} {word}");
+    Line::from(vec![
+        Span::styled("    ", Style::default()),
+        Span::styled(glyph, Style::default().fg(color)),
+        Span::styled(
+            truncate_chars(&text, row_width.saturating_sub(6)),
+            if ready {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            },
+        ),
+    ])
 }
 
 /// A session under its checkout: whether it is running, what it is doing, and

@@ -321,6 +321,7 @@ impl App {
                 self.state.set_status(s, false);
                 if kind == OperationKind::Commit {
                     self.state.modal = Modal::None;
+                    self.state.commit_draft = None;
                     self.state.commit_message.clear();
                     self.state.commit_cursor = 0;
                     if self.state.push_after_commit {
@@ -466,6 +467,7 @@ impl App {
                     }
                     self.state.commit_message = final_msg;
                     self.state.commit_cursor = self.state.commit_message.chars().count();
+                    self.state.finish_commit_draft();
                     // A message that ran out of budget goes in the editable
                     // field either way — it is a draft, and half a draft is
                     // still a starting point. It is reported as an error so it
@@ -488,6 +490,7 @@ impl App {
                     if let Some(mut g) = self.state.generation.take() {
                         handle = g.handle.take();
                     }
+                    self.state.commit_draft = None;
                     self.state.set_status(e, true);
                 }
             }
