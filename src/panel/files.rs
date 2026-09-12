@@ -306,10 +306,10 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
             }
         }
         KeyCode::Char('h') | KeyCode::Left => {
-            if let Some(row) = rows.get(state.files_idx) {
-                if let TreeKind::Folder { expanded: true, .. } = row.kind {
-                    state.collapsed_dirs.insert(row.path.clone());
-                }
+            if let Some(row) = rows.get(state.files_idx)
+                && let TreeKind::Folder { expanded: true, .. } = row.kind
+            {
+                state.collapsed_dirs.insert(row.path.clone());
             }
         }
         KeyCode::Char('c') => {

@@ -20,7 +20,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     if modal.width < 40 || modal.height < 16 {
         let inner = ui::modal_frame(frame, modal, "Settings");
         frame.render_widget(Paragraph::new("Terminal too small for settings"), inner);
-        ui::animate_modal_border(state.animation_ms, modal, &[], frame);
+        if state.decorative_animations {
+            ui::animate_modal_border(state.animation_ms, modal, &[], frame);
+        }
         return;
     }
 
@@ -225,7 +227,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 
     let inner = ui::modal_frame(frame, modal, "Settings");
     frame.render_widget(Paragraph::new(lines), inner);
-    ui::animate_modal_border(state.animation_ms, modal, &[], frame);
+    if state.decorative_animations {
+        ui::animate_modal_border(state.animation_ms, modal, &[], frame);
+    }
 }
 
 /// Lays the key hints out across as many lines as the modal is wide enough for,

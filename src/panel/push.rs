@@ -95,7 +95,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     };
     let inner = ui::modal_frame(frame, modal, title);
     frame.render_widget(Paragraph::new(text), inner);
-    ui::animate_modal_border(state.animation_ms, modal, &[], frame);
+    if state.decorative_animations {
+        ui::animate_modal_border(state.animation_ms, modal, &[], frame);
+    }
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {

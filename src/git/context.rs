@@ -34,7 +34,7 @@ pub fn active_repo() -> Option<PathBuf> {
 }
 
 /// Directory this thread's git commands run in.
-fn repo_dir() -> Option<PathBuf> {
+pub(crate) fn repo_dir() -> Option<PathBuf> {
     PINNED_REPO
         .with(|pinned| pinned.borrow().clone())
         .or_else(active_repo)

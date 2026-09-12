@@ -187,7 +187,7 @@ fn draw_stars(scene: &Scene, seed: usize, t: f32, blast: Option<f32>, put: Put<'
                 continue;
             }
             let h = hash(x, y.wrapping_add(seed.wrapping_mul(131)));
-            if h % STAR_DENSITY != 0 {
+            if !h.is_multiple_of(STAR_DENSITY) {
                 continue;
             }
             let period = 1.5 + ((h >> 8) % 100) as f32 / 40.0;
@@ -251,7 +251,7 @@ fn draw_station(scene: &Scene, t: f32, since: Option<f32>, blast: Option<f32>, p
             }
             if xf >= fl && xf <= fr {
                 // The floor, deep in shadow with its markings.
-                if hash(x, y.wrapping_add(7)) % 4 == 0 {
+                if hash(x, y.wrapping_add(7)).is_multiple_of(4) {
                     put(x, y, '.', lit(FLOOR, k * 0.6));
                 }
                 continue;
@@ -370,7 +370,7 @@ fn draw_blast(scene: &Scene, blast: f32, put: Put<'_>) {
                     // Not reached yet: the hull ahead of the fire flashes white.
                     if yf >= scene.horizon(xf) {
                         let flash = (1.0 - (d - front) / 12.0).clamp(0.0, 1.0);
-                        if flash > 0.0 && hash(x, y) % 3 != 0 {
+                        if flash > 0.0 && !hash(x, y).is_multiple_of(3) {
                             let glyph = if flash > 0.6 { '#' } else { '+' };
                             put(
                                 x,
@@ -452,7 +452,11 @@ fn draw_blast(scene: &Scene, blast: f32, put: Put<'_>) {
             let d = speed * blast;
             let x = scene.vx + angle.cos() * d;
             let y = scene.vy - angle.sin() * d * 0.5;
-            let glyph = if (h >> 16) % 3 == 0 { ':' } else { '.' };
+            let glyph = if (h >> 16).is_multiple_of(3) {
+                ':'
+            } else {
+                '.'
+            };
             scene.plot(
                 put,
                 x,

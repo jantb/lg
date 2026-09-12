@@ -1,4 +1,5 @@
 use super::common::*;
+use lg::panel::environments::menu::{self, RepoAction};
 use lg::session::{SessionKind, SessionSpec, Sessions};
 use lg::state::{AppMode, MainView};
 use lg::term::Spawn;
@@ -569,12 +570,12 @@ fn the_header_calls_out_a_session_blocked_on_a_question() {
 }
 
 #[test]
-fn f2_swaps_between_the_git_view_and_the_workspace_view() {
+fn w_swaps_between_the_git_view_and_the_workspace_view() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 30)).unwrap();
     app.state.repo_root = Some("/workspace".into());
     assert_eq!(app.state.mode, AppMode::Git);
 
-    app.send_key(key(KeyCode::F(2))).unwrap();
+    app.send_key(key(KeyCode::Char('w'))).unwrap();
     assert_eq!(app.state.mode, AppMode::Workspace);
     let screen = buffer_text(&app);
     assert!(
@@ -590,7 +591,7 @@ fn f2_swaps_between_the_git_view_and_the_workspace_view() {
         "an empty workspace should say how to start one: {screen}"
     );
 
-    app.send_key(key(KeyCode::F(2))).unwrap();
+    app.send_key(key(KeyCode::Char('w'))).unwrap();
     assert_eq!(app.state.mode, AppMode::Git);
     assert!(
         buffer_text(&app).contains("[2] Files"),
@@ -655,7 +656,7 @@ fn leaving_workspace_mode_leaves_the_sessions_running() {
     app.state.session_capture = false;
     app.state.mode = AppMode::Workspace;
 
-    app.send_key(key(KeyCode::F(2))).unwrap();
+    app.send_key(key(KeyCode::Char('w'))).unwrap();
 
     assert_eq!(app.state.mode, AppMode::Git);
     assert_eq!(app.state.sessions.len(), 1);
@@ -817,9 +818,13 @@ fn a_worktree_running_a_session_is_not_removed_from_under_it() {
     app.state.nested_repo_tree_idx = 1;
 
     // Landing, bringing home and removing all end in `git worktree remove`.
-    for code in [KeyCode::Char('m'), KeyCode::Char('b'), KeyCode::Char('D')] {
+    for code in [
+        RepoAction::LandWorktree,
+        RepoAction::BranchHome,
+        RepoAction::RemoveWorktree,
+    ] {
         app.state.status = None;
-        app.send_key(key(code)).unwrap();
+        menu::run(&mut app.state, code);
 
         assert!(
             app.state.confirm.is_none(),
@@ -865,7 +870,7 @@ fn closing_the_session_frees_the_worktree_to_be_landed() {
     app.state.show_diff();
     app.state.focus = Pane::Status;
     app.state.nested_repo_tree_idx = 1;
-    app.send_key(key(KeyCode::Char('m'))).unwrap();
+    menu::run(&mut app.state, RepoAction::LandWorktree);
 
     let confirm = app.state.confirm.as_ref().expect("confirm prompt");
     assert_eq!(

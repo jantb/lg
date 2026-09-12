@@ -10,6 +10,7 @@ mod commits;
 mod config;
 mod context;
 mod diff;
+pub mod environments;
 mod flow;
 mod index;
 mod merge_editor;
@@ -118,7 +119,7 @@ fn combined_failure_message(command: &str, text: &str) -> String {
     }
 }
 
-fn run(args: &[&str]) -> Result<Output> {
+pub(crate) fn run(args: &[&str]) -> Result<Output> {
     let out = git_command(args)
         .output()
         .with_context(|| format!("failed to spawn git {}", args.join(" ")))?;
@@ -215,3 +216,5 @@ pub fn head_branch() -> Result<String> {
     }
     Ok(branch)
 }
+
+pub(crate) use context::repo_dir as configuration_context;

@@ -44,7 +44,8 @@ pub fn new_file_entries(dir: &Path) -> Vec<FileEntry> {
 /// on. This is the way out of everything above: once it succeeds the folder is
 /// a checkout, and the next refresh shows it as one.
 pub fn init_repository(dir: &Path) -> Result<String> {
-    let text = super::run_combined_in_dir(dir, &["init", "-b", crate::config::BRANCH_MAIN])?;
+    let configured_base = crate::preferences::base_branch();
+    let text = super::run_combined_in_dir(dir, &["init", "-b", configured_base.as_str()])?;
     Ok(text
         .lines()
         .rfind(|line| !line.trim().is_empty())

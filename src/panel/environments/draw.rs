@@ -9,7 +9,6 @@ use ratatui::{
 };
 
 use crate::{
-    config::BRANCH_MAIN,
     git::{Branch, NestedRepo, ReleaseEnv, ReleaseTargetStatus, RemoteBranch, Worktree},
     state::{AppState, SPINNER_FRAMES, clamp_index},
     ui,
@@ -52,7 +51,8 @@ fn release_envs(state: &AppState) -> Vec<(ReleaseEnv, String)> {
 }
 
 pub(super) fn render_deployment_status(state: &AppState, area: Rect, frame: &mut Frame) {
-    let block = ui::bordered("Deployment Status");
+    let configured_base = crate::preferences::base_branch();
+    let block = ui::bordered("Branch inclusion · deployment unknown · E environments");
     let mut lines = Vec::new();
 
     match state.branch.as_deref() {
@@ -67,7 +67,7 @@ pub(super) fn render_deployment_status(state: &AppState, area: Rect, frame: &mut
     }
 
     lines.push(env_line(
-        BRANCH_MAIN,
+        configured_base.as_str(),
         state.current_branch_releases.main.as_ref(),
         crate::ui::palette::LANE_MAIN,
         state.animation_tick,
@@ -645,7 +645,7 @@ fn env_line(
             ));
         }
         None => {
-            let pulse = if tick % 2 == 0 {
+            let pulse = if tick.is_multiple_of(2) {
                 SPINNER_FRAMES[tick % SPINNER_FRAMES.len()]
             } else {
                 "-"

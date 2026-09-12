@@ -116,6 +116,7 @@ pub struct AppState {
     pub commit_scroll_offset: usize,
     /// First visible row of the staged-files list beside the commit editor.
     pub commit_files_scroll: usize,
+    pub commit_author: String,
     pub author_path_input: String,
     pub author_name_input: String,
     pub author_email_input: String,
@@ -159,6 +160,13 @@ pub struct AppState {
     pub nested_repo_detail_path: Option<String>,
 
     pub status: Option<StatusMsg>,
+    pub decorative_animations: bool,
+    pub history_file: Option<std::path::PathBuf>,
+    pub status_history: Vec<StatusMsg>,
+    pub environment_view: crate::panel::deployment::Environments,
+    pub commands: crate::panel::commands::Commands,
+    pub settings_hub: crate::panel::settings::Settings,
+    pub agent_profiles: Vec<crate::preferences::Agent>,
     pub pending_action: Option<PendingAction>,
     pub confirm: Option<ConfirmPrompt>,
     pub push_after_commit: bool,
@@ -213,6 +221,8 @@ pub struct AppState {
     pub preferred_agent: crate::session::SessionKind,
     pub agent_pick_idx: usize,
     pub agent_pick_sandboxed: bool,
+    /// The highlighted entry of the repository action menu.
+    pub repo_menu_idx: usize,
 
     pub conflicts: Vec<String>,
     pub conflict_idx: usize,
@@ -328,6 +338,7 @@ impl AppState {
             commit_cursor: 0,
             commit_scroll_offset: 0,
             commit_files_scroll: 0,
+            commit_author: String::new(),
             author_path_input: String::new(),
             author_name_input: String::new(),
             author_email_input: String::new(),
@@ -362,6 +373,13 @@ impl AppState {
             nested_repo_detail_path: None,
 
             status: None,
+            decorative_animations: true,
+            history_file: None,
+            status_history: Vec::new(),
+            environment_view: Default::default(),
+            commands: Default::default(),
+            settings_hub: Default::default(),
+            agent_profiles: Vec::new(),
             pending_action: None,
             confirm: None,
             push_after_commit: false,
@@ -406,6 +424,7 @@ impl AppState {
             preferred_agent: crate::session::SessionKind::Claude,
             agent_pick_idx: 0,
             agent_pick_sandboxed: true,
+            repo_menu_idx: 0,
 
             conflicts: Vec::new(),
             conflict_idx: 0,

@@ -4,8 +4,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    BRANCH_MAIN, DEFAULT_PUSH_REMOTE, deploy_branch_list, is_deploy_branch_name,
-    is_protected_branch_name, protected_branch_list,
+    deploy_branch_list, is_deploy_branch_name, is_protected_branch_name, protected_branch_list,
 };
 
 use super::{git_command, parse_worktree_list, run};
@@ -124,7 +123,8 @@ fn ensure_feature_branch(branch: &str) -> Result<()> {
 }
 
 fn ensure_merge_main_branch(branch: &str) -> Result<()> {
-    if branch.is_empty() || branch == BRANCH_MAIN {
+    let configured_base = crate::preferences::base_branch();
+    if branch.is_empty() || branch == configured_base.as_str() {
         anyhow::bail!(
             "checkout a feature branch or a deploy branch ({}) first",
             deploy_branch_list()
@@ -174,19 +174,20 @@ fn is_valid_branch_name(name: &str) -> bool {
 }
 
 fn remote_ref_for_branch(branch: &str, upstream: Option<&str>) -> Result<String> {
+    let configured_remote = crate::preferences::remote();
     if let Some(upstream) = upstream
         && ref_exists(upstream)
     {
         return Ok(upstream.to_string());
     }
 
-    let remote_ref = format!("{DEFAULT_PUSH_REMOTE}/{branch}");
+    let remote_ref = format!("{configured_remote}/{branch}");
     if ref_exists(&remote_ref) {
         return Ok(remote_ref);
     }
 
     anyhow::bail!(
-        "no remote branch found for {branch}; set an upstream or push {DEFAULT_PUSH_REMOTE}/{branch}"
+        "no remote branch found for {branch}; set an upstream or push {configured_remote}/{branch}"
     );
 }
 

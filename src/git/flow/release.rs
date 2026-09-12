@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 
-use crate::config::{BRANCH_MAIN, BRANCH_TEST, DEFAULT_PUSH_REMOTE, DEV_BRANCH_NAMES};
+use crate::config::{BRANCH_TEST, DEV_BRANCH_NAMES};
 
 use super::super::{head_branch, run, run_combined};
 use super::*;
@@ -16,6 +16,16 @@ pub fn flow_release_current_with_progress(
     target_branch: &str,
     progress: &mut impl FnMut(),
 ) -> Result<String> {
+    if crate::preferences::configured_category("branches") {
+        let config = crate::preferences::load().config.branches;
+        let env = config
+            .environments
+            .iter()
+            .find(|e| e.branch == target_branch)
+            .context("target is not a configured environment")?;
+        let preview = super::super::environments::preview_promotion(current_branch, &env.id)?;
+        return super::super::environments::promote(&preview);
+    }
     ensure_no_conflict_in_progress()?;
     ensure_feature_branch(current_branch)?;
     progress();
@@ -47,7 +57,8 @@ pub fn flow_release_current_with_progress(
 /// commit is sitting on the deploy branch, and resetting to the remote drops it
 /// and walks straight back into the conflict it resolved.
 fn ensure_target_matches_remote(target_branch: &str) -> Result<()> {
-    let remote_ref = format!("{DEFAULT_PUSH_REMOTE}/{target_branch}");
+    let configured_remote = crate::preferences::remote();
+    let remote_ref = format!("{configured_remote}/{target_branch}");
     if !ref_exists(target_branch) || !ref_exists(&remote_ref) {
         return Ok(());
     }
@@ -79,8 +90,9 @@ fn release_current_branch(
     target_branch: &str,
     progress: &mut impl FnMut(),
 ) -> Result<()> {
+    let configured_remote = crate::preferences::remote();
     progress();
-    run(&["push", DEFAULT_PUSH_REMOTE, current_branch])?;
+    run(&["push", configured_remote.as_str(), current_branch])?;
     if target_branch != current_branch {
         progress();
         run(&["fetch"])?;
@@ -90,12 +102,12 @@ fn release_current_branch(
             "branch",
             "-f",
             target_branch,
-            &format!("{DEFAULT_PUSH_REMOTE}/{target_branch}"),
+            &format!("{configured_remote}/{target_branch}"),
         ])?;
         run(&[
             "branch",
             "--set-upstream-to",
-            &format!("{DEFAULT_PUSH_REMOTE}/{target_branch}"),
+            &format!("{configured_remote}/{target_branch}"),
             target_branch,
         ])?;
     } else {
@@ -109,11 +121,11 @@ fn release_current_branch(
     progress();
     merge_remote_main_into_current_release_branch(target_branch)?;
     progress();
-    run(&["merge", &format!("{DEFAULT_PUSH_REMOTE}/{current_branch}")])?;
+    run(&["merge", &format!("{configured_remote}/{current_branch}")])?;
     progress();
     run(&[
         "push",
-        DEFAULT_PUSH_REMOTE,
+        configured_remote.as_str(),
         &format!("HEAD:refs/heads/{target_branch}"),
     ])?;
     progress();
@@ -145,9 +157,11 @@ pub(crate) fn update_release_branch_from_main_before_commit() -> Result<Option<S
 }
 
 fn merge_remote_main_into_current_release_branch(branch: &str) -> Result<Option<String>> {
+    let configured_base = crate::preferences::base_branch();
+    let configured_remote = crate::preferences::remote();
     ensure_release_branch(branch)?;
     run(&["fetch"])?;
-    let remote_main = format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
+    let remote_main = format!("{configured_remote}/{configured_base}");
     if !ref_exists(&remote_main) {
         anyhow::bail!("cannot update {branch}: missing {remote_main}");
     }

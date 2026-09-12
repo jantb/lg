@@ -12,24 +12,35 @@ use super::scroll;
 
 mod actions;
 mod draw;
+pub mod menu;
 mod tree;
 
 pub(crate) use actions::{
-    activate_selected_repository_row, close_nested_repo_detail, init_available,
-    reload_nested_repo_detail, selected_checkout_label, selected_linked_worktree, selected_session,
+    activate_selected_repository_row, close_nested_repo_detail, open_new_worktree_form,
+    reload_nested_repo_detail, selected_checkout, selected_checkout_label, selected_session,
     start_session_for_selection,
 };
 pub(crate) use draw::{nested_repo_scroll_offset, sync_scroll_offset};
 pub(crate) use tree::{nested_repo_tree_len, select_nested_repo_tree_row};
 
 use actions::{
-    bring_selected_worktree_home, close_selected_session, init_selected_checkout,
-    land_selected_worktree, load_nested_repo_detail, open_new_worktree_form,
-    remove_selected_worktree, selected_repository_project_path, show_session_row,
-    sync_selected_worktree,
+    close_selected_session, load_nested_repo_detail, selected_repository_project_path,
+    show_session_row,
 };
 use draw::render_nested_repositories;
 use tree::{NestedRepoTreeRow, move_selection, selected_tree_row};
+
+/// Swap the expanded repository between its local and remote branches.
+fn toggle_remote_branches(state: &mut AppState) {
+    state.nested_repo_branch_view = match state.nested_repo_branch_view {
+        BranchView::Local => BranchView::Remote,
+        BranchView::Remote => BranchView::Local,
+    };
+    if let Some(path) = state.nested_repo_detail_path.clone() {
+        let _ = load_nested_repo_detail(state, &path);
+    }
+    state.clamp();
+}
 
 /// Borders plus the branch line plus the `main` row. Deploy branches add one
 /// row each, and a checkout does not have to have both.
@@ -112,26 +123,13 @@ pub fn handle_key(
                 state.pending_action = Some(crate::state::PendingAction::OpenProjectAt(path));
             }
         }
-        KeyCode::Char('i') => init_selected_checkout(state),
+        KeyCode::Char(' ') => menu::open(state),
         KeyCode::Char('n') => open_new_worktree_form(state),
         KeyCode::Char('s') => state.open_agent_picker(true),
-        KeyCode::Char('S') => state.open_agent_picker(false),
         KeyCode::Char('t') => start_session_for_selection(state, SessionKind::Terminal, true),
-        KeyCode::Char('T') => start_session_for_selection(state, SessionKind::Terminal, false),
-        KeyCode::Char('D') => remove_selected_worktree(state),
         KeyCode::Char('x') => close_selected_session(state),
-        KeyCode::Char('m') => land_selected_worktree(state),
-        KeyCode::Char('M') => sync_selected_worktree(state),
-        KeyCode::Char('b') => bring_selected_worktree_home(state),
         KeyCode::Char('r') if state.nested_repo_detail_path.is_some() => {
-            state.nested_repo_branch_view = match state.nested_repo_branch_view {
-                BranchView::Local => BranchView::Remote,
-                BranchView::Remote => BranchView::Local,
-            };
-            if let Some(path) = state.nested_repo_detail_path.clone() {
-                let _ = load_nested_repo_detail(state, &path);
-            }
-            state.clamp();
+            toggle_remote_branches(state)
         }
         KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('h') => {
             close_nested_repo_detail(state);

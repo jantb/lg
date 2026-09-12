@@ -1,6 +1,6 @@
 //! What the branch lists hold and how the selected branch stands against main.
 
-use crate::config::{BRANCH_MAIN, BRANCH_TEST, DEV_BRANCH_NAMES, is_deploy_branch_name};
+use crate::config::{BRANCH_TEST, DEV_BRANCH_NAMES, is_deploy_branch_name};
 use crate::git::{ReleaseEnv, RemoteBranch};
 
 use super::AppState;
@@ -93,6 +93,9 @@ impl AppState {
     /// to the local branch list so the panels are right before the first
     /// refresh snapshot lands.
     pub fn release_branch(&self, env: ReleaseEnv) -> Option<&str> {
+        if self.release_branches.configured {
+            return self.release_branches.branch(env);
+        }
         if let Some(branch) = self.release_branches.branch(env) {
             return Some(branch);
         }
@@ -109,11 +112,12 @@ impl AppState {
     }
 
     pub fn merge_main_available(&self) -> bool {
+        let configured_base = crate::preferences::base_branch();
         let Some(branch) = self.branch.as_deref() else {
             return false;
         };
         match branch {
-            BRANCH_MAIN => false,
+            value if value == configured_base.as_str() => false,
             _ if is_deploy_branch_name(branch) => {
                 self.current_branch_behind_main().is_some_and(|n| n > 0)
             }

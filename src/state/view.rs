@@ -205,11 +205,12 @@ impl AppState {
         // Every modal carries the orbiting frame, so an open one keeps the
         // screen repainting. The review chat is docked into the main pane
         // rather than drawn as a box, so it has no frame to move.
-        !matches!(self.modal, Modal::None | Modal::ReviewChat)
-            || self.status.as_ref().is_some_and(|status| {
-                crate::ui::palette::status_animating(status.age_ms(), status.is_error)
-            })
-            || self.sessions.activity_counts().1 > 0
+        self.decorative_animations
+            && (!matches!(self.modal, Modal::None | Modal::ReviewChat)
+                || self.status.as_ref().is_some_and(|status| {
+                    crate::ui::palette::status_animating(status.age_ms(), status.is_error)
+                })
+                || self.sessions.activity_counts().1 > 0)
     }
 
     /// Which set of keys the main pane is listening for right now.

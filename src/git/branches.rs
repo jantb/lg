@@ -3,8 +3,6 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::config::{BRANCH_MAIN, DEFAULT_PUSH_REMOTE};
-
 use super::commits::{preferred_commit_ref, preferred_commit_ref_in_dir};
 use super::nested::{nested_repo_dir, nested_repo_dir_at};
 use super::{run, run_in_dir};
@@ -30,8 +28,12 @@ pub struct RemoteBranch {
 }
 
 pub fn list_branches() -> Result<Vec<Branch>> {
-    let main_ref =
-        preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}"), BRANCH_MAIN);
+    let configured_base = crate::preferences::base_branch();
+    let configured_remote = crate::preferences::remote();
+    let main_ref = preferred_commit_ref(
+        &format!("{configured_remote}/{configured_base}"),
+        configured_base.as_str(),
+    );
     let out = run(&[
         "branch",
         "--format=%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)\x1f%(upstream:track)\x1f%(committerdate:unix)",
@@ -82,10 +84,12 @@ pub fn nested_repo_branches_at(root: &Path, repo_path: &str) -> Result<Vec<Branc
 }
 
 fn list_branches_in_dir(dir: &Path) -> Result<Vec<Branch>> {
+    let configured_base = crate::preferences::base_branch();
+    let configured_remote = crate::preferences::remote();
     let main_ref = preferred_commit_ref_in_dir(
         dir,
-        &format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}"),
-        BRANCH_MAIN,
+        &format!("{configured_remote}/{configured_base}"),
+        configured_base.as_str(),
     );
     let out = run_in_dir(
         dir,
@@ -229,10 +233,11 @@ fn parse_upstream_track(value: &str) -> (u32, u32) {
 }
 
 fn branch_behind_main(branch: &str, main_ref: Option<&str>) -> u32 {
+    let configured_base = crate::preferences::base_branch();
     let Some(main_ref) = main_ref else {
         return 0;
     };
-    if branch == BRANCH_MAIN || branch == main_ref {
+    if branch == configured_base.as_str() || branch == main_ref {
         return 0;
     }
     let Ok(out) = run(&["rev-list", "--count", main_ref, "--not", branch]) else {
@@ -245,10 +250,11 @@ fn branch_behind_main(branch: &str, main_ref: Option<&str>) -> u32 {
 }
 
 fn branch_behind_main_in_dir(dir: &Path, branch: &str, main_ref: Option<&str>) -> u32 {
+    let configured_base = crate::preferences::base_branch();
     let Some(main_ref) = main_ref else {
         return 0;
     };
-    if branch == BRANCH_MAIN || branch == main_ref {
+    if branch == configured_base.as_str() || branch == main_ref {
         return 0;
     }
     let Ok(out) = run_in_dir(dir, &["rev-list", "--count", main_ref, "--not", branch]) else {

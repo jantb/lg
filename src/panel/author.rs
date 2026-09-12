@@ -23,7 +23,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             Paragraph::new("Terminal too small for author settings"),
             inner,
         );
-        ui::animate_modal_border(state.animation_ms, modal, &[], frame);
+        if state.decorative_animations {
+            ui::animate_modal_border(state.animation_ms, modal, &[], frame);
+        }
         return;
     }
 
@@ -60,7 +62,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             Span::styled("Tab", Style::default().fg(Color::Yellow)),
             Span::raw(" field    "),
             Span::styled("Enter", Style::default().fg(Color::Green)),
-            Span::raw(" save subtree    "),
+            Span::raw(" save local    "),
             Span::styled("Ctrl+L", Style::default().fg(Color::Green)),
             Span::raw(" save local    "),
             Span::styled("Ctrl+U", Style::default().fg(Color::Red)),
@@ -74,7 +76,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 
     let inner = ui::modal_frame(frame, modal, "Author Settings");
     frame.render_widget(Paragraph::new(lines), inner);
-    ui::animate_modal_border(state.animation_ms, modal, &[], frame);
+    if state.decorative_animations {
+        ui::animate_modal_border(state.animation_ms, modal, &[], frame);
+    }
     if let Some((x, y)) = active_field_cursor(state, modal) {
         frame.set_cursor_position(Position::new(x, y));
     }
@@ -139,8 +143,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             };
         }
         KeyCode::Enter => {
-            state.pending_action = Some(PendingAction::SaveSubtreeAuthor {
-                path: state.author_path_input.clone(),
+            state.pending_action = Some(PendingAction::SaveAuthor {
                 name: state.author_name_input.clone(),
                 email: state.author_email_input.clone(),
             });

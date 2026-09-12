@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use std::io::Write;
 use std::process::Stdio;
 
-use crate::config::{BRANCH_MAIN, DEFAULT_PUSH_REMOTE, is_protected_branch_name};
+use crate::config::is_protected_branch_name;
 
 use super::super::{git_command, head_branch, run, run_combined};
 use super::*;
@@ -52,6 +52,8 @@ pub fn flow_reset_branch_from_main_with_progress(
     target_branch: &str,
     progress: &mut impl FnMut(),
 ) -> Result<String> {
+    let configured_base = crate::preferences::base_branch();
+    let configured_remote = crate::preferences::remote();
     ensure_no_conflict_in_progress()?;
     progress();
     run(&["fetch"])?;
@@ -65,7 +67,7 @@ pub fn flow_reset_branch_from_main_with_progress(
     run(&[
         "reset",
         "--hard",
-        &format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}"),
+        &format!("{configured_remote}/{configured_base}"),
     ])?;
     progress();
     run(&["push", "--force"])?;
@@ -75,7 +77,9 @@ pub fn flow_reset_branch_from_main_with_progress(
     }
     progress();
     delete_safety_ref(&safety_ref)?;
-    Ok(format!("reset {target_branch} from origin/{BRANCH_MAIN}"))
+    Ok(format!(
+        "reset {target_branch} from origin/{configured_base}"
+    ))
 }
 
 pub fn flow_discard_checkout_from_remote(current_branch: &str) -> Result<String> {
@@ -86,6 +90,7 @@ pub fn flow_discard_checkout_from_remote_with_progress(
     current_branch: &str,
     progress: &mut impl FnMut(),
 ) -> Result<String> {
+    let configured_remote = crate::preferences::remote();
     if current_branch.trim().is_empty() {
         anyhow::bail!("checkout a branch first");
     }
@@ -99,7 +104,7 @@ pub fn flow_discard_checkout_from_remote_with_progress(
     let fetch_remote = upstream
         .as_deref()
         .and_then(remote_name_from_ref)
-        .unwrap_or(DEFAULT_PUSH_REMOTE);
+        .unwrap_or(configured_remote.as_str());
 
     progress();
     run(&["fetch", fetch_remote])?;
@@ -130,12 +135,14 @@ pub fn flow_create_feature_branch(current_branch: &str, new_branch: &str) -> Res
 }
 
 fn create_feature_branch(current_branch: &str, new_branch: &str, stashed: bool) -> Result<String> {
+    let configured_base = crate::preferences::base_branch();
+    let configured_remote = crate::preferences::remote();
     run(&["fetch"])?;
-    let start_point = if current_branch == BRANCH_MAIN {
+    let start_point = if current_branch == configured_base.as_str() {
         run(&["pull", "--rebase"])?;
-        BRANCH_MAIN.to_string()
+        configured_base.as_str().to_string()
     } else {
-        format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}")
+        format!("{configured_remote}/{configured_base}")
     };
     run(&["checkout", "--no-track", "-b", new_branch, &start_point])?;
     pop_stash_if_needed(stashed)?;
@@ -148,11 +155,12 @@ fn create_feature_branch(current_branch: &str, new_branch: &str, stashed: bool) 
 }
 
 fn push_new_feature_branch_upstream(new_branch: &str) -> Result<Option<String>> {
-    if !remote_exists(DEFAULT_PUSH_REMOTE) {
+    let configured_remote = crate::preferences::remote();
+    if !remote_exists(configured_remote.as_str()) {
         return Ok(None);
     }
-    run(&["push", "-u", DEFAULT_PUSH_REMOTE, new_branch])?;
-    Ok(Some(format!("{DEFAULT_PUSH_REMOTE}/{new_branch}")))
+    run(&["push", "-u", configured_remote.as_str(), new_branch])?;
+    Ok(Some(format!("{configured_remote}/{new_branch}")))
 }
 
 pub fn flow_transfer_diff_to_feature_branch(
@@ -167,6 +175,8 @@ pub fn flow_transfer_diff_to_feature_branch_with_progress(
     new_branch: &str,
     progress: &mut impl FnMut(),
 ) -> Result<String> {
+    let configured_base = crate::preferences::base_branch();
+    let configured_remote = crate::preferences::remote();
     ensure_feature_branch(source_branch)?;
     if new_branch.trim().is_empty() {
         anyhow::bail!("branch name cannot be empty");
@@ -189,13 +199,13 @@ pub fn flow_transfer_diff_to_feature_branch_with_progress(
 
     progress();
     run(&["fetch"])?;
-    let remote_main = format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
+    let remote_main = format!("{configured_remote}/{configured_base}");
     let base_ref = if ref_exists(&remote_main) {
         remote_main
-    } else if ref_exists(BRANCH_MAIN) {
-        BRANCH_MAIN.to_string()
+    } else if ref_exists(configured_base.as_str()) {
+        configured_base.as_str().to_string()
     } else {
-        anyhow::bail!("could not find {BRANCH_MAIN} or {DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
+        anyhow::bail!("could not find {configured_base} or {configured_remote}/{configured_base}");
     };
 
     progress();
@@ -216,6 +226,7 @@ pub fn flow_transfer_diff_to_feature_branch_with_progress(
 }
 
 pub fn delete_local_branch(name: &str, force: bool) -> Result<String> {
+    let configured_base = crate::preferences::base_branch();
     if name.is_empty() {
         anyhow::bail!("branch name must not be empty");
     }
@@ -226,7 +237,7 @@ pub fn delete_local_branch(name: &str, force: bool) -> Result<String> {
     if let Ok(current) = head_branch()
         && current == name
     {
-        let checkout = checkout_branch(BRANCH_MAIN)?;
+        let checkout = checkout_branch(configured_base.as_str())?;
         let checkout_line = checkout
             .lines()
             .find(|line| !line.trim().is_empty())
@@ -234,9 +245,9 @@ pub fn delete_local_branch(name: &str, force: bool) -> Result<String> {
             .trim()
             .to_owned();
         prefix = if checkout_line.is_empty() {
-            format!("checked out {BRANCH_MAIN}; ")
+            format!("checked out {configured_base}; ")
         } else {
-            format!("checked out {BRANCH_MAIN} ({checkout_line}); ")
+            format!("checked out {configured_base} ({checkout_line}); ")
         };
     }
     let flag = if force { "-D" } else { "-d" };
@@ -250,13 +261,14 @@ pub fn delete_local_branch(name: &str, force: bool) -> Result<String> {
 }
 
 pub fn delete_remote_branch(name: &str) -> Result<String> {
+    let configured_remote = crate::preferences::remote();
     if name.is_empty() {
         anyhow::bail!("branch name must not be empty");
     }
     if is_protected_branch(name) {
         anyhow::bail!("cannot delete protected branch {name}");
     }
-    run_combined(&["push", DEFAULT_PUSH_REMOTE, "--delete", name]).map(|text| {
+    run_combined(&["push", configured_remote.as_str(), "--delete", name]).map(|text| {
         text.lines()
             .rev()
             .find(|line| !line.trim().is_empty())

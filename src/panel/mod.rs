@@ -19,6 +19,7 @@ pub mod model;
 pub mod push;
 pub mod review_chat;
 pub(crate) mod scroll;
+pub mod settings;
 pub mod solid;
 pub mod stage_all;
 pub mod status;
@@ -58,3 +59,6 @@ pub(crate) fn wrap_words(text: &str, width: usize) -> Vec<String> {
     }
     lines
 }
+
+pub mod commands;
+pub mod deployment;

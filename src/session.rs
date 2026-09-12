@@ -221,6 +221,7 @@ pub struct Session {
     pub sandboxed: bool,
     pub kind: SessionKind,
     pub status: SessionStatus,
+    launch: Option<(SessionSpec, Spawn)>,
     /// Output arrived while this session was not the one being shown.
     pub attention: bool,
     /// What claude last reported through its hooks. Starts idle: a session that
@@ -575,6 +576,30 @@ impl Sessions {
         }
     }
 
+    pub fn start_profile(
+        &mut self,
+        spec: SessionSpec,
+        profile: &crate::preferences::Agent,
+        size: (u16, u16),
+    ) -> Result<SessionId> {
+        let hooks = if profile.adapter == "claude" {
+            crate::hooks::install(&spec.cwd).ok()
+        } else {
+            None
+        };
+        let spawn = crate::agents::spawn(
+            profile,
+            &spec.cwd,
+            hooks.as_ref().map(|h| h.settings.as_path()),
+            spec.prompt.as_deref(),
+        )?;
+        let id = self.start_with(spec, &spawn, size)?;
+        if let Some(session) = self.get_mut(id) {
+            session.events = hooks.map(|h| h.events);
+        }
+        Ok(id)
+    }
+
     /// Start claude, wired up to report what it is doing. A checkout with
     /// nowhere to keep a hook file still gets a session; it just has to do
     /// without claude saying what it is up to.
@@ -597,7 +622,12 @@ impl Sessions {
         spawn: &Spawn,
         size: (u16, u16),
     ) -> Result<SessionId> {
-        if let Some(existing) = self.for_dir_kind(&spec.cwd, spec.kind) {
+        if let Some(existing) = self
+            .items
+            .iter()
+            .find(|s| s.cwd == spec.cwd && s.kind == spec.kind && s.label == spec.label)
+            .map(|s| s.id)
+        {
             self.focus(existing);
             return Ok(existing);
         }
@@ -606,6 +636,7 @@ impl Sessions {
         let process = PtyProcess::start(spawn, size)?;
         let id = SessionId(self.next_id);
         self.next_id += 1;
+        let launch = Some((spec.clone(), spawn.clone()));
         self.items.push(Session {
             id,
             label: spec.label,
@@ -613,6 +644,7 @@ impl Sessions {
             sandboxed: spec.sandboxed,
             kind: spec.kind,
             status: SessionStatus::Running,
+            launch,
             attention: false,
             activity: SessionActivity::Idle,
             asking: false,
@@ -626,6 +658,28 @@ impl Sessions {
         }
         self.focused = Some(id);
         Ok(id)
+    }
+
+    pub fn rename(&mut self, id: SessionId, label: &str) -> Result<()> {
+        if label.trim().is_empty() {
+            anyhow::bail!("session name cannot be empty");
+        }
+        let session = self
+            .get_mut(id)
+            .ok_or_else(|| anyhow::anyhow!("session ended"))?;
+        session.label = label.trim().into();
+        if let Some((spec, _)) = &mut session.launch {
+            spec.label = session.label.clone();
+        }
+        Ok(())
+    }
+    pub fn restart(&mut self, id: SessionId) -> Result<SessionId> {
+        let (spec, spawn) = self
+            .get(id)
+            .and_then(|s| s.launch.clone())
+            .ok_or_else(|| anyhow::anyhow!("no saved launch command for this session"))?;
+        self.close(id);
+        self.start_with(spec, &spawn, default_size())
     }
 
     /// Stop a session and forget it. The next session in the list takes focus,
@@ -711,8 +765,11 @@ fn confined(cwd: &Path, sandboxed: bool, program: &str) -> (String, Vec<String>)
         return (program.to_string(), Vec::new());
     }
     (
-        "terrarium".to_string(),
+        crate::terrarium::executable()
+            .to_string_lossy()
+            .into_owned(),
         vec![
+            "sandbox".to_string(),
             "run".to_string(),
             "--project".to_string(),
             cwd.to_string_lossy().into_owned(),
@@ -829,6 +886,10 @@ pub fn pi_spawn(cwd: &Path, sandboxed: bool, prompt: Option<&str>) -> Spawn {
 /// back to something every unix has. It is started with no arguments, which on
 /// a pty is an interactive shell and so reads the usual rc file.
 fn login_shell() -> String {
+    let configured = crate::preferences::load().config.tools.terminal;
+    if !configured.is_empty() {
+        return configured;
+    }
     std::env::var("SHELL")
         .ok()
         .filter(|shell| !shell.trim().is_empty())
@@ -842,7 +903,8 @@ pub fn shell_spawn(cwd: &Path, sandboxed: bool) -> Spawn {
     // terrarium resolves the project path before looking up its profile, so the
     // path handed to it has to be resolved too.
     let cwd = &crate::terrarium::resolve(cwd);
-    let (program, args) = confined(cwd, sandboxed, &login_shell());
+    let (program, mut args) = confined(cwd, sandboxed, &login_shell());
+    args.extend(crate::preferences::load().config.tools.terminal_args);
     Spawn {
         program,
         args,
@@ -914,10 +976,14 @@ mod tests {
     #[test]
     fn a_sandboxed_session_goes_through_terrarium_in_its_own_worktree() {
         let spawn = claude_spawn(Path::new("/dev/lg.worktrees/feat-x"), true, None, None);
-        assert_eq!(spawn.program, "terrarium");
+        assert_eq!(
+            spawn.program,
+            crate::terrarium::executable().to_string_lossy()
+        );
         assert_eq!(
             spawn.args,
             [
+                "sandbox",
                 "run",
                 "--project",
                 "/dev/lg.worktrees/feat-x",
@@ -947,6 +1013,7 @@ mod tests {
         assert_eq!(
             sandboxed.args,
             [
+                "sandbox",
                 "run",
                 "--project",
                 "/dev/lg",
@@ -974,10 +1041,14 @@ mod tests {
     #[test]
     fn a_sandboxed_codex_leaves_the_confining_to_terrarium() {
         let spawn = codex_spawn(Path::new("/dev/lg.worktrees/feat-x"), true, None);
-        assert_eq!(spawn.program, "terrarium");
+        assert_eq!(
+            spawn.program,
+            crate::terrarium::executable().to_string_lossy()
+        );
         assert_eq!(
             spawn.args,
             [
+                "sandbox",
                 "run",
                 "--project",
                 "/dev/lg.worktrees/feat-x",
@@ -1002,10 +1073,20 @@ mod tests {
     #[test]
     fn a_sandboxed_pi_goes_through_terrarium_too() {
         let spawn = pi_spawn(Path::new("/dev/lg.worktrees/feat-x"), true, None);
-        assert_eq!(spawn.program, "terrarium");
+        assert_eq!(
+            spawn.program,
+            crate::terrarium::executable().to_string_lossy()
+        );
         assert_eq!(
             spawn.args,
-            ["run", "--project", "/dev/lg.worktrees/feat-x", "--", "pi"]
+            [
+                "sandbox",
+                "run",
+                "--project",
+                "/dev/lg.worktrees/feat-x",
+                "--",
+                "pi"
+            ]
         );
     }
 
@@ -1096,10 +1177,14 @@ mod tests {
     fn a_sandboxed_terminal_runs_its_shell_through_terrarium() {
         temp_env("SHELL", "/bin/zsh", || {
             let spawn = shell_spawn(Path::new("/dev/lg.worktrees/feat-x"), true);
-            assert_eq!(spawn.program, "terrarium");
+            assert_eq!(
+                spawn.program,
+                crate::terrarium::executable().to_string_lossy()
+            );
             assert_eq!(
                 spawn.args,
                 [
+                    "sandbox",
                     "run",
                     "--project",
                     "/dev/lg.worktrees/feat-x",
@@ -1180,6 +1265,7 @@ mod tests {
         assert_eq!(
             spawn.args,
             [
+                "sandbox",
                 "run",
                 "--project",
                 "/dev/lg",
@@ -1236,6 +1322,7 @@ mod tests {
             sandboxed: false,
             kind,
             status: SessionStatus::Running,
+            launch: None,
             attention: false,
             activity: SessionActivity::Idle,
             asking: false,

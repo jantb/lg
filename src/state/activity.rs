@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 
 use super::{AppState, BackgroundJob, GenMsg, Generation, PendingAction};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StatusMsg {
     pub text: String,
     pub is_error: bool,
@@ -168,6 +168,7 @@ impl AppState {
                 Some(PendingAction::Pull) => Some("starting pull"),
                 Some(PendingAction::MergeUpstream) => Some("starting merge"),
                 Some(PendingAction::MergeMainAllBranches) => Some("starting branch sync"),
+                Some(PendingAction::Promote(_)) => Some("promoting"),
                 Some(PendingAction::Flow(_)) => Some("starting branch action"),
                 Some(
                     PendingAction::SaveAuthor { .. }
@@ -201,7 +202,9 @@ impl AppState {
                 Some(PendingAction::SyncWorktree { .. }) => Some("syncing worktree"),
                 Some(PendingAction::BringWorktreeHome { .. }) => Some("moving branch home"),
                 Some(PendingAction::PruneWorktrees) => Some("pruning worktrees"),
-                Some(PendingAction::StartSession { .. }) => Some("starting session"),
+                Some(PendingAction::StartAgent { .. } | PendingAction::StartSession { .. }) => {
+                    Some("starting session")
+                }
                 Some(PendingAction::Quit) => Some("quitting"),
                 None => None,
             }
@@ -321,12 +324,37 @@ impl AppState {
         }
     }
 
+    pub fn enable_history(&mut self) {
+        self.history_file = crate::preferences::scope_path(crate::preferences::Scope::Repository)
+            .ok()
+            .map(|p| p.with_file_name("activity.json"));
+        if let Some(path) = &self.history_file {
+            self.status_history = std::fs::read(path)
+                .ok()
+                .and_then(|data| serde_json::from_slice::<Vec<StatusMsg>>(&data).ok())
+                .unwrap_or_default();
+            if self.status_history.len() > 500 {
+                self.status_history.drain(..self.status_history.len() - 500);
+            }
+        }
+    }
+
     pub fn set_status(&mut self, text: impl Into<String>, is_error: bool) {
-        self.status = Some(StatusMsg {
+        let status = StatusMsg {
             text: text.into(),
             is_error,
             at: Utc::now(),
-        });
+        };
+        if self.status_history.len() >= 500 {
+            self.status_history.remove(0);
+        }
+        self.status_history.push(status.clone());
+        if let Some(path) = &self.history_file
+            && let Ok(data) = serde_json::to_vec(&self.status_history)
+        {
+            let _ = crate::preferences::atomic_write(path, &data);
+        }
+        self.status = Some(status);
     }
 }
 

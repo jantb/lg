@@ -2,8 +2,6 @@
 
 use anyhow::Result;
 
-use crate::config::{BRANCH_MAIN, DEFAULT_PUSH_REMOTE};
-
 use super::{head_branch, preferred_commit_ref, run};
 
 mod category;
@@ -74,13 +72,15 @@ pub fn assisted_review_against_main() -> Result<String> {
 }
 
 pub fn build_assisted_review_against_main() -> Result<AssistedReview> {
-    let base_ref =
-        preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}"), BRANCH_MAIN)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "could not find {DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN} or {BRANCH_MAIN}"
-                )
-            })?;
+    let configured_base = crate::preferences::base_branch();
+    let configured_remote = crate::preferences::remote();
+    let base_ref = preferred_commit_ref(
+        &format!("{configured_remote}/{configured_base}"),
+        configured_base.as_str(),
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!("could not find {configured_remote}/{configured_base} or {configured_base}")
+    })?;
     let branch = head_branch().unwrap_or_else(|_| "HEAD".to_string());
 
     let merge_base = run(&["merge-base", &base_ref, "HEAD"])

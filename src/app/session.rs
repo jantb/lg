@@ -128,6 +128,7 @@ impl App {
     /// and a prompt can only ever be submitted, never given a newline.
     pub(super) fn sync_session_keyboard(&mut self) {
         let wanted = self.state.session_capture
+            || self.state.modal == Modal::Settings
             || (self.state.modal == Modal::Conflict
                 && self
                     .state

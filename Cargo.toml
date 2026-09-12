@@ -2,12 +2,14 @@
 name = "lg"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.86"
+rust-version = "1.88"
 
 [profile.dev]
 debug = 1
 
 [dependencies]
+terrarium = { path = "crates/terrarium" }
+toml = "1.1"
 ratatui    = "0.30"
 reqwest    = { version = "0.13", features = ["blocking", "json"] }
 serde      = { version = "1", features = ["derive"] }
@@ -25,3 +27,8 @@ libc = "0.2"
 
 
 [dev-dependencies]
+
+[workspace]
+members = ["crates/terrarium"]
+default-members = ["."]
+resolver = "3"

@@ -74,7 +74,7 @@ pub(crate) fn selected_checkout_label(state: &AppState) -> Option<String> {
 }
 
 /// The checkout a row stands for: where it is, and what to call it.
-fn selected_checkout(state: &AppState) -> Option<(String, String)> {
+pub(crate) fn selected_checkout(state: &AppState) -> Option<(String, String)> {
     match selected_tree_row(state)? {
         NestedRepoTreeRow::Session { id } => {
             let session = state.sessions.get(id)?;
@@ -145,7 +145,7 @@ pub(super) fn init_selected_checkout(state: &mut AppState) {
 }
 
 /// Open the new-worktree form for the active repository.
-pub(super) fn open_new_worktree_form(state: &mut AppState) {
+pub(crate) fn open_new_worktree_form(state: &mut AppState) {
     if state.repo_root.is_none() && state.worktrees.is_empty() {
         state.set_status("no repository to add a worktree to", true);
         return;
@@ -232,10 +232,11 @@ pub(super) fn close_selected_session(state: &mut AppState) {
 /// merge itself runs in whichever checkout holds main, so it works from here
 /// no matter which checkout lg is currently showing.
 pub(super) fn land_selected_worktree(state: &mut AppState) {
+    let configured_remote = crate::preferences::remote();
     let Some((path, branch)) = handover_candidate(state, "land") else {
         return;
     };
-    let remote = format!("{}/{branch}", crate::config::DEFAULT_PUSH_REMOTE);
+    let remote = format!("{}/{branch}", configured_remote.as_str());
     state.confirm_action(
         "Land Worktree",
         format!("Merge {branch} into main and clean up?"),

@@ -9,6 +9,21 @@ pub const SECTIONS: &[Section] = &[
         pane: None,
         bindings: &[
             Binding {
+                key: ":",
+                help: "Search actions",
+                footer: Some((":", "actions")),
+            },
+            Binding {
+                key: "E",
+                help: "Environments and promotion",
+                footer: Some(("E", "environments")),
+            },
+            Binding {
+                key: ",",
+                help: "Settings and project preferences",
+                footer: Some((",", "settings")),
+            },
+            Binding {
                 key: "?",
                 help: "Toggle help",
                 footer: Some(("?", "help")),
@@ -89,9 +104,9 @@ pub const SECTIONS: &[Section] = &[
                 footer: None,
             },
             Binding {
-                key: "F2",
+                key: "w",
                 help: "Swap between the git and workspace views",
-                footer: Some(("F2", "workspace")),
+                footer: Some(("w", "workspace")),
             },
         ],
         footer_meta: None,
@@ -195,9 +210,9 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("Enter", "expand/checkout")),
             },
             Binding {
-                key: "i",
-                help: "Make this folder a git repository",
-                footer: Some(("i", "git init")),
+                key: "Space",
+                help: "Menu of everything the selected row can do",
+                footer: Some(("Space", "actions")),
             },
             Binding {
                 key: "n",
@@ -206,13 +221,8 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "s",
-                help: "Pick a sandboxed agent to start here",
-                footer: Some(("s", "agent session")),
-            },
-            Binding {
-                key: "S",
-                help: "The same picker, without the sandbox",
-                footer: None,
+                help: "Pick an agent to start here",
+                footer: Some(("s", "agent")),
             },
             Binding {
                 key: "t",
@@ -220,34 +230,9 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("t", "terminal")),
             },
             Binding {
-                key: "T",
-                help: "Terminal without the sandbox",
-                footer: None,
-            },
-            Binding {
-                key: "D",
-                help: "Remove worktree, or prune a missing one",
-                footer: None,
-            },
-            Binding {
                 key: "x",
                 help: "Stop the selected session and forget it",
                 footer: Some(("x", "close session")),
-            },
-            Binding {
-                key: "m",
-                help: "Merge worktree into main, then clean up",
-                footer: Some(("m", "land worktree")),
-            },
-            Binding {
-                key: "M",
-                help: "Merge main into the worktree's branch",
-                footer: Some(("M", "sync main")),
-            },
-            Binding {
-                key: "b",
-                help: "Move its branch to the main checkout",
-                footer: Some(("b", "branch home")),
             },
             Binding {
                 key: "o",
@@ -284,22 +269,13 @@ pub const SECTIONS: &[Section] = &[
         footer_order: &[
             "j/k",
             "Enter",
-            "i",
-            "n",
-            "m",
-            "M",
-            "b",
+            "Space",
             "s",
             "t",
+            "n",
             "x",
             "o",
-            "r",
-            "Esc",
-            "f",
-            "a",
-            "L",
-            "p",
-            "F2",
+            "w",
             "?",
             "Ctrl-C / q",
         ],
@@ -759,7 +735,7 @@ pub const SECTIONS: &[Section] = &[
         bindings: &[
             Binding {
                 key: "j/k",
-                help: "Move between claude, codex and pi",
+                help: "Move between the agents",
                 footer: Some(("j/k", "select")),
             },
             Binding {
@@ -768,14 +744,52 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("Enter", "start")),
             },
             Binding {
+                key: "Space",
+                help: "Sandbox on or off for the agent started next",
+                footer: Some(("Space", "sandbox")),
+            },
+            Binding {
                 key: "c / x / p",
                 help: "Start claude / codex / pi outright",
                 footer: Some(("c/x/p", "claude/codex/pi")),
             },
             Binding {
+                key: ",",
+                help: "Configure agents in Settings",
+                footer: Some((",", "configure")),
+            },
+            Binding {
+                key: "n",
+                help: "Make a worktree to start it in first",
+                footer: Some(("n", "new worktree")),
+            },
+            Binding {
                 key: "Esc",
                 help: "Cancel",
                 footer: Some(("Esc", "cancel")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Repository actions",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "j/k",
+                help: "Move between the actions",
+                footer: Some(("j/k", "select")),
+            },
+            Binding {
+                key: "Enter",
+                help: "Run the highlighted action",
+                footer: Some(("Enter", "run")),
+            },
+            Binding {
+                key: "Esc",
+                help: "Close the menu",
+                footer: Some(("Esc", "close")),
             },
         ],
         footer_meta: None,
@@ -1067,7 +1081,13 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         section: "Agent picker",
         prefix: "Start agent ",
         tone: Tone::Normal,
-        order: &["j/k", "Enter", "c / x / p", "Esc"],
+        order: &["j/k", "Enter", "Space", "c / x / p", "Esc"],
+    },
+    ModalFooter {
+        section: "Repository actions",
+        prefix: "Actions ",
+        tone: Tone::Normal,
+        order: &["j/k", "Enter", "Esc"],
     },
     ModalFooter {
         section: "Push modal",

@@ -3,8 +3,6 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::config::DEFAULT_PUSH_REMOTE;
-
 use super::super::{head_branch, run, run_combined, run_in_dir, stage};
 use super::*;
 
@@ -235,15 +233,14 @@ pub fn validate_conflict_resolution(followup: Followup<'_>) -> Result<String> {
         out.push_str(push.trim());
     }
 
-    if let Some(branch) = followup.return_branch {
-        if head_branch()
+    if let Some(branch) = followup.return_branch
+        && head_branch()
             .map(|current| current != branch)
             .unwrap_or(true)
-        {
-            let checkout = run_combined(&["checkout", branch])?;
-            out.push_str("\n\nCheckout:\n");
-            out.push_str(checkout.trim());
-        }
+    {
+        let checkout = run_combined(&["checkout", branch])?;
+        out.push_str("\n\nCheckout:\n");
+        out.push_str(checkout.trim());
     }
 
     if let Some((label, branch)) = followup.safety_cleanup
@@ -283,10 +280,11 @@ fn merge_outstanding_branch(
     merge_branch: Option<&str>,
     push_branch: Option<&str>,
 ) -> Result<Option<String>> {
+    let configured_remote = crate::preferences::remote();
     let (Some(merge_branch), Some(push_branch)) = (merge_branch, push_branch) else {
         return Ok(None);
     };
-    let remote_ref = format!("{DEFAULT_PUSH_REMOTE}/{merge_branch}");
+    let remote_ref = format!("{configured_remote}/{merge_branch}");
     if !ref_exists(&remote_ref)
         || !ref_exists(push_branch)
         || commits_missing_from(push_branch, &remote_ref)? == 0
@@ -307,25 +305,30 @@ fn merge_outstanding_branch(
 }
 
 fn push_followup_branch(branch: &str) -> Result<String> {
+    let configured_remote = crate::preferences::remote();
     let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-    match run_combined(&["push", DEFAULT_PUSH_REMOTE, &refspec]) {
+    match run_combined(&["push", configured_remote.as_str(), &refspec]) {
         Ok(out) => Ok(out),
         Err(err) => {
             if is_non_fast_forward_error(&err.to_string()) {
                 let current = head_branch().ok();
-                let remote_ref = format!("{DEFAULT_PUSH_REMOTE}/{branch}");
+                let remote_ref = format!("{configured_remote}/{branch}");
                 let fetch_refspec = format!("refs/heads/{branch}:refs/remotes/{remote_ref}");
                 let mut out = format!("initial push was rejected because {remote_ref} advanced\n");
                 out.push_str(&run_combined(&[
                     "fetch",
-                    DEFAULT_PUSH_REMOTE,
+                    configured_remote.as_str(),
                     &fetch_refspec,
                 ])?);
                 if current.as_deref() != Some(branch) {
                     out.push_str(&run_combined(&["checkout", branch])?);
                 }
                 out.push_str(&run_combined(&["merge", &remote_ref])?);
-                out.push_str(&run_combined(&["push", DEFAULT_PUSH_REMOTE, &refspec])?);
+                out.push_str(&run_combined(&[
+                    "push",
+                    configured_remote.as_str(),
+                    &refspec,
+                ])?);
                 Ok(out)
             } else {
                 Err(err)
@@ -364,15 +367,14 @@ pub fn abort_in_progress_operation_with_cleanup(
         out = "no merge, rebase, or cherry-pick operation is in progress".to_string();
     }
 
-    if let Some(branch) = return_branch {
-        if head_branch()
+    if let Some(branch) = return_branch
+        && head_branch()
             .map(|current| current != branch)
             .unwrap_or(true)
-        {
-            let checkout = run_combined(&["checkout", branch])?;
-            out.push_str("\n\nCheckout:\n");
-            out.push_str(checkout.trim());
-        }
+    {
+        let checkout = run_combined(&["checkout", branch])?;
+        out.push_str("\n\nCheckout:\n");
+        out.push_str(checkout.trim());
     }
 
     if let Some((label, branch)) = safety_cleanup

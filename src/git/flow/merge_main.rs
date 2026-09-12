@@ -2,8 +2,6 @@
 
 use anyhow::Result;
 
-use crate::config::{BRANCH_MAIN, DEFAULT_PUSH_REMOTE};
-
 use super::super::{
     counts_ahead_behind, head_branch, list_branches, run, run_combined, run_in_dir,
 };
@@ -35,23 +33,30 @@ pub fn flow_merge_main_into_all_local_branches() -> Result<String> {
 }
 
 fn flow_merge_main_into_all_local_branches_clean(original_branch: Option<&str>) -> Result<String> {
+    let configured_base = crate::preferences::base_branch();
+    let configured_remote = crate::preferences::remote();
     run(&["fetch", "--all", "--prune"])?;
-    if !ref_exists(BRANCH_MAIN) {
-        anyhow::bail!("could not find local {BRANCH_MAIN}");
+    if !ref_exists(configured_base.as_str()) {
+        anyhow::bail!("could not find local {configured_base}");
     }
 
     if head_branch()
-        .map(|current| current != BRANCH_MAIN)
+        .map(|current| current != configured_base.as_str())
         .unwrap_or(true)
     {
-        run_combined(&["checkout", BRANCH_MAIN])?;
+        run_combined(&["checkout", configured_base.as_str()])?;
     }
-    let remote_main = format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
+    let remote_main = format!("{configured_remote}/{configured_base}");
     let base_ref = if ref_exists(&remote_main) {
-        run_combined(&["pull", "--rebase", DEFAULT_PUSH_REMOTE, BRANCH_MAIN])?;
+        run_combined(&[
+            "pull",
+            "--rebase",
+            configured_remote.as_str(),
+            configured_base.as_str(),
+        ])?;
         remote_main
     } else {
-        BRANCH_MAIN.to_string()
+        configured_base.as_str().to_string()
     };
 
     let branches = list_branches()?;
@@ -60,7 +65,7 @@ fn flow_merge_main_into_all_local_branches_clean(original_branch: Option<&str>) 
     let mut skipped_push = 0usize;
     let mut failed_pushes = Vec::new();
     for branch in branches {
-        if branch.name == BRANCH_MAIN || branch.name.starts_with(SAFETY_REF_PREFIX) {
+        if branch.name == configured_base.as_str() || branch.name.starts_with(SAFETY_REF_PREFIX) {
             continue;
         }
 
@@ -155,12 +160,13 @@ fn merge_main_into_current(
     current_branch: &str,
     progress: &mut impl FnMut(),
 ) -> Result<Vec<String>> {
+    let configured_remote = crate::preferences::remote();
     let mut steps = Vec::new();
     progress();
     // Being offline is no reason to refuse a local merge, so a failed fetch
     // only means main is merged as the last fetch left it.
     if run(&["fetch"]).is_err() {
-        steps.push(format!("could not reach {DEFAULT_PUSH_REMOTE}"));
+        steps.push(format!("could not reach {configured_remote}"));
     }
     progress();
     pull_current_branch_for_merge_main(current_branch)?;
@@ -181,29 +187,37 @@ fn merge_main_into_current(
 /// lives; a checkout that will not take it is worth a note rather than a
 /// failed merge, because what gets merged below is whichever `main` is ahead.
 fn update_local_main() -> Result<Option<String>> {
-    let remote_main = format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
+    let configured_base = crate::preferences::base_branch();
+    let configured_remote = crate::preferences::remote();
+    let remote_main = format!("{configured_remote}/{configured_base}");
     if !ref_exists(&remote_main) {
         return Ok(None);
     }
-    if !ref_exists(BRANCH_MAIN) {
-        run(&["branch", BRANCH_MAIN, &remote_main])?;
-        return Ok(Some(format!("created {BRANCH_MAIN} from {remote_main}")));
+    if !ref_exists(configured_base.as_str()) {
+        run(&["branch", configured_base.as_str(), &remote_main])?;
+        return Ok(Some(format!(
+            "created {configured_base} from {remote_main}"
+        )));
     }
-    if commits_missing_from(BRANCH_MAIN, &remote_main)? == 0 {
+    if commits_missing_from(configured_base.as_str(), &remote_main)? == 0 {
         return Ok(None);
     }
-    let Some(host) = branch_checkout_dir(BRANCH_MAIN)? else {
+    let Some(host) = branch_checkout_dir(configured_base.as_str())? else {
         run(&[
             "fetch",
-            DEFAULT_PUSH_REMOTE,
-            &format!("{BRANCH_MAIN}:{BRANCH_MAIN}"),
+            configured_remote.as_str(),
+            &format!("{configured_base}:{configured_base}"),
         ])?;
-        return Ok(Some(format!("updated {BRANCH_MAIN} from {remote_main}")));
+        return Ok(Some(format!(
+            "updated {configured_base} from {remote_main}"
+        )));
     };
     match run_in_dir(&host, &["merge", "--ff-only", &remote_main]) {
-        Ok(_) => Ok(Some(format!("updated {BRANCH_MAIN} from {remote_main}"))),
+        Ok(_) => Ok(Some(format!(
+            "updated {configured_base} from {remote_main}"
+        ))),
         Err(_) => Ok(Some(format!(
-            "left {BRANCH_MAIN} where {} has it",
+            "left {configured_base} where {} has it",
             host.display()
         ))),
     }
@@ -214,28 +228,30 @@ fn update_local_main() -> Result<Option<String>> {
 /// on — and merging the one that is behind reports success while leaving the
 /// branch short of what the branch list says it is missing.
 fn merge_main_base_ref() -> Result<(String, Option<String>)> {
-    let remote_main = format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
-    let local = ref_exists(BRANCH_MAIN);
+    let configured_base = crate::preferences::base_branch();
+    let configured_remote = crate::preferences::remote();
+    let remote_main = format!("{configured_remote}/{configured_base}");
+    let local = ref_exists(configured_base.as_str());
     let remote = ref_exists(&remote_main);
     if !local && !remote {
-        anyhow::bail!("could not find {BRANCH_MAIN} or {remote_main}");
+        anyhow::bail!("could not find {configured_base} or {remote_main}");
     }
     if !local {
         return Ok((remote_main, None));
     }
     if !remote {
-        return Ok((BRANCH_MAIN.to_string(), None));
+        return Ok((configured_base.as_str().to_string(), None));
     }
-    if commits_missing_from(&remote_main, BRANCH_MAIN)? == 0 {
+    if commits_missing_from(&remote_main, configured_base.as_str())? == 0 {
         return Ok((remote_main, None));
     }
-    let behind = commits_missing_from(BRANCH_MAIN, &remote_main)?;
+    let behind = commits_missing_from(configured_base.as_str(), &remote_main)?;
     let note = (behind > 0).then(|| {
         format!(
-            "{remote_main} has {behind} commits {BRANCH_MAIN} does not; reconcile those separately"
+            "{remote_main} has {behind} commits {configured_base} does not; reconcile those separately"
         )
     });
-    Ok((BRANCH_MAIN.to_string(), note))
+    Ok((configured_base.as_str().to_string(), note))
 }
 
 /// Push the merge when the branch has somewhere to go. A branch nobody has
@@ -250,6 +266,7 @@ fn push_after_merge_main(branch: &str) -> Result<String> {
 }
 
 fn pull_current_branch_for_merge_main(current_branch: &str) -> Result<()> {
+    let configured_remote = crate::preferences::remote();
     if let Ok((ahead, behind)) = counts_ahead_behind() {
         if ahead > 0 && behind > 0 {
             run_combined(&["merge", "--no-edit", "@{u}"])?;
@@ -259,9 +276,14 @@ fn pull_current_branch_for_merge_main(current_branch: &str) -> Result<()> {
         return Ok(());
     }
 
-    let remote_branch = format!("{DEFAULT_PUSH_REMOTE}/{current_branch}");
+    let remote_branch = format!("{configured_remote}/{current_branch}");
     if ref_exists(&remote_branch) {
-        run_combined(&["pull", "--ff-only", DEFAULT_PUSH_REMOTE, current_branch])?;
+        run_combined(&[
+            "pull",
+            "--ff-only",
+            configured_remote.as_str(),
+            current_branch,
+        ])?;
     }
     Ok(())
 }

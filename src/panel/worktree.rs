@@ -90,7 +90,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 
     let inner = ui::modal_frame(frame, modal, "New Worktree");
     frame.render_widget(Paragraph::new(lines), inner);
-    ui::animate_modal_border(state.animation_ms, modal, &[], frame);
+    if state.decorative_animations {
+        ui::animate_modal_border(state.animation_ms, modal, &[], frame);
+    }
     if let Some((x, y)) = active_field_cursor(state, modal) {
         frame.set_cursor_position(Position::new(x, y));
     }

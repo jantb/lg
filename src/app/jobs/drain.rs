@@ -40,9 +40,20 @@ impl App {
         snapshot: crate::state::RefreshSnapshot,
         refresh_diff: bool,
     ) {
+        self.state.decorative_animations = crate::preferences::animations_enabled();
+        if let Ok(author) = crate::git::author_config() {
+            self.state.commit_author = format!(
+                "{} <{}>",
+                author.name.unwrap_or_default(),
+                author.email.unwrap_or_default()
+            );
+        }
         let repo_before = self.state.repo_root.clone();
         self.state.repo_root = snapshot.repo_root;
         let repo_changed = self.state.repo_root != repo_before;
+        if repo_changed && self.state.history_file.is_some() {
+            self.state.enable_history();
+        }
         self.state.workspace_root = snapshot.workspace_root;
         if let Some(files) = snapshot.files {
             self.state.files = files;
@@ -69,11 +80,11 @@ impl App {
             self.clear_release_status(None);
         }
         let selected_ref = selected_commit_ref(&self.state);
-        if let Some(commits) = snapshot.commits {
-            if selected_ref.as_deref() == self.state.branch.as_deref() {
-                self.state.commits = commits;
-                self.state.commits_ref = selected_ref.clone();
-            }
+        if let Some(commits) = snapshot.commits
+            && selected_ref.as_deref() == self.state.branch.as_deref()
+        {
+            self.state.commits = commits;
+            self.state.commits_ref = selected_ref.clone();
         }
         self.state.remote_url = snapshot.remote_url;
         self.state.ahead_behind = snapshot.ahead_behind;

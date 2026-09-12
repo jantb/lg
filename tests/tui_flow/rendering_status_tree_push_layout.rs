@@ -1,4 +1,5 @@
 use super::common::*;
+use lg::panel::environments::menu::{self, RepoAction};
 
 // ── XY-rendering smoke test ───────────────────────────────────────────────────
 
@@ -171,7 +172,7 @@ fn a_lone_project_lists_its_checkout_and_its_sessions() {
     assert!(text.contains("workspace"), "the checkout row: {text}");
     assert!(text.contains("codex"), "the session running in it: {text}");
     assert!(
-        text.contains("Deployment Status"),
+        text.contains("Branch inclusion"),
         "and the deployment box still fits underneath: {text}"
     );
 }
@@ -182,6 +183,7 @@ fn current_branch_panel_renders_environment_history() {
     add_flow_branches(&mut state);
     state.branch = Some("feature/released".into());
     state.current_branch_releases = BranchReleaseStatus {
+        environments: Default::default(),
         main: None,
         develop: Some(ReleaseTargetStatus {
             released_at: "2026-04-29 14:20".into(),
@@ -210,7 +212,7 @@ fn current_branch_panel_renders_environment_history() {
     }
 
     assert!(
-        text.contains("Deployment Status"),
+        text.contains("Branch inclusion"),
         "missing deployment status panel: {text}"
     );
     assert!(
@@ -232,6 +234,7 @@ fn deployment_status_lists_only_the_deploy_branches_the_repo_has() {
     state.release_branches = ReleaseBranches::new(None, Some("test".into()));
     state.branch = Some("feature/box-adjustments".into());
     state.current_branch_releases = BranchReleaseStatus {
+        environments: Default::default(),
         main: Some(ReleaseTargetStatus {
             released_at: String::new(),
             missing_commits: 3,
@@ -260,7 +263,7 @@ fn deployment_status_lists_only_the_deploy_branches_the_repo_has() {
     }
 
     assert!(
-        text.contains("Deployment Status"),
+        text.contains("Branch inclusion"),
         "missing deployment status panel: {text}"
     );
     assert!(text.contains("test"), "missing test badge: {text}");
@@ -378,7 +381,7 @@ fn current_branch_panel_hides_environment_history_without_release_branches() {
     }
 
     assert!(
-        !text.contains("Deployment Status"),
+        !text.contains("Branch inclusion"),
         "environment box should be hidden: {text}"
     );
     assert!(!text.contains("dev"), "dev status should be hidden: {text}");
@@ -854,7 +857,7 @@ fn removing_a_dirty_worktree_confirms_and_forces() {
     ];
 
     panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
-    panel::environments::handle_key(&mut state, key(KeyCode::Char('D'))).unwrap();
+    menu::run(&mut state, RepoAction::RemoveWorktree);
 
     assert_eq!(state.modal, Modal::ConfirmDestructive);
     let prompt = state.confirm.as_ref().expect("confirm prompt");
@@ -889,7 +892,7 @@ fn the_main_checkout_is_not_removable_but_the_active_one_is() {
 
     // Row 1 is the main worktree, which git will not remove.
     panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
-    panel::environments::handle_key(&mut state, key(KeyCode::Char('D'))).unwrap();
+    menu::run(&mut state, RepoAction::RemoveWorktree);
     assert_eq!(state.modal, Modal::None);
     assert!(
         state
@@ -903,7 +906,7 @@ fn the_main_checkout_is_not_removable_but_the_active_one_is() {
     // Row 2 is the checkout lg is showing. Removing it is allowed: the
     // removal moves lg back to the main checkout before the directory goes.
     panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
-    panel::environments::handle_key(&mut state, key(KeyCode::Char('D'))).unwrap();
+    menu::run(&mut state, RepoAction::RemoveWorktree);
     assert_eq!(state.modal, Modal::ConfirmDestructive);
     let prompt = state.confirm.as_ref().expect("confirm prompt");
     assert_eq!(
@@ -973,7 +976,7 @@ fn a_scanned_worktree_of_the_active_repository_acts_as_a_worktree_row() {
     // Root, alviter, then the worktree row.
     panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
     panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
-    panel::environments::handle_key(&mut state, key(KeyCode::Char('D'))).unwrap();
+    menu::run(&mut state, RepoAction::RemoveWorktree);
     assert_eq!(state.modal, Modal::ConfirmDestructive);
     assert_eq!(
         state.confirm.as_ref().expect("confirm prompt").action,
@@ -1001,9 +1004,27 @@ fn removing_a_missing_worktree_prunes_instead() {
     ];
 
     panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
-    panel::environments::handle_key(&mut state, key(KeyCode::Char('D'))).unwrap();
+    menu::run(&mut state, RepoAction::RemoveWorktree);
 
     assert_eq!(state.pending_action, Some(PendingAction::PruneWorktrees));
+}
+
+/// Where a started agent lands and how: the checkout, its label, which agent,
+/// and whether it runs confined. A profile's confinement is the sandbox choice.
+fn started_agent(state: &AppState) -> Option<(String, String, SessionKind, bool)> {
+    match &state.pending_action {
+        Some(PendingAction::StartAgent {
+            path,
+            label,
+            profile,
+        }) => Some((
+            path.clone(),
+            label.clone(),
+            lg::agents::kind(profile),
+            profile.confinement == "terrarium",
+        )),
+        _ => None,
+    }
 }
 
 #[test]
@@ -1024,29 +1045,28 @@ fn s_asks_for_a_sandboxed_session_in_the_selected_worktree() {
     panel::agent::handle_key(&mut state, key(KeyCode::Char('c'))).unwrap();
 
     assert_eq!(
-        state.pending_action,
-        Some(PendingAction::StartSession {
-            path: "/workspace.worktrees/feat-x".into(),
-            label: "feat/x".into(),
-            sandboxed: true,
-            kind: SessionKind::Claude,
-            prompt: None,
-        })
+        started_agent(&state),
+        Some((
+            "/workspace.worktrees/feat-x".into(),
+            "feat/x".into(),
+            SessionKind::Claude,
+            true,
+        ))
     );
 
-    // Shift asks for the same session without the sandbox.
+    // Space in the picker asks for the same agent without the sandbox.
     state.pending_action = None;
-    panel::environments::handle_key(&mut state, key(KeyCode::Char('S'))).unwrap();
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('s'))).unwrap();
+    panel::agent::handle_key(&mut state, key(KeyCode::Char(' '))).unwrap();
     panel::agent::handle_key(&mut state, key(KeyCode::Char('c'))).unwrap();
     assert_eq!(
-        state.pending_action,
-        Some(PendingAction::StartSession {
-            path: "/workspace.worktrees/feat-x".into(),
-            label: "feat/x".into(),
-            sandboxed: false,
-            kind: SessionKind::Claude,
-            prompt: None,
-        })
+        started_agent(&state),
+        Some((
+            "/workspace.worktrees/feat-x".into(),
+            "feat/x".into(),
+            SessionKind::Claude,
+            false,
+        ))
     );
 }
 
@@ -1068,14 +1088,8 @@ fn each_agent_starts_in_the_checkout_the_picker_was_opened_on() {
         panel::agent::handle_key(&mut state, key(KeyCode::Char(pressed))).unwrap();
 
         assert_eq!(
-            state.pending_action,
-            Some(PendingAction::StartSession {
-                path: "/workspace".into(),
-                label: "main".into(),
-                sandboxed: true,
-                kind: expected,
-                prompt: None,
-            }),
+            started_agent(&state),
+            Some(("/workspace".into(), "main".into(), expected, true)),
             "{pressed} should start {}",
             expected.label()
         );
@@ -1112,7 +1126,7 @@ fn t_asks_for_a_terminal_in_the_selected_worktree() {
     );
 
     state.pending_action = None;
-    panel::environments::handle_key(&mut state, key(KeyCode::Char('T'))).unwrap();
+    menu::run(&mut state, RepoAction::TerminalNoSandbox);
     assert_eq!(
         state.pending_action,
         Some(PendingAction::StartSession {
@@ -1136,14 +1150,13 @@ fn a_session_on_the_root_row_uses_the_checked_out_branch_as_its_name() {
     panel::agent::handle_key(&mut state, key(KeyCode::Char('c'))).unwrap();
 
     assert_eq!(
-        state.pending_action,
-        Some(PendingAction::StartSession {
-            path: "/workspace".into(),
-            label: "main".into(),
-            sandboxed: true,
-            kind: SessionKind::Claude,
-            prompt: None,
-        })
+        started_agent(&state),
+        Some((
+            "/workspace".into(),
+            "main".into(),
+            SessionKind::Claude,
+            true
+        ))
     );
 }
 
@@ -1240,6 +1253,7 @@ fn repository_panel_keeps_deployment_status_visible_in_full_layout() {
         worktree_of: None,
     }];
     app.state.current_branch_releases = BranchReleaseStatus {
+        environments: Default::default(),
         main: None,
         develop: Some(ReleaseTargetStatus {
             released_at: "2026-04-29 14:20".into(),
@@ -1256,7 +1270,7 @@ fn repository_panel_keeps_deployment_status_visible_in_full_layout() {
     let text = buffer_text(&app);
     assert!(text.contains("Repositories"), "missing repo panel: {text}");
     assert!(
-        text.contains("Deployment Status"),
+        text.contains("Branch inclusion"),
         "missing deployment status panel: {text}"
     );
     assert!(text.contains("services/api"), "missing nested repo: {text}");
@@ -1827,8 +1841,8 @@ fn layout_renders_all_panel_borders() {
     assert!(all_text.contains("lg"), "missing project header");
     assert!(all_text.contains("Status"), "missing Status panel title");
     assert!(
-        all_text.contains("Deployment Status"),
-        "missing Deployment Status panel title"
+        all_text.contains("Branch inclusion"),
+        "missing Branch inclusion panel title"
     );
     assert!(all_text.contains("Files"), "missing Files panel title");
     assert!(
@@ -1944,7 +1958,7 @@ fn state_on_a_worktree_row() -> AppState {
 fn m_on_a_worktree_row_parks_the_land_behind_a_confirmation() {
     let mut state = state_on_a_worktree_row();
 
-    panel::environments::handle_key(&mut state, key(KeyCode::Char('m'))).unwrap();
+    menu::run(&mut state, RepoAction::LandWorktree);
 
     assert_eq!(state.pending_action, None, "nothing runs before the y/n");
     assert_eq!(state.modal, Modal::ConfirmDestructive);
@@ -1967,7 +1981,7 @@ fn m_on_a_worktree_row_parks_the_land_behind_a_confirmation() {
 fn shift_m_on_a_worktree_row_offers_to_merge_main_into_it() {
     let mut state = state_on_a_worktree_row();
 
-    panel::environments::handle_key(&mut state, key(KeyCode::Char('M'))).unwrap();
+    menu::run(&mut state, RepoAction::SyncWorktree);
 
     assert_eq!(state.pending_action, None, "nothing runs before the y/n");
     assert_eq!(
@@ -1988,7 +2002,7 @@ fn shift_m_on_a_worktree_row_offers_to_merge_main_into_it() {
 fn b_on_a_worktree_row_offers_to_move_the_branch_home() {
     let mut state = state_on_a_worktree_row();
 
-    panel::environments::handle_key(&mut state, key(KeyCode::Char('b'))).unwrap();
+    menu::run(&mut state, RepoAction::BranchHome);
 
     let confirm = state.confirm.as_ref().expect("confirm prompt");
     assert_eq!(
@@ -2022,7 +2036,7 @@ fn a_handover_is_refused_before_the_confirmation_when_the_worktree_is_dirty() {
     ];
     panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
 
-    panel::environments::handle_key(&mut state, key(KeyCode::Char('m'))).unwrap();
+    menu::run(&mut state, RepoAction::LandWorktree);
 
     assert!(state.confirm.is_none(), "no prompt for a dirty worktree");
     assert_eq!(state.pending_action, None);
@@ -2048,8 +2062,8 @@ fn the_handover_keys_do_nothing_on_the_root_row() {
         worktree("/workspace.worktrees/feat-x", "feat/x"),
     ];
 
-    for code in [KeyCode::Char('m'), KeyCode::Char('b')] {
-        panel::environments::handle_key(&mut state, key(code)).unwrap();
+    for code in [RepoAction::LandWorktree, RepoAction::BranchHome] {
+        menu::run(&mut state, code);
         assert!(state.confirm.is_none(), "{code:?} needs a worktree row");
         let status = state.status.as_ref().expect("status");
         assert!(
@@ -2131,18 +2145,18 @@ fn only_the_irreversible_prompt_warns_that_it_cannot_be_undone() {
         ];
         app.state.focus = Pane::Status;
         app.state.nested_repo_tree_idx = 1;
-        app.send_key(key(code)).unwrap();
+        menu::run(&mut app.state, code);
         app.render().unwrap();
         buffer_text(&app)
     };
 
-    let landing = screen_after(KeyCode::Char('m'));
+    let landing = screen_after(RepoAction::LandWorktree);
     assert!(
         landing.contains("This cannot be undone."),
         "landing deletes a branch off the remote: {landing}"
     );
 
-    let coming_home = screen_after(KeyCode::Char('b'));
+    let coming_home = screen_after(RepoAction::BranchHome);
     assert!(
         !coming_home.contains("cannot be undone"),
         "moving a branch between checkouts is not a one-way door: {coming_home}"

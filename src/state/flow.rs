@@ -1,6 +1,5 @@
 //! The branch flow actions and when each one is offered.
 
-use crate::config::BRANCH_MAIN;
 use crate::git::ReleaseEnv;
 
 use super::AppState;
@@ -87,6 +86,13 @@ impl AppState {
     /// Whether this checkout deploys from any branch at all. One deploy branch
     /// is enough — the release actions for the missing one stay hidden.
     pub fn flow_available(&self) -> bool {
+        if self.release_branches.configured {
+            return !crate::preferences::load()
+                .config
+                .branches
+                .environments
+                .is_empty();
+        }
         self.release_branch(ReleaseEnv::Dev).is_some()
             || self.release_branch(ReleaseEnv::Test).is_some()
     }
@@ -94,18 +100,25 @@ impl AppState {
     /// The label for a flow action, naming the deploy branch this checkout
     /// actually uses instead of the default spelling.
     pub fn flow_action_label(&self, action: FlowAction) -> String {
+        let configured_base = crate::preferences::base_branch();
         let Some(branch) = action
             .release_env()
             .and_then(|env| self.release_branch(env))
         else {
-            return action.label().to_string();
+            return action.label().replace(
+                "origin/main",
+                &format!("{}/{}", crate::preferences::remote(), configured_base),
+            );
         };
         match action {
             FlowAction::ReleaseDev | FlowAction::ReleaseTest => {
                 format!("Release current branch into {branch}")
             }
             FlowAction::ResetDev | FlowAction::ResetTest => {
-                format!("Reset {branch} from origin/{BRANCH_MAIN}")
+                format!(
+                    "Reset {branch} from {}/{configured_base}",
+                    crate::preferences::remote()
+                )
             }
             _ => action.label().to_string(),
         }

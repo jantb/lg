@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod app;
 pub mod config;
 pub mod git;
@@ -5,9 +6,12 @@ pub mod graph;
 pub mod hooks;
 pub mod llm;
 pub mod panel;
+pub mod preferences;
 pub mod session;
 pub mod settings;
 pub mod state;
 pub mod term;
 pub mod terrarium;
 pub mod ui;
+
+pub mod preferences_cli;

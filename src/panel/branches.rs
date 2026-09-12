@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::{
     app,
-    config::{BRANCH_MAIN, DEFAULT_PUSH_REMOTE, is_deploy_branch_name, is_protected_branch_name},
+    config::{is_deploy_branch_name, is_protected_branch_name},
     git::{Branch, RemoteBranch},
     state::{AppState, BranchView, FlowAction, PendingAction, SPINNER_FRAMES, clamp_index},
     ui,
@@ -106,6 +106,7 @@ fn branch_scroll_offset_mut(state: &mut AppState) -> &mut usize {
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
+    let configured_base = crate::preferences::base_branch();
     state.clamp();
     let shifted_m = shifted_char(key, 'm', 'M');
     let shifted_d = shifted_char(key, 'd', 'D');
@@ -193,7 +194,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
         KeyCode::Char('m') if !shifted_m => {
             if state.branch_view == BranchView::Remote {
                 state.set_status("merge main from local branch view", false);
-            } else if state.branch.as_deref() == Some(BRANCH_MAIN) {
+            } else if state.branch.as_deref() == Some(configured_base.as_str()) {
                 if state.pull_available() {
                     state.pending_action = Some(PendingAction::Pull);
                 } else {
@@ -224,6 +225,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
 }
 
 fn queue_set_upstream(state: &mut AppState) {
+    let configured_remote = crate::preferences::remote();
     if state.branch_view == BranchView::Remote {
         state.set_status("set upstream from local branch view", false);
         return;
@@ -243,7 +245,7 @@ fn queue_set_upstream(state: &mut AppState) {
         .remote_branches
         .iter()
         .filter(|remote| remote.local_name == branch.name)
-        .min_by_key(|remote| usize::from(remote.remote != DEFAULT_PUSH_REMOTE));
+        .min_by_key(|remote| usize::from(remote.remote != configured_remote.as_str()));
 
     let Some(remote) = matching else {
         state.set_status(
@@ -290,6 +292,18 @@ fn local_branch_line(state: &AppState, branch: &Branch, row_width: usize) -> Lin
                     .add_modifier(Modifier::BOLD),
             ),
         ];
+        for env in crate::preferences::load()
+            .config
+            .branches
+            .environments
+            .iter()
+            .filter(|e| e.branch == branch.name)
+        {
+            spans.push(Span::styled(
+                format!(" [{}]", env.name),
+                Style::default().fg(Color::Magenta),
+            ));
+        }
         append_local_branch_status(&mut spans, branch);
         Line::from(spans)
     } else if branch.is_current {
@@ -297,6 +311,18 @@ fn local_branch_line(state: &AppState, branch: &Branch, row_width: usize) -> Lin
             format!("* {}", visible_local_branch_name(branch, 2, row_width)),
             current_branch_style(),
         )];
+        for env in crate::preferences::load()
+            .config
+            .branches
+            .environments
+            .iter()
+            .filter(|e| e.branch == branch.name)
+        {
+            spans.push(Span::styled(
+                format!(" [{}]", env.name),
+                Style::default().fg(Color::Magenta),
+            ));
+        }
         append_local_branch_status(&mut spans, branch);
         Line::from(spans)
     } else {
@@ -304,6 +330,18 @@ fn local_branch_line(state: &AppState, branch: &Branch, row_width: usize) -> Lin
             format!("  {}", visible_local_branch_name(branch, 2, row_width)),
             Style::default(),
         )];
+        for env in crate::preferences::load()
+            .config
+            .branches
+            .environments
+            .iter()
+            .filter(|e| e.branch == branch.name)
+        {
+            spans.push(Span::styled(
+                format!(" [{}]", env.name),
+                Style::default().fg(Color::Magenta),
+            ));
+        }
         append_local_branch_status(&mut spans, branch);
         Line::from(spans)
     }

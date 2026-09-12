@@ -7,8 +7,6 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use crate::config::{BRANCH_MAIN, DEFAULT_PUSH_REMOTE};
-
 use super::{run, run_combined, run_combined_in_dir, run_in_dir};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,9 +61,10 @@ impl Worktree {
 /// dirty state filled in. Worktrees whose directory is gone are reported as
 /// clean rather than as an error.
 pub fn worktrees() -> Result<Vec<Worktree>> {
+    let configured_base = crate::preferences::base_branch();
     let out = run(&["worktree", "list", "--porcelain"])?;
     let mut worktrees = parse_worktree_list(&String::from_utf8_lossy(&out.stdout));
-    let has_main = ref_exists(&format!("refs/heads/{BRANCH_MAIN}"));
+    let has_main = ref_exists(&format!("refs/heads/{configured_base}"));
     for worktree in &mut worktrees {
         worktree.has_changes = worktree_has_changes(Path::new(&worktree.path)).unwrap_or(false);
         worktree.unmerged = has_main.then(|| unmerged_commits(worktree)).flatten();
@@ -97,8 +96,9 @@ pub fn main_worktree() -> Result<PathBuf> {
 /// How far a worktree's branch has run ahead of `main`. Refs are shared by
 /// every checkout, so this is answered from whichever one git is pointed at.
 fn unmerged_commits(worktree: &Worktree) -> Option<u32> {
+    let configured_base = crate::preferences::base_branch();
     let branch = worktree.branch.as_deref()?;
-    if branch == BRANCH_MAIN {
+    if branch == configured_base.as_str() {
         return None;
     }
     let out = run(&[
@@ -106,7 +106,7 @@ fn unmerged_commits(worktree: &Worktree) -> Option<u32> {
         "--count",
         &format!("refs/heads/{branch}"),
         "--not",
-        &format!("refs/heads/{BRANCH_MAIN}"),
+        &format!("refs/heads/{configured_base}"),
     ])
     .ok()?;
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
@@ -184,6 +184,8 @@ pub fn worktree_land_with_progress(
     branch: &str,
     progress: &mut dyn FnMut(&str),
 ) -> Result<String> {
+    let configured_base = crate::preferences::base_branch();
+    let configured_remote = crate::preferences::remote();
     let worktrees = worktrees()?;
     let branch = movable_branch(&worktrees, path, branch)?;
     let host = main_branch_host(&worktrees)?;
@@ -192,16 +194,16 @@ pub fn worktree_land_with_progress(
     // Being offline is no reason to refuse a local merge, so a failed fetch
     // only means `main` is compared against what the last fetch left behind.
     progress("fetching");
-    let _ = run_in_dir(&host, &["fetch", DEFAULT_PUSH_REMOTE, "--prune"]);
-    let remote_main = format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
+    let _ = run_in_dir(&host, &["fetch", configured_remote.as_str(), "--prune"]);
+    let remote_main = format!("{configured_remote}/{configured_base}");
     if ref_exists_in(&host, &remote_main) && behind_count(&host, &remote_main)? > 0 {
         run_in_dir(&host, &["merge", "--ff-only", &remote_main]).with_context(|| {
-            format!("{BRANCH_MAIN} has diverged from {remote_main}; reconcile those first")
+            format!("{configured_base} has diverged from {remote_main}; reconcile those first")
         })?;
-        steps.push(format!("updated {BRANCH_MAIN} from {remote_main}"));
+        steps.push(format!("updated {configured_base} from {remote_main}"));
     }
 
-    progress(&format!("merging {branch} into {BRANCH_MAIN}"));
+    progress(&format!("merging {branch} into {configured_base}"));
     match run_combined_in_dir(&host, &["merge", "--no-edit", &branch]) {
         Ok(out) => steps.push(last_line(&out, &format!("merged {branch}"))),
         Err(err) => {
@@ -209,17 +211,20 @@ pub fn worktree_land_with_progress(
             // worse than not having merged at all.
             let _ = run_in_dir(&host, &["merge", "--abort"]);
             anyhow::bail!(
-                "{err}\nmerge {branch} into {BRANCH_MAIN} by hand in {}",
+                "{err}\nmerge {branch} into {configured_base} by hand in {}",
                 host.display()
             );
         }
     }
 
-    if ref_exists_in(&host, &format!("{BRANCH_MAIN}@{{u}}")) {
-        progress(&format!("pushing {BRANCH_MAIN}"));
-        run_combined_in_dir(&host, &["push", DEFAULT_PUSH_REMOTE, BRANCH_MAIN])
-            .context("merged, but the push failed; push it and run this again to clean up")?;
-        steps.push(format!("pushed {BRANCH_MAIN}"));
+    if ref_exists_in(&host, &format!("{configured_base}@{{u}}")) {
+        progress(&format!("pushing {configured_base}"));
+        run_combined_in_dir(
+            &host,
+            &["push", configured_remote.as_str(), configured_base.as_str()],
+        )
+        .context("merged, but the push failed; push it and run this again to clean up")?;
+        steps.push(format!("pushed {configured_base}"));
     }
 
     // The worktree has to let go of the branch before git will delete it.
@@ -229,16 +234,16 @@ pub fn worktree_land_with_progress(
     run_in_dir(&host, &["branch", "-d", &branch])?;
     steps.push(format!("deleted {branch}"));
 
-    if ref_exists_in(
-        &host,
-        &format!("refs/remotes/{DEFAULT_PUSH_REMOTE}/{branch}"),
-    ) {
-        progress(&format!("deleting {DEFAULT_PUSH_REMOTE}/{branch}"));
+    if ref_exists_in(&host, &format!("refs/remotes/{configured_remote}/{branch}")) {
+        progress(&format!("deleting {configured_remote}/{branch}"));
         // The branch is merged and pushed by this point, so a remote that
         // refuses the delete is worth a note rather than failing the whole run.
-        match run_combined_in_dir(&host, &["push", DEFAULT_PUSH_REMOTE, "--delete", &branch]) {
-            Ok(_) => steps.push(format!("deleted {DEFAULT_PUSH_REMOTE}/{branch}")),
-            Err(err) => steps.push(format!("kept {DEFAULT_PUSH_REMOTE}/{branch}: {err}")),
+        match run_combined_in_dir(
+            &host,
+            &["push", configured_remote.as_str(), "--delete", &branch],
+        ) {
+            Ok(_) => steps.push(format!("deleted {configured_remote}/{branch}")),
+            Err(err) => steps.push(format!("kept {configured_remote}/{branch}: {err}")),
         }
     }
 
@@ -264,13 +269,14 @@ pub fn worktree_sync_main_with_progress(
     branch: &str,
     progress: &mut dyn FnMut(&str),
 ) -> Result<String> {
+    let configured_remote = crate::preferences::remote();
     let worktrees = worktrees()?;
     let branch = movable_branch(&worktrees, path, branch)?;
 
     // Being offline is no reason to refuse a local merge, so a failed fetch
     // only means `main` is compared against what the last fetch left behind.
     progress("fetching");
-    let _ = run_in_dir(path, &["fetch", DEFAULT_PUSH_REMOTE, "--prune"]);
+    let _ = run_in_dir(path, &["fetch", configured_remote.as_str(), "--prune"]);
 
     let base = sync_base_ref(path)?;
     if behind_count(path, &base)? == 0 {
@@ -288,19 +294,21 @@ pub fn worktree_sync_main_with_progress(
 /// case where merging the remote would report success while leaving the branch
 /// short of what the branch list says it is missing.
 fn sync_base_ref(dir: &Path) -> Result<String> {
-    let remote_main = format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
-    let local = ref_exists_in(dir, BRANCH_MAIN);
+    let configured_base = crate::preferences::base_branch();
+    let configured_remote = crate::preferences::remote();
+    let remote_main = format!("{configured_remote}/{configured_base}");
+    let local = ref_exists_in(dir, configured_base.as_str());
     let remote = ref_exists_in(dir, &remote_main);
     if !local && !remote {
-        anyhow::bail!("could not find {BRANCH_MAIN} or {remote_main}");
+        anyhow::bail!("could not find {configured_base} or {remote_main}");
     }
     if !remote {
-        return Ok(BRANCH_MAIN.to_string());
+        return Ok(configured_base.as_str().to_string());
     }
-    if !local || commits_not_in(dir, &remote_main, BRANCH_MAIN)? == 0 {
+    if !local || commits_not_in(dir, &remote_main, configured_base.as_str())? == 0 {
         return Ok(remote_main);
     }
-    Ok(BRANCH_MAIN.to_string())
+    Ok(configured_base.as_str().to_string())
 }
 
 /// How many commits `ahead_of` carries that `base` does not.
@@ -350,6 +358,7 @@ pub fn worktree_bring_home(path: &Path, branch: &str) -> Result<String> {
 /// branch is checked because it is what the user was asked to confirm, and a
 /// worktree can be switched to another one in between.
 fn movable_branch(worktrees: &[Worktree], path: &Path, expected: &str) -> Result<String> {
+    let configured_base = crate::preferences::base_branch();
     let source = worktrees
         .iter()
         .find(|worktree| same_dir(Path::new(&worktree.path), path))
@@ -364,8 +373,8 @@ fn movable_branch(worktrees: &[Worktree], path: &Path, expected: &str) -> Result
         .branch
         .clone()
         .context("a detached worktree has no branch to hand over")?;
-    if branch == BRANCH_MAIN {
-        anyhow::bail!("{BRANCH_MAIN} is not a branch to move off a worktree");
+    if branch == configured_base.as_str() {
+        anyhow::bail!("{configured_base} is not a branch to move off a worktree");
     }
     if branch != expected {
         anyhow::bail!("{} is on {branch} now, not {expected}", source.dir_name());
@@ -379,9 +388,10 @@ fn movable_branch(worktrees: &[Worktree], path: &Path, expected: &str) -> Result
 /// The checkout a merge into `main` runs in: whichever worktree already holds
 /// it, or the main worktree with `main` checked out into it when none does.
 fn main_branch_host(worktrees: &[Worktree]) -> Result<PathBuf> {
+    let configured_base = crate::preferences::base_branch();
     if let Some(host) = worktrees
         .iter()
-        .find(|worktree| worktree.branch.as_deref() == Some(BRANCH_MAIN))
+        .find(|worktree| worktree.branch.as_deref() == Some(configured_base.as_str()))
     {
         if host.has_changes {
             anyhow::bail!("commit or stash the changes in {} first", host.path);
@@ -397,8 +407,8 @@ fn main_branch_host(worktrees: &[Worktree]) -> Result<PathBuf> {
         anyhow::bail!("commit or stash the changes in {} first", main.path);
     }
     let dir = PathBuf::from(&main.path);
-    run_in_dir(&dir, &["checkout", BRANCH_MAIN])
-        .with_context(|| format!("no checkout holds {BRANCH_MAIN}"))?;
+    run_in_dir(&dir, &["checkout", configured_base.as_str()])
+        .with_context(|| format!("no checkout holds {configured_base}"))?;
     Ok(dir)
 }
 
@@ -451,11 +461,13 @@ pub fn worktree_slug(branch: &str) -> String {
 /// The ref a new branch should start from: the remote's main branch when it is
 /// known, which is what the branch flows already assume.
 pub fn preferred_base_ref() -> String {
-    let remote_main = format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}");
+    let configured_base = crate::preferences::base_branch();
+    let configured_remote = crate::preferences::remote();
+    let remote_main = format!("{configured_remote}/{configured_base}");
     if ref_exists(&remote_main) {
         remote_main
     } else {
-        BRANCH_MAIN.to_string()
+        configured_base.as_str().to_string()
     }
 }
 

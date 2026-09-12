@@ -82,6 +82,7 @@ pub(super) fn layout_for(state: &AppState, area: Rect) -> ui::LayoutRects {
 fn prepare(state: &mut AppState, area: Rect) {
     let rects = layout_for(state, area);
     state.advance_animation();
+    panel::settings::poll(state);
     super::prepare_conflict_editor(state);
     state.diff_viewport_height = if state.modal == Modal::ReviewChat {
         panel::main::review_chat_layout(state, rects.main)[0]
@@ -133,10 +134,14 @@ fn draw(frame: &mut Frame, state: &AppState) -> Option<String> {
         Modal::StageAllBeforeCommit => panel::stage_all::render(state, area, frame),
         Modal::Push => panel::push::render(state, area, frame),
         Modal::Author => panel::author::render(state, area, frame),
+        Modal::Environments => panel::deployment::render(state, area, frame),
+        Modal::Commands => panel::commands::render(state, area, frame),
+        Modal::Settings => panel::settings::render(state, area, frame),
         Modal::Model => panel::model::render(state, area, frame),
         Modal::Help => panel::help::render(state, area, frame),
         Modal::Flow => panel::flow::render(state, area, frame),
         Modal::Agent => panel::agent::render(state, area, frame),
+        Modal::RepoActions => panel::environments::menu::render(state, area, frame),
         Modal::Conflict => panel::conflict::render(state, area, frame),
         Modal::DeleteBranch => panel::delete_branch::render(state, area, frame),
         Modal::Worktree => panel::worktree::render(state, area, frame),

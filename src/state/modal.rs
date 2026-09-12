@@ -75,11 +75,29 @@ impl AppState {
     /// out: `s` and `S` differ only in that, and having chosen it once the
     /// picker is about the agent and nothing else.
     pub fn open_agent_picker(&mut self, sandboxed: bool) {
+        self.agent_profiles = crate::panel::environments::selected_checkout(self)
+            .map(|(path, _)| {
+                crate::git::with_repo(path, || crate::preferences::load().config.agents)
+            })
+            .unwrap_or_else(|| crate::preferences::load().config.agents);
         self.agent_pick_sandboxed = sandboxed;
         self.agent_pick_idx = crate::session::SessionKind::AGENTS
             .iter()
             .position(|kind| *kind == self.preferred_agent)
             .unwrap_or(0);
+        if let Some(index) = self.agent_profiles.iter().position(|p| p.default) {
+            self.agent_pick_idx = index;
+        }
+        for profile in &mut self.agent_profiles {
+            if !sandboxed {
+                profile.confinement = if ["claude", "codex"].contains(&profile.adapter.as_str()) {
+                    "agent"
+                } else {
+                    "direct"
+                }
+                .into();
+            }
+        }
         self.modal = Modal::Agent;
     }
 
@@ -114,10 +132,15 @@ pub enum Modal {
     Push,
     Author,
     Model,
+    Settings,
+    Environments,
+    Commands,
     Help,
     Flow,
     /// Which coding agent to start in the selected checkout.
     Agent,
+    /// What can be done to the selected row of the repository tree.
+    RepoActions,
     Conflict,
     DeleteBranch,
     Worktree,
@@ -270,6 +293,12 @@ impl RepoTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingAction {
+    StartAgent {
+        path: String,
+        label: String,
+        profile: crate::preferences::Agent,
+    },
+    Promote(crate::git::environments::PromotionPreview),
     GenerateMessage,
     ReviewAssist(String),
     ReviewPrText,

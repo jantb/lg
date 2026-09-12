@@ -202,7 +202,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         ]
     };
     frame.render_widget(Paragraph::new(controls), regions.controls);
-    ui::animate_modal_border(state.animation_ms, modal, &regions.dividers, frame);
+    if state.decorative_animations {
+        ui::animate_modal_border(state.animation_ms, modal, &regions.dividers, frame);
+    }
 }
 
 /// The header's third line: what the local pass is doing, or what it did, or

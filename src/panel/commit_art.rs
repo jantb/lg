@@ -453,7 +453,7 @@ impl Feed {
     fn occupied(&self, slot: usize) -> bool {
         match self.at(slot) {
             Some((c, _)) => c != ' ',
-            None => hash(slot, 11) % TOKEN_GAP != 0,
+            None => !hash(slot, 11).is_multiple_of(TOKEN_GAP),
         }
     }
 }
@@ -668,7 +668,7 @@ impl Tree {
         // and always forks.
         if level == 0 {
             want = want.max(2);
-        } else if level >= 2 && (h >> 8) % 5 == 0 {
+        } else if level >= 2 && (h >> 8).is_multiple_of(5) {
             return;
         }
         let want = want.min(*spare + 1);
@@ -1091,7 +1091,7 @@ fn draw_rain(canvas: &mut Canvas, width: usize, ground: usize, t: f32) {
     let span = ground + RAIN_TRAIL;
     for x in 0..width {
         let seed = hash(x, 7);
-        if seed % RAIN_DENSITY != 0 {
+        if !seed.is_multiple_of(RAIN_DENSITY) {
             continue;
         }
         // Some drops fall at one speed, some at half again, so the rain has
@@ -1132,7 +1132,7 @@ fn draw_night(canvas: &mut Canvas, width: usize, ground: usize, ms: u64) {
     for y in 0..ground {
         for x in 0..width {
             let seed = hash(x, y);
-            if seed % STAR_DENSITY != 0 {
+            if !seed.is_multiple_of(STAR_DENSITY) {
                 continue;
             }
             // Each star twinkles on its own period and phase; the glyph

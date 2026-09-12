@@ -24,10 +24,14 @@ fn modal_section(modal: Modal) -> Option<&'static str> {
         Modal::StageAllBeforeCommit => "Stage all",
         Modal::Push => "Push modal",
         Modal::Author => "Author settings",
+        Modal::Environments => "Environments",
+        Modal::Commands => "Actions",
+        Modal::Settings => "Settings",
         Modal::Model => "Settings",
         Modal::Help => "Help overlay",
         Modal::Flow => "Branch actions",
         Modal::Agent => "Agent picker",
+        Modal::RepoActions => "Repository actions",
         Modal::Conflict => "Conflict",
         Modal::DeleteBranch => "Delete branch",
         Modal::Worktree => "New worktree",
@@ -118,7 +122,7 @@ fn session_spans(state: &AppState) -> Vec<Span<'static>> {
                 ("i", "type into it"),
                 ("x", "close"),
                 ("Backspace", "back to diff"),
-                ("F2", "git view"),
+                ("w", "git view"),
                 ("?", "help"),
                 ("q", "quit"),
             ],
@@ -167,12 +171,6 @@ fn shortcut_visible(state: &AppState, key: &str, label: &str) -> bool {
         ("F", _) => state.branch_actions_available(),
         ("p", _) => state.pull_available(),
         ("v", _) => diff_view_toggle_available(state),
-        // Handing a branch over needs a worktree to hand it over from.
-        ("m", "land worktree") | ("b", "branch home") => {
-            crate::panel::environments::selected_linked_worktree(state).is_some()
-        }
-        // Nothing to initialize once the folder is a checkout.
-        ("i", "git init") => crate::panel::environments::init_available(state),
         // Only a session row has a session to close.
         ("x", "close session") => crate::panel::environments::selected_session(state).is_some(),
         // Distinguished from the Status pane's Esc, which means "back".
@@ -278,7 +276,14 @@ fn status_text(state: &AppState) -> (String, Style) {
             };
             (
                 format!("{icon} {}", status.text),
-                palette::status_style(status.age_ms(), status.is_error),
+                palette::status_style(
+                    if state.decorative_animations {
+                        status.age_ms()
+                    } else {
+                        i64::MAX
+                    },
+                    status.is_error,
+                ),
             )
         }
         (None, Some(label)) => {

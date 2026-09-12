@@ -535,13 +535,14 @@ impl Arena {
             if dir == snake.dir.reverse() {
                 continue;
             }
-            if let Some((nx, ny)) = self.step_from(hx, hy, dir) {
-                if self.passable(nx, ny) && !self.burning(nx, ny) {
-                    let i = ny * self.width + nx;
-                    seen[i] = true;
-                    first[i] = Some(dir);
-                    queue.push_back((nx, ny));
-                }
+            if let Some((nx, ny)) = self.step_from(hx, hy, dir)
+                && self.passable(nx, ny)
+                && !self.burning(nx, ny)
+            {
+                let i = ny * self.width + nx;
+                seen[i] = true;
+                first[i] = Some(dir);
+                queue.push_back((nx, ny));
             }
         }
         while let Some((cx, cy)) = queue.pop_front() {

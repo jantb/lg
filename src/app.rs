@@ -212,6 +212,8 @@ impl App {
             .workspace
             .map(|workspace| workspace.to_string_lossy().into_owned());
         prime_branches(&mut app.state);
+        app.state.enable_history();
+        app.state.decorative_animations = crate::preferences::animations_enabled();
         prime_files(&mut app.state);
         app.start_refresh(true);
         app.start_fetch();
@@ -280,7 +282,9 @@ impl App {
                         Event::Key(k) => self.handle_key(k)?,
                         Event::Mouse(m) => self.handle_mouse(m)?,
                         Event::Paste(text) => {
-                            if !crate::panel::conflict::handle_paste(&mut self.state, &text) {
+                            if !crate::panel::settings::handle_paste(&mut self.state, &text)
+                                && !crate::panel::conflict::handle_paste(&mut self.state, &text)
+                            {
                                 session::forward_paste(&mut self.state, &text);
                             }
                         }

@@ -468,12 +468,30 @@ fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> {
             panel::author::handle_key(host.state_mut(), k)?;
             return Ok(());
         }
+        Modal::Commands => {
+            if let Some(key) = panel::commands::handle_key(host.state_mut(), k) {
+                return dispatch_key(host, key);
+            }
+            return Ok(());
+        }
+        Modal::Environments => {
+            panel::deployment::handle_key(host.state_mut(), k)?;
+            return Ok(());
+        }
+        Modal::Settings => {
+            panel::settings::handle_key(host.state_mut(), k)?;
+            return Ok(());
+        }
         Modal::Model => {
             panel::model::handle_key(host.state_mut(), k)?;
             return Ok(());
         }
         Modal::Flow => {
             panel::flow::handle_key(host.state_mut(), k)?;
+            return Ok(());
+        }
+        Modal::RepoActions => {
+            panel::environments::menu::handle_key(host.state_mut(), k)?;
             return Ok(());
         }
         Modal::Agent => {
@@ -504,7 +522,7 @@ fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> {
     }
 
     match k.code {
-        KeyCode::F(2) => {
+        KeyCode::Char('w') => {
             host.state_mut().toggle_mode();
             return Ok(());
         }
@@ -610,6 +628,18 @@ fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('a') => {
             open_author_modal(host.state_mut());
+            return Ok(());
+        }
+        KeyCode::Char(':') => {
+            panel::commands::open(host.state_mut());
+            return Ok(());
+        }
+        KeyCode::Char('E') => {
+            panel::deployment::open(host.state_mut());
+            return Ok(());
+        }
+        KeyCode::Char(',') => {
+            panel::settings::open(host.state_mut(), 0);
             return Ok(());
         }
         KeyCode::Char('L') => {

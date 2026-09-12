@@ -47,7 +47,7 @@ fn render_no_session(state: &AppState, area: Rect, frame: &mut Frame, focused: b
         ratatui::text::Line::from("  Pick a checkout on the left and press s to start claude"),
         ratatui::text::Line::from("  in it, t for a terminal, or n to make a worktree first."),
         ratatui::text::Line::from(""),
-        ratatui::text::Line::from("  F2 goes back to the git view; sessions keep running."),
+        ratatui::text::Line::from("  w goes back to the git view; sessions keep running."),
     ];
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
@@ -80,12 +80,13 @@ fn render_session(
     }
     crate::term::render_screen(session.screen(), inner, frame.buffer_mut());
 
-    if focused && state.session_capture {
-        if let Some((row, col)) = session.cursor_position() {
-            if row < inner.height && col < inner.width {
-                frame.set_cursor_position((inner.x + col, inner.y + row));
-            }
-        }
+    if focused
+        && state.session_capture
+        && let Some((row, col)) = session.cursor_position()
+        && row < inner.height
+        && col < inner.width
+    {
+        frame.set_cursor_position((inner.x + col, inner.y + row));
     }
 }
 

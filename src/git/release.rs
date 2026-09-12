@@ -4,9 +4,7 @@ use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
-use crate::config::{
-    BRANCH_MAIN, BRANCH_TEST, DEFAULT_PUSH_REMOTE, DEV_BRANCH_NAMES, is_protected_branch_name,
-};
+use crate::config::{BRANCH_TEST, DEV_BRANCH_NAMES, is_protected_branch_name};
 
 use super::commits::{commit_oid, preferred_commit_ref, rev_list};
 use super::run;
@@ -16,6 +14,7 @@ struct ReleaseStatusCacheKey {
     branch: String,
     branch_oid: String,
     base_oid: String,
+    environment_refs: Vec<(String, Option<String>)>,
     develop_oid: Option<String>,
     test_oid: Option<String>,
 }
@@ -40,13 +39,18 @@ pub enum ReleaseEnv {
 /// branch works the same way.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReleaseBranches {
+    pub configured: bool,
     dev: Option<String>,
     test: Option<String>,
 }
 
 impl ReleaseBranches {
     pub fn new(dev: Option<String>, test: Option<String>) -> Self {
-        Self { dev, test }
+        Self {
+            dev,
+            test,
+            configured: false,
+        }
     }
 
     pub fn branch(&self, env: ReleaseEnv) -> Option<&str> {
@@ -63,6 +67,7 @@ impl ReleaseBranches {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BranchReleaseStatus {
+    pub environments: std::collections::BTreeMap<String, ReleaseTargetStatus>,
     pub main: Option<ReleaseTargetStatus>,
     pub develop: Option<ReleaseTargetStatus>,
     pub test: Option<ReleaseTargetStatus>,
@@ -75,13 +80,17 @@ pub struct ReleaseTargetStatus {
 }
 
 pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
+    let configured_base = crate::preferences::base_branch();
+    let configured_remote = crate::preferences::remote();
     if branch.is_empty() || is_protected_branch_name(branch) {
         return Ok(BranchReleaseStatus::default());
     }
 
-    let base_ref =
-        preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{BRANCH_MAIN}"), BRANCH_MAIN)
-            .unwrap_or_else(|| BRANCH_MAIN.to_string());
+    let base_ref = preferred_commit_ref(
+        &format!("{configured_remote}/{configured_base}"),
+        configured_base.as_str(),
+    )
+    .unwrap_or_else(|| configured_base.as_str().to_string());
     let Some(base_oid) = commit_oid(&base_ref) else {
         return Ok(BranchReleaseStatus::default());
     };
@@ -91,7 +100,16 @@ pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
     let targets = release_branches();
     let develop_ref = release_branch_ref(targets.branch(ReleaseEnv::Dev));
     let test_ref = release_branch_ref(targets.branch(ReleaseEnv::Test));
+    let configured_environments = crate::preferences::load().config.branches.environments;
+    let environment_refs: Vec<_> = configured_environments
+        .iter()
+        .map(|e| {
+            let reference = format!("{}/{}", e.remote, e.branch);
+            (e.id.clone(), commit_oid(&reference))
+        })
+        .collect();
     let key = ReleaseStatusCacheKey {
+        environment_refs,
         branch: branch.to_string(),
         branch_oid,
         base_oid,
@@ -105,6 +123,20 @@ pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
     }
 
     let unique_commits = rev_list(&["--reverse", branch, &format!("^{base_ref}")])?;
+    let mut environments = std::collections::BTreeMap::new();
+    for env in &configured_environments {
+        if env.branch.is_empty() {
+            continue;
+        }
+        let reference = format!("{}/{}", env.remote, env.branch);
+        if let Some(status) =
+            release_target_status(branch, &unique_commits, &base_ref, Some(&reference))
+                .ok()
+                .flatten()
+        {
+            environments.insert(env.id.clone(), status);
+        }
+    }
     if unique_commits.is_empty() {
         // Branch tip is reachable from main (regular or rebase merge); record
         // the merge date so the deployment panel can show it as merged.
@@ -112,6 +144,7 @@ pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
             .or_else(|| commit_date(branch).ok())
             .unwrap_or_else(|| "unknown".to_string());
         let status = BranchReleaseStatus {
+            environments,
             main: Some(ReleaseTargetStatus {
                 released_at,
                 missing_commits: 0,
@@ -126,6 +159,7 @@ pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
     }
 
     let status = BranchReleaseStatus {
+        environments,
         main: Some(ReleaseTargetStatus {
             released_at: String::new(),
             missing_commits: unique_commits.len(),
@@ -143,6 +177,21 @@ pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
 /// up on its own so a repository with only one of them still gets its release
 /// actions and deployment status.
 pub fn release_branches() -> ReleaseBranches {
+    let loaded = crate::preferences::load();
+    if loaded.sources.contains_key("branches") {
+        let branch = |id: &str| {
+            loaded
+                .config
+                .branches
+                .environments
+                .iter()
+                .find(|e| e.id == id && !e.branch.is_empty())
+                .map(|e| e.branch.clone())
+        };
+        let mut branches = ReleaseBranches::new(branch("dev"), branch("test"));
+        branches.configured = true;
+        return branches;
+    }
     ReleaseBranches::new(
         DEV_BRANCH_NAMES
             .into_iter()
@@ -155,8 +204,9 @@ pub fn release_branches() -> ReleaseBranches {
 /// The ref to compare against for a deploy branch, preferring the remote so an
 /// out-of-date local checkout does not report a release that never landed.
 fn release_branch_ref(branch: Option<&str>) -> Option<String> {
+    let configured_remote = crate::preferences::remote();
     let branch = branch?;
-    preferred_commit_ref(&format!("{DEFAULT_PUSH_REMOTE}/{branch}"), branch)
+    preferred_commit_ref(&format!("{configured_remote}/{branch}"), branch)
 }
 
 fn release_target_status(

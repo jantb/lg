@@ -91,17 +91,40 @@ pub const DEV_BRANCH_NAMES: [&str; 2] = [BRANCH_DEV, BRANCH_DEV_SHORT];
 /// branch. A repository needs only one of them: alv.no deploys `test` and has
 /// no develop branch, so the names are checked one at a time.
 pub fn is_deploy_branch_name(name: &str) -> bool {
-    name == BRANCH_TEST || DEV_BRANCH_NAMES.contains(&name)
+    let loaded = crate::preferences::load();
+    if loaded.sources.contains_key("branches") {
+        loaded
+            .config
+            .branches
+            .environments
+            .iter()
+            .any(|e| !e.branch.is_empty() && e.branch == name)
+    } else {
+        name == BRANCH_TEST || DEV_BRANCH_NAMES.contains(&name)
+    }
 }
 
 /// Deploy branches plus `main`, the branches lg refuses to treat as a feature
 /// branch.
 pub fn is_protected_branch_name(name: &str) -> bool {
-    name == BRANCH_MAIN || is_deploy_branch_name(name)
+    let branches = crate::preferences::load().config.branches;
+    name == branches.base || branches.protected.iter().any(|b| b == name)
 }
 
 /// Deploy branch names for error messages, in promotion order.
 pub fn deploy_branch_list() -> String {
+    let loaded = crate::preferences::load();
+    if loaded.sources.contains_key("branches") {
+        return loaded
+            .config
+            .branches
+            .environments
+            .iter()
+            .filter(|e| !e.branch.is_empty())
+            .map(|e| e.branch.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+    }
     let mut names = DEV_BRANCH_NAMES.to_vec();
     names.push(BRANCH_TEST);
     names.join(", ")
@@ -109,7 +132,12 @@ pub fn deploy_branch_list() -> String {
 
 /// Protected branch names for error messages, in promotion order.
 pub fn protected_branch_list() -> String {
-    format!("{BRANCH_MAIN}, {}", deploy_branch_list())
+    let config = crate::preferences::load().config.branches;
+    let mut names = config.protected;
+    names.push(config.base);
+    names.sort();
+    names.dedup();
+    names.join(", ")
 }
 pub const STATUS_BAR_HEIGHT: u16 = 1;
 pub const STATUS_MSG_LIFETIME_SECS: i64 = 3;

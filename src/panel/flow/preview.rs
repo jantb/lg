@@ -10,7 +10,6 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::config::BRANCH_MAIN;
 use crate::state::{AppState, FlowAction, FlowRun};
 use crate::ui::palette;
 
@@ -102,8 +101,9 @@ pub(super) enum Progress {
 /// magenta, the deploy branches keep their own colours, and anything else is
 /// the working green of a feature branch.
 fn branch_color(state: &AppState, name: &str) -> Color {
+    let configured_base = crate::preferences::base_branch();
     let bare = name.strip_prefix("origin/").unwrap_or(name);
-    if bare == BRANCH_MAIN {
+    if bare == configured_base.as_str() {
         return palette::LANE_MAIN;
     }
     for (env, color) in [
@@ -341,7 +341,7 @@ impl Preview {
 
     /// Whether a grid row is a lane's track rather than the space between two.
     fn is_lane_row(&self, row: usize) -> bool {
-        row % self.row_stride == 0
+        row.is_multiple_of(self.row_stride)
     }
 
     fn grid_rows(&self) -> usize {
@@ -402,12 +402,13 @@ impl Preview {
 /// it checks other branches out, and a picture that followed the checkout would
 /// redraw itself as something else halfway through.
 pub(super) fn preview(state: &AppState, run: &FlowRun) -> Option<Preview> {
+    let configured_base = crate::preferences::base_branch();
     if run.branch.is_empty() {
         return None;
     }
     let current = run.branch.clone();
     let steps = super::steps_for(run);
-    let remote_main = format!("origin/{BRANCH_MAIN}");
+    let remote_main = format!("origin/{configured_base}");
     let created = run
         .input
         .clone()
@@ -422,21 +423,23 @@ pub(super) fn preview(state: &AppState, run: &FlowRun) -> Option<Preview> {
             let main = preview.lane(state, &remote_main);
             let branch = preview.lane(state, &current);
             let remote = preview.lane(state, &format!("origin/{current}"));
-            preview.merge(main, branch, &format!("merge {BRANCH_MAIN} into"));
+            preview.merge(main, branch, &format!("merge {configured_base} into"));
             preview.merge(branch, remote, &format!("push {current}"));
             preview
         }
         FlowAction::ReleaseDev | FlowAction::ReleaseTest => {
             let target = run.target.clone()?;
             let mut preview = Preview::new(
-                format!("{BRANCH_MAIN} and {current} merge into {target}, which is then pushed"),
+                format!(
+                    "{configured_base} and {current} merge into {target}, which is then pushed"
+                ),
                 steps,
             );
             let main = preview.lane(state, &remote_main);
             let feature = preview.lane(state, &format!("origin/{current}"));
             let deploy = preview.lane(state, &target);
             let remote = preview.lane(state, &format!("origin/{target}"));
-            preview.merge(main, deploy, &format!("merge origin/{BRANCH_MAIN}"));
+            preview.merge(main, deploy, &format!("merge origin/{configured_base}"));
             preview.merge(feature, deploy, &format!("merge origin/{current}"));
             preview.merge(deploy, remote, "push HEAD to");
             preview
@@ -482,7 +485,9 @@ pub(super) fn preview(state: &AppState, run: &FlowRun) -> Option<Preview> {
         }
         FlowAction::TransferDiff => {
             let mut preview = Preview::new(
-                format!("what {current} changed against {BRANCH_MAIN} is staged on a new branch"),
+                format!(
+                    "what {current} changed against {configured_base} is staged on a new branch"
+                ),
                 steps,
             );
             let from = preview.lane(state, &current);

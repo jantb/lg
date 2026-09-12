@@ -1,4 +1,4 @@
-use crate::config::{BRANCH_MAIN, is_deploy_branch_name, protected_branch_list};
+use crate::config::{is_deploy_branch_name, protected_branch_list};
 use crate::state::{
     AppState, BranchView, ConflictFollowup, FlowAction, FlowRun, Modal, Pane, SafetyRefCleanup,
     WorkflowJob, WorkflowMsg,
@@ -11,6 +11,26 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
         return;
     }
     let current = state.branch.clone().unwrap_or_default();
+    if crate::preferences::configured_category("branches")
+        && matches!(action, FlowAction::ReleaseDev | FlowAction::ReleaseTest)
+    {
+        crate::panel::deployment::open(state);
+        let id = if action == FlowAction::ReleaseDev {
+            "dev"
+        } else {
+            "test"
+        };
+        state.environment_view.selected = crate::preferences::load()
+            .config
+            .branches
+            .environments
+            .iter()
+            .position(|e| e.id == id)
+            .unwrap_or(0);
+        state.environment_view.notice =
+            "Enter previews the configured promotion path and method.".into();
+        return;
+    }
     if matches!(action, FlowAction::MergeMain) && !state.merge_main_available() {
         state.modal = Modal::None;
         let status = merge_main_unavailable_status(&current);
@@ -193,6 +213,7 @@ pub(crate) fn workflow_steps(
     input: Option<&str>,
     release_target: Option<&str>,
 ) -> Vec<String> {
+    let configured_base = crate::preferences::base_branch();
     let target = release_target.unwrap_or_default();
     match action {
         FlowAction::MergeMain => vec![
@@ -200,8 +221,8 @@ pub(crate) fn workflow_steps(
             "create safety backup".into(),
             "fetch origin".into(),
             format!("pull {current}"),
-            format!("update {} from origin", BRANCH_MAIN),
-            format!("merge {} into {current}", BRANCH_MAIN),
+            format!("update {} from origin", configured_base.as_str()),
+            format!("merge {} into {current}", configured_base.as_str()),
             format!("push {current}"),
             "restore stashed changes".into(),
             "remove safety backup".into(),
@@ -221,8 +242,8 @@ pub(crate) fn workflow_steps(
             "push and set upstream".into(),
         ],
         FlowAction::TransferDiff => vec![
-            format!("fetch {}", BRANCH_MAIN),
-            format!("diff {current} against {}", BRANCH_MAIN),
+            format!("fetch {}", configured_base.as_str()),
+            format!("diff {current} against {}", configured_base.as_str()),
             format!(
                 "create {}",
                 input.filter(|s| !s.is_empty()).unwrap_or("new branch")
@@ -234,6 +255,7 @@ pub(crate) fn workflow_steps(
 }
 
 fn release_steps(current: &str, target: &str) -> Vec<String> {
+    let configured_base = crate::preferences::base_branch();
     vec![
         "stash current changes".into(),
         "create safety backup".into(),
@@ -241,7 +263,7 @@ fn release_steps(current: &str, target: &str) -> Vec<String> {
         "fetch origin".into(),
         format!("sync {target} from origin/{target}"),
         format!("checkout {target}"),
-        format!("merge origin/{}", BRANCH_MAIN),
+        format!("merge origin/{}", configured_base.as_str()),
         format!("merge origin/{current}"),
         format!("push HEAD to origin/{target}"),
         format!("checkout {current}"),
@@ -250,13 +272,14 @@ fn release_steps(current: &str, target: &str) -> Vec<String> {
 }
 
 fn reset_steps(current: &str, target: &str) -> Vec<String> {
+    let configured_base = crate::preferences::base_branch();
     let mut steps = vec!["fetch origin".into()];
     if current != target {
         steps.push(format!("checkout {target}"));
     }
     steps.extend([
         "create safety backup".into(),
-        format!("reset {target} to origin/{}", BRANCH_MAIN),
+        format!("reset {target} to origin/{}", configured_base.as_str()),
         format!("force push {target}"),
         "remove safety backup".into(),
     ]);

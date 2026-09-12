@@ -65,6 +65,10 @@ pub fn api_key() -> Option<String> {
 
 pub fn current_model() -> String {
     env_model()
+        .or_else(|| {
+            crate::preferences::configured_category("models")
+                .then(|| crate::preferences::load().config.models.model)
+        })
         .or_else(saved_model)
         .or_else(first_available_mtplx_model)
         .unwrap_or_else(|| LLM_MODEL.to_owned())
@@ -81,9 +85,13 @@ pub fn current_endpoint() -> String {
 }
 
 pub fn endpoint_for_provider(provider: LlmProvider) -> String {
-    provider
-        .endpoint_env()
-        .unwrap_or_else(|| provider.default_endpoint().to_owned())
+    provider.endpoint_env().unwrap_or_else(|| {
+        if crate::preferences::configured_category("models") {
+            normalize_mtplx_chat_endpoint(&crate::preferences::load().config.models.endpoint)
+        } else {
+            provider.default_endpoint().to_owned()
+        }
+    })
 }
 
 /// The chat endpoint for a value that may name the server, its `/v1` root, or
@@ -314,6 +322,10 @@ fn render_config_entries(entries: &[(String, String)]) -> String {
         out.push('\n');
     }
     out
+}
+
+pub(crate) fn legacy_model() -> Option<String> {
+    saved_model()
 }
 
 #[cfg(test)]

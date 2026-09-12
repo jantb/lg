@@ -5,19 +5,19 @@ bin := "lg"
 default: check test clippy fmt-check
 
 check:
-    cargo check --all-targets
+    cargo check --workspace --all-targets
 
 test:
-    cargo test --all-targets
+    cargo test --workspace --all-targets
 
 clippy:
-    cargo clippy --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings
 
 fmt:
-    cargo fmt
+    cargo fmt --all
 
 fmt-check:
-    cargo fmt --check
+    cargo fmt --all --check
 
 build:
     cargo build

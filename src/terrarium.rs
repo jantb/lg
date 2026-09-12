@@ -94,7 +94,7 @@ fn ensure_profile_in(
         .filter(|path| path.is_file())
         .with_context(|| {
             format!(
-                "{} has no terrarium profile — run `terrarium init` there, or start the session unsandboxed",
+                "{} has no terrarium profile — open Settings → Sandbox there and initialize the bundled profile",
                 main_worktree.display()
             )
         })?;
@@ -180,6 +180,32 @@ fn name_of(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+/// Use the installed host binary, never an independently installed Terrarium.
+pub fn executable() -> PathBuf {
+    std::env::current_exe().expect("the running executable has a path")
+}
+
+pub fn initialize_current(preset: &str) -> anyhow::Result<()> {
+    let root = crate::git::repo_root()?;
+    ::terrarium::initialize(Path::new(&root), preset)?;
+    let main = crate::git::main_worktree()?;
+    ensure_profile(Path::new(&root), &main, &crate::git::common_git_dir()?)?;
+    Ok(())
+}
+pub fn read_profile() -> anyhow::Result<String> {
+    Ok(std::fs::read_to_string(
+        profile_path(Path::new(&crate::git::repo_root()?)).context("HOME is missing")?,
+    )?)
+}
+pub fn save_profile(text: &str) -> anyhow::Result<()> {
+    ::terrarium::check_profile(text)?;
+    let path = profile_path(Path::new(&crate::git::repo_root()?)).context("HOME is missing")?;
+    if path.exists() {
+        std::fs::copy(&path, path.with_extension("toml.bak"))?;
+    }
+    crate::preferences::atomic_write(&path, text.as_bytes())
 }
 
 #[cfg(test)]
@@ -298,7 +324,7 @@ mod tests {
         )
         .expect_err("there is nothing to derive from");
         let message = format!("{err:#}");
-        assert!(message.contains("terrarium init"), "{message}");
+        assert!(message.contains("Settings → Sandbox"), "{message}");
     }
 
     #[test]

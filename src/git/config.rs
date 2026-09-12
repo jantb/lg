@@ -110,6 +110,16 @@ fn open_project_command(command: IdeOpenCommand) -> Result<String> {
 }
 
 pub(super) fn build_project_open_command(root: &str) -> IdeOpenCommand {
+    let tools = crate::preferences::load().config.tools;
+    if !tools.editor.is_empty() {
+        let mut args = tools.editor_args;
+        args.push(root.into());
+        return IdeOpenCommand {
+            program: tools.editor,
+            args,
+            line: 1,
+        };
+    }
     let program = ide_program_for_project(Path::new(root));
     IdeOpenCommand {
         program: program.to_string(),
@@ -119,6 +129,16 @@ pub(super) fn build_project_open_command(root: &str) -> IdeOpenCommand {
 }
 
 pub(super) fn build_ide_open_command(root: &str, path: &str, line: usize) -> IdeOpenCommand {
+    let tools = crate::preferences::load().config.tools;
+    if !tools.editor.is_empty() {
+        let mut args = tools.editor_args;
+        args.push(Path::new(root).join(path).to_string_lossy().into_owned());
+        return IdeOpenCommand {
+            program: tools.editor,
+            args,
+            line: line.max(1),
+        };
+    }
     let program = ide_program_for_path(path);
     let file = {
         let path = Path::new(path);

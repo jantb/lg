@@ -1,4 +1,5 @@
 use super::common::*;
+use lg::panel::environments::menu::{self, RepoAction};
 
 // ── Destructive actions require confirmation ──────────────────────────────────
 
@@ -367,7 +368,7 @@ fn a_multi_step_confirm_shows_every_step_it_names() {
     ];
     app.state.focus = Pane::Status;
     app.state.nested_repo_tree_idx = 1;
-    app.send_key(key(KeyCode::Char('m'))).unwrap();
+    menu::run(&mut app.state, RepoAction::LandWorktree);
 
     app.render().unwrap();
     let screen = buffer_text(&app);

@@ -461,6 +461,48 @@ impl App {
                 );
             }
             PendingAction::Quit => self.state.should_quit = true,
+            PendingAction::Promote(preview) => {
+                spawn_operation(
+                    &mut self.state,
+                    "promoting",
+                    OperationKind::WorkingTree,
+                    move || crate::git::environments::promote(&preview),
+                );
+            }
+            PendingAction::StartAgent {
+                path,
+                label,
+                profile,
+            } => {
+                let cwd = PathBuf::from(&path);
+                let sandboxed = profile.confinement == "terrarium";
+                let result = (|| {
+                    if sandboxed {
+                        prepare_sandbox(&cwd)?;
+                    }
+                    let spec = crate::session::SessionSpec {
+                        cwd,
+                        label: format!("{label} · {}", profile.name),
+                        sandboxed,
+                        kind: crate::agents::kind(&profile),
+                        prompt: None,
+                    };
+                    self.state.sessions.start_profile(
+                        spec,
+                        &profile,
+                        crate::session::default_size(),
+                    )
+                })();
+                match result {
+                    Ok(id) => {
+                        self.state.show_session(id);
+                        self.set_session_capture(true);
+                    }
+                    Err(e) => self
+                        .state
+                        .set_status(format!("start agent failed: {e:#}"), true),
+                }
+            }
             PendingAction::StartSession {
                 path,
                 label,

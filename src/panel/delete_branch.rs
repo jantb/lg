@@ -77,7 +77,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         Span::raw(" cancel"),
     ])];
     frame.render_widget(Paragraph::new(controls), chunks[2]);
-    ui::animate_modal_border(state.animation_ms, modal, &dividers, frame);
+    if state.decorative_animations {
+        ui::animate_modal_border(state.animation_ms, modal, &dividers, frame);
+    }
 }
 
 fn toggle_line(label: &str, on: bool, focused: bool) -> Line<'static> {

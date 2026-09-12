@@ -4,10 +4,11 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::Receiver;
 
-use crate::config::{COMMIT_LIST_LIMIT, DEFAULT_PUSH_REMOTE};
+use crate::config::COMMIT_LIST_LIMIT;
 use crate::state::{AppState, RefreshSnapshot};
 
 pub(super) fn build_refresh_snapshot(workspace_root: Option<String>) -> RefreshSnapshot {
+    let configured_remote = crate::preferences::remote();
     let mut errors = Vec::new();
     let current_root = crate::git::repo_root().ok();
     let workspace_root = workspace_root.or_else(|| current_root.clone());
@@ -77,7 +78,7 @@ pub(super) fn build_refresh_snapshot(workspace_root: Option<String>) -> RefreshS
         commits,
         unpushed_shas,
         branch,
-        remote_url: crate::git::remote_url(DEFAULT_PUSH_REMOTE).ok(),
+        remote_url: crate::git::remote_url(configured_remote.as_str()).ok(),
         ahead_behind: crate::git::counts_ahead_behind().ok(),
         errors,
     }

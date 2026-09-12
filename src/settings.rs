@@ -75,7 +75,7 @@ impl RepoSettings {
 /// Loads the settings for the current checkout, falling back to defaults for
 /// anything missing or unparsable. Settings are advisory, so a broken file must
 /// never block committing.
-pub fn load() -> RepoSettings {
+pub(crate) fn load_legacy() -> RepoSettings {
     match repo_settings_dir() {
         Ok(dir) => load_from_dir(&dir),
         Err(_) => RepoSettings::default(),
@@ -421,6 +421,19 @@ fn path_hash(value: &str) -> u64 {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
+}
+
+/// Resolve shared repository preferences while retaining checkout-specific legacy files.
+pub fn load() -> RepoSettings {
+    let w = crate::preferences::load().config.writing;
+    RepoSettings {
+        pr_language: w.language,
+        comment_style: w.comment_style,
+        commit_subject_max_chars: w.subject_max,
+        commit_body_max_lines: w.body_lines,
+        commit_prompt: w.commit_prompt,
+        review_style: w.review_style,
+    }
 }
 
 #[cfg(test)]

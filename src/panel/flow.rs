@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::{
     app,
-    config::{BRANCH_MAIN, is_protected_branch_name},
+    config::is_protected_branch_name,
     state::{AppState, BranchView, FlowAction, FlowRun, Modal, SPINNER_FRAMES, clamp_index},
     ui,
 };
@@ -55,7 +55,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let dividers = render_body(state, modal, frame);
     // The light is laid on last so every shape the modal takes gets the same
     // outline, whatever rooms it is divided into underneath.
-    ui::animate_modal_border(state.animation_ms, modal, &dividers, frame);
+    if state.decorative_animations {
+        ui::animate_modal_border(state.animation_ms, modal, &dividers, frame);
+    }
 }
 
 /// Draws the modal and hands back the dividers it split itself by.
@@ -87,14 +89,14 @@ fn render_body(state: &AppState, modal: Rect, frame: &mut Frame) -> Vec<Rect> {
 
     if let Some(action) = state.flow_input {
         let mut text = vec![Line::from(state.flow_action_label(action)), Line::from("")];
-        if action == FlowAction::TransferDiff {
-            if let Some(source) = selected_feature_branch(state) {
-                text.push(Line::from(vec![
-                    Span::styled("source: ", Style::default().fg(Color::Yellow)),
-                    Span::raw(source),
-                ]));
-                text.push(Line::from(""));
-            }
+        if action == FlowAction::TransferDiff
+            && let Some(source) = selected_feature_branch(state)
+        {
+            text.push(Line::from(vec![
+                Span::styled("source: ", Style::default().fg(Color::Yellow)),
+                Span::raw(source),
+            ]));
+            text.push(Line::from(""));
         }
         text.extend([
             Line::from(vec![
@@ -184,7 +186,11 @@ fn render_body(state: &AppState, modal: Rect, frame: &mut Frame) -> Vec<Rect> {
             state,
             &run,
             preview::Progress::Menu,
-            state.animation_ms,
+            if state.decorative_animations {
+                state.animation_ms
+            } else {
+                0
+            },
             area.width,
             area.height.saturating_sub(reserved),
         );
@@ -262,7 +268,11 @@ fn render_running(
             // No progress reported yet means the first step is the one running,
             // which is what the step list beside it shows too.
             preview::Progress::Step(job.current_step.unwrap_or(0)),
-            state.animation_ms,
+            if state.decorative_animations {
+                state.animation_ms
+            } else {
+                0
+            },
             area.width,
             // Nothing shares this pane with the diagram, so all of it but a
             // row for the caption to wrap into is the diagram's.
@@ -542,6 +552,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
 }
 
 fn warning_for(state: &AppState, action: FlowAction) -> Line<'static> {
+    let configured_base = crate::preferences::base_branch();
     let target = action
         .release_env()
         .and_then(|env| state.release_branch(env))
@@ -561,7 +572,7 @@ fn warning_for(state: &AppState, action: FlowAction) -> Line<'static> {
             Style::default().fg(Color::Red),
         )),
         FlowAction::ReleaseDev | FlowAction::ReleaseTest => Line::from(format!(
-            "Pushes current branch, syncs {target}, merges origin/{BRANCH_MAIN}, merges current, pushes HEAD to {target}, then returns."
+            "Pushes current branch, syncs {target}, merges origin/{configured_base}, merges current, pushes HEAD to {target}, then returns."
         )),
         FlowAction::MergeMain => Line::from(
             "Stashes local changes, updates main from origin/main, returns, merges origin/main, pushes current, then restores.",

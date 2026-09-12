@@ -1,13 +1,13 @@
 pub(super) fn infer_entry_symbol(path: &str, line: usize, hunk: &str) -> String {
-    if path.ends_with(".rs") {
-        if let Some(symbol) = infer_rust_symbol(path, line) {
-            return symbol;
-        }
+    if path.ends_with(".rs")
+        && let Some(symbol) = infer_rust_symbol(path, line)
+    {
+        return symbol;
     }
-    if matches_kotlin_path(path) {
-        if let Some(symbol) = infer_kotlin_symbol(path, line) {
-            return symbol;
-        }
+    if matches_kotlin_path(path)
+        && let Some(symbol) = infer_kotlin_symbol(path, line)
+    {
+        return symbol;
     }
     if matches_csharp_path(path)
         && let Some(symbol) = infer_source_symbol(path, line, csharp_item_label)

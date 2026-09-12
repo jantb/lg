@@ -87,9 +87,17 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     };
 
     let body_area = regions.editor;
+    let author = state.commit_author.as_str();
+    let title_text = if author.is_empty() {
+        title_text
+    } else {
+        format!("{title_text} · {author}")
+    };
     ui::modal_frame(frame, modal, &title_text);
     ui::draw_dividers(frame, &regions.dividers);
-    if let Some(generation) = &state.generation {
+    if let Some(generation) = &state.generation
+        && state.decorative_animations
+    {
         // While the model works the box is a stage: the language's mascot
         // feeding the diff into a network. Before the first token it has the
         // whole box; as the message streams in, the text takes the rows it
@@ -240,7 +248,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     };
     frame.render_widget(List::new(items), regions.staged);
     ui::section_title(frame, regions.staged, &title);
-    ui::animate_modal_border(state.animation_ms, modal, &regions.dividers, frame);
+    if state.decorative_animations {
+        ui::animate_modal_border(state.animation_ms, modal, &regions.dividers, frame);
+    }
 }
 
 /// The staged-files pane of the commit modal.

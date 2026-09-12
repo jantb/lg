@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::config::{COMMIT_LIST_LIMIT, DEFAULT_PUSH_REMOTE};
+use crate::config::COMMIT_LIST_LIMIT;
 use crate::state::{
     AppState, CheckoutJob, CheckoutMsg, DiffSource, Modal, OperationJob, OperationKind,
     OperationMsg, Pane, PushJob, PushMsg, TreeKind,
@@ -129,6 +129,7 @@ fn load_new_file_text(source: &DiffSource) -> String {
 }
 
 pub(super) fn spawn_push(state: &mut AppState) {
+    let configured_remote = crate::preferences::remote();
     if git_job_running(state) {
         return;
     }
@@ -142,7 +143,7 @@ pub(super) fn spawn_push(state: &mut AppState) {
         return;
     }
     let branch = state.branch.clone().unwrap_or_default();
-    let remote = DEFAULT_PUSH_REMOTE.to_string();
+    let remote = configured_remote.as_str().to_string();
     let (tx, rx) = std::sync::mpsc::channel();
     let tbranch = branch.clone();
     let tremote = remote.clone();
@@ -170,6 +171,7 @@ pub(super) fn spawn_push(state: &mut AppState) {
 }
 
 pub(super) fn spawn_pull(state: &mut AppState) {
+    let configured_remote = crate::preferences::remote();
     if git_job_running(state) {
         return;
     }
@@ -179,7 +181,7 @@ pub(super) fn spawn_pull(state: &mut AppState) {
     }
     let branch = state.branch.clone().unwrap_or_default();
     spawn_operation(state, "pulling", OperationKind::WorkingTree, move || {
-        let out = crate::git::pull(DEFAULT_PUSH_REMOTE, &branch)?;
+        let out = crate::git::pull(configured_remote.as_str(), &branch)?;
         Ok(out
             .lines()
             .rfind(|line| !line.trim().is_empty())
@@ -273,6 +275,7 @@ pub(crate) fn suggest_repo_settings_if_unset(state: &mut AppState) {
 
 /// Mirrors the stored per-checkout settings into the editable modal fields.
 pub(crate) fn load_repo_settings_into_state(state: &mut AppState) {
+    state.decorative_animations = crate::preferences::animations_enabled();
     let settings = crate::settings::load();
     state.settings_prompt_is_custom = settings.commit_prompt_is_custom();
     state.settings_review_style_is_custom = settings.review_style_is_custom();

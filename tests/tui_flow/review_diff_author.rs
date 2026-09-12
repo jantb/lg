@@ -156,7 +156,7 @@ fn review_footer_shows_flag_shortcut_in_review_mode() {
 }
 
 #[test]
-fn author_modal_saves_subtree_rule_from_fields() {
+fn author_modal_saves_repository_identity_by_default() {
     let mut state = AppState::new();
     state.modal = Modal::Author;
     state.author_path_input = "/tmp/example-work".into();
@@ -168,8 +168,7 @@ fn author_modal_saves_subtree_rule_from_fields() {
 
     assert_eq!(
         state.pending_action,
-        Some(PendingAction::SaveSubtreeAuthor {
-            path: "/tmp/example-work".into(),
+        Some(PendingAction::SaveAuthor {
             name: "Example User".into(),
             email: "example@example.com".into(),
         })
