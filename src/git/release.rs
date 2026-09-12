@@ -179,18 +179,7 @@ pub fn branch_release_status(branch: &str) -> Result<BranchReleaseStatus> {
 pub fn release_branches() -> ReleaseBranches {
     let loaded = crate::preferences::load();
     if loaded.sources.contains_key("branches") {
-        let branch = |id: &str| {
-            loaded
-                .config
-                .branches
-                .environments
-                .iter()
-                .find(|e| e.id == id && !e.branch.is_empty())
-                .map(|e| e.branch.clone())
-        };
-        let mut branches = ReleaseBranches::new(branch("dev"), branch("test"));
-        branches.configured = true;
-        return branches;
+        return configured_release_branches(&loaded.config.branches.environments);
     }
     ReleaseBranches::new(
         DEV_BRANCH_NAMES
@@ -199,6 +188,34 @@ pub fn release_branches() -> ReleaseBranches {
             .map(str::to_string),
         release_branch_ref(Some(BRANCH_TEST)).map(|_| BRANCH_TEST.to_string()),
     )
+}
+
+/// The release slots of a configured environment list. An environment named
+/// `dev` or `test` takes its slot; otherwise the slots fill in the order the
+/// environments are listed, so a repository whose staging environment is
+/// called something else still gets its release actions.
+pub fn configured_release_branches(
+    environments: &[crate::preferences::Environment],
+) -> ReleaseBranches {
+    let with_branch: Vec<_> = environments
+        .iter()
+        .filter(|e| !e.branch.is_empty())
+        .collect();
+    let by_id = |id: &str| with_branch.iter().find(|e| e.id == id).copied();
+    let named_dev = by_id("dev");
+    let named_test = by_id("test");
+    let mut rest = with_branch
+        .iter()
+        .copied()
+        .filter(|e| Some(*e) != named_dev && Some(*e) != named_test);
+    let dev = named_dev.or_else(|| rest.next());
+    let test = named_test.or_else(|| rest.next());
+    let mut branches = ReleaseBranches::new(
+        dev.map(|e| e.branch.clone()),
+        test.map(|e| e.branch.clone()),
+    );
+    branches.configured = true;
+    branches
 }
 
 /// The ref to compare against for a deploy branch, preferring the remote so an
@@ -268,4 +285,44 @@ fn commit_date(commit: &str) -> Result<String> {
         commit,
     ])?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::preferences::Environment;
+
+    fn env(id: &str, branch: &str) -> Environment {
+        Environment {
+            id: id.into(),
+            branch: branch.into(),
+            ..Environment::default()
+        }
+    }
+
+    #[test]
+    fn environments_named_dev_and_test_take_their_slots() {
+        let branches = configured_release_branches(&[env("test", "qa"), env("dev", "develop")]);
+        assert_eq!(branches.branch(ReleaseEnv::Dev), Some("develop"));
+        assert_eq!(branches.branch(ReleaseEnv::Test), Some("qa"));
+    }
+
+    #[test]
+    fn otherwise_environments_fill_the_slots_in_listed_order() {
+        let branches =
+            configured_release_branches(&[env("staging", "staging"), env("preprod", "release")]);
+        assert_eq!(branches.branch(ReleaseEnv::Dev), Some("staging"));
+        assert_eq!(branches.branch(ReleaseEnv::Test), Some("release"));
+        assert!(branches.configured);
+    }
+
+    #[test]
+    fn a_named_slot_is_kept_while_the_other_falls_back() {
+        let branches =
+            configured_release_branches(&[env("staging", "staging"), env("test", "test")]);
+        assert_eq!(branches.branch(ReleaseEnv::Dev), Some("staging"));
+        assert_eq!(branches.branch(ReleaseEnv::Test), Some("test"));
+        let empty = configured_release_branches(&[env("staging", "")]);
+        assert!(!empty.any());
+    }
 }

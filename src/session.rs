@@ -570,7 +570,7 @@ impl Sessions {
                 self.start_with(spec, &spawn, size)
             }
             SessionKind::Terminal => {
-                let spawn = shell_spawn(&spec.cwd, spec.sandboxed);
+                let spawn = shell_spawn(&spec.cwd);
                 self.start_with(spec, &spawn, size)
             }
         }
@@ -896,15 +896,15 @@ fn login_shell() -> String {
         .unwrap_or_else(|| FALLBACK_SHELL.to_string())
 }
 
-/// How to launch a shell in `cwd`. Sandboxed goes through terrarium exactly as
-/// a claude session does, so a terminal opened on a worktree is confined to the
-/// same checkout the claude session next to it is.
-pub fn shell_spawn(cwd: &Path, sandboxed: bool) -> Spawn {
-    // terrarium resolves the project path before looking up its profile, so the
-    // path handed to it has to be resolved too.
+/// How to launch a shell in `cwd`. A terminal is the user's own shell and is
+/// never put through terrarium: the sandbox is for agents, and a confined
+/// shell only blocks the work the user came to do by hand.
+pub fn shell_spawn(cwd: &Path) -> Spawn {
+    // Resolved the same way the agent sessions beside it are, so the shell
+    // opens in the checkout they show.
     let cwd = &crate::terrarium::resolve(cwd);
-    let (program, mut args) = confined(cwd, sandboxed, &login_shell());
-    args.extend(crate::preferences::load().config.tools.terminal_args);
+    let program = login_shell();
+    let args = crate::preferences::load().config.tools.terminal_args;
     Spawn {
         program,
         args,
@@ -1170,36 +1170,10 @@ mod tests {
         assert_eq!(sessions.for_dir(Path::new("/dev/lg")).count(), 4);
     }
 
-    /// The sandbox is what a worktree session is for, and it has to hold for a
-    /// shell as much as for claude — a terminal outside it could write into the
-    /// checkout next door.
     #[test]
-    fn a_sandboxed_terminal_runs_its_shell_through_terrarium() {
+    fn a_terminal_runs_the_users_shell_with_no_arguments() {
         temp_env("SHELL", "/bin/zsh", || {
-            let spawn = shell_spawn(Path::new("/dev/lg.worktrees/feat-x"), true);
-            assert_eq!(
-                spawn.program,
-                crate::terrarium::executable().to_string_lossy()
-            );
-            assert_eq!(
-                spawn.args,
-                [
-                    "sandbox",
-                    "run",
-                    "--project",
-                    "/dev/lg.worktrees/feat-x",
-                    "--",
-                    "/bin/zsh"
-                ]
-            );
-            assert_eq!(spawn.cwd, Path::new("/dev/lg.worktrees/feat-x"));
-        });
-    }
-
-    #[test]
-    fn an_unsandboxed_terminal_runs_the_users_shell_with_no_arguments() {
-        temp_env("SHELL", "/bin/zsh", || {
-            let spawn = shell_spawn(Path::new("/dev/lg"), false);
+            let spawn = shell_spawn(Path::new("/dev/lg"));
             assert_eq!(spawn.program, "/bin/zsh");
             assert!(spawn.args.is_empty(), "an interactive shell needs no flags");
             assert_eq!(spawn.cwd, Path::new("/dev/lg"));
@@ -1209,7 +1183,7 @@ mod tests {
     #[test]
     fn a_terminal_falls_back_to_a_shell_every_machine_has() {
         temp_env("SHELL", "", || {
-            assert_eq!(shell_spawn(Path::new("/dev/lg"), false).program, "/bin/sh");
+            assert_eq!(shell_spawn(Path::new("/dev/lg")).program, "/bin/sh");
         });
     }
 
@@ -1217,7 +1191,7 @@ mod tests {
     /// markers that would make that claude think it is nested.
     #[test]
     fn a_terminal_declares_a_terminal_and_drops_the_nested_claude_markers() {
-        let spawn = shell_spawn(Path::new("/dev/lg"), false);
+        let spawn = shell_spawn(Path::new("/dev/lg"));
         assert!(
             spawn
                 .env

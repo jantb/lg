@@ -89,13 +89,9 @@ impl AppState {
             self.agent_pick_idx = index;
         }
         for profile in &mut self.agent_profiles {
-            if !sandboxed {
-                profile.confinement = if ["claude", "codex"].contains(&profile.adapter.as_str()) {
-                    "agent"
-                } else {
-                    "direct"
-                }
-                .into();
+            if !sandboxed || profile.adapter == "terminal" {
+                profile.confinement =
+                    crate::preferences::default_confinement(&profile.adapter).into();
             }
         }
         self.modal = Modal::Agent;

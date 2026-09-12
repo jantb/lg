@@ -15,17 +15,17 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
         && matches!(action, FlowAction::ReleaseDev | FlowAction::ReleaseTest)
     {
         crate::panel::deployment::open(state);
-        let id = if action == FlowAction::ReleaseDev {
-            "dev"
-        } else {
-            "test"
-        };
+        // The slot's branch names the environment; ids other than dev and
+        // test still find theirs through the branch they deploy.
+        let branch = action
+            .release_env()
+            .and_then(|env| state.release_branch(env).map(str::to_string));
         state.environment_view.selected = crate::preferences::load()
             .config
             .branches
             .environments
             .iter()
-            .position(|e| e.id == id)
+            .position(|e| Some(&e.branch) == branch.as_ref())
             .unwrap_or(0);
         state.environment_view.notice =
             "Enter previews the configured promotion path and method.".into();

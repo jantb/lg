@@ -1027,8 +1027,10 @@ fn started_agent(state: &AppState) -> Option<(String, String, SessionKind, bool)
     }
 }
 
+/// An agent runs under its own permission harness unless the sandbox is asked
+/// for; the terminal never is.
 #[test]
-fn s_asks_for_a_sandboxed_session_in_the_selected_worktree() {
+fn s_asks_for_a_session_under_the_agents_own_harness_in_the_selected_worktree() {
     let mut state = AppState::new();
     state.workspace_root = Some("/workspace".into());
     state.repo_root = Some("/workspace".into());
@@ -1050,11 +1052,11 @@ fn s_asks_for_a_sandboxed_session_in_the_selected_worktree() {
             "/workspace.worktrees/feat-x".into(),
             "feat/x".into(),
             SessionKind::Claude,
-            true,
+            false,
         ))
     );
 
-    // Space in the picker asks for the same agent without the sandbox.
+    // Space in the picker asks for the same agent inside the Terrarium sandbox.
     state.pending_action = None;
     panel::environments::handle_key(&mut state, key(KeyCode::Char('s'))).unwrap();
     panel::agent::handle_key(&mut state, key(KeyCode::Char(' '))).unwrap();
@@ -1065,7 +1067,7 @@ fn s_asks_for_a_sandboxed_session_in_the_selected_worktree() {
             "/workspace.worktrees/feat-x".into(),
             "feat/x".into(),
             SessionKind::Claude,
-            false,
+            true,
         ))
     );
 }
@@ -1089,15 +1091,15 @@ fn each_agent_starts_in_the_checkout_the_picker_was_opened_on() {
 
         assert_eq!(
             started_agent(&state),
-            Some(("/workspace".into(), "main".into(), expected, true)),
+            Some(("/workspace".into(), "main".into(), expected, false)),
             "{pressed} should start {}",
             expected.label()
         );
     }
 }
 
-/// The terminal keys are the session keys with a different program on the end:
-/// same checkout, same sandbox choice, same shift for going without it.
+/// The terminal key is the session key with a different program on the end:
+/// same checkout, and never a sandbox, from the key or the menu alike.
 #[test]
 fn t_asks_for_a_terminal_in_the_selected_worktree() {
     let mut state = AppState::new();
@@ -1119,14 +1121,14 @@ fn t_asks_for_a_terminal_in_the_selected_worktree() {
         Some(PendingAction::StartSession {
             path: "/workspace.worktrees/feat-x".into(),
             label: "feat/x".into(),
-            sandboxed: true,
+            sandboxed: false,
             kind: SessionKind::Terminal,
             prompt: None,
         })
     );
 
     state.pending_action = None;
-    menu::run(&mut state, RepoAction::TerminalNoSandbox);
+    menu::run(&mut state, RepoAction::Terminal);
     assert_eq!(
         state.pending_action,
         Some(PendingAction::StartSession {
@@ -1155,7 +1157,7 @@ fn a_session_on_the_root_row_uses_the_checked_out_branch_as_its_name() {
             "/workspace".into(),
             "main".into(),
             SessionKind::Claude,
-            true
+            false
         ))
     );
 }
@@ -2226,7 +2228,10 @@ fn c_hands_the_conflict_to_a_claude_session_in_the_checkout() {
     };
     assert_eq!(path, "/workspace/alv-no");
     assert_eq!(label, "feature/send-cv");
-    assert!(sandboxed, "c is the sandboxed one, as elsewhere in lg");
+    assert!(
+        !sandboxed,
+        "c runs the agent under its own harness, as elsewhere in lg; C sandboxes it"
+    );
     assert_eq!(kind, SessionKind::Claude);
 
     let prompt = prompt.expect("the session should open on the conflict");
@@ -2246,14 +2251,14 @@ fn c_hands_the_conflict_to_a_claude_session_in_the_checkout() {
         "the modal steps aside so the session can be seen"
     );
 
-    // Shift is the unsandboxed one, matching s/S on the checkout rows.
+    // Shift is the Terrarium-sandboxed one.
     state.pending_action = None;
     state.modal = Modal::Conflict;
     panel::conflict::handle_key(&mut state, key(KeyCode::Char('C'))).unwrap();
     let Some(PendingAction::StartSession { sandboxed, .. }) = state.pending_action.clone() else {
         panic!("C should ask for a session too");
     };
-    assert!(!sandboxed);
+    assert!(sandboxed);
 }
 
 /// Leaving the modal — to resolve the conflict in a session, or by mistake —

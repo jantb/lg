@@ -118,7 +118,7 @@ fn agent_line(kind: SessionKind, sandboxed: bool) -> Line<'static> {
     let confinement = if sandboxed {
         "Terrarium sandbox"
     } else {
-        "no sandbox"
+        "agent's own sandbox"
     };
     Line::from(vec![
         Span::styled(
@@ -254,14 +254,11 @@ fn toggle_sandbox(state: &mut AppState) {
     state.agent_pick_sandboxed = !state.agent_pick_sandboxed;
     let sandboxed = state.agent_pick_sandboxed;
     for profile in &mut state.agent_profiles {
-        profile.confinement = if sandboxed {
-            "terrarium"
-        } else if ["claude", "codex"].contains(&profile.adapter.as_str()) {
-            "agent"
+        profile.confinement = if sandboxed && profile.adapter != "terminal" {
+            "terrarium".into()
         } else {
-            "direct"
-        }
-        .into();
+            crate::preferences::default_confinement(&profile.adapter).into()
+        };
     }
 }
 

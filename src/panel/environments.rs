@@ -125,8 +125,8 @@ pub fn handle_key(
         }
         KeyCode::Char(' ') => menu::open(state),
         KeyCode::Char('n') => open_new_worktree_form(state),
-        KeyCode::Char('s') => state.open_agent_picker(true),
-        KeyCode::Char('t') => start_session_for_selection(state, SessionKind::Terminal, true),
+        KeyCode::Char('s') => state.open_agent_picker(false),
+        KeyCode::Char('t') => start_session_for_selection(state, SessionKind::Terminal, false),
         KeyCode::Char('x') => close_selected_session(state),
         KeyCode::Char('r') if state.nested_repo_detail_path.is_some() => {
             toggle_remote_branches(state)

@@ -75,13 +75,26 @@ fn ensure_target_matches_remote(target_branch: &str) -> Result<()> {
     )
 }
 
-fn release_environment(target_branch: &str) -> &str {
+/// What the deploy branch is called as an environment: the configured
+/// environment fed by that branch, or the built-in spelling.
+fn release_environment(target_branch: &str) -> String {
+    let loaded = crate::preferences::load();
+    if loaded.sources.contains_key("branches")
+        && let Some(env) = loaded
+            .config
+            .branches
+            .environments
+            .iter()
+            .find(|e| e.branch == target_branch)
+    {
+        return env.id.clone();
+    }
     if DEV_BRANCH_NAMES.contains(&target_branch) {
-        "dev"
+        "dev".into()
     } else if target_branch == BRANCH_TEST {
-        "test"
+        "test".into()
     } else {
-        target_branch
+        target_branch.into()
     }
 }
 

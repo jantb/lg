@@ -475,7 +475,7 @@ impl App {
                 profile,
             } => {
                 let cwd = PathBuf::from(&path);
-                let sandboxed = profile.confinement == "terrarium";
+                let sandboxed = profile.sandboxed();
                 let result = (|| {
                     if sandboxed {
                         prepare_sandbox(&cwd)?;
@@ -511,6 +511,8 @@ impl App {
                 prompt,
             } => {
                 let cwd = PathBuf::from(&path);
+                // A terminal is the user's own shell and is never confined.
+                let sandboxed = sandboxed && kind != crate::session::SessionKind::Terminal;
                 if sandboxed {
                     match prepare_sandbox(&cwd) {
                         Ok(Some(note)) => self.state.set_status(note, false),

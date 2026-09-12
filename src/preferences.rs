@@ -70,9 +70,26 @@ impl Default for Agent {
             executable: String::new(),
             args: vec![],
             model: String::new(),
-            confinement: "terrarium".into(),
+            confinement: default_confinement("terminal").into(),
             default: false,
         }
+    }
+}
+impl Agent {
+    /// Whether lg wraps the process in the Terrarium sandbox. A terminal is
+    /// never wrapped: it is the user's own shell, and confining it only gets
+    /// in the way of the work done there by hand.
+    pub fn sandboxed(&self) -> bool {
+        self.confinement == "terrarium" && self.adapter != "terminal"
+    }
+}
+/// The confinement an adapter starts out with: coding agents bring their own
+/// permission harness and run under it, anything else runs unconfined.
+pub fn default_confinement(adapter: &str) -> &'static str {
+    if ["claude", "codex"].contains(&adapter) {
+        "agent"
+    } else {
+        "direct"
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -189,6 +206,7 @@ impl Default for Preferences {
                     adapter: name.into(),
                     executable: name.into(),
                     default: name == "claude",
+                    confinement: default_confinement(name).into(),
                     ..Agent::default()
                 })
                 .collect(),

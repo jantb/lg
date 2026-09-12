@@ -112,6 +112,6 @@ impl App {
             ),
             false,
         );
-        super::super::start_conflict_session(&mut self.state, true);
+        super::super::start_conflict_session(&mut self.state, false);
     }
 }

@@ -302,8 +302,8 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char('l') | KeyCode::Char('L') => app::spawn_conflict_resolve(state),
-        KeyCode::Char('c') => app::start_conflict_session(state, true),
-        KeyCode::Char('C') => app::start_conflict_session(state, false),
+        KeyCode::Char('c') => app::start_conflict_session(state, false),
+        KeyCode::Char('C') => app::start_conflict_session(state, true),
         KeyCode::Char('v') | KeyCode::Char('V') => app::validate_conflict_resolution(state),
         KeyCode::Char('a') | KeyCode::Char('A') => app::abort_conflict_operation(state),
         KeyCode::Esc => {

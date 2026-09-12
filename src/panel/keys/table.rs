@@ -226,7 +226,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "t",
-                help: "Start or show a sandboxed terminal here",
+                help: "Start or show a terminal here",
                 footer: Some(("t", "terminal")),
             },
             Binding {
@@ -745,7 +745,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "Space",
-                help: "Sandbox on or off for the agent started next",
+                help: "Terrarium sandbox for the agent started next",
                 footer: Some(("Space", "sandbox")),
             },
             Binding {
@@ -856,12 +856,12 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "c",
-                help: "Hand it to a sandboxed agent here",
+                help: "Hand it to an agent here (its own harness)",
                 footer: Some(("c", "agent")),
             },
             Binding {
                 key: "C",
-                help: "The same, without the sandbox",
+                help: "The same, inside the Terrarium sandbox",
                 footer: None,
             },
             Binding {

@@ -38,7 +38,6 @@ pub enum RepoAction {
     Activate,
     StartAgent,
     Terminal,
-    TerminalNoSandbox,
     NewWorktree,
     CloseSession,
     LandWorktree,
@@ -91,7 +90,6 @@ pub fn available(state: &AppState) -> Vec<RepoAction> {
         actions.extend([
             RepoAction::StartAgent,
             RepoAction::Terminal,
-            RepoAction::TerminalNoSandbox,
             RepoAction::NewWorktree,
         ]);
     }
@@ -127,8 +125,7 @@ fn label(state: &AppState, action: RepoAction) -> String {
             _ => "Expand".into(),
         },
         RepoAction::StartAgent => "Start an agent here…".into(),
-        RepoAction::Terminal => "Open a terminal here (Terrarium sandbox)".into(),
-        RepoAction::TerminalNoSandbox => "Open a terminal here, no sandbox".into(),
+        RepoAction::Terminal => "Open a terminal here".into(),
         RepoAction::NewWorktree => "New worktree…".into(),
         RepoAction::CloseSession => "Close session".into(),
         RepoAction::LandWorktree => "Land worktree: merge into main and clean up".into(),
@@ -160,11 +157,8 @@ pub fn run(state: &mut AppState, action: RepoAction) {
         RepoAction::Activate => {
             let _ = super::handle_key(state, KeyEvent::from(KeyCode::Enter));
         }
-        RepoAction::StartAgent => state.open_agent_picker(true),
-        RepoAction::Terminal => start_session_for_selection(state, SessionKind::Terminal, true),
-        RepoAction::TerminalNoSandbox => {
-            start_session_for_selection(state, SessionKind::Terminal, false)
-        }
+        RepoAction::StartAgent => state.open_agent_picker(false),
+        RepoAction::Terminal => start_session_for_selection(state, SessionKind::Terminal, false),
         RepoAction::NewWorktree => open_new_worktree_form(state),
         RepoAction::CloseSession => close_selected_session(state),
         RepoAction::LandWorktree => land_selected_worktree(state),

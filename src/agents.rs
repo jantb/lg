@@ -46,7 +46,11 @@ pub fn describe(agent: &Agent) -> String {
         resolve(&agent.executable)
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| format!("{} not installed", agent.executable)),
-        confinement_label(&agent.confinement),
+        if agent.adapter == "terminal" {
+            confinement_label("direct")
+        } else {
+            confinement_label(&agent.confinement)
+        },
         capabilities(agent)
     )
 }
@@ -63,12 +67,12 @@ pub fn spawn(
             agent.executable
         )
     })?;
-    let sandboxed = agent.confinement == "terrarium";
+    let sandboxed = agent.sandboxed();
     let mut spawn = match kind(agent) {
         SessionKind::Claude => crate::session::claude_spawn(cwd, sandboxed, hooks, None),
         SessionKind::Codex => crate::session::codex_spawn(cwd, sandboxed, None),
         SessionKind::Pi => crate::session::pi_spawn(cwd, sandboxed, None),
-        SessionKind::Terminal => crate::session::shell_spawn(cwd, sandboxed),
+        SessionKind::Terminal => crate::session::shell_spawn(cwd),
     };
     if sandboxed {
         let index = spawn

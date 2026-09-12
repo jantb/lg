@@ -54,11 +54,19 @@ const HINT_KEY: Color = palette::LANE_TEST;
 const OK: Color = palette::LANE_FEATURE;
 const BAD: Color = palette::LANE_LOST;
 
+/// Which pane the arrow keys move: the category list or its fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Categories,
+    Fields,
+}
+
 #[derive(Debug)]
 pub struct Settings {
     pub category: usize,
     pub scope: Scope,
     pub selected: usize,
+    pub focus: Focus,
     pub draft: Value,
     original: Value,
     pub editing: bool,
@@ -72,6 +80,13 @@ pub struct Settings {
     folder: String,
     editing_folder: bool,
     cursor: usize,
+    /// Local branch names, offered when a field names a branch.
+    branches: Vec<String>,
+    /// The highlighted branch in the picker, an index into `choices`.
+    choice: Option<usize>,
+    /// Whether the picker's text has been typed rather than carried over from
+    /// the field; only typed text narrows the list.
+    typed: bool,
     /// First list line in view. Set while drawing, so the frame that moved
     /// the selection is the frame that scrolls to it, and read back when a
     /// click has to be mapped onto a row.
@@ -84,6 +99,7 @@ impl Default for Settings {
             category: 0,
             scope: Scope::Repository,
             selected: 0,
+            focus: Focus::Fields,
             draft: json!({}),
             original: json!({}),
             editing: false,
@@ -98,6 +114,9 @@ impl Default for Settings {
             editing_folder: false,
             diagnostics: None,
             cursor: 0,
+            branches: Vec::new(),
+            choice: None,
+            typed: false,
             scroll: Cell::new(0),
         }
     }
@@ -150,6 +169,7 @@ pub fn open(state: &mut AppState, category: usize) {
         ..Settings::default()
     };
     state.settings_hub.folder = preferences::default_folder().display().to_string();
+    state.settings_hub.branches = local_branches(state);
     state.settings_hub.reload();
     load_sessions(state);
     state.modal = Modal::Settings;
@@ -187,12 +207,70 @@ fn move_selection(state: &mut AppState, down: bool, steps: usize) {
         hub.selected.saturating_sub(steps)
     };
 }
-fn start_edit(hub: &mut Settings) {
-    if let Some(f) = fields(hub).get(hub.selected) {
-        hub.input = display(&f.value);
-        hub.cursor = hub.input.chars().count();
-        hub.editing = true;
+fn local_branches(state: &AppState) -> Vec<String> {
+    state.branches.iter().map(|b| b.name.clone()).collect()
+}
+/// Whether the field names a branch of this repository: the integration
+/// branch or the branch an environment deploys.
+fn names_branch(hub: &Settings, field: &Field) -> bool {
+    hub.key() == "branches"
+        && (field.path == "/base"
+            || (field.path.starts_with("/environments/") && field.key == "branch"))
+}
+/// The local branches matching what has been typed so far; all of them
+/// while the text is still the field's own value.
+fn choices(hub: &Settings) -> Vec<String> {
+    let query = if hub.typed {
+        hub.input.to_lowercase()
+    } else {
+        String::new()
+    };
+    hub.branches
+        .iter()
+        .filter(|b| b.to_lowercase().contains(&query))
+        .cloned()
+        .collect()
+}
+/// Whether the field being edited offers the branch picker.
+fn picking_branch(hub: &Settings) -> bool {
+    !hub.editing_folder
+        && fields(hub)
+            .get(hub.selected)
+            .is_some_and(|f| names_branch(hub, f))
+}
+fn move_choice(hub: &mut Settings, down: bool) {
+    let count = choices(hub).len();
+    if count == 0 {
+        hub.choice = None;
+        return;
     }
+    hub.choice = Some(match (hub.choice, down) {
+        (None, true) => 0,
+        (None, false) => count - 1,
+        (Some(i), true) => (i + 1) % count,
+        (Some(i), false) => (i + count - 1) % count,
+    });
+}
+/// Opens the selected field: a boolean flips in place, anything else gets
+/// the text editor.
+fn start_edit(hub: &mut Settings) {
+    let Some(f) = fields(hub).get(hub.selected).cloned() else {
+        return;
+    };
+    if let Value::Bool(current) = f.value {
+        if let Some(slot) = hub.draft.pointer_mut(&f.path) {
+            *slot = Value::Bool(!current);
+        }
+        return;
+    }
+    hub.input = display(&f.value);
+    hub.cursor = hub.input.chars().count();
+    hub.choice = None;
+    hub.typed = false;
+    if names_branch(hub, &f) {
+        hub.choice = hub.branches.iter().position(|b| *b == hub.input);
+    }
+    hub.editing = true;
 }
 
 /// One editable leaf of the category's value tree.
@@ -366,7 +444,7 @@ fn describe(category: &str, field: &Field) -> Option<&'static str> {
             "Model the agent is asked to use. Empty leaves the agent's own default."
         }
         ("agents", _, "confinement") => {
-            "terrarium runs it in the sandbox profile, agent trusts the agent's own sandbox, direct runs it unconfined."
+            "terrarium runs it in the sandbox profile, agent trusts the agent's own harness (the default for claude and codex), direct runs it unconfined. A terminal is never sandboxed."
         }
         ("agents", _, "default") => {
             "The agent a new session starts with when none is chosen. One agent should be true."
@@ -605,8 +683,11 @@ fn commit_edit(hub: &mut Settings) -> Result<()> {
         .get(hub.selected)
         .cloned()
         .context("select a field")?;
+    let picked = names_branch(hub, &field)
+        .then(|| hub.choice.and_then(|i| choices(hub).get(i).cloned()))
+        .flatten();
     let value = match field.value {
-        Value::String(_) => Value::String(hub.input.clone()),
+        Value::String(_) => Value::String(picked.clone().unwrap_or_else(|| hub.input.clone())),
         Value::Bool(_) => Value::Bool(hub.input.parse().context("use true or false")?),
         Value::Number(_) => Value::from(
             hub.input
@@ -618,9 +699,53 @@ fn commit_edit(hub: &mut Settings) -> Result<()> {
     };
     *hub.draft
         .pointer_mut(&field.path)
-        .context("field no longer exists")? = value;
+        .context("field no longer exists")? = value.clone();
     hub.editing = false;
+    if let (Some(id), Value::String(branch)) = (environment_id(hub, &field), &value)
+        && !branch.is_empty()
+    {
+        wire_environment(hub, &id, branch);
+    }
     Ok(())
+}
+/// The id of the environment whose branch field this is.
+fn environment_id(hub: &Settings, field: &Field) -> Option<String> {
+    if !(hub.key() == "branches"
+        && field.path.starts_with("/environments/")
+        && field.key == "branch")
+    {
+        return None;
+    }
+    let parent = field.path.rsplit_once('/')?.0;
+    hub.draft
+        .pointer(&format!("{parent}/id"))?
+        .as_str()
+        .map(str::to_string)
+}
+/// Makes a newly assigned environment branch a release target: protected
+/// from feature-branch actions, and reachable by a feature promotion, so the
+/// flow actions work without further setup.
+fn wire_environment(hub: &mut Settings, id: &str, branch: &str) {
+    let mut added = Vec::new();
+    if let Some(protected) = hub.draft["protected"].as_array_mut()
+        && !protected.iter().any(|p| p.as_str() == Some(branch))
+    {
+        protected.push(Value::String(branch.into()));
+        added.push(format!("protected {branch}"));
+    }
+    if let Some(promotions) = hub.draft["promotions"].as_array_mut()
+        && !promotions.iter().any(|p| p["to"].as_str() == Some(id))
+        && let Ok(rule) = serde_json::to_value(preferences::Promotion {
+            to: id.into(),
+            ..preferences::Promotion::default()
+        })
+    {
+        promotions.push(rule);
+        added.push(format!("promotion feature \u{2192} {id}"));
+    }
+    if !added.is_empty() {
+        hub.notice = format!("Added {}.", added.join(" and "));
+    }
 }
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
@@ -686,7 +811,7 @@ fn render_header(hub: &Settings, area: Rect, frame: &mut Frame) {
         ])
     } else {
         Line::from(muted(
-            "Click a category or a field \u{b7} Tab switches category \u{b7} / filters fields",
+            "\u{2190}/\u{2192} switch pane \u{b7} Tab switches category \u{b7} / filters fields",
         ))
     };
     let lines = vec![
@@ -706,8 +831,10 @@ fn render_categories(hub: &Settings, area: Rect, frame: &mut Frame) {
         .iter()
         .enumerate()
         .map(|(i, (_, name))| {
-            if i == hub.category {
+            if i == hub.category && hub.focus == Focus::Categories {
                 Line::from(vec![accent("\u{203a} "), accent(*name)]).style(palette::selection())
+            } else if i == hub.category {
+                Line::from(vec![accent("\u{203a} "), accent(*name)])
             } else {
                 Line::from(vec![Span::raw("  "), muted(*name)])
             }
@@ -768,7 +895,7 @@ fn render_fields(hub: &Settings, area: Rect, frame: &mut Frame) {
             let mut spans = vec![Span::raw(marker)];
             spans.extend(line.spans);
             let line = Line::from(spans);
-            if is_selected {
+            if is_selected && hub.focus == Focus::Fields {
                 line.style(palette::selection())
             } else {
                 line
@@ -788,6 +915,10 @@ fn render_editor(hub: &Settings, area: Rect, frame: &mut Frame) {
             .unwrap_or_else(|| "Editing".into())
     };
     ui::section_title(frame, area, &title);
+    if picking_branch(hub) {
+        render_branch_picker(hub, area, frame);
+        return;
+    }
     let (row, col) = cursor_position(&hub.input, hub.cursor, area.width.max(1) as usize);
     let scroll = row.saturating_sub(area.height.saturating_sub(1) as usize);
     frame.render_widget(
@@ -798,6 +929,38 @@ fn render_editor(hub: &Settings, area: Rect, frame: &mut Frame) {
     );
     if area.width > 0 && area.height > 0 {
         frame.set_cursor_position((area.x + col as u16, area.y + (row - scroll) as u16));
+    }
+}
+
+/// The typed name on the first line, and below it the local branches that
+/// contain it, with the highlighted one applied by Enter.
+fn render_branch_picker(hub: &Settings, area: Rect, frame: &mut Frame) {
+    let choices = choices(hub);
+    let mut lines = vec![Line::from(vec![
+        Span::raw(hub.input.clone()),
+        Span::styled("\u{258f}", Style::default().fg(palette::ACCENT)),
+        muted(if choices.is_empty() {
+            "   no local branch matches; Enter keeps the typed name"
+        } else {
+            "   \u{2191}/\u{2193} pick a local branch"
+        }),
+    ])];
+    let room = area.height.saturating_sub(1) as usize;
+    let first = hub
+        .choice
+        .map_or(0, |c| c.saturating_sub(room.saturating_sub(1)));
+    for (i, name) in choices.iter().enumerate().skip(first).take(room) {
+        let line = if hub.choice == Some(i) {
+            Line::from(vec![accent("\u{203a} "), accent(name.clone())]).style(palette::selection())
+        } else {
+            Line::from(vec![Span::raw("  "), Span::raw(name.clone())])
+        };
+        lines.push(line);
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+    if area.width > 0 && area.height > 0 {
+        let col = hub.input.chars().count().min(area.width as usize - 1) as u16;
+        frame.set_cursor_position((area.x + col, area.y));
     }
 }
 
@@ -814,7 +977,8 @@ fn render_detail(hub: &Settings, area: Rect, frame: &mut Frame) {
         return;
     };
     let kind = match field.value {
-        Value::Bool(_) => "true or false",
+        _ if names_branch(hub, field) => "a local branch; Enter opens the picker",
+        Value::Bool(_) => "true or false; Enter toggles",
         Value::Number(_) => "a whole number",
         Value::String(_) => "text; Shift-Enter adds a line",
         Value::Array(_) => "a JSON list, for example [\"--wait\"]",
@@ -973,7 +1137,15 @@ fn hint_line(keys: &[(&str, &str)]) -> Line<'static> {
 }
 fn render_footer(hub: &Settings, area: Rect, frame: &mut Frame) {
     let mut lines = Vec::new();
-    if hub.editing {
+    if hub.editing && picking_branch(hub) {
+        lines.push(hint_line(&[
+            ("\u{2191}/\u{2193}", "pick branch"),
+            ("Enter", "apply"),
+            ("Ctrl-U", "clear"),
+            ("Ctrl-S", "apply and save"),
+            ("Esc", "cancel"),
+        ]));
+    } else if hub.editing {
         lines.push(hint_line(&[
             ("Enter", "apply"),
             ("Shift-Enter", "newline"),
@@ -984,9 +1156,9 @@ fn render_footer(hub: &Settings, area: Rect, frame: &mut Frame) {
     } else {
         let (extra, note) = category_keys(hub.key());
         let mut keys = vec![
-            ("Tab", "category"),
-            ("j/k", "field"),
-            ("Enter", "edit"),
+            ("\u{2190}/\u{2192}", "pane"),
+            ("j/k", "move"),
+            ("Enter", "edit / toggle"),
             ("Ctrl-S", "save"),
             ("s", "scope"),
             ("f", "folder"),
@@ -1025,8 +1197,11 @@ pub fn handle_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) {
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) if r.categories.contains(at) => {
             let index = usize::from(m.row - r.categories.y);
-            if index < CATEGORIES.len() && index != state.settings_hub.category {
-                switch_category(state, index);
+            if index < CATEGORIES.len() {
+                state.settings_hub.focus = Focus::Categories;
+                if index != state.settings_hub.category {
+                    switch_category(state, index);
+                }
             }
         }
         MouseEventKind::Down(MouseButton::Left) if r.fields.contains(at) => {
@@ -1044,6 +1219,7 @@ pub fn handle_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) {
             );
             let index = hub.scroll.get() + usize::from(m.row - r.fields.y);
             if let Some((_, Some(field))) = lines.get(index) {
+                hub.focus = Focus::Fields;
                 if *field == hub.selected {
                     start_edit(hub);
                 } else {
@@ -1077,6 +1253,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
+    state.settings_hub.branches = local_branches(state);
     let hub = &mut state.settings_hub;
     hub.notice_error = false;
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -1093,8 +1270,13 @@ fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
     if hub.editing && !(ctrl && key.code == KeyCode::Char('s')) {
+        let picking = picking_branch(hub);
         match key.code {
             KeyCode::Esc => hub.editing = false,
+            KeyCode::Down | KeyCode::Up if picking => {
+                move_choice(hub, key.code == KeyCode::Down);
+                return Ok(());
+            }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => insert(hub, "\n"),
             KeyCode::Enter => commit_edit(hub)?,
             KeyCode::Backspace if hub.cursor > 0 => {
@@ -1102,11 +1284,15 @@ fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 chars.remove(hub.cursor - 1);
                 hub.cursor -= 1;
                 hub.input = chars.into_iter().collect();
+                hub.choice = None;
+                hub.typed = true;
             }
             KeyCode::Delete if hub.cursor < hub.input.chars().count() => {
                 let mut chars: Vec<_> = hub.input.chars().collect();
                 chars.remove(hub.cursor);
                 hub.input = chars.into_iter().collect();
+                hub.choice = None;
+                hub.typed = true;
             }
             KeyCode::Left => hub.cursor = hub.cursor.saturating_sub(1),
             KeyCode::Right => hub.cursor = (hub.cursor + 1).min(hub.input.chars().count()),
@@ -1115,8 +1301,20 @@ fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
             KeyCode::Char('u') if ctrl => {
                 hub.input.clear();
                 hub.cursor = 0;
+                hub.choice = None;
+                hub.typed = true;
             }
-            KeyCode::Char(c) if !ctrl => insert(hub, &c.to_string()),
+            KeyCode::Char(c) if !ctrl => {
+                // The carried-over branch name is a suggestion; typing
+                // replaces it rather than appending to it.
+                if picking && !hub.typed {
+                    hub.input.clear();
+                    hub.cursor = 0;
+                }
+                insert(hub, &c.to_string());
+                hub.choice = None;
+                hub.typed = true;
+            }
             _ => {}
         }
         return Ok(());
@@ -1156,6 +1354,17 @@ fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
             hub.notice = "Save or discard edits before changing category or scope.".into()
         }
         KeyCode::Char('/') => hub.searching = true,
+        KeyCode::Left => hub.focus = Focus::Categories,
+        KeyCode::Right => hub.focus = Focus::Fields,
+        KeyCode::Down | KeyCode::Char('j') if hub.focus == Focus::Categories => {
+            let next = hub.category + 1;
+            switch_category(state, next);
+        }
+        KeyCode::Up | KeyCode::Char('k') if hub.focus == Focus::Categories => {
+            let next = hub.category + CATEGORIES.len() - 1;
+            switch_category(state, next);
+        }
+        KeyCode::Enter if hub.focus == Focus::Categories => hub.focus = Focus::Fields,
         KeyCode::Down | KeyCode::Char('j') => move_selection(state, true, 1),
         KeyCode::Up | KeyCode::Char('k') => move_selection(state, false, 1),
         KeyCode::PageDown => move_selection(state, true, 10),
@@ -1407,7 +1616,14 @@ pub fn handle_paste(state: &mut AppState, text: &str) -> bool {
     if state.modal != Modal::Settings || !state.settings_hub.editing {
         return false;
     }
-    insert(&mut state.settings_hub, text);
+    let hub = &mut state.settings_hub;
+    if picking_branch(hub) && !hub.typed {
+        hub.input.clear();
+        hub.cursor = 0;
+    }
+    insert(hub, text);
+    hub.choice = None;
+    hub.typed = true;
     true
 }
 
@@ -1517,6 +1733,138 @@ mod tests {
             },
         );
         assert_eq!(state.settings_hub.key(), "agents");
+    }
+
+    fn press(state: &mut AppState, code: KeyCode) {
+        handle_key(state, KeyEvent::new(code, KeyModifiers::NONE)).unwrap();
+    }
+
+    #[test]
+    fn enter_on_a_boolean_flips_it_without_opening_the_editor() {
+        let mut state = branches_hub();
+        state.settings_hub.draft["flag"] = Value::Bool(false);
+        state.settings_hub.original = state.settings_hub.draft.clone();
+        state.settings_hub.selected = fields(&state.settings_hub)
+            .iter()
+            .position(|f| f.path == "/flag")
+            .unwrap();
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(state.settings_hub.draft["flag"], Value::Bool(true));
+        assert!(!state.settings_hub.editing);
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(state.settings_hub.draft["flag"], Value::Bool(false));
+    }
+
+    #[test]
+    fn left_arrow_moves_to_the_categories_and_up_down_switch_them() {
+        let mut state = branches_hub();
+        let before = state.settings_hub.key();
+        press(&mut state, KeyCode::Left);
+        press(&mut state, KeyCode::Down);
+        assert_ne!(state.settings_hub.key(), before);
+        press(&mut state, KeyCode::Up);
+        assert_eq!(state.settings_hub.key(), before);
+        // Back in the fields, Down moves the field selection, not the category.
+        press(&mut state, KeyCode::Right);
+        press(&mut state, KeyCode::Down);
+        assert_eq!(state.settings_hub.key(), before);
+        assert_eq!(state.settings_hub.selected, 1);
+    }
+
+    fn with_local_branches(state: &mut AppState, names: &[&str]) {
+        state.branches = names
+            .iter()
+            .map(|name| crate::git::Branch {
+                name: (*name).into(),
+                is_current: false,
+                upstream: None,
+                upstream_gone: false,
+                ahead: 0,
+                behind: 0,
+                behind_main: 0,
+                last_commit_unix: None,
+            })
+            .collect();
+    }
+
+    fn select(state: &mut AppState, path: &str) {
+        state.settings_hub.selected = fields(&state.settings_hub)
+            .iter()
+            .position(|f| f.path == path)
+            .unwrap();
+    }
+
+    #[test]
+    fn an_environment_branch_is_picked_from_the_local_branches() {
+        let mut state = branches_hub();
+        with_local_branches(&mut state, &["main", "staging", "feature/x"]);
+        select(&mut state, "/environments/1/branch");
+        press(&mut state, KeyCode::Enter);
+        assert!(state.settings_hub.editing);
+        let screen = text(&drawn(&state, Rect::new(0, 0, 120, 40)));
+        assert!(screen.contains("staging"), "{screen}");
+        for c in "stag".chars() {
+            press(&mut state, KeyCode::Char(c));
+        }
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+        assert!(!state.settings_hub.editing);
+        assert_eq!(
+            state.settings_hub.draft["environments"][1]["branch"],
+            Value::String("staging".into())
+        );
+    }
+
+    #[test]
+    fn a_typed_branch_name_is_kept_when_nothing_is_picked() {
+        let mut state = branches_hub();
+        with_local_branches(&mut state, &["main"]);
+        select(&mut state, "/base");
+        press(&mut state, KeyCode::Enter);
+        for c in "trunk".chars() {
+            press(&mut state, KeyCode::Char(c));
+        }
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(
+            state.settings_hub.draft["base"],
+            Value::String("trunk".into())
+        );
+    }
+
+    #[test]
+    fn assigning_an_environment_branch_makes_it_a_release_target() {
+        let mut state = branches_hub();
+        with_local_branches(&mut state, &["staging"]);
+        press(&mut state, KeyCode::Char('n'));
+        let index = state.settings_hub.draft["environments"]
+            .as_array()
+            .unwrap()
+            .len()
+            - 1;
+        let id = state.settings_hub.draft["environments"][index]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        select(&mut state, &format!("/environments/{index}/branch"));
+        press(&mut state, KeyCode::Enter);
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+        let draft = &state.settings_hub.draft;
+        assert!(
+            draft["protected"]
+                .as_array()
+                .unwrap()
+                .contains(&Value::String("staging".into())),
+            "{draft}"
+        );
+        assert!(
+            draft["promotions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["to"].as_str() == Some(id.as_str())),
+            "{draft}"
+        );
     }
 
     #[test]
