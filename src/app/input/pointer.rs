@@ -48,7 +48,7 @@ pub(super) fn handle_modal_mouse(state: &mut AppState, area: Rect, m: &MouseEven
                 // A click beside the modal puts it away; a generation in
                 // flight carries on and is listed under its checkout.
                 MouseEventKind::Down(MouseButton::Left) if !inside => {
-                    if state.generation.is_some() {
+                    if state.generating() {
                         state.set_status(panel::commit::BACKGROUND_NOTICE, false);
                     }
                     state.modal = Modal::None;

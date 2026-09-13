@@ -75,16 +75,21 @@ fn status_panel_renders_change_counts() {
 fn status_panel_shows_active_generation() {
     let mut state = make_state_with_files();
     let (_tx, rx) = std::sync::mpsc::channel::<lg::state::GenMsg>();
-    state.generation = Some(lg::state::Generation {
-        rx,
-        handle: None,
-        output: String::new(),
-        spinner: 0,
-        scene: 0,
-        arrivals: Vec::new(),
-        first_output_ms: None,
-        feed: Default::default(),
-    });
+    state.commit_drafts = vec![lg::state::CommitDraft {
+        dir: state.commit_dir(),
+        generation: Some(lg::state::Generation {
+            rx,
+            handle: None,
+            output: String::new(),
+            spinner: 0,
+            scene: 0,
+            arrivals: Vec::new(),
+            first_output_ms: None,
+            feed: Default::default(),
+        }),
+        text: String::new(),
+        ready: false,
+    }];
 
     let backend = TestBackend::new(40, 8);
     let mut terminal = Terminal::new(backend).unwrap();

@@ -9,8 +9,8 @@ use crate::state::{
 
 use super::super::{App, selected_commit_ref, should_refresh_for_fs_event, spawn_push};
 use super::{
-    drain_messages, first_status_line, join_worker, open_conflict_modal_if_needed, take_finished,
-    tick_spinner,
+    drain_job, drain_messages, first_status_line, join_worker, open_conflict_modal_if_needed,
+    take_finished, tick_spinner,
 };
 
 impl App {
@@ -321,7 +321,7 @@ impl App {
                 self.state.set_status(s, false);
                 if kind == OperationKind::Commit {
                     self.state.modal = Modal::None;
-                    self.state.commit_draft = None;
+                    self.state.cancel_generation();
                     self.state.commit_message.clear();
                     self.state.commit_cursor = 0;
                     if self.state.push_after_commit {
@@ -428,14 +428,38 @@ impl App {
         Ok(())
     }
 
+    /// Take in what every checkout's generation has sent. Each draft is its
+    /// own stream: one checkout's message arriving must not land in another
+    /// checkout's draft, and a message that finishes while its checkout is
+    /// off screen waits in its draft rather than jumping into the editor.
     pub(in crate::app) fn drain_generation(&mut self) {
+        let mut i = 0;
+        while i < self.state.commit_drafts.len() {
+            if self.drain_draft(i) {
+                i += 1;
+            }
+        }
+        for draft in &mut self.state.commit_drafts {
+            if let Some(generation) = draft.generation.as_mut() {
+                generation.spinner = generation.spinner.wrapping_add(1);
+            }
+        }
+    }
+
+    /// Take in what the draft at `i` has sent. False when the draft is gone
+    /// from the list, which leaves the next one at the same index.
+    fn drain_draft(&mut self, i: usize) -> bool {
+        let Some(generation) = self.state.commit_drafts[i].generation.as_ref() else {
+            return true;
+        };
         let mut handle = None;
-        for msg in drain_messages(&self.state.generation) {
+        let mut kept = true;
+        for msg in drain_job(generation) {
             match msg {
                 GenMsg::Thinking(_) => {}
                 GenMsg::Output(o) => {
                     let now = self.state.animation_ms;
-                    if let Some(g) = self.state.generation.as_mut() {
+                    if let Some(g) = self.state.commit_drafts[i].generation.as_mut() {
                         // Chunks that have landed and stopped glowing are
                         // plain text now and need no remembering.
                         g.arrivals.retain(|a| {
@@ -451,7 +475,7 @@ impl App {
                     }
                 }
                 GenMsg::Reset => {
-                    if let Some(g) = self.state.generation.as_mut() {
+                    if let Some(g) = self.state.commit_drafts[i].generation.as_mut() {
                         g.output.clear();
                         g.arrivals.clear();
                         g.first_output_ms = None;
@@ -462,12 +486,12 @@ impl App {
                     stats,
                 } => {
                     let truncated = stats.truncated;
-                    if let Some(mut g) = self.state.generation.take() {
+                    if let Some(g) = self.state.commit_drafts[i].generation.as_mut() {
                         handle = g.handle.take();
                     }
-                    self.state.commit_message = final_msg;
-                    self.state.commit_cursor = self.state.commit_message.chars().count();
-                    self.state.finish_commit_draft();
+                    let was = self.state.commit_drafts.len();
+                    self.state.finish_commit_draft(i, final_msg);
+                    kept = self.state.commit_drafts.len() == was;
                     // A message that ran out of budget goes in the editable
                     // field either way — it is a draft, and half a draft is
                     // still a starting point. It is reported as an error so it
@@ -487,16 +511,20 @@ impl App {
                     }
                 }
                 GenMsg::Error(e) => {
-                    if let Some(mut g) = self.state.generation.take() {
+                    if let Some(g) = self.state.commit_drafts[i].generation.as_mut() {
                         handle = g.handle.take();
                     }
-                    self.state.commit_draft = None;
+                    self.state.drop_draft(i);
+                    kept = false;
                     self.state.set_status(e, true);
                 }
             }
+            if !kept {
+                break;
+            }
         }
         join_worker(handle);
-        tick_spinner(&mut self.state.generation);
+        kept
     }
 
     pub(in crate::app) fn join_background_jobs(&mut self) {

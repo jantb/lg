@@ -31,7 +31,7 @@ pub(crate) fn select_nested_repo_tree_row(state: &mut AppState, idx: usize) {
             NestedRepoTreeRow::Root
             | NestedRepoTreeRow::Worktree { .. }
             | NestedRepoTreeRow::Session { .. }
-            | NestedRepoTreeRow::CommitDraft,
+            | NestedRepoTreeRow::CommitDraft { .. },
         )
         | None => {}
     }
@@ -50,7 +50,7 @@ pub(super) fn move_selection(state: &mut AppState, down: bool, amount: usize) {
             NestedRepoTreeRow::Root
             | NestedRepoTreeRow::Worktree { .. }
             | NestedRepoTreeRow::Session { .. }
-            | NestedRepoTreeRow::CommitDraft,
+            | NestedRepoTreeRow::CommitDraft { .. },
         )
         | None => {}
     }
@@ -74,8 +74,11 @@ pub(super) enum NestedRepoTreeRow {
         id: crate::session::SessionId,
     },
     /// The commit message being written for a checkout while its modal is
-    /// closed; Enter or a click brings the modal back.
-    CommitDraft,
+    /// closed; Enter or a click brings the modal back. Several checkouts can
+    /// have one at once, so the row says which.
+    CommitDraft {
+        draft_idx: usize,
+    },
     /// A checkout of the active repository, listed under the row that stands
     /// for that repository.
     Worktree {
@@ -162,10 +165,8 @@ fn push_checkout(rows: &mut Vec<NestedRepoTreeRow>, state: &AppState, row: Neste
     // Matched like sessions are: the draft records the checkout as git names
     // it, the tree as the workspace scan does, and a symlink or a resolved
     // path between them must not lose the row.
-    if state.commit_draft.as_ref().is_some_and(|draft| {
-        crate::session::same_dir(std::path::Path::new(&draft.dir), std::path::Path::new(&dir))
-    }) {
-        rows.push(NestedRepoTreeRow::CommitDraft);
+    if let Some(draft_idx) = state.draft_idx(&dir) {
+        rows.push(NestedRepoTreeRow::CommitDraft { draft_idx });
     }
 }
 
@@ -190,8 +191,11 @@ pub(super) fn row_checkout_dir(state: &AppState, row: NestedRepoTreeRow) -> Opti
                     .into_owned(),
             )
         }
+        NestedRepoTreeRow::CommitDraft { draft_idx } => state
+            .commit_drafts
+            .get(draft_idx)
+            .map(|draft| draft.dir.clone()),
         NestedRepoTreeRow::Session { .. }
-        | NestedRepoTreeRow::CommitDraft
         | NestedRepoTreeRow::Branch { .. }
         | NestedRepoTreeRow::Remote { .. } => None,
     }
@@ -315,15 +319,16 @@ mod tests {
     fn a_background_commit_message_is_listed_under_its_checkout_and_reopens() {
         let mut state = AppState::new();
         state.repo_root = Some("/repo".into());
-        state.commit_draft = Some(crate::state::CommitDraft {
+        state.commit_drafts = vec![crate::state::CommitDraft {
             dir: "/repo".into(),
+            generation: None,
+            text: "feat: done".into(),
             ready: true,
-        });
-        state.commit_message = "feat: done".into();
+        }];
         let rows = nested_repo_tree_rows(&state);
         let idx = rows
             .iter()
-            .position(|row| *row == NestedRepoTreeRow::CommitDraft)
+            .position(|row| matches!(row, NestedRepoTreeRow::CommitDraft { .. }))
             .expect("the draft has a row");
         assert_eq!(rows[idx - 1], NestedRepoTreeRow::Root, "under its checkout");
 
@@ -339,8 +344,36 @@ mod tests {
         assert_eq!(state.modal, crate::state::Modal::Commit);
         assert_eq!(state.commit_message, "feat: done");
         assert!(
-            state.commit_draft.is_none(),
+            state.commit_drafts.is_empty(),
             "looked at, so no longer listed"
+        );
+    }
+
+    /// Opening a draft belonging to another checkout moves lg over to that
+    /// checkout and hands the editor that draft's message, rather than
+    /// leaving the one that was being typed here in front of it.
+    #[test]
+    fn opening_another_checkouts_draft_switches_to_it_and_takes_its_message() {
+        let mut state = AppState::new();
+        state.repo_root = Some("/here".into());
+        state.commit_message = "typed for here".into();
+        state.commit_drafts = vec![crate::state::CommitDraft {
+            dir: "/elsewhere".into(),
+            generation: None,
+            text: "feat: written elsewhere".into(),
+            ready: true,
+        }];
+
+        super::super::actions::open_commit_draft(&mut state, 0);
+
+        assert_eq!(state.modal, crate::state::Modal::Commit);
+        assert_eq!(state.commit_message, "feat: written elsewhere");
+        assert!(
+            matches!(
+                state.pending_action,
+                Some(crate::state::PendingAction::SwitchRepository { .. })
+            ),
+            "and lg goes to the checkout the message is for"
         );
     }
 
@@ -348,11 +381,17 @@ mod tests {
     fn a_draft_for_another_checkout_is_not_listed_here() {
         let mut state = AppState::new();
         state.repo_root = Some("/repo".into());
-        state.commit_draft = Some(crate::state::CommitDraft {
+        state.commit_drafts = vec![crate::state::CommitDraft {
             dir: "/elsewhere".into(),
+            generation: None,
+            text: String::new(),
             ready: false,
-        });
-        assert!(!nested_repo_tree_rows(&state).contains(&NestedRepoTreeRow::CommitDraft));
+        }];
+        assert!(
+            !nested_repo_tree_rows(&state)
+                .iter()
+                .any(|row| matches!(row, NestedRepoTreeRow::CommitDraft { .. }))
+        );
     }
 
     #[test]

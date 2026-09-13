@@ -181,10 +181,11 @@ pub struct AppState {
     /// When the animation clock started.
     animation_started: Instant,
 
-    pub generation: Option<Generation>,
-    /// The commit message being generated, or generated and not yet looked
-    /// at, that the workspace tree lists under its checkout.
-    pub commit_draft: Option<CommitDraft>,
+    /// A commit message being generated, or generated and not yet looked at,
+    /// per checkout: several can be in flight at once, each listed under its
+    /// own checkout in the workspace tree. The modal shows the one belonging
+    /// to the repository on screen.
+    pub commit_drafts: Vec<CommitDraft>,
     pub push_job: Option<PushJob>,
     pub checkout_job: Option<CheckoutJob>,
     pub operation_job: Option<OperationJob>,
@@ -392,8 +393,7 @@ impl AppState {
             animation_ms: 0,
             animation_started: Instant::now(),
 
-            generation: None,
-            commit_draft: None,
+            commit_drafts: Vec::new(),
             push_job: None,
             checkout_job: None,
             operation_job: None,

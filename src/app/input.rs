@@ -160,11 +160,10 @@ mod tests {
         assert!(handle_modal_mouse(&mut state, area, &left_click(0, 0)));
 
         assert_eq!(state.modal, Modal::None);
-        assert!(state.generation.is_some(), "the model keeps writing");
+        assert!(state.generating(), "the model keeps writing");
         assert!(
             state
-                .commit_draft
-                .as_ref()
+                .current_draft()
                 .is_some_and(|d| d.dir == "/repo" && !d.ready),
             "the draft is listed under its checkout"
         );

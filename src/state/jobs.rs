@@ -105,15 +105,30 @@ pub enum GenMsg {
     Error(String),
 }
 
-/// A commit message being written, or written, for a checkout while the
-/// commit modal is closed: the sub-line under the checkout in the workspace
-/// tree that leads back to it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A commit message being written, or written, for one checkout. There is a
+/// draft per checkout rather than one for the whole app: a message can be
+/// left generating in the background and another started in the next
+/// checkout, and the two must not be mistaken for each other. While the
+/// modal is closed the draft is the sub-line under its checkout in the
+/// workspace tree that leads back to it.
+#[derive(Debug)]
 pub struct CommitDraft {
     /// The checkout the message describes.
     pub dir: String,
+    /// The model writing it, gone once it has finished or been cancelled.
+    pub generation: Option<Generation>,
+    /// The finished message, held until the checkout's modal is opened on
+    /// it. Empty while the model is still writing: what has arrived so far
+    /// lives in the generation, where the scene can see it stream in.
+    pub text: String,
     /// The model has finished and nobody has looked at the result yet.
     pub ready: bool,
+}
+
+impl CommitDraft {
+    pub fn generating(&self) -> bool {
+        self.generation.is_some()
+    }
 }
 
 #[derive(Debug)]

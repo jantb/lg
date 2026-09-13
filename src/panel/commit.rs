@@ -72,7 +72,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     // the foot of the modal and how far the model has got is beside them, both
     // of which would run off the right edge of the top border if they were put
     // there instead.
-    let (msg_view, msg_cursor, title_text, editable) = match &state.generation {
+    let (msg_view, msg_cursor, title_text, editable) = match state.generation() {
         Some(g) => {
             let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
             let title = format!("Commit message  {spinner} generating\u{2026}");
@@ -95,7 +95,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     };
     ui::modal_frame(frame, modal, &title_text);
     ui::draw_dividers(frame, &regions.dividers);
-    if let Some(generation) = &state.generation
+    if let Some(generation) = state.generation()
         && state.decorative_animations
     {
         // While the model works the box is a stage: the language's mascot
@@ -164,7 +164,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         }
     }
 
-    let generating = state.generation.is_some();
+    let generating = state.generating();
     let hints = if generating {
         // What the model is doing, how long it has been at it, and how fast:
         // a wait of a minute on a local model is bearable when the reader
@@ -293,7 +293,7 @@ pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
         return;
     }
 
-    let (message, cursor) = match &state.generation {
+    let (message, cursor) = match state.generation() {
         Some(generation) => (
             generation.output.as_str(),
             generation.output.chars().count(),
@@ -588,7 +588,7 @@ fn move_cursor_vertical(state: &mut AppState, up: bool) {
 }
 
 pub fn place_cursor_at(state: &mut AppState, area: Rect, column: u16, row: u16) -> bool {
-    if state.generation.is_some() {
+    if state.generating() {
         return false;
     }
     let body = editor_body_area(area);
@@ -616,7 +616,7 @@ pub(crate) const BACKGROUND_NOTICE: &str =
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let generating = state.generation.is_some();
+    let generating = state.generating();
     match key.code {
         // Closing the modal never stops the model: the message keeps being
         // written in the background and the workspace tree lists it under
@@ -780,7 +780,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(state.generation.is_none(), "the old generation is dropped");
+        assert!(!state.generating(), "the old generation is dropped");
         assert_eq!(state.pending_action, Some(PendingAction::GenerateMessage));
     }
 

@@ -29,9 +29,11 @@ fn take_finished<J: BackgroundJob>(slot: &mut Option<J>) -> Option<(J, J::Msg)> 
 /// Everything a streaming job has sent since the last check. The job stays put:
 /// it reports many times before it is done.
 fn drain_messages<J: BackgroundJob>(slot: &Option<J>) -> Vec<J::Msg> {
-    let Some(job) = slot.as_ref() else {
-        return Vec::new();
-    };
+    slot.as_ref().map(drain_job).unwrap_or_default()
+}
+
+/// The same for a job that is not held in a slot of its own.
+fn drain_job<J: BackgroundJob>(job: &J) -> Vec<J::Msg> {
     let mut drained = Vec::new();
     while let Ok(msg) = job.rx().try_recv() {
         drained.push(msg);

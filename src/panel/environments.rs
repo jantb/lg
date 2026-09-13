@@ -80,7 +80,9 @@ pub fn handle_key(
         KeyCode::Char('k') | KeyCode::Up => move_selection(state, false, 1),
         KeyCode::Enter => match selected_tree_row(state) {
             Some(NestedRepoTreeRow::Session { id }) => show_session_row(state, id),
-            Some(NestedRepoTreeRow::CommitDraft) => open_commit_draft(state),
+            Some(NestedRepoTreeRow::CommitDraft { draft_idx }) => {
+                open_commit_draft(state, draft_idx)
+            }
             Some(
                 NestedRepoTreeRow::Root
                 | NestedRepoTreeRow::Repo { .. }

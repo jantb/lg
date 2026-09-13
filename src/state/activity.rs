@@ -49,8 +49,13 @@ impl AppState {
                 }
             )+ };
         }
+        // Every checkout's generation, then the single-slot jobs.
+        for draft in &mut self.commit_drafts {
+            if let Some(generation) = draft.generation.as_mut() {
+                handles.extend(generation.handle_mut().take());
+            }
+        }
         take!(
-            generation,
             push_job,
             checkout_job,
             operation_job,
@@ -74,7 +79,7 @@ impl AppState {
     /// Whether any background job is in flight. The event loop polls faster
     /// while one is, so its result lands without waiting out a full tick.
     pub fn any_job_running(&self) -> bool {
-        self.generation.is_some()
+        self.any_generating()
             || self.push_job.is_some()
             || self.checkout_job.is_some()
             || self.operation_job.is_some()
@@ -120,7 +125,7 @@ impl AppState {
     }
 
     pub fn activity_label(&self) -> Option<&'static str> {
-        if self.generation.is_some() {
+        if self.any_generating() {
             Some("generating")
         } else if self.push_job.is_some() {
             Some("pushing")
@@ -212,20 +217,59 @@ impl AppState {
         }
     }
 
+    /// The checkout a commit message is written for: the repository on
+    /// screen. With no checkout the draft has no row in the tree; the modal
+    /// itself is still the way back to it.
+    pub fn commit_dir(&self) -> String {
+        self.repo_root
+            .clone()
+            .or_else(|| self.workspace_root.clone())
+            .unwrap_or_default()
+    }
+
+    /// Where the draft for `dir` sits, matched the way sessions are: git and
+    /// the workspace scan can name the same checkout differently, and a
+    /// symlink between them must not lose the draft.
+    pub fn draft_idx(&self, dir: &str) -> Option<usize> {
+        self.commit_drafts.iter().position(|draft| {
+            crate::session::same_dir(std::path::Path::new(&draft.dir), std::path::Path::new(dir))
+        })
+    }
+
+    /// The draft for the repository on screen, which is the one the commit
+    /// modal is about.
+    pub fn current_draft(&self) -> Option<&CommitDraft> {
+        self.commit_drafts.get(self.draft_idx(&self.commit_dir())?)
+    }
+
+    /// The generation the commit modal shows: the one writing this
+    /// checkout's message. A message being written for another checkout is
+    /// that checkout's business and stays out of this modal.
+    pub fn generation(&self) -> Option<&Generation> {
+        self.current_draft()?.generation.as_ref()
+    }
+
+    /// Whether the repository on screen is having its message written.
+    pub fn generating(&self) -> bool {
+        self.generation().is_some()
+    }
+
+    /// Whether any checkout is.
+    pub fn any_generating(&self) -> bool {
+        self.commit_drafts.iter().any(CommitDraft::generating)
+    }
+
     pub fn start_generation(
         &mut self,
         rx: Receiver<GenMsg>,
         handle: JoinHandle<()>,
         feed: crate::panel::commit_art::Feed,
     ) {
-        // With no checkout to hang it under, the draft has no row; the modal
-        // itself is still the way back to it.
-        self.commit_draft = self
-            .repo_root
-            .clone()
-            .or_else(|| self.workspace_root.clone())
-            .map(|dir| CommitDraft { dir, ready: false });
-        self.generation = Some(Generation {
+        let dir = self.commit_dir();
+        // One draft to a checkout: asking again replaces what was there,
+        // whatever state it had reached.
+        self.cancel_generation_at(&dir);
+        let generation = Generation {
             rx,
             handle: Some(handle),
             output: String::new(),
@@ -234,6 +278,12 @@ impl AppState {
             arrivals: Vec::new(),
             first_output_ms: None,
             feed,
+        };
+        self.commit_drafts.push(CommitDraft {
+            dir,
+            generation: Some(generation),
+            text: String::new(),
+            ready: false,
         });
     }
 
@@ -298,8 +348,8 @@ impl AppState {
             self.set_diff_text("review cancelled".to_string());
             cancelled = Some("review cancelled");
         }
-        if self.generation.is_some() {
-            self.cancel_generation();
+        if self.any_generating() {
+            self.cancel_all_generations();
             cancelled = Some("generation cancelled");
         }
 
@@ -323,24 +373,80 @@ impl AppState {
             || self.review_flag_job.is_some()
             || self.review_chat_job.is_some()
             || self.conflict_resolve_job.is_some()
-            || self.generation.is_some()
+            || self.any_generating()
     }
 
+    /// Drop the draft for the repository on screen, stopping the model if it
+    /// is still writing.
     pub fn cancel_generation(&mut self) {
-        if let Some(mut generation) = self.generation.take() {
-            self.defer_thread_join(generation.handle.take());
-        }
-        self.commit_draft = None;
+        let dir = self.commit_dir();
+        self.cancel_generation_at(&dir);
     }
 
-    /// The generation has finished. With the modal open the message is on
-    /// screen and the sub-line has done its job; closed, the sub-line keeps
-    /// standing, marked ready, until the message is looked at.
-    pub fn finish_commit_draft(&mut self) {
-        if self.modal == Modal::Commit {
-            self.commit_draft = None;
-        } else if let Some(draft) = self.commit_draft.as_mut() {
+    /// The same for a named checkout: the workspace tree can set aside a
+    /// draft belonging to a checkout other than the one on screen.
+    pub fn cancel_generation_at(&mut self, dir: &str) {
+        let Some(i) = self.draft_idx(dir) else { return };
+        self.drop_draft(i);
+    }
+
+    /// Take the draft out and let go of the thread behind it. Dropping the
+    /// receiver is what stops the model: the streaming loop bails out as
+    /// soon as a send fails.
+    pub(crate) fn drop_draft(&mut self, i: usize) -> Option<CommitDraft> {
+        if i >= self.commit_drafts.len() {
+            return None;
+        }
+        let mut draft = self.commit_drafts.remove(i);
+        if let Some(generation) = draft.generation.as_mut() {
+            let handle = generation.handle.take();
+            self.defer_thread_join(handle);
+        }
+        Some(draft)
+    }
+
+    /// Stop every checkout's generation.
+    pub fn cancel_all_generations(&mut self) {
+        while !self.commit_drafts.is_empty() {
+            self.drop_draft(0);
+        }
+    }
+
+    /// The draft at `i` has been written. With its own checkout's modal
+    /// open the message goes straight into the editor and the sub-line has
+    /// done its job; otherwise the sub-line keeps standing, marked ready and
+    /// holding the message, until the checkout it belongs to opens it.
+    pub fn finish_commit_draft(&mut self, i: usize, text: String) {
+        let on_screen = self
+            .draft_idx(&self.commit_dir())
+            .is_some_and(|current| current == i);
+        if on_screen && self.modal == Modal::Commit {
+            self.drop_draft(i);
+            self.commit_message = text;
+            self.commit_cursor = self.commit_message.chars().count();
+            return;
+        }
+        if let Some(draft) = self.commit_drafts.get_mut(i) {
+            draft.generation = None;
+            draft.text = text;
             draft.ready = true;
+        }
+    }
+
+    /// Bring a finished draft into the editor, if the checkout on screen has
+    /// one waiting. Called as its modal opens: until then the message sits
+    /// in the draft, so that opening one checkout's message cannot put
+    /// another checkout's into the editor.
+    pub fn take_ready_draft(&mut self) {
+        let Some(i) = self.draft_idx(&self.commit_dir()) else {
+            return;
+        };
+        if self.commit_drafts[i].generating() {
+            return;
+        }
+        if let Some(draft) = self.drop_draft(i) {
+            self.commit_message = draft.text;
+            self.commit_cursor = self.commit_message.chars().count();
         }
     }
 
@@ -398,6 +504,92 @@ mod tests {
             state.animation_tick, start,
             "animation speed must not follow the frame rate"
         );
+    }
+
+    /// Start a generation for `dir` and hand back the sender, so the test
+    /// can drive it the way the model would.
+    fn generate_in(state: &mut AppState, dir: &str) -> std::sync::mpsc::Sender<GenMsg> {
+        state.repo_root = Some(dir.to_string());
+        let (tx, rx) = std::sync::mpsc::channel();
+        state.start_generation(rx, std::thread::spawn(|| {}), Default::default());
+        tx
+    }
+
+    /// Two checkouts can have their messages written at once, and each
+    /// modal shows its own: the whole point of leaving one in the
+    /// background is to get on with the next repository meanwhile.
+    #[test]
+    fn each_checkout_writes_its_own_message_at_the_same_time() {
+        let mut state = AppState::new();
+        let _one = generate_in(&mut state, "/one");
+        let _two = generate_in(&mut state, "/two");
+
+        assert_eq!(state.commit_drafts.len(), 2, "one draft to a checkout");
+        assert!(state.generating(), "the checkout on screen is writing");
+        assert_eq!(state.current_draft().map(|d| d.dir.as_str()), Some("/two"));
+
+        state.repo_root = Some("/one".into());
+        assert_eq!(state.current_draft().map(|d| d.dir.as_str()), Some("/one"));
+
+        // A checkout with no draft of its own sees no generation, however
+        // much is being written elsewhere.
+        state.repo_root = Some("/three".into());
+        assert!(
+            state.generation().is_none(),
+            "another checkout's is not ours"
+        );
+        assert!(state.any_generating(), "though work is still in flight");
+    }
+
+    /// A message that finishes while its checkout is off screen waits in
+    /// its own draft rather than landing in the editor, which is pointed at
+    /// another repository.
+    #[test]
+    fn a_message_finished_off_screen_waits_for_its_own_checkout() {
+        let mut state = AppState::new();
+        let _one = generate_in(&mut state, "/one");
+        let _two = generate_in(&mut state, "/two");
+        state.commit_message = "written by hand for two".into();
+
+        let one = state.draft_idx("/one").expect("the first draft");
+        state.finish_commit_draft(one, "feat: one".into());
+
+        assert_eq!(
+            state.commit_message, "written by hand for two",
+            "the editor still holds the checkout it is pointed at"
+        );
+        let draft = &state.commit_drafts[state.draft_idx("/one").expect("still listed")];
+        assert!(draft.ready && !draft.generating(), "it is done and waiting");
+
+        // Only opening that checkout's modal brings it in, and it does not
+        // start another generation over the top of it.
+        state.repo_root = Some("/one".into());
+        state.commit_message.clear();
+        state.open_commit_modal();
+        assert_eq!(state.commit_message, "feat: one");
+        assert_eq!(state.pending_action, None, "the message is already written");
+        assert!(
+            state.draft_idx("/one").is_none(),
+            "looked at, so no longer listed"
+        );
+    }
+
+    /// Setting one checkout's message aside leaves the others alone.
+    #[test]
+    fn cancelling_one_checkout_leaves_the_others_writing() {
+        let mut state = AppState::new();
+        let _one = generate_in(&mut state, "/one");
+        let _two = generate_in(&mut state, "/two");
+
+        state.cancel_generation();
+        assert!(
+            state.draft_idx("/two").is_none(),
+            "the one on screen is gone"
+        );
+        assert!(state.draft_idx("/one").is_some(), "the other keeps writing");
+
+        state.cancel_all_generations();
+        assert!(state.commit_drafts.is_empty());
     }
 
     #[test]

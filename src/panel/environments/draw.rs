@@ -148,8 +148,8 @@ pub(super) fn render_nested_repositories(
                 }
                 None => ListItem::new(Line::from("")),
             },
-            NestedRepoTreeRow::CommitDraft => {
-                repository_list_item(commit_draft_line(state, row_width), false)
+            NestedRepoTreeRow::CommitDraft { draft_idx } => {
+                repository_list_item(commit_draft_line(state, *draft_idx, row_width), false)
             }
             NestedRepoTreeRow::Worktree { wt_idx } => {
                 let worktree = &state.worktrees[*wt_idx];
@@ -397,8 +397,11 @@ fn activity_word(activity: crate::session::SessionActivity) -> Option<&'static s
 
 /// The commit message under its checkout: a spinner while the model writes
 /// it, a steady green dot once it is ready to be read.
-fn commit_draft_line(state: &AppState, row_width: usize) -> Line<'static> {
-    let ready = state.commit_draft.as_ref().is_some_and(|d| d.ready);
+fn commit_draft_line(state: &AppState, draft_idx: usize, row_width: usize) -> Line<'static> {
+    let ready = state
+        .commit_drafts
+        .get(draft_idx)
+        .is_some_and(|draft| draft.ready);
     let (glyph, color, word) = if ready {
         ("\u{25cf} ".to_string(), Color::Green, "ready \u{25b4}")
     } else {

@@ -76,7 +76,7 @@ pub fn available(state: &AppState) -> Vec<RepoAction> {
     let mut actions = Vec::new();
     let checkout = selected_checkout(state).is_some();
     match row {
-        NestedRepoTreeRow::Session { .. } | NestedRepoTreeRow::CommitDraft => {
+        NestedRepoTreeRow::Session { .. } | NestedRepoTreeRow::CommitDraft { .. } => {
             actions.extend([RepoAction::Activate, RepoAction::CloseSession]);
         }
         NestedRepoTreeRow::Branch { .. } | NestedRepoTreeRow::Remote { .. } => {
@@ -119,7 +119,7 @@ fn label(state: &AppState, action: RepoAction) -> String {
     match action {
         RepoAction::Activate => match selected_tree_row(state) {
             Some(NestedRepoTreeRow::Session { .. }) => "Show session".into(),
-            Some(NestedRepoTreeRow::CommitDraft) => "Open the commit message".into(),
+            Some(NestedRepoTreeRow::CommitDraft { .. }) => "Open the commit message".into(),
             Some(NestedRepoTreeRow::Branch { .. } | NestedRepoTreeRow::Remote { .. }) => {
                 "Check out this branch".into()
             }
@@ -129,10 +129,15 @@ fn label(state: &AppState, action: RepoAction) -> String {
         RepoAction::Terminal => "Open a terminal here".into(),
         RepoAction::NewWorktree => "New worktree…".into(),
         RepoAction::CloseSession => match selected_tree_row(state) {
-            Some(NestedRepoTreeRow::CommitDraft) if state.generation.is_some() => {
+            Some(NestedRepoTreeRow::CommitDraft { draft_idx })
+                if state
+                    .commit_drafts
+                    .get(draft_idx)
+                    .is_some_and(crate::state::CommitDraft::generating) =>
+            {
                 "Cancel the generation".into()
             }
-            Some(NestedRepoTreeRow::CommitDraft) => "Set the message aside".into(),
+            Some(NestedRepoTreeRow::CommitDraft { .. }) => "Set the message aside".into(),
             _ => "Close session".into(),
         },
         RepoAction::LandWorktree => "Land worktree: merge into main and clean up".into(),
@@ -189,7 +194,7 @@ fn title(state: &AppState) -> String {
             .sessions
             .get(id)
             .map(|session| format!("session {}", session.label)),
-        Some(NestedRepoTreeRow::CommitDraft) => Some("the commit message".to_string()),
+        Some(NestedRepoTreeRow::CommitDraft { .. }) => Some("the commit message".to_string()),
         Some(NestedRepoTreeRow::Worktree { .. }) => {
             selected_checkout(state).map(|(_, label)| format!("worktree {label}"))
         }

@@ -2,7 +2,7 @@
 
 use crate::{
     git::Worktree,
-    state::{AppState, BranchView},
+    state::{AppState, BranchView, CommitDraft},
 };
 
 use super::tree::{NestedRepoTreeRow, selected_tree_row, tree_idx_for_repo_path};
@@ -34,8 +34,8 @@ pub(crate) fn activate_selected_repository_row(state: &mut AppState) -> bool {
             }
             true
         }
-        Some(NestedRepoTreeRow::CommitDraft) => {
-            open_commit_draft(state);
+        Some(NestedRepoTreeRow::CommitDraft { draft_idx }) => {
+            open_commit_draft(state, draft_idx);
             true
         }
         _ => false,
@@ -43,12 +43,38 @@ pub(crate) fn activate_selected_repository_row(state: &mut AppState) -> bool {
 }
 
 /// Bring the commit modal back over the message being written, or written,
-/// in the background.
-pub(super) fn open_commit_draft(state: &mut AppState) {
-    if state.commit_draft.is_none() {
+/// in the background. A draft belonging to another checkout brings lg over
+/// to that checkout first: the modal commits where it is pointed, so opening
+/// a message must move the repository under it too.
+pub(super) fn open_commit_draft(state: &mut AppState, draft_idx: usize) {
+    let Some(draft) = state.commit_drafts.get(draft_idx) else {
+        return;
+    };
+    let dir = draft.dir.clone();
+    if crate::session::same_dir(
+        std::path::Path::new(&dir),
+        std::path::Path::new(&state.commit_dir()),
+    ) {
+        state.open_commit_modal();
         return;
     }
-    state.open_commit_modal();
+    state.pending_action = Some(crate::state::PendingAction::SwitchRepository {
+        target: crate::state::RepoTarget::Path(std::path::PathBuf::from(dir)),
+    });
+    // The switch lands before the next draw, and with it the draft becomes
+    // this checkout's. The editor is emptied on the way: whatever was typed
+    // belonged to the checkout being left, and carrying it over is the very
+    // mix-up the per-checkout drafts are there to prevent. A draft that has
+    // finished puts its message in; one still being written leaves the
+    // editor to the generation.
+    state.modal = crate::state::Modal::Commit;
+    let finished = (!state.commit_drafts[draft_idx].generating())
+        .then(|| state.drop_draft(draft_idx))
+        .flatten();
+    state.commit_message = finished.map(|draft| draft.text).unwrap_or_default();
+    state.commit_cursor = state.commit_message.chars().count();
+    state.commit_scroll_offset = 0;
+    state.commit_files_scroll = 0;
 }
 
 /// Start a session of `kind` in the selected checkout, or show the one already
@@ -96,8 +122,8 @@ pub(crate) fn selected_checkout(state: &AppState) -> Option<(String, String)> {
                 session.label.clone(),
             ))
         }
-        NestedRepoTreeRow::CommitDraft => {
-            let dir = state.commit_draft.as_ref()?.dir.clone();
+        NestedRepoTreeRow::CommitDraft { draft_idx } => {
+            let dir = state.commit_drafts.get(draft_idx)?.dir.clone();
             let label = dir_name(&dir).to_string();
             Some((dir, label))
         }
@@ -229,9 +255,12 @@ pub(crate) fn selected_session(state: &AppState) -> Option<crate::session::Sessi
 /// closing one from the row it is shown on, rather than only from inside the
 /// session pane.
 pub(super) fn close_selected_session(state: &mut AppState) {
-    if selected_tree_row(state) == Some(NestedRepoTreeRow::CommitDraft) {
-        let was_running = state.generation.is_some();
-        state.cancel_generation();
+    if let Some(NestedRepoTreeRow::CommitDraft { draft_idx }) = selected_tree_row(state) {
+        let was_running = state
+            .commit_drafts
+            .get(draft_idx)
+            .is_some_and(CommitDraft::generating);
+        state.drop_draft(draft_idx);
         state.set_status(
             if was_running {
                 "commit message generation cancelled"
@@ -412,7 +441,10 @@ pub(super) fn selected_repository_project_path(state: &AppState) -> Option<Strin
             .sessions
             .get(id)
             .map(|session| session.cwd.to_string_lossy().into_owned()),
-        NestedRepoTreeRow::CommitDraft => state.commit_draft.as_ref().map(|d| d.dir.clone()),
+        NestedRepoTreeRow::CommitDraft { draft_idx } => state
+            .commit_drafts
+            .get(draft_idx)
+            .map(|draft| draft.dir.clone()),
         NestedRepoTreeRow::Worktree { wt_idx } => state
             .worktrees
             .get(wt_idx)
