@@ -6,7 +6,8 @@
 //! stance and blinking, feeds the diff token by token into a neural network
 //! that pulses as it thinks, against one of a few backgrounds (code raining
 //! down, a starry night, the diff scrolling past, a round of GLTron, a game
-//! of Snake, the trench run), with a caption reporting what the model is up
+//! of Snake, the trench run, a Wolfenstein maze or a Doom base walked in the
+//! first person), with a caption reporting what the model is up
 //! to. Everything moves on the millisecond clock, so it is as smooth as the
 //! terminal can draw. None of it is true, all of it is more fun than a timer.
 
@@ -914,6 +915,78 @@ mod tests {
         assert!(
             sky.contains('\u{2500}') || sky.contains('\u{2502}'),
             "and they have left walls:\n{sky}"
+        );
+    }
+
+    /// The top rows of the scene for `backdrop` as cells of glyph, ink and
+    /// ground, after running the clock the way a real wait would. Short of
+    /// the ground line, so every row of it is sky.
+    fn sky_cells_after_a_wait(backdrop: Backdrop) -> Vec<(char, Option<Color>, Option<Color>)> {
+        let seed = BACKDROPS
+            .iter()
+            .position(|b| *b == backdrop)
+            .expect("the game is one of the backdrops");
+        let mut last = Vec::new();
+        for frame in 0..600u64 {
+            let lines = scene(show(Language::Rust, seed, frame * 50), 120, 34, false);
+            last = lines
+                .iter()
+                .take(8)
+                .flat_map(|line| {
+                    line.spans.iter().flat_map(|span| {
+                        span.content
+                            .chars()
+                            .map(move |c| (c, span.style.fg, span.style.bg))
+                    })
+                })
+                .collect();
+        }
+        last
+    }
+
+    /// Both first-person backdrops fill their sky with a lit, solid picture
+    /// rather than glyphs on black: every cell of it is painted top and
+    /// bottom, and it is painted in many shades, which is what a room seen
+    /// in perspective looks like and a flat wall of one colour does not.
+    #[test]
+    fn the_first_person_backdrops_fill_the_sky_with_a_lit_room() {
+        for backdrop in [Backdrop::Wolf3D, Backdrop::Doom] {
+            let sky = sky_cells_after_a_wait(backdrop);
+            assert!(!sky.is_empty(), "{backdrop:?} draws something");
+            assert!(
+                sky.iter().all(|(_, fg, bg)| fg.is_some() && bg.is_some()),
+                "{backdrop:?} paints every cell of its sky"
+            );
+            let mut shades: Vec<Color> = sky.iter().filter_map(|c| c.1).collect();
+            shades.sort_by_key(|c| format!("{c:?}"));
+            shades.dedup();
+            assert!(
+                shades.len() > 30,
+                "{backdrop:?} is a room with depth in it, not a flat colour: {} shades",
+                shades.len()
+            );
+        }
+    }
+
+    /// The two rooms are lit and coloured for their own game: the maze is
+    /// bright at the far end of a hall, the base has gone dark by then.
+    #[test]
+    fn the_doom_base_is_darker_than_the_wolfenstein_maze() {
+        let brightness = |backdrop| {
+            let sky = sky_cells_after_a_wait(backdrop);
+            let total: f32 = sky
+                .iter()
+                .filter_map(|c| c.1)
+                .map(|c| match c {
+                    Color::Rgb(r, g, b) => (r as f32 + g as f32 + b as f32) / 3.0,
+                    _ => 0.0,
+                })
+                .sum();
+            total / sky.len() as f32
+        };
+        assert!(
+            brightness(Backdrop::Doom) < brightness(Backdrop::Wolf3D),
+            "the base is the darker of the two"
         );
     }
 
