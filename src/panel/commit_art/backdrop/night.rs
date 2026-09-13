@@ -1,50 +1,55 @@
-//! The backdrops behind the mascot: rain, night sky, moon and the scrolling diff.
+//! A night sky: twinkling stars, the moon and the odd shooting star.
 
 use super::*;
 
-/// Code falling down the background above the ground: a third of the
-/// columns carry a drop, each at its own offset, a bright head with a
-/// fading tail of glyphs behind it.
-pub(super) fn draw_rain(canvas: &mut Canvas, width: usize, ground: usize, t: f32) {
-    if ground == 0 {
-        return;
-    }
-    let span = ground + RAIN_TRAIL;
-    for x in 0..width {
-        let seed = hash(x, 7);
-        if !seed.is_multiple_of(RAIN_DENSITY) {
-            continue;
-        }
-        // Some drops fall at one speed, some at half again, so the rain has
-        // depth; the head's position is continuous, its cell the floor of it.
-        let speed = RAIN_SPEED * (1.0 + 0.5 * ((seed >> 8) % 2) as f32);
-        let fall = t * speed + ((seed >> 16) % 1_000) as f32;
-        let head = fall as usize % span;
-        let generation = fall as usize / span;
-        for back in 0..RAIN_TRAIL {
-            let Some(y) = head.checked_sub(back) else {
-                break;
-            };
-            if y >= ground {
-                continue;
-            }
-            let glyph = RAIN_GLYPHS[(hash(x, y + generation) % RAIN_GLYPHS.len() as u64) as usize];
-            // Brightness falls off along the tail and flickers a little.
-            let fade = 1.0 - back as f32 / RAIN_TRAIL as f32;
-            let flicker = 0.85 + 0.15 * (t * 17.0 + x as f32).sin();
-            let color = if back == 0 {
-                Color::Rgb(170, 255, 200)
-            } else {
-                dim(Color::Rgb(70, 200, 120), fade * flicker)
-            };
-            let mut style = Style::default().fg(color);
-            if back == 0 {
-                style = style.add_modifier(Modifier::BOLD);
-            }
-            canvas.put(x, y, glyph, style);
-        }
-    }
-}
+/// One cell in this many is a star.
+const STAR_DENSITY: u64 = 14;
+/// Milliseconds between shooting stars.
+const SHOOTING_STAR_PERIOD_MS: u64 = 9_000;
+/// The moon is not a drawing but a lit sphere worked out cell by cell:
+/// these glyphs, faint to dense, stand for the light coming off it.
+const MOON_RAMP: &[char] = &['.', ':', '-', '=', '+', '*', '#', '%', '@'];
+/// Rows the disc spans, at most and at least. Under the minimum a sphere
+/// has too few cells to read as round, so the sky is left moonless.
+const MOON_MAX_ROWS: usize = 18;
+const MOON_MIN_ROWS: usize = 8;
+/// How much light the bright highlands throw back, and how much of that is
+/// left at the limb: enough dimming to round the ball off, not so much that
+/// its edge blurs into the sky.
+const MOON_HIGHLAND: f32 = 0.95;
+const MOON_LIMB: f32 = 0.78;
+/// The near side's dark plains, as middle, radius and depth on the unit
+/// disc with x to the right and y up. The moon shows us one face, so these
+/// are placed where they are seen rather than turned into view.
+const MOON_MARIA: &[(f32, f32, f32, f32)] = &[
+    (-0.55, 0.10, 0.34, 0.46),  // Oceanus Procellarum
+    (-0.28, 0.42, 0.26, 0.50),  // Mare Imbrium
+    (0.10, 0.36, 0.18, 0.48),   // Mare Serenitatis
+    (0.28, 0.17, 0.20, 0.48),   // Mare Tranquillitatis
+    (0.61, 0.29, 0.10, 0.44),   // Mare Crisium
+    (0.44, -0.01, 0.14, 0.42),  // Mare Fecunditatis
+    (0.32, -0.17, 0.10, 0.38),  // Mare Nectaris
+    (-0.02, 0.17, 0.09, 0.34),  // Mare Vaporum
+    (-0.16, -0.34, 0.15, 0.36), // Mare Nubium
+    (-0.37, -0.31, 0.11, 0.38), // Mare Humorum
+];
+/// The ray craters, laid out the same way: Tycho in the south with its
+/// splash, and Copernicus above it.
+const MOON_CRATERS: &[(f32, f32, f32, f32)] = &[
+    (-0.11, -0.61, 0.11, 0.08), // Tycho
+    (-0.27, 0.16, 0.07, 0.10),  // Copernicus
+];
+/// Where the moon would rather hang: this far in from the right edge, so it
+/// is over the sky left of where the network sits below and the picture is
+/// not all weight on one side. This is a preference, not a fit: a sky with
+/// no room for it puts the moon as far right as it goes and no further.
+const MOON_MARGIN: usize = (TREE_LEVELS - 1) * MAX_LEVEL_STEP + 8;
+/// The fit, on the other hand: this much sky beside the moon or none at
+/// all, since a moon with the sky crowded around it is worse than a clear
+/// night.
+const MOON_SKY: usize = 32;
+/// The row the moon hangs from.
+const MOON_Y: usize = 1;
 
 /// A night sky: stars that brighten and fade at their own pace, the moon
 /// itself, and now and then a shooting star crossing from the top left.
@@ -105,7 +110,7 @@ pub(super) fn draw_night(canvas: &mut Canvas, width: usize, ground: usize, ms: u
 /// the light its own bit of surface reflects, so the moon is round at
 /// whatever size the sky allows and dark where the maria are. Too shallow
 /// a sky leaves it moonless.
-pub(super) fn draw_moon(canvas: &mut Canvas, width: usize, ground: usize, t: f32) {
+fn draw_moon(canvas: &mut Canvas, width: usize, ground: usize, t: f32) {
     let rows = ground.saturating_sub(MOON_Y + 1).min(MOON_MAX_ROWS);
     if rows < MOON_MIN_ROWS {
         return;
@@ -149,7 +154,7 @@ pub(super) fn draw_moon(canvas: &mut Canvas, width: usize, ground: usize, t: f32
 /// its face is not shadow but albedo: bright highlands, dark maria and
 /// brighter ray craters, over a disc that dims a little towards the limb,
 /// with a fine grain so the surface does not read as polished.
-pub(super) fn moon_light(nx: f32, ny: f32, r2: f32, col: usize, row: usize) -> f32 {
+fn moon_light(nx: f32, ny: f32, r2: f32, col: usize, row: usize) -> f32 {
     let mut albedo = MOON_HIGHLAND;
     for (mx, my, mr, depth) in MOON_MARIA.iter().copied() {
         albedo -= depth * moon_patch(nx, ny, mx, my, mr);
@@ -167,73 +172,11 @@ pub(super) fn moon_light(nx: f32, ny: f32, r2: f32, col: usize, row: usize) -> f
 /// How much of a patch centred on `(px, py)` with radius `pr` covers the
 /// point `(x, y)`: all of it in the middle, none at the rim, eased between
 /// so the plains have soft shores.
-pub(super) fn moon_patch(x: f32, y: f32, px: f32, py: f32, pr: f32) -> f32 {
+fn moon_patch(x: f32, y: f32, px: f32, py: f32, pr: f32) -> f32 {
     let d = ((x - px).powi(2) + (y - py).powi(2)).sqrt() / pr;
     if d >= 1.0 {
         return 0.0;
     }
     let e = 1.0 - d;
     e * e * (3.0 - 2.0 * e)
-}
-
-/// The diff scrolling up behind everything: the very lines the model is
-/// reading, highlighted the way the diff pane highlights them and in the
-/// colours a diff is read in. The change itself is what the wait is about, so
-/// the backdrop shows it rather than a stand-in; it loops round, so a wait
-/// long enough sees all of it go past. Only a diff too large to have been
-/// kept falls back to abstract glyphs.
-pub(super) fn draw_diff(canvas: &mut Canvas, feed: &Feed, width: usize, ground: usize, t: f32) {
-    if feed.lines.is_empty() {
-        draw_glyph_diff(canvas, width, ground, t);
-        return;
-    }
-    let offset = (t * DIFF_SPEED) as usize;
-    for y in 0..ground {
-        let line = &feed.lines[(y + offset) % feed.lines.len()];
-        // Lines nearer the top have been read and fade; the newest arrive
-        // bright at the bottom.
-        let depth = 0.55 + 0.45 * (y as f32 / ground.max(1) as f32);
-        for (x, &(c, color)) in line.iter().take(width).enumerate() {
-            if c != ' ' {
-                canvas.put(x, y, c, Style::default().fg(dim(color, depth)));
-            }
-        }
-    }
-}
-
-/// The stand-in for a diff there is nothing left of: lines of the right
-/// shape in the right colours, drawn as runs of glyphs.
-pub(super) fn draw_glyph_diff(canvas: &mut Canvas, width: usize, ground: usize, t: f32) {
-    let offset = (t * DIFF_SPEED) as usize;
-    for y in 0..ground {
-        let line = y + offset;
-        let seed = hash(line, 3);
-        let (sign, color) = match seed % 7 {
-            0 | 1 => ('+', DIFF_ADDED),
-            2 => ('-', DIFF_REMOVED),
-            3 => continue,
-            _ => (' ', DIFF_CONTEXT),
-        };
-        // Lines nearer the top have been read and fade; the newest arrive
-        // bright at the bottom.
-        let depth = 0.55 + 0.45 * (y as f32 / ground.max(1) as f32);
-        let indent = 1 + (seed >> 8) as usize % 4 * 4;
-        let len = 6 + (seed >> 16) as usize % (width * 7 / 10).max(1);
-        let style = Style::default().fg(dim(color, depth));
-        canvas.put(0, y, sign, style);
-        let mut x = indent + 1;
-        let end = (x + len).min(width.saturating_sub(1));
-        while x < end {
-            let word = 2 + (hash(line, x) % 6) as usize;
-            for _ in 0..word {
-                if x >= end {
-                    break;
-                }
-                let glyph = RAIN_GLYPHS[(hash(line, x + 99) % RAIN_GLYPHS.len() as u64) as usize];
-                canvas.put(x, y, glyph, style);
-                x += 1;
-            }
-            x += 1;
-        }
-    }
 }

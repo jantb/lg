@@ -5,17 +5,17 @@
 //! a small three-dimensional figure facing the reader, waving, shifting its
 //! stance and blinking, feeds the diff token by token into a neural network
 //! that pulses as it thinks, against one of a few backgrounds (code raining
-//! down, a starry night, the diff scrolling past, an arcade round, the trench
-//! run), with a caption reporting what the model is up to. Everything moves
-//! on the millisecond clock, so it is as smooth as the terminal can draw.
-//! None of it is true, all of it is more fun than a timer.
+//! down, a starry night, the diff scrolling past, a round of GLTron, a game
+//! of Snake, the trench run), with a caption reporting what the model is up
+//! to. Everything moves on the millisecond clock, so it is as smooth as the
+//! terminal can draw. None of it is true, all of it is more fun than a timer.
 
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 
-use super::{arena, solid, trench};
+use super::solid;
 use crate::ui::Token;
 
 mod backdrop;
@@ -153,30 +153,6 @@ const CAPTIONS: &[&str] = &[
     "almost there, probably",
 ];
 
-/// The backgrounds a wait can be set against.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Backdrop {
-    /// Code glyphs raining down.
-    Rain,
-    /// Stars twinkling under a moon, with the odd shooting star.
-    Night,
-    /// The diff itself scrolling up past the reader.
-    Diff,
-    /// Light cycles and a snake playing out a round on the grid.
-    Arena,
-    /// The trench run: the Death Star, which goes up when the first word
-    /// of the message flies in.
-    Trench,
-}
-
-const BACKDROPS: [Backdrop; 5] = [
-    Backdrop::Rain,
-    Backdrop::Night,
-    Backdrop::Diff,
-    Backdrop::Arena,
-    Backdrop::Trench,
-];
-
 /// The figure's picture is this many rows tall at most, and never fewer than
 /// the minimum; its width follows from the cell shape.
 const FIGURE_MAX_ROWS: usize = 22;
@@ -214,66 +190,6 @@ const MAX_LEVEL_STEP: usize = 10;
 /// Cells kept clear to the right of the network: the runway the words of
 /// the message take off along as they leave the leaves for the text.
 const NETWORK_MARGIN: usize = 12;
-/// The glyphs raining down the background.
-const RAIN_GLYPHS: &[char] = &[
-    '{', '}', '(', ')', '[', ']', ';', '=', '<', '>', '+', '-', '*', '/', '&', '|', '!', '?', ':',
-    '.', '0', '1', 'f', 'n', 'x',
-];
-/// How many columns out of this many carry rain.
-const RAIN_DENSITY: u64 = 3;
-const RAIN_TRAIL: usize = 7;
-/// Rows a drop falls per second, at the slower of its two speeds.
-const RAIN_SPEED: f32 = 9.0;
-/// One cell in this many is a star.
-const STAR_DENSITY: u64 = 14;
-/// Milliseconds between shooting stars.
-const SHOOTING_STAR_PERIOD_MS: u64 = 9_000;
-/// The moon is not a drawing but a lit sphere worked out cell by cell:
-/// these glyphs, faint to dense, stand for the light coming off it.
-const MOON_RAMP: &[char] = &['.', ':', '-', '=', '+', '*', '#', '%', '@'];
-/// Rows the disc spans, at most and at least. Under the minimum a sphere
-/// has too few cells to read as round, so the sky is left moonless.
-const MOON_MAX_ROWS: usize = 18;
-const MOON_MIN_ROWS: usize = 8;
-/// How much light the bright highlands throw back, and how much of that is
-/// left at the limb: enough dimming to round the ball off, not so much that
-/// its edge blurs into the sky.
-const MOON_HIGHLAND: f32 = 0.95;
-const MOON_LIMB: f32 = 0.78;
-/// The near side's dark plains, as middle, radius and depth on the unit
-/// disc with x to the right and y up. The moon shows us one face, so these
-/// are placed where they are seen rather than turned into view.
-const MOON_MARIA: &[(f32, f32, f32, f32)] = &[
-    (-0.55, 0.10, 0.34, 0.46),  // Oceanus Procellarum
-    (-0.28, 0.42, 0.26, 0.50),  // Mare Imbrium
-    (0.10, 0.36, 0.18, 0.48),   // Mare Serenitatis
-    (0.28, 0.17, 0.20, 0.48),   // Mare Tranquillitatis
-    (0.61, 0.29, 0.10, 0.44),   // Mare Crisium
-    (0.44, -0.01, 0.14, 0.42),  // Mare Fecunditatis
-    (0.32, -0.17, 0.10, 0.38),  // Mare Nectaris
-    (-0.02, 0.17, 0.09, 0.34),  // Mare Vaporum
-    (-0.16, -0.34, 0.15, 0.36), // Mare Nubium
-    (-0.37, -0.31, 0.11, 0.38), // Mare Humorum
-];
-/// The ray craters, laid out the same way: Tycho in the south with its
-/// splash, and Copernicus above it.
-const MOON_CRATERS: &[(f32, f32, f32, f32)] = &[
-    (-0.11, -0.61, 0.11, 0.08), // Tycho
-    (-0.27, 0.16, 0.07, 0.10),  // Copernicus
-];
-/// Where the moon would rather hang: this far in from the right edge, so it
-/// is over the sky left of where the network sits below and the picture is
-/// not all weight on one side. This is a preference, not a fit: a sky with
-/// no room for it puts the moon as far right as it goes and no further.
-const MOON_MARGIN: usize = (TREE_LEVELS - 1) * MAX_LEVEL_STEP + 8;
-/// The fit, on the other hand: this much sky beside the moon or none at
-/// all, since a moon with the sky crowded around it is worse than a clear
-/// night.
-const MOON_SKY: usize = 32;
-/// The row the moon hangs from.
-const MOON_Y: usize = 1;
-/// Rows per second the diff scrolls.
-const DIFF_SPEED: f32 = 4.0;
 /// The colours the sides of a diff are read in.
 const DIFF_ADDED: Color = Color::Rgb(70, 160, 90);
 const DIFF_REMOVED: Color = Color::Rgb(170, 70, 80);
@@ -461,30 +377,13 @@ fn paint(
         seed,
         ms,
         feed,
-        boom,
+        ..
     } = show;
     let plan = Plan::fit(lang, seed, width, height)?;
     let mut canvas = Canvas::new(plan.width, plan.height);
     let t = ms as f32 / 1000.0;
 
-    match BACKDROPS[seed % BACKDROPS.len()] {
-        Backdrop::Rain => draw_rain(&mut canvas, plan.width, plan.ground, t),
-        Backdrop::Night => draw_night(&mut canvas, plan.width, plan.ground, ms),
-        Backdrop::Diff => draw_diff(&mut canvas, feed, plan.width, plan.ground, t),
-        Backdrop::Arena => {
-            arena::frame(seed, plan.width, plan.ground, ms, &mut |x, y, c, style| {
-                canvas.put(x, y, c, style)
-            })
-        }
-        Backdrop::Trench => trench::frame(
-            seed,
-            plan.width,
-            plan.ground,
-            ms,
-            boom,
-            &mut |x, y, c, style| canvas.put(x, y, c, style),
-        ),
-    }
+    Backdrop::pick(seed).draw(&mut canvas, show, plan.width, plan.ground);
     canvas.text(
         0,
         plan.ground,
@@ -986,14 +885,13 @@ mod tests {
         assert_ne!(waiting, burning);
     }
 
-    #[test]
-    fn the_arena_backdrop_plays_out_a_round_above_the_mascot() {
+    /// The sky of the scene for `backdrop`, after running the clock the way
+    /// a real wait would, since the arcade games build up as they go.
+    fn sky_after_a_wait(backdrop: Backdrop) -> String {
         let seed = BACKDROPS
             .iter()
-            .position(|b| *b == Backdrop::Arena)
-            .expect("the arena is one of the backdrops");
-        // The arena builds up as the wait goes on, so run the clock the way
-        // a real wait would rather than jumping to one moment.
+            .position(|b| *b == backdrop)
+            .expect("the game is one of the backdrops");
         let mut last = String::new();
         for frame in 0..600u64 {
             last = text_of(&scene(
@@ -1003,15 +901,33 @@ mod tests {
                 false,
             ));
         }
-        let sky: String = last.lines().take(12).collect::<Vec<_>>().join("\n");
+        last.lines().take(12).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn the_tron_backdrop_has_riders_and_their_walls_above_the_mascot() {
+        let sky = sky_after_a_wait(Backdrop::Tron);
         assert!(
             sky.contains(['>', '<', '^', 'v']),
             "riders are out there:\n{sky}"
         );
         assert!(
             sky.contains('\u{2500}') || sky.contains('\u{2502}'),
-            "and they have left trails:\n{sky}"
+            "and they have left walls:\n{sky}"
         );
-        assert!(sky.contains('@'), "the snake is out too:\n{sky}");
+    }
+
+    #[test]
+    fn the_snake_backdrop_has_a_snake_and_food_above_the_mascot() {
+        let sky = sky_after_a_wait(Backdrop::Snake);
+        assert!(sky.contains('@'), "the snake is out:\n{sky}");
+        assert!(
+            sky.contains(['$', '*', '+']),
+            "and there is food about:\n{sky}"
+        );
+        assert!(
+            !sky.contains(['>', '<', '^', 'v']),
+            "no light cycles in snake:\n{sky}"
+        );
     }
 }

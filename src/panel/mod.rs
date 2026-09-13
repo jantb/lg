@@ -1,5 +1,4 @@
 pub mod agent;
-pub mod arena;
 pub mod author;
 pub mod branches;
 pub mod commit;
@@ -23,7 +22,6 @@ pub mod settings;
 pub mod solid;
 pub mod stage_all;
 pub mod status;
-pub mod trench;
 pub mod worktree;
 
 /// Splits `text` into chunks no wider than `width`, breaking on spaces so a
