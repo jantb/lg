@@ -533,7 +533,11 @@ fn draw_fighters(scene: &Scene, seed: usize, t: f32, since: Option<f32>, put: Pu
     // walls and riding up and down; once the shot is away it climbs out and
     // peels off.
     let (xl, xr, fy, ty) = scene.floor(0.74);
-    let phase = seed as f32 * 0.7;
+    // The seed only sets where in the weave the run starts. It is folded
+    // into a few seconds first: a seed taken straight would be a float so
+    // large that adding the clock to it changed nothing, and the run would
+    // stand still.
+    let phase = (hash(seed, 0x5EED) % (TIE_PASS_S * 100.0) as u64) as f32 / 100.0;
     let u = 0.5 + 0.28 * (t * 2.1 + phase).sin();
     let hv = 0.38 + 0.16 * (t * 1.5 + phase).sin();
     let xw = xl + (xr - xl) * u + after * 4.0;
@@ -653,8 +657,12 @@ mod tests {
     use super::*;
 
     fn picture(width: usize, height: usize, ms: u64, boom: Option<u64>) -> String {
+        seeded(0, width, height, ms, boom)
+    }
+
+    fn seeded(seed: usize, width: usize, height: usize, ms: u64, boom: Option<u64>) -> String {
         let mut grid = vec![vec![' '; width]; height];
-        frame(0, width, height, ms, boom, &mut |x, y, c, _| grid[y][x] = c);
+        frame(seed, width, height, ms, boom, &mut |x, y, c, _| grid[y][x] = c);
         grid.into_iter()
             .map(|row| row.into_iter().collect::<String>())
             .collect::<Vec<_>>()
@@ -699,6 +707,26 @@ mod tests {
         for ms in (0..12_000).step_by(700) {
             picture(40, 6, ms, Some(3_000));
             picture(16, 4, ms, None);
+        }
+    }
+
+    #[test]
+    fn the_run_flies_whatever_the_seed_is() {
+        // Seeds come off the clock in nanoseconds, so they are huge.
+        for seed in [0usize, 7, 0xF1E2_D3C4_B5A6_9788] {
+            let places: std::collections::HashSet<usize> = (0..6_000)
+                .step_by(250)
+                .filter_map(|ms| {
+                    seeded(seed, 120, 24, ms, None)
+                        .lines()
+                        .enumerate()
+                        .find_map(|(row, line)| line.find(">=[O]=<").map(|col| row * 1000 + col))
+                })
+                .collect();
+            assert!(
+                places.len() > 4,
+                "the X-wing weaves down the trench for seed {seed}, not sits still"
+            );
         }
     }
 }
