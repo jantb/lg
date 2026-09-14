@@ -176,7 +176,7 @@ fn shotgun_paint(c: char) -> Option<Color> {
 
 /// The base, what is loose in it and what is in the air.
 struct World {
-    key: (usize, usize, usize),
+    key: (usize, usize),
     tick: u64,
     rng: Rng,
     map: Map,
@@ -412,12 +412,12 @@ fn light(d: f32) -> f32 {
 impl Sim for World {
     const TICK_MS: u64 = 33;
 
-    fn new(seed: usize, width: usize, height: usize, tick: u64) -> Self {
+    fn new(seed: usize, width: usize, _height: usize, tick: u64) -> Self {
         let mut rng = Rng::new(seed ^ 0x1993);
         let map = Map::maze(&mut rng, 25, 25, 4);
         let walker = Walker::new(&map, &mut rng);
         let mut world = Self {
-            key: (seed, width, height),
+            key: (seed, width),
             tick,
             rng,
             map,
@@ -442,7 +442,7 @@ impl Sim for World {
         world
     }
 
-    fn key(&self) -> (usize, usize, usize) {
+    fn key(&self) -> (usize, usize) {
         self.key
     }
 
@@ -479,8 +479,8 @@ impl Sim for World {
         self.take_a_shot();
     }
 
-    fn draw(&self, _ms: u64, put: &mut dyn FnMut(usize, usize, char, Style)) {
-        let (w, rows) = (self.key.1, self.key.2);
+    fn draw(&self, _ms: u64, rows: usize, put: &mut dyn FnMut(usize, usize, char, Style)) {
+        let w = self.key.1;
         let mut frame = Frame::new(w, rows);
         let swing = (self.walker.walked * 3.0).sin();
         let view = View {

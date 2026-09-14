@@ -93,8 +93,8 @@ impl Sim for Pit {
         pit
     }
 
-    fn key(&self) -> (usize, usize, usize) {
-        (self.seed, self.width, self.height)
+    fn key(&self) -> (usize, usize) {
+        (self.seed, self.width)
     }
 
     fn tick(&self) -> u64 {
@@ -120,7 +120,9 @@ impl Sim for Pit {
         self.replenish_food();
     }
 
-    fn draw(&self, ms: u64, put: &mut dyn FnMut(usize, usize, char, Style)) {
+    fn draw(&self, ms: u64, height: usize, put: &mut dyn FnMut(usize, usize, char, Style)) {
+        let mut grounded = grid::grounded(self.height, height, put);
+        let put = &mut grounded;
         let t = ms as f32 / 1000.0;
         for y in 0..self.height {
             for x in 0..self.width {

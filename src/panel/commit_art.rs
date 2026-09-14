@@ -247,6 +247,27 @@ pub const FLIGHT_TOTAL_MS: u64 = FLIGHT_MS + LANDING_GLOW_MS;
 /// Rows the flight path bulges upward above the straight line, at its most.
 const FLIGHT_ARC: f32 = 1.5;
 
+/// A seed for a new wait: what backdrop it gets and how the game in it
+/// plays out both follow from the seed, so one that never changed would
+/// show the same round every time. Drawn from the clock's nanoseconds and
+/// a count of the seeds handed out, so two waits started in the same
+/// instant still differ.
+pub fn fresh_seed() -> usize {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static HANDED_OUT: AtomicUsize = AtomicUsize::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as usize);
+    let n = HANDED_OUT.fetch_add(1, Ordering::Relaxed);
+    // Stir the bits so consecutive seeds do not just differ in the low
+    // ones, which is all a backdrop pick by remainder would see.
+    let mut x = nanos ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    x ^= x >> 33;
+    x
+}
+
 /// What is on show for one generation: the language of the commit, the
 /// seed that picked its backdrop, the clock, and the diff going into the
 /// network. Everything but the box it is drawn in.

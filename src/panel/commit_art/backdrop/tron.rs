@@ -111,8 +111,8 @@ impl Sim for Arena {
         arena
     }
 
-    fn key(&self) -> (usize, usize, usize) {
-        (self.seed, self.width, self.height)
+    fn key(&self) -> (usize, usize) {
+        (self.seed, self.width)
     }
 
     fn tick(&self) -> u64 {
@@ -137,7 +137,9 @@ impl Sim for Arena {
         }
     }
 
-    fn draw(&self, ms: u64, put: &mut dyn FnMut(usize, usize, char, Style)) {
+    fn draw(&self, ms: u64, height: usize, put: &mut dyn FnMut(usize, usize, char, Style)) {
+        let mut grounded = grid::grounded(self.height, height, put);
+        let put = &mut grounded;
         for g in &self.ghosts {
             let into = self.tick.saturating_sub(g.since) as f32 / WALL_FADE_TICKS as f32;
             let left = (1.0 - into).clamp(0.0, 1.0) * 0.6;
@@ -468,9 +470,11 @@ mod tests {
             "the survivors' walls still stand"
         );
         let mut drawn = Vec::new();
-        arena.draw(arena.tick * TICK_MS + 30, &mut |px, py, c, _| {
-            drawn.push((px, py, c))
-        });
+        arena.draw(
+            arena.tick * TICK_MS + 30,
+            arena.height,
+            &mut |px, py, c, _| drawn.push((px, py, c)),
+        );
         assert!(
             drawn.iter().any(|&(px, py, c)| px.abs_diff(x) <= 4
                 && py.abs_diff(y) <= 2
@@ -533,5 +537,33 @@ mod tests {
         });
         assert_ne!(a, later, "three ticks on, things have moved");
         assert!(!a.is_empty());
+    }
+
+    #[test]
+    fn a_shorter_box_shows_the_same_round_going_on() {
+        let seed = 11;
+        let mut before = Vec::new();
+        frame(seed, 80, 14, 5_000, &mut |x, y, c, s| {
+            before.push((x, y, c, s))
+        });
+        // Two lines of message land above the scene, taking two rows off it.
+        let later = 5_000 + TICK_MS * 3;
+        let mut shorter = Vec::new();
+        frame(seed, 80, 12, later, &mut |x, y, c, s| {
+            shorter.push((x, y, c, s))
+        });
+        let mut full = Vec::new();
+        frame(seed, 80, 14, later, &mut |x, y, c, s| {
+            full.push((x, y, c, s))
+        });
+        let expected: Vec<_> = full
+            .into_iter()
+            .filter_map(|(x, y, c, s)| (y >= 2).then_some((x, y - 2, c, s)))
+            .collect();
+        assert_eq!(
+            shorter, expected,
+            "the round carries on with its top rows out of view"
+        );
+        assert!(!shorter.is_empty());
     }
 }

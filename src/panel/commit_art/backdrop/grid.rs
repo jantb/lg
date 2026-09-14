@@ -253,16 +253,38 @@ pub(super) fn burning(explosions: &[Explosion], x: usize, y: usize) -> bool {
 }
 
 /// A simulation that runs on a fixed tick and can be drawn at any moment
-/// within one.
+/// within one. It is started at the height the box had then and keeps it:
+/// the message streaming in above takes rows off the box as it grows, and
+/// a game that started over each time a line landed would never get
+/// anywhere. Each draw is told the rows it has now instead.
 pub(super) trait Sim: Sized + 'static {
     /// Milliseconds between steps.
     const TICK_MS: u64;
     fn new(seed: usize, width: usize, height: usize, tick: u64) -> Self;
-    /// The seed and size this was started with.
-    fn key(&self) -> (usize, usize, usize);
+    /// The seed and width this was started with. The height is not part of
+    /// it: the same world is drawn into whatever rows are left.
+    fn key(&self) -> (usize, usize);
     fn tick(&self) -> u64;
     fn step(&mut self);
-    fn draw(&self, ms: u64, put: &mut dyn FnMut(usize, usize, char, Style));
+    /// Draw the world into `height` rows.
+    fn draw(&self, ms: u64, height: usize, put: &mut dyn FnMut(usize, usize, char, Style));
+}
+
+/// A `put` into `height` rows for a world `world_height` rows tall: the
+/// world keeps its feet on the ground line, so when the box is shorter the
+/// top rows are out of view, and when it is taller the sky above is empty.
+pub(super) fn grounded<'a>(
+    world_height: usize,
+    height: usize,
+    put: &'a mut dyn FnMut(usize, usize, char, Style),
+) -> impl FnMut(usize, usize, char, Style) + 'a {
+    let hidden = world_height.saturating_sub(height);
+    let lowered = height.saturating_sub(world_height);
+    move |x, y, c, style| {
+        if y >= hidden {
+            put(x, y - hidden + lowered, c, style);
+        }
+    }
 }
 
 /// Simulations kept at once. The commit box has one size at a time, but the
@@ -277,7 +299,8 @@ const MAX_CATCH_UP: u64 = 400;
 /// clock and seed only if the simulation that got there is the same one
 /// every time, so it is stepped forward to the clock rather than rebuilt.
 /// The clock is expected to run forward: a call for an earlier `ms` than
-/// the one caught up to starts a fresh round.
+/// the one caught up to starts a fresh round. A change of height does not:
+/// the world that is running is drawn into the rows there are.
 pub(super) fn frame<S: Sim>(
     store: &'static LocalKey<RefCell<Vec<S>>>,
     seed: usize,
@@ -291,7 +314,7 @@ pub(super) fn frame<S: Sim>(
     }
     let target = ms / S::TICK_MS;
     store.with_borrow_mut(|sims| {
-        let same = |s: &S| s.key() == (seed, width, height);
+        let same = |s: &S| s.key() == (seed, width);
         let stale = |s: &S| s.tick() > target || target - s.tick() > MAX_CATCH_UP;
         sims.retain(|s| !(same(s) && stale(s)));
         let index = match sims.iter().position(same) {
@@ -308,6 +331,6 @@ pub(super) fn frame<S: Sim>(
         while sim.tick() < target {
             sim.step();
         }
-        sim.draw(ms, put);
+        sim.draw(ms, height, put);
     });
 }

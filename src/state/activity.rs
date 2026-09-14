@@ -274,7 +274,7 @@ impl AppState {
             handle: Some(handle),
             output: String::new(),
             spinner: 0,
-            scene: self.animation_tick,
+            scene: crate::panel::commit_art::fresh_seed(),
             arrivals: Vec::new(),
             first_output_ms: None,
             feed,
