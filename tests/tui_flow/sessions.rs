@@ -485,7 +485,7 @@ fn closing_a_session_with_no_conflict_opens_no_modal() {
     assert_eq!(app.state.modal, Modal::None);
 }
 
-/// A checkout holds one session of each kind, and both get a row under it —
+/// A checkout holds an agent and a shell at once, and both get a row under it —
 /// starting a terminal must not be mistaken for the claude already there.
 #[test]
 fn a_checkout_lists_its_claude_and_its_terminal_side_by_side() {
@@ -525,6 +525,87 @@ fn a_checkout_lists_its_claude_and_its_terminal_side_by_side() {
         Some(terminal.to_string()),
         "the second row under the checkout is the terminal"
     );
+}
+
+/// A checkout can hold several shells at once: one running a build, the next
+/// reading its log. Each gets its own row, and its own number to be told by.
+#[test]
+fn a_checkout_holds_several_terminals_at_once() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state.workspace_root = Some("/workspace".into());
+    app.state.repo_root = Some("/workspace".into());
+    app.state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        worktree("/workspace.worktrees/feat-x", "feat/x"),
+    ];
+    let dir = "/workspace.worktrees/feat-x";
+    let first = session_of(&mut app, "sleep 30", dir, SessionKind::Terminal);
+    let second = session_of(&mut app, "sleep 30", dir, SessionKind::Terminal);
+    assert_ne!(first, second, "asking for another terminal must open one");
+    assert_eq!(app.state.sessions.len(), 2);
+
+    app.state.show_diff();
+    app.state.focus = Pane::Status;
+    // Root, the worktree, then a row for each of its terminals.
+    app.state.nested_repo_tree_idx = 3;
+    app.send_key(key(KeyCode::Enter)).unwrap();
+    assert_eq!(
+        app.state.session_view().map(|id| id.to_string()),
+        Some(second.to_string()),
+        "each terminal is reachable from its own row"
+    );
+
+    app.render().unwrap();
+    let screen = buffer_text(&app);
+    assert!(
+        screen.contains("terminal 2"),
+        "the second terminal should be told from the first: {screen}"
+    );
+}
+
+/// Opening a session moves lg to the checkout it runs in: the diff beside a
+/// worktree's terminal should be that worktree's, not the one left behind.
+#[test]
+fn showing_a_session_moves_the_repository_to_its_checkout() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state.workspace_root = Some("/workspace".into());
+    app.state.repo_root = Some("/workspace".into());
+    let dir = "/workspace.worktrees/feat-x";
+    session_of(&mut app, "sleep 30", dir, SessionKind::Terminal);
+    assert_eq!(
+        app.state.pending_action,
+        Some(lg::state::PendingAction::SwitchRepository {
+            target: lg::state::RepoTarget::Path(dir.into()),
+        }),
+        "the session's checkout becomes the one lg is showing"
+    );
+}
+
+/// A session in the checkout already being shown moves nothing: switching to
+/// where lg already is would reload the panes for no reason.
+#[test]
+fn showing_a_session_in_the_current_checkout_switches_nothing() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state.workspace_root = Some("/workspace".into());
+    app.state.repo_root = Some("/workspace".into());
+    session_of(&mut app, "sleep 30", "/workspace", SessionKind::Terminal);
+    assert_eq!(app.state.pending_action, None);
+}
+
+/// An agent is still one to a checkout: two claudes editing the same files is
+/// a mix-up, so asking again lands on the one already running.
+#[test]
+fn asking_for_an_agent_twice_finds_the_one_already_running() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
+    app.state.repo_root = Some("/workspace".into());
+    let dir = "/workspace.worktrees/feat-x";
+    let first = session_of(&mut app, "sleep 30", dir, SessionKind::Claude);
+    let again = session_of(&mut app, "sleep 30", dir, SessionKind::Claude);
+    assert_eq!(first, again);
+    assert_eq!(app.state.sessions.len(), 1);
 }
 
 #[test]
@@ -824,6 +905,9 @@ fn a_worktree_running_a_session_is_not_removed_from_under_it() {
         RepoAction::RemoveWorktree,
     ] {
         app.state.status = None;
+        // Showing the session queued a switch to its checkout; this test is
+        // about what the menu action does, so it starts from nothing pending.
+        app.state.pending_action = None;
         menu::run(&mut app.state, code);
 
         assert!(

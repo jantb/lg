@@ -1,9 +1,9 @@
 //! Which coding agent to start in the selected checkout.
 //!
-//! A checkout holds one session of each kind, so this is a choice about what to
-//! run rather than about replacing anything: claude, codex and pi can all be
-//! open on the same worktree at once. The list is short and the letters are
-//! fixed, so `s x` starts codex without ever reading it — the rows are there
+//! A checkout holds one session of each agent kind, so this is a choice about
+//! what to run rather than about replacing anything: claude, codex and pi can
+//! all be open on the same worktree at once. The list is short and the letters
+//! are fixed, so `s x` starts codex without ever reading it — the rows are there
 //! for the first few times, and for saying which one `s` will hand a conflict
 //! to.
 

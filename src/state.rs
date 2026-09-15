@@ -76,7 +76,8 @@ pub struct AppState {
 
     pub collapsed_dirs: HashSet<String>,
 
-    /// Terminal sessions lg is keeping alive, one per checkout.
+    /// Terminal sessions lg is keeping alive: one agent of each kind per
+    /// checkout, and any number of shells.
     pub sessions: crate::session::Sessions,
     pub main_view: MainView,
     /// Keys go to the focused session instead of to lg.

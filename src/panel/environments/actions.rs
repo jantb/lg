@@ -77,9 +77,11 @@ pub(super) fn open_commit_draft(state: &mut AppState, draft_idx: usize) {
     state.commit_files_scroll = 0;
 }
 
-/// Start a session of `kind` in the selected checkout, or show the one already
-/// running there. One session of each kind per checkout, so this is also how
-/// you get back to a session you left.
+/// Start a session of `kind` in the selected checkout, or show the agent
+/// already running there. One agent of each kind per checkout, so this is also
+/// how you get back to an agent you left. A terminal is started every time it
+/// is asked for: a checkout can hold as many shells as there is work to run in
+/// them, and the one already open is a row away in the tree.
 pub(crate) fn start_session_for_selection(
     state: &mut AppState,
     kind: crate::session::SessionKind,
@@ -89,9 +91,14 @@ pub(crate) fn start_session_for_selection(
         state.set_status("select a repository or worktree first", false);
         return;
     };
-    if let Some(id) = state
-        .sessions
-        .for_dir_kind(std::path::Path::new(&path), kind)
+    if let Some(id) = kind
+        .is_agent()
+        .then(|| {
+            state
+                .sessions
+                .for_dir_kind(std::path::Path::new(&path), kind)
+        })
+        .flatten()
     {
         state.show_session(id);
         state.session_capture = true;
@@ -279,7 +286,7 @@ pub(super) fn close_selected_session(state: &mut AppState) {
     let closed = state
         .sessions
         .get(id)
-        .map(|session| format!("{} in {}", session.kind.label(), session.label))
+        .map(|session| format!("{} in {}", session.kind_label(), session.label))
         .unwrap_or_else(|| "session".to_string());
     state.sessions.close(id);
     if state.session_view().is_none() {

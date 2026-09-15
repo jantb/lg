@@ -447,11 +447,11 @@ fn session_line(
     };
     // The dot says what it is doing; the word repeats it for anyone the colour
     // alone does not reach, and the caret still marks output nobody has read.
-    let kind = session.kind.label();
+    let kind = session.kind_label();
     let state_text = match &session.status {
         crate::session::SessionStatus::Ended(notice) => format!("{kind} {notice}"),
         crate::session::SessionStatus::Running => {
-            let mut text = kind.to_string();
+            let mut text = kind.clone();
             if let Some(word) = activity_word(session.activity()) {
                 text.push_str(" \u{b7} ");
                 text.push_str(word);

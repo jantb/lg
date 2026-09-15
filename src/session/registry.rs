@@ -86,21 +86,33 @@ impl Sessions {
     }
 
     /// Every session running in `dir`, in the order they were started. A
-    /// checkout can have one of each kind, so this is what the tree lists under
-    /// it.
+    /// checkout can have one agent of each kind and any number of shells, so
+    /// this is what the tree lists under it.
     pub fn for_dir(&self, dir: &Path) -> impl Iterator<Item = &Session> {
         self.items
             .iter()
             .filter(move |session| same_dir(&session.cwd, dir))
     }
 
-    /// The `kind` session running in `dir`, if there is one. One session of
-    /// each kind per checkout is the whole point: asking for a terminal in a
-    /// worktree twice finds the first one again.
+    /// The `kind` session running in `dir`, if there is one. Asking for an
+    /// agent in a worktree twice finds the first one again; for shells, of
+    /// which a checkout may hold several, this is merely the oldest.
     pub fn for_dir_kind(&self, dir: &Path, kind: SessionKind) -> Option<SessionId> {
         self.for_dir(dir)
             .find(|session| session.kind == kind)
             .map(|session| session.id)
+    }
+
+    /// The number to give a new `kind` session in `dir`: the lowest not
+    /// already taken there. Numbers stay put for as long as a session lives,
+    /// so a gap left by a closed shell is what the next one fills.
+    fn next_seq(&self, dir: &Path, kind: SessionKind) -> usize {
+        let taken: Vec<usize> = self
+            .for_dir(dir)
+            .filter(|session| session.kind == kind)
+            .map(|session| session.seq)
+            .collect();
+        (1..).find(|seq| !taken.contains(seq)).unwrap_or(1)
     }
 
     /// Whether anything at all is running in `dir`. Removing a checkout out
@@ -139,10 +151,16 @@ impl Sessions {
             })
     }
 
-    /// Start the session `spec` asks for, or hand back the one of that kind
-    /// already running there.
+    /// Start the session `spec` asks for, or hand back the agent of that kind
+    /// already running there. A shell is always started fresh: several at once
+    /// in one checkout is the point of asking for another.
     pub fn start(&mut self, spec: SessionSpec, size: (u16, u16)) -> Result<SessionId> {
-        if let Some(existing) = self.for_dir_kind(&spec.cwd, spec.kind) {
+        if let Some(existing) = spec
+            .kind
+            .is_agent()
+            .then(|| self.for_dir_kind(&spec.cwd, spec.kind))
+            .flatten()
+        {
             self.focus(existing);
             return Ok(existing);
         }
@@ -216,7 +234,12 @@ impl Sessions {
         if let Some(existing) = self
             .items
             .iter()
-            .find(|s| s.cwd == spec.cwd && s.kind == spec.kind && s.label == spec.label)
+            .find(|s| {
+                s.kind.is_agent()
+                    && s.cwd == spec.cwd
+                    && s.kind == spec.kind
+                    && s.label == spec.label
+            })
             .map(|s| s.id)
         {
             self.focus(existing);
@@ -224,6 +247,7 @@ impl Sessions {
         }
 
         let size = (size.0.max(1), size.1.max(1));
+        let seq = self.next_seq(&spec.cwd, spec.kind);
         let process = PtyProcess::start(spawn, size)?;
         let id = SessionId(self.next_id);
         self.next_id += 1;
@@ -231,6 +255,7 @@ impl Sessions {
         self.items.push(Session {
             id,
             label: spec.label,
+            seq,
             cwd: spec.cwd,
             sandboxed: spec.sandboxed,
             kind: spec.kind,

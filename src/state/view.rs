@@ -143,11 +143,38 @@ impl AppState {
         self.mode == AppMode::Git
     }
 
-    /// Show a session in the main pane, and hand it the keyboard.
+    /// Show a session in the main pane, and hand it the keyboard. The rest of
+    /// lg follows it to its checkout: a session is work being done in one
+    /// worktree, and the diff, branches and commits beside it are only useful
+    /// if they are that worktree's rather than whichever one was last looked
+    /// at.
     pub fn show_session(&mut self, id: crate::session::SessionId) {
         self.sessions.focus(id);
         self.main_view = MainView::Session(id);
         self.focus = Pane::Main;
+        self.follow_session_checkout(id);
+    }
+
+    /// Queue the switch to the checkout a session runs in, unless lg is
+    /// already showing it. Nothing to switch to if lg has no repository at all
+    /// yet: the switch is anchored on one.
+    fn follow_session_checkout(&mut self, id: crate::session::SessionId) {
+        let Some(cwd) = self.sessions.get(id).map(|session| session.cwd.clone()) else {
+            return;
+        };
+        if self.workspace_root.is_none() && self.repo_root.is_none() {
+            return;
+        }
+        if self
+            .repo_root
+            .as_ref()
+            .is_some_and(|root| crate::session::same_dir(std::path::Path::new(root), &cwd))
+        {
+            return;
+        }
+        self.pending_action = Some(crate::state::PendingAction::SwitchRepository {
+            target: crate::state::RepoTarget::Path(cwd),
+        });
     }
 
     /// Go back to the diff, releasing the keyboard.

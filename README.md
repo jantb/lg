@@ -24,8 +24,9 @@ agents safely.
 - **Conflict assistance.** An in-app conflict editor with model-suggested
   resolutions.
 - **Embedded sessions.** Run a coding agent (claude, codex or pi) or your own
-  shell inside `lg`, one of each per checkout. Sessions keep running while you
-  look at something else, and `lg` shows what the agent is doing.
+  shell inside `lg`: one agent of each kind per checkout, and as many shells as
+  you like. Sessions keep running while you look at something else, and `lg`
+  shows what the agent is doing.
 - **Sandboxing.** Agents and dev tools can run inside a macOS Seatbelt profile
   with a filtering network proxy, via `lg sandbox ...`.
 - **Scoped configuration.** Settings live at user, repository or worktree scope

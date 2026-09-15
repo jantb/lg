@@ -1,11 +1,15 @@
-//! Terminal sessions lg keeps alive — one of each kind per checkout.
+//! Terminal sessions lg keeps alive — one agent of each kind per checkout,
+//! and as many shells as are wanted.
 //!
 //! A session is a program running on a pseudo terminal in one worktree, plus
 //! the parsed screen it has drawn so far. Two sorts are on offer: a coding
 //! agent — claude, codex or pi — and the user's own shell. Sessions keep
 //! running and keep being read while lg shows something else, so several
 //! checkouts can be worked on at once and switched between, and one checkout
-//! can hold every kind at the same time.
+//! can hold every kind at the same time. Agents are one to a checkout, since
+//! two claudes editing the same files is a mistake rather than a feature;
+//! shells are not, because running a build in one and reading a log in the
+//! next is ordinary work.
 
 use anyhow::Result;
 use std::fs::OpenOptions;
@@ -151,6 +155,11 @@ pub struct SessionSpec {
 pub struct Session {
     pub id: SessionId,
     pub label: String,
+    /// Which shell in this checkout this is, counting from one. Only shells
+    /// can be several in one place, so for everything else it is always 1.
+    /// The number is handed out at startup and kept for the session's life, so
+    /// closing terminal 1 does not renumber terminal 2 under the user's hands.
+    pub seq: usize,
     pub cwd: PathBuf,
     pub sandboxed: bool,
     pub kind: SessionKind,
@@ -220,9 +229,18 @@ impl Session {
             .is_some_and(|at| at.elapsed().as_millis() < OUTPUT_ACTIVE_MS)
     }
 
+    /// What this session is called by its kind: the program's name, and the
+    /// number that tells two shells in the same checkout apart.
+    pub fn kind_label(&self) -> String {
+        match self.seq {
+            0 | 1 => self.kind.label().to_string(),
+            seq => format!("{} {seq}", self.kind.label()),
+        }
+    }
+
     /// Line for the session pane's frame.
     pub fn title(&self) -> String {
-        let mut title = format!("{} \u{b7} {}", self.kind.label(), self.label);
+        let mut title = format!("{} \u{b7} {}", self.kind_label(), self.label);
         if self.sandboxed {
             title.push_str(" \u{b7} sandboxed");
         }
@@ -736,6 +754,7 @@ mod tests {
         Session {
             id: SessionId(id),
             label: format!("session {id}"),
+            seq: 1,
             cwd: PathBuf::from(cwd),
             sandboxed: false,
             kind,

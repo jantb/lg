@@ -226,7 +226,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "t",
-                help: "Start or show a terminal here",
+                help: "Open a terminal here",
                 footer: Some(("t", "terminal")),
             },
             Binding {
