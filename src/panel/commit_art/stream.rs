@@ -2,84 +2,161 @@
 
 use super::*;
 
-/// The token in slot `slot` of the stream at time `t`, or none for a gap:
-/// the next character of the diff, coloured for the side of the diff it is
-/// on, or an abstract glyph when there is no diff to show. Each slot is
-/// hashed for its own hue, so the stream is a jumble rather than a pattern,
-/// and every token glitters at its own pace. The hue also drifts with time
-/// and along the stream, so the whole thing slowly cycles through the
-/// rainbow.
-pub(super) fn token(feed: &Feed, slot: usize, along: f32, t: f32) -> Option<(char, Style)> {
-    let seed = hash(slot, 11);
-    if !feed.occupied(slot) {
+/// One row of the stream: how far into the diff the code on it is taken
+/// from, and what keeps its twinkling apart from the rest. The lane at the
+/// wire is the one the network reads, and takes the diff from where it
+/// stands; the lanes above and below it are shifted a line back and on from
+/// there, so the block of them reads as the code it is.
+pub(super) struct Lane {
+    pub(super) y: usize,
+    pub(super) shift: isize,
+    pub(super) salt: usize,
+    /// How far this lane is from the wire, 0 at it: the ones out at the
+    /// edge of the stream are held back a little.
+    pub(super) depth: usize,
+}
+
+/// The lanes of a stream `rows` rows tall starting at `y`, with the wire
+/// leaving it on row `wire`. Rows above the wire carry the lines before the
+/// one at it and rows below the lines after, so the stream reads down the
+/// diff the way the file does.
+pub(super) fn lanes(feed: &Feed, y: usize, rows: usize, wire: usize) -> Vec<Lane> {
+    (y..y + rows)
+        .map(|row| {
+            let away = row as isize - wire as isize;
+            let shift = feed.lane_shift(away.unsigned_abs()) as isize;
+            Lane {
+                y: row,
+                shift: if away < 0 { -shift } else { shift },
+                salt: if away == 0 { 0 } else { row.wrapping_mul(977) },
+                depth: away.unsigned_abs(),
+            }
+        })
+        .collect()
+}
+
+impl Lane {
+    /// Where on the tape this lane reads the token in slot `slot` from.
+    ///
+    /// Slots rise towards the network, which is on the right, so a run of
+    /// text laid out slot by slot would come out mirrored. Taking the tape
+    /// backwards puts it the right way round for a reader: the code drifts
+    /// rightwards into the network and reads left to right on the way.
+    pub(super) fn pos(&self, slot: usize) -> usize {
+        (FEED_ORIGIN as isize - slot as isize + self.shift).max(0) as usize
+    }
+}
+
+/// The token in slot `slot` of `lane` at time `t`, or none for a gap: the
+/// next character of the diff in the colour the code in it is read in, or an
+/// abstract glyph when there is no diff to show. Every token glitters at its
+/// own pace, and the lanes away from the wire sit back behind the one on it.
+pub(super) fn token(
+    feed: &Feed,
+    lane: &Lane,
+    slot: usize,
+    along: f32,
+    t: f32,
+) -> Option<(char, Style)> {
+    let seed = hash(slot.wrapping_add(lane.salt), 11);
+    let pos = lane.pos(slot);
+    if !feed.occupied(pos, seed) {
         return None;
     }
-    let (glyph, side) = feed.at(slot).unwrap_or_else(|| {
-        let glyph = TOKEN_GLYPHS[((seed >> 8) % TOKEN_GLYPHS.len() as u64) as usize];
-        (glyph, Side::Context)
-    });
     let own_hue = ((seed >> 16) % 1_000) as f32 / 1_000.0;
-    let color = match side {
-        Side::Added => mix(Color::Rgb(120, 255, 140), Color::Rgb(40, 200, 90), own_hue),
-        Side::Removed => mix(Color::Rgb(255, 120, 130), Color::Rgb(230, 60, 80), own_hue),
-        Side::Context => hue(own_hue * 0.35 + along * 0.5 + t * 0.12),
-    };
+    let (glyph, color) = feed.at(pos).unwrap_or_else(|| {
+        let glyph = TOKEN_GLYPHS[((seed >> 8) % TOKEN_GLYPHS.len() as u64) as usize];
+        // With no diff to show the stream cycles through the rainbow, the
+        // hue drifting with time and along the stream.
+        (glyph, hue(own_hue * 0.35 + along * 0.5 + t * 0.12))
+    });
     // Each token twinkles on its own period; the brightest go white-hot.
+    // The code has to stay legible through it, so the twinkle lifts the
+    // colour rather than taking it away.
     let rate = 3.0 + ((seed >> 24) % 50) as f32 / 10.0;
     let phase = ((seed >> 32) % 628) as f32 / 100.0;
     let sparkle = 0.5 + 0.5 * (t * rate + phase).sin();
-    let dense = token_fires(feed, slot);
-    let color = if sparkle > 0.85 {
-        mix(color, Color::Rgb(255, 255, 255), (sparkle - 0.85) * 5.0)
+    let dense = lane.depth == 0 && token_fires(feed, slot);
+    let color = if sparkle > 0.9 {
+        mix(color, Color::Rgb(255, 255, 255), (sparkle - 0.9) * 10.0)
     } else {
-        dim(color, 0.55 + 0.45 * sparkle)
+        dim(color, 0.78 + 0.22 * sparkle)
     };
-    let mut style = Style::default().fg(color);
-    if dense || sparkle > 0.85 {
+    let mut style = Style::default().fg(dim(color, 1.0 - 0.16 * lane.depth as f32));
+    if dense || sparkle > 0.9 {
         style = style.add_modifier(Modifier::BOLD);
     }
     Some((glyph, style))
 }
 
-/// When slot `slot` reaches the arrowhead at the end of the stream: the slot
-/// there at time `t` is `STREAM_ORIGIN + t * STREAM_SPEED + 1`.
+/// When slot `slot` reaches the end of the stream, where the lanes are
+/// gathered: the slot there at time `t` is
+/// `STREAM_ORIGIN + t * STREAM_SPEED + 1`.
 pub(super) fn arrival(slot: usize) -> f32 {
     (slot as f32 - STREAM_ORIGIN as f32 - 1.0) / STREAM_SPEED
 }
 
 /// Whether the token in `slot` fires a pulse when it reaches the network:
-/// only a few do, so the paths through the tree stay distinct.
+/// only a few do, so the paths through the tree stay distinct. The network
+/// reads the lane the wire leaves on, which is the unshifted one.
 pub(super) fn token_fires(feed: &Feed, slot: usize) -> bool {
     let seed = hash(slot, 11);
-    feed.occupied(slot) && (seed >> 8) % (TOKEN_GLYPHS.len() as u64) < 2
+    feed.occupied(FEED_ORIGIN.saturating_sub(slot), seed)
+        && (seed >> 8) % (TOKEN_GLYPHS.len() as u64) < 2
 }
 
-/// The stream of tokens flowing right into the root of the network, one
-/// line of them ending in an arrowhead at the wire.
+/// The stream of code flowing right into the root of the network: several
+/// lines of the diff at once, one to a lane, the one at the wire running on
+/// into the tree. A bracket at the end gathers the lanes onto that row,
+/// which is where the tokens leave the stream for the network.
 pub(super) fn draw_stream(
     canvas: &mut Canvas,
     x: usize,
-    y: usize,
     width: usize,
+    lanes: &[Lane],
+    wire: usize,
     t: f32,
     feed: &Feed,
 ) {
     let travelled = (t * STREAM_SPEED) as usize;
-    for col in 0..width.saturating_sub(1) {
-        let slot = STREAM_ORIGIN + travelled + width - col;
-        let along = col as f32 / width.max(1) as f32;
-        if let Some((c, style)) = token(feed, slot, along, t) {
-            canvas.put(x + col, y, c, style);
+    let text_w = width.saturating_sub(1);
+    for lane in lanes {
+        for col in 0..text_w {
+            let slot = STREAM_ORIGIN + travelled + width - col;
+            let along = col as f32 / width.max(1) as f32;
+            if let Some((c, style)) = token(feed, lane, slot, along, t) {
+                canvas.put(x + col, lane.y, c, style);
+            }
         }
     }
-    canvas.put(
-        x + width - 1,
-        y,
-        '\u{25b8}',
-        Style::default()
-            .fg(hue(t * 0.12 + 0.5))
-            .add_modifier(Modifier::BOLD),
-    );
+    draw_gather(canvas, x + text_w, lanes, wire, t);
+}
+
+/// The bracket the lanes are gathered into at the end of the stream, an
+/// arrowhead when the stream is a single lane.
+fn draw_gather(canvas: &mut Canvas, x: usize, lanes: &[Lane], wire: usize, t: f32) {
+    let style = Style::default()
+        .fg(hue(t * 0.12 + 0.5))
+        .add_modifier(Modifier::BOLD);
+    let (Some(first), Some(last)) = (lanes.first(), lanes.last()) else {
+        return;
+    };
+    let (top, bottom) = (first.y, last.y);
+    if top == bottom {
+        canvas.put(x, top, '\u{25b8}', style);
+        return;
+    }
+    for y in top..=bottom {
+        // Only the wire's own row reaches on towards the network; the rest
+        // of the bracket is the column that gathers the lanes onto it.
+        let glyph = match (y == wire, y == top, y == bottom) {
+            (true, true, _) => '\u{256d}',
+            (true, _, true) => '\u{2570}',
+            (true, ..) => '\u{251c}',
+            _ => '\u{2502}',
+        };
+        canvas.put(x, y, glyph, style);
+    }
 }
 
 /// Slots are counted from here so the arithmetic never goes below zero.

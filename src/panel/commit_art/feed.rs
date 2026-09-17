@@ -10,17 +10,22 @@ pub(super) enum Side {
     Context,
 }
 
-/// The diff, ready to be fed into the network a character at a time: what
-/// the model is reading, shown going in. Header lines are left out and runs
-/// of whitespace become one gap, so the stream is the code and not its
-/// indentation; a very long diff is cut, as the stream loops round anyway.
-/// The lines are kept as well, laid out for the grid and coloured by what
-/// the code in them is, for the backdrop that scrolls the change itself past
-/// the reader.
+/// The diff, ready to be shown going in: what the model is reading.
+///
+/// The lines are laid out for the grid and coloured by what the code in
+/// them is, both for the backdrop that scrolls the change itself past the
+/// reader and for the stream that feeds the network. The stream reads them
+/// from `tape`, which is the same lines run together with a break mark
+/// between them, so what flows down it is the code as it stands in the
+/// diff: markers, indentation, syntax colours and all. Hunk headers are
+/// not code and are left out of the tape. A very long diff is cut, as the
+/// stream loops round anyway.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Feed {
-    pub(super) chars: Vec<(char, Side)>,
     pub(super) lines: Vec<GridLine>,
+    pub(super) tape: Vec<(char, Color)>,
+    /// How far apart on the tape the lanes of the stream sit.
+    pub(super) stride: usize,
 }
 
 /// A line of the diff ready to be drawn: each cell a character and the
@@ -38,14 +43,24 @@ pub(super) const TAB_WIDTH: usize = 4;
 /// Slots are counted back from here into the diff; far enough ahead of any
 /// slot the stream reaches in a wait.
 pub(super) const FEED_ORIGIN: usize = STREAM_ORIGIN * 2;
+/// The mark the tape carries where one line of the diff ends and the next
+/// begins.
+pub(super) const LINE_BREAK: char = '\u{21b5}';
+/// The colour of that mark: dim enough to read as punctuation between the
+/// lines rather than as part of them.
+pub(super) const LINE_BREAK_COLOR: Color = Color::Rgb(86, 90, 116);
+/// The least the lanes of the stream are set apart on the tape: wider than
+/// the stream itself, so a diff of very short lines still gives every lane
+/// its own run of code rather than the same one twice.
+pub(super) const MIN_LANE_STRIDE: usize = MAX_STREAM_WIDTH + 8;
 
 impl Feed {
     pub fn from_diff(diff: &str) -> Self {
-        let mut chars: Vec<(char, Side)> = Vec::new();
         let mut lines: Vec<GridLine> = Vec::new();
         // The file the lines below belong to, which is what says how to read
         // the code in them.
         let mut path = String::new();
+        let mut code = Vec::new();
         for line in diff.lines() {
             if let Some(next) = crate::ui::diff_header_path(line) {
                 path = next.to_owned();
@@ -69,54 +84,76 @@ impl Feed {
                 Some('-') => Side::Removed,
                 _ => Side::Context,
             };
-            if lines.len() < FEED_LINE_CAP {
-                lines.push(on_grid(line, &path, side));
+            lines.push(on_grid(line, &path, side));
+            // A hunk header says where in the file the change is, which is
+            // not something the model reads as code.
+            if !line.starts_with("@@") {
+                code.push(lines.len() - 1);
             }
-            if chars.len() < FEED_CAP {
-                for c in line.chars() {
-                    if c.is_whitespace() || c.is_control() {
-                        if chars.last().is_some_and(|&(last, _)| last != ' ') {
-                            chars.push((' ', side));
-                        }
-                    } else {
-                        chars.push((cell(c), side));
-                    }
-                }
-                if chars.last().is_some_and(|&(last, _)| last != ' ') {
-                    chars.push((' ', side));
-                }
-            }
-            if chars.len() >= FEED_CAP && lines.len() >= FEED_LINE_CAP {
+            if lines.len() >= FEED_LINE_CAP {
                 break;
             }
         }
-        chars.truncate(FEED_CAP);
-        Self { chars, lines }
+        let tape = tape_of(&lines, &code);
+        // A line of the diff on average is what sets one lane of the stream
+        // apart from the next.
+        let stride = tape.len().checked_div(code.len()).unwrap_or(0);
+        Self {
+            lines,
+            tape,
+            stride: stride.max(MIN_LANE_STRIDE),
+        }
     }
 
-    /// The character in stream slot `slot`, or none when there is no diff
-    /// to show and the stream falls back to abstract tokens.
+    /// The character at tape position `pos` and the colour it is drawn in,
+    /// or none when there is no diff to show and the stream falls back to
+    /// abstract tokens.
     ///
-    /// Slots rise towards the network, which is on the right, so a run of
-    /// text laid out slot by slot would come out mirrored. Taking the diff
-    /// backwards puts it the right way round for a reader: the words drift
-    /// rightwards into the network and read left to right on the way. The
-    /// stream is a loop either way, so all of the diff goes past.
-    pub(super) fn at(&self, slot: usize) -> Option<(char, Side)> {
-        if self.chars.is_empty() {
+    /// The tape is a loop, so all of the diff goes past however long the
+    /// wait runs.
+    pub(super) fn at(&self, pos: usize) -> Option<(char, Color)> {
+        if self.tape.is_empty() {
             return None;
         }
-        let i = FEED_ORIGIN.saturating_sub(slot);
-        self.chars.get(i % self.chars.len()).copied()
+        self.tape.get(pos % self.tape.len()).copied()
     }
 
-    /// Whether `slot` carries anything: a gap between words carries nothing.
-    pub(super) fn occupied(&self, slot: usize) -> bool {
-        match self.at(slot) {
+    /// Whether the tape carries anything at `pos`: the gaps a line's
+    /// indentation and the spaces in it leave carry nothing. With no diff
+    /// to show, `seed` decides, so the abstract stream has gaps too.
+    pub(super) fn occupied(&self, pos: usize, seed: u64) -> bool {
+        match self.at(pos) {
             Some((c, _)) => c != ' ',
-            None => !hash(slot, 11).is_multiple_of(TOKEN_GAP),
+            None => !seed.is_multiple_of(TOKEN_GAP),
         }
     }
+
+    /// How much to shift a lane of the stream by to put it `n` lanes along
+    /// from the one at the wire: about `n` lines of the diff.
+    pub(super) fn lane_shift(&self, n: usize) -> usize {
+        n * self.stride
+    }
+}
+
+/// The lines of the diff at `code` run together into one tape, with a break
+/// mark where each ends. Trailing blanks are dropped: they are not code, and
+/// the stream is narrow.
+fn tape_of(lines: &[GridLine], code: &[usize]) -> Vec<(char, Color)> {
+    let mut tape: Vec<(char, Color)> = Vec::new();
+    for &i in code {
+        if tape.len() >= FEED_CAP {
+            break;
+        }
+        let line = &lines[i];
+        let end = line
+            .iter()
+            .rposition(|&(c, _)| c != ' ')
+            .map_or(0, |i| i + 1);
+        tape.extend_from_slice(&line[..end]);
+        tape.push((LINE_BREAK, LINE_BREAK_COLOR));
+    }
+    tape.truncate(FEED_CAP);
+    tape
 }
 
 /// A line of the diff as it can be laid out on the grid: tabs opened out to

@@ -24,6 +24,10 @@ pub(super) struct Pipeline {
     /// Where the stream starts and how wide it is.
     pub(super) stream_x: usize,
     pub(super) stream_w: usize,
+    /// The rows the stream runs on: several lines of the diff at once, the
+    /// wire leaving from the one the root of the tree is on.
+    pub(super) stream_y: usize,
+    pub(super) stream_h: usize,
     pub(super) tree: Tree,
     /// Top row of the tree.
     pub(super) tree_y: usize,
@@ -240,9 +244,18 @@ impl Plan {
                     let tree_y = root_target
                         .saturating_sub(tree.nodes[0].row)
                         .clamp(band_y, lowest);
+                    // The stream is a block of lines centred on the wire,
+                    // taking what the band has room for around it.
+                    let root_row = tree_y + tree.nodes[0].row;
+                    let floor = band_y + mascot_h - spare;
+                    let reach = (STREAM_ROWS / 2)
+                        .min(root_row - band_y)
+                        .min(floor - 1 - root_row);
                     Some(Pipeline {
                         stream_x,
                         stream_w,
+                        stream_y: root_row - reach,
+                        stream_h: reach * 2 + 1,
                         tree,
                         tree_y,
                         output_row: (spare > 0).then_some(band_y + mascot_h - 1),

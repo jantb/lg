@@ -662,7 +662,9 @@ mod tests {
 
     fn seeded(seed: usize, width: usize, height: usize, ms: u64, boom: Option<u64>) -> String {
         let mut grid = vec![vec![' '; width]; height];
-        frame(seed, width, height, ms, boom, &mut |x, y, c, _| grid[y][x] = c);
+        frame(seed, width, height, ms, boom, &mut |x, y, c, _| {
+            grid[y][x] = c
+        });
         grid.into_iter()
             .map(|row| row.into_iter().collect::<String>())
             .collect::<Vec<_>>()

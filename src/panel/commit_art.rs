@@ -173,9 +173,14 @@ const TOKEN_GAP: u64 = 3;
 const STREAM_SPEED: f32 = 12.0;
 /// The narrowest the stream may be before the pipeline is dropped, and the
 /// widest it is allowed to be: the width beyond that goes to the tree. The
-/// stream is kept short so the words leaving the network have room.
-const MIN_STREAM_WIDTH: usize = 8;
-const MAX_STREAM_WIDTH: usize = 16;
+/// stream is kept short so the words leaving the network have room, but wide
+/// enough that a run of the code going in is readable in it.
+const MIN_STREAM_WIDTH: usize = 10;
+const MAX_STREAM_WIDTH: usize = 24;
+/// Rows of code the stream carries at once, when the band has room for them
+/// either side of the wire. An odd number: the wire's row and as many above
+/// it as below.
+const STREAM_ROWS: usize = 5;
 /// The network is a tree lying on its side, root at the left where the
 /// stream comes in, leaves at the right. This many levels at most; a low
 /// band gets fewer.
@@ -434,7 +439,16 @@ fn paint(
         let network = Network::new(&pipe.tree, pipe.tree_y, t, feed);
         let root_row = pipe.tree_y + pipe.tree.nodes[0].row;
         exit = (pipe.tree.x + pipe.tree.width() + 1, root_row);
-        draw_stream(&mut canvas, pipe.stream_x, root_row, pipe.stream_w, t, feed);
+        let lanes = lanes(feed, pipe.stream_y, pipe.stream_h, root_row);
+        draw_stream(
+            &mut canvas,
+            pipe.stream_x,
+            pipe.stream_w,
+            &lanes,
+            root_row,
+            t,
+            feed,
+        );
         let style = Style::default().fg(mix(
             Color::Rgb(80, 80, 110),
             Color::Rgb(255, 250, 170),
@@ -632,7 +646,7 @@ mod tests {
             "8ms later is a new frame"
         );
         assert!(
-            first.contains("\u{25b8}"),
+            first.contains(TOKEN_GLYPHS[0]) || first.contains(TOKEN_GLYPHS[1]),
             "tokens flow into the network:\n{first}"
         );
         assert!(first.contains("\u{25cb}"), "the network is drawn:\n{first}");
@@ -791,7 +805,7 @@ mod tests {
         let text = text_of(&lines);
         assert!(text.contains('O'), "the gopher is still there:\n{text}");
         assert!(
-            !text.contains("\u{25b8}"),
+            !text.contains(TOKEN_GLYPHS[0]) && !text.contains(TOKEN_GLYPHS[1]),
             "no room for the token stream:\n{text}"
         );
     }
@@ -803,7 +817,7 @@ mod tests {
              -let sleepy = 1;\n+let sparkly = 2;\n",
         );
         // Headers are not code and do not go down the stream.
-        let text: String = feed.chars.iter().map(|&(c, _)| c).collect();
+        let text: String = feed.tape.iter().map(|&(c, _)| c).collect();
         assert!(!text.contains("100644"), "{text}");
         assert!(text.contains("sparkly"), "{text}");
 
@@ -829,6 +843,33 @@ mod tests {
             bare.contains(TOKEN_GLYPHS[0]) || bare.contains(TOKEN_GLYPHS[1]),
             "{bare}"
         );
+    }
+
+    #[test]
+    fn the_stream_carries_several_lines_of_the_diff_at_once() {
+        // Every line of this diff says `let`, so a row of the stream that is
+        // carrying code says it too, wherever in the diff the row is.
+        let body: String = (0..30)
+            .map(|i| format!("+    let value_{i} = {i} + 1;\n"))
+            .collect();
+        let feed = Feed::from_diff(&format!("diff --git a/x.rs b/x.rs\n@@ -1 +1,30 @@\n{body}"));
+        let rows = (0..60)
+            .map(|frame| {
+                let show = Show {
+                    lang: Language::Rust,
+                    seed: 0,
+                    ms: frame * 80,
+                    feed: &feed,
+                    boom: None,
+                };
+                text_of(&scene(show, 130, 30, false))
+                    .lines()
+                    .filter(|line| line.contains("let"))
+                    .count()
+            })
+            .max()
+            .unwrap_or(0);
+        assert!(rows > 1, "the stream is a block of code, not one line");
     }
 
     #[test]
