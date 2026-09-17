@@ -37,14 +37,19 @@ pub(super) fn lanes(feed: &Feed, y: usize, rows: usize, wire: usize) -> Vec<Lane
 
 impl Lane {
     /// Where on the tape this lane reads the token in slot `slot` from.
-    ///
-    /// Slots rise towards the network, which is on the right, so a run of
-    /// text laid out slot by slot would come out mirrored. Taking the tape
-    /// backwards puts it the right way round for a reader: the code drifts
-    /// rightwards into the network and reads left to right on the way.
     pub(super) fn pos(&self, slot: usize) -> usize {
-        (FEED_ORIGIN as isize - slot as isize + self.shift).max(0) as usize
+        tape_pos(slot, self.shift)
     }
+}
+
+/// Where on the tape a lane shifted by `shift` reads slot `slot` from.
+///
+/// Slots rise towards the network, which is on the right, so a run of text
+/// laid out slot by slot would come out mirrored. Taking the tape backwards
+/// puts it the right way round for a reader: the code drifts rightwards into
+/// the network and reads left to right on the way.
+fn tape_pos(slot: usize, shift: isize) -> usize {
+    (FEED_ORIGIN as isize - slot as isize + shift).max(0) as usize
 }
 
 /// The token in slot `slot` of `lane` at time `t`, or none for a gap: the
@@ -101,8 +106,7 @@ pub(super) fn arrival(slot: usize) -> f32 {
 /// reads the lane the wire leaves on, which is the unshifted one.
 pub(super) fn token_fires(feed: &Feed, slot: usize) -> bool {
     let seed = hash(slot, 11);
-    feed.occupied(FEED_ORIGIN.saturating_sub(slot), seed)
-        && (seed >> 8) % (TOKEN_GLYPHS.len() as u64) < 2
+    feed.occupied(tape_pos(slot, 0), seed) && (seed >> 8) % (TOKEN_GLYPHS.len() as u64) < 2
 }
 
 /// The stream of code flowing right into the root of the network: several
