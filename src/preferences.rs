@@ -40,12 +40,17 @@ impl Default for Writing {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Models {
+    /// Whether lg talks to the model at all. Off, the commit message is typed,
+    /// conflicts are left to the person, and the review assists stay quiet,
+    /// so nothing waits on a server that is not running.
+    pub enabled: bool,
     pub model: String,
     pub endpoint: String,
 }
 impl Default for Models {
     fn default() -> Self {
         Self {
+            enabled: true,
             model: crate::config::LLM_MODEL.into(),
             endpoint: crate::config::MTPLX_CHAT_ENDPOINT.into(),
         }
@@ -436,6 +441,17 @@ fn load_uncached() -> Loaded {
             serde_json::to_value(detect_branches(&crate::git::local_branch_names())),
         );
     }
+    if let Ok(v) = std::env::var("LG_LLM_ENABLED") {
+        let on = !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        );
+        config["models"]["enabled"] = on.into();
+        sources.insert(
+            "models.enabled".into(),
+            "LG_LLM_ENABLED environment override".into(),
+        );
+    }
     if let Ok(v) = std::env::var("LG_LLM_MODEL") {
         config["models"]["model"] = v.into();
         sources.insert(
@@ -745,6 +761,11 @@ fn folder_path(folder: &Path) -> PathBuf {
         .join("folders")
         .join(slug(&folder.to_string_lossy()))
         .join("preferences.toml")
+}
+/// Whether the model is asked for anything: commit messages, conflict
+/// resolutions and review assists. `LG_LLM_ENABLED=0` turns it off for one run.
+pub fn ai_enabled() -> bool {
+    load().config.models.enabled
 }
 pub fn animations_enabled() -> bool {
     let tools = load().config.tools;

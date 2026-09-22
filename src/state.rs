@@ -162,6 +162,9 @@ pub struct AppState {
 
     pub status: Option<StatusMsg>,
     pub decorative_animations: bool,
+    /// Whether the model is asked for anything. Off, the commit message is
+    /// typed by hand and conflicts and reviews are left alone.
+    pub ai_assist: bool,
     pub history_file: Option<std::path::PathBuf>,
     pub status_history: Vec<StatusMsg>,
     pub environment_view: crate::panel::deployment::Environments,
@@ -380,6 +383,7 @@ impl AppState {
 
             status: None,
             decorative_animations: true,
+            ai_assist: crate::preferences::ai_enabled(),
             history_file: None,
             status_history: Vec::new(),
             environment_view: Default::default(),

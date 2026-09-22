@@ -559,7 +559,7 @@ impl AppState {
         self.take_ready_draft();
         self.commit_files_scroll = 0;
         self.commit_cursor = self.commit_message.chars().count();
-        if self.commit_message.is_empty() && !self.generating() {
+        if self.commit_message.is_empty() && !self.generating() && self.ai_assist {
             self.set_status("generating\u{2026}", false);
             self.pending_action = Some(PendingAction::GenerateMessage);
         }

@@ -32,6 +32,10 @@ const HUNK_CONTEXT_LINES: usize = 12;
 /// Hand every conflicted file to the local model, one at a time, in the
 /// background.
 pub(crate) fn spawn_conflict_resolve(state: &mut AppState) {
+    if !state.ai_assist {
+        state.set_status(crate::panel::commit::AI_OFF_NOTICE, false);
+        return;
+    }
     if state.conflict_resolve_job.is_some() {
         state.set_status("the local model is already working on this", false);
         return;

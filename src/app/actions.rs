@@ -60,8 +60,25 @@ fn refresh_llm_settings_state(state: &mut AppState) {
     state.llm_config_path = crate::llm::config_file_display();
 }
 
+/// The actions that send a request to the model server.
+fn asks_the_model(action: &PendingAction) -> bool {
+    matches!(
+        action,
+        PendingAction::GenerateMessage
+            | PendingAction::ReviewAssist(_)
+            | PendingAction::ReviewPrText
+            | PendingAction::ReviewStyleFlags
+            | PendingAction::ReviewChat(_)
+    )
+}
+
 impl App {
     pub(super) fn dispatch_pending(&mut self, action: PendingAction) {
+        if !self.state.ai_assist && asks_the_model(&action) {
+            self.state
+                .set_status(crate::panel::commit::AI_OFF_NOTICE, false);
+            return;
+        }
         match action {
             PendingAction::GenerateMessage => match crate::git::staged_diff() {
                 Ok(diff) => {

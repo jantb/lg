@@ -614,6 +614,11 @@ pub fn place_cursor_at(state: &mut AppState, area: Rect, column: u16, row: u16) 
 pub(crate) const BACKGROUND_NOTICE: &str =
     "generating in the background \u{b7} the commit row under the checkout leads back here";
 
+/// What the status line says when the model is asked for something while
+/// AI assist is switched off.
+pub(crate) const AI_OFF_NOTICE: &str =
+    "AI assist is off \u{b7} turn it on under Settings \u{203a} Models";
+
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let generating = state.generating();
@@ -643,6 +648,10 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         // a reader who can see the answer going wrong should not have to
         // cancel first.
         KeyCode::Char('r') if ctrl => {
+            if !state.ai_assist {
+                state.set_status(AI_OFF_NOTICE, false);
+                return Ok(());
+            }
             state.cancel_generation();
             state.commit_message.clear();
             state.commit_cursor = 0;

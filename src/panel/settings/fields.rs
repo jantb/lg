@@ -304,6 +304,9 @@ pub(super) fn describe(category: &str, field: &Field) -> Option<&'static str> {
             "The instructions given to the model before the staged diff. Enter opens the whole text in the editor; v previews the assembled prompt."
         }
         ("writing", _, "review_style") => "House rules the reviewer checks changes against.",
+        ("models", _, "enabled") => {
+            "Whether lg asks the model at all. Off, commit messages are typed by hand and conflicts and reviews are left alone; use it when no model server is running."
+        }
         ("models", _, "model") => {
             "Model used for commit messages, reviews and summaries. Enter picks from the models the endpoint serves; L opens the model modal with connectivity checks."
         }

@@ -254,7 +254,8 @@ pub(crate) fn open_model_modal(state: &mut AppState) {
 /// out of its own commit history, so the modal opens with a real starting point.
 /// Anything already saved is left alone.
 pub(crate) fn suggest_repo_settings_if_unset(state: &mut AppState) {
-    if crate::settings::is_configured() || state.settings_suggest_job.is_some() {
+    if crate::settings::is_configured() || state.settings_suggest_job.is_some() || !state.ai_assist
+    {
         return;
     }
     let history = match crate::git::recent_commit_messages(30) {
@@ -276,6 +277,7 @@ pub(crate) fn suggest_repo_settings_if_unset(state: &mut AppState) {
 /// Mirrors the stored per-checkout settings into the editable modal fields.
 pub(crate) fn load_repo_settings_into_state(state: &mut AppState) {
     state.decorative_animations = crate::preferences::animations_enabled();
+    state.ai_assist = crate::preferences::ai_enabled();
     let settings = crate::settings::load();
     state.settings_prompt_is_custom = settings.commit_prompt_is_custom();
     state.settings_review_style_is_custom = settings.review_style_is_custom();

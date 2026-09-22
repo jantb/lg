@@ -180,7 +180,9 @@ impl App {
 
         // Off the startup path on purpose: asking the model server what it
         // serves is a round trip, and nothing here waits on the answer.
-        crate::llm::prime_models_async();
+        if crate::preferences::ai_enabled() {
+            crate::llm::prime_models_async();
+        }
 
         let prev_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {

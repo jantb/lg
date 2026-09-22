@@ -246,6 +246,7 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 preferences::save_category(hub.scope, hub.key(), hub.draft.clone())?;
             }
             state.decorative_animations = preferences::animations_enabled();
+            state.ai_assist = preferences::ai_enabled();
             if let Ok(author) = crate::git::author_config() {
                 state.commit_author = format!(
                     "{} <{}>",

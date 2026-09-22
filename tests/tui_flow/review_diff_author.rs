@@ -2355,3 +2355,39 @@ fn review_panel_collapsing_category_recursively_closes_descendants() {
         "reopening the category should keep descendant branches closed: {reopened}"
     );
 }
+
+#[test]
+fn with_ai_assist_off_the_commit_modal_is_typed_by_hand() {
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(80, 24)).unwrap();
+    app.state.ai_assist = false;
+    app.state.files = vec![FileEntry {
+        path: "b.rs".into(),
+        x: 'A',
+        y: ' ',
+    }];
+
+    app.send_key(key(KeyCode::Char('c'))).unwrap();
+    assert_eq!(app.state.modal, Modal::Commit);
+    assert_eq!(
+        app.state.pending_action, None,
+        "nothing is asked of the model"
+    );
+    assert!(!app.state.generating());
+
+    for ch in "fix".chars() {
+        app.send_key(key(KeyCode::Char(ch))).unwrap();
+    }
+    assert_eq!(app.state.commit_message, "fix");
+
+    app.send_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL))
+        .unwrap();
+    assert_eq!(
+        app.state.pending_action, None,
+        "Ctrl-R does not start a generation"
+    );
+    assert_eq!(app.state.commit_message, "fix", "the typed message is kept");
+
+    app.send_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL))
+        .unwrap();
+    assert_eq!(app.state.pending_action, Some(PendingAction::Commit));
+}
