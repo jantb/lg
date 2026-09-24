@@ -123,15 +123,66 @@ fn draw_tabs(state: &AppState, area: Rect, frame: &mut Frame) {
             }
         }
         Tab::Repositories => {
+            let used: usize = spans.iter().map(|span| span.width()).sum();
+            spans.extend(owner_spans(
+                state,
+                (area.width as usize).saturating_sub(used),
+            ));
             if gh.repos_loading.is_some() {
                 spans.push(Span::styled(
-                    format!("{} reading repositories", spinner(state)),
+                    format!("   {} reading repositories", spinner(state)),
                     Style::default().fg(Color::Yellow),
                 ));
             }
         }
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Whose repositories are listed, among everyone whose could be: every owner
+/// by name when they fit in `room`, otherwise the chosen one and where it
+/// stands among them.
+fn owner_spans(state: &AppState, room: usize) -> Vec<Span<'static>> {
+    let gh = &state.github;
+    let name = |owner: &Option<String>| match (owner, &gh.owners) {
+        (Some(org), _) => org.clone(),
+        (None, Some(owners)) if !owners.login.is_empty() => owners.login.clone(),
+        (None, _) => "you".to_string(),
+    };
+    let chosen = Style::default().fg(Color::Cyan);
+    let choices = gh.owner_choices();
+    let mut spans = vec![Span::styled("owner ", LABEL)];
+    if choices.len() < 2 {
+        spans.push(Span::styled(name(&gh.owner), chosen));
+        return spans;
+    }
+    let hint = "  (\u{2190}\u{2192} changes)";
+    let all: usize = choices
+        .iter()
+        .map(|owner| name(owner).chars().count() + 2)
+        .sum();
+    if 6 + all + hint.chars().count() <= room {
+        for owner in &choices {
+            let style = if *owner == gh.owner {
+                chosen.add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette::TEXT_IDLE)
+            };
+            spans.push(Span::styled(format!(" {} ", name(owner)), style));
+        }
+    } else {
+        let at = choices
+            .iter()
+            .position(|owner| *owner == gh.owner)
+            .unwrap_or(0);
+        spans.push(Span::styled(name(&gh.owner), chosen));
+        spans.push(Span::styled(
+            format!(" {}/{}", at + 1, choices.len()),
+            LABEL,
+        ));
+    }
+    spans.push(Span::styled(hint, LABEL));
+    spans
 }
 
 /// A message filling a pane in place of a list: loading, empty, or failed.
@@ -621,6 +672,11 @@ fn draw_repo_list(state: &AppState, area: Rect, frame: &mut Frame) {
                 format!("Enter clones {} from GitHub", gh.query.trim()),
                 false,
             ),
+            (None, false) if gh.query.trim().is_empty() => (
+                "no repositories here you can see \u{2014} \u{2190}\u{2192} lists another owner's"
+                    .to_string(),
+                false,
+            ),
             (None, false) => (
                 "nothing matches \u{2014} type owner/name to clone any repository".to_string(),
                 false,
@@ -782,6 +838,7 @@ fn draw_bottom(state: &AppState, area: Rect, frame: &mut Frame) {
         (Mode::Browse, Tab::Repositories) => ui::key_hints(&[
             ("type", "search"),
             ("\u{2191}\u{2193}", "select"),
+            ("\u{2190}\u{2192}", "owner"),
             ("Enter", "clone"),
             ("Ctrl-R", "reload"),
             ("Tab", "pull requests"),

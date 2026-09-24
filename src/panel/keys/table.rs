@@ -1139,6 +1139,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: None,
             },
             Binding {
+                key: "←/→",
+                help: "Repositories: yours, or an organization's",
+                footer: None,
+            },
+            Binding {
                 key: "Ctrl-S",
                 help: "New pull request: push and open it",
                 footer: None,

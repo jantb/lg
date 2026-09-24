@@ -23,6 +23,9 @@ const PR_FIELDS: &str = "number,title,author,headRefName,baseRefName,state,isDra
 const REPO_INFO_FIELDS: &str = "nameWithOwner,url,defaultBranchRef,mergeCommitAllowed,\
                                 squashMergeAllowed,rebaseMergeAllowed,viewerDefaultMergeMethod";
 const REPO_LIST_FIELDS: &str = "nameWithOwner,description,isPrivate,isFork,isArchived";
+/// The signed-in user and the organizations they belong to, in one call.
+const OWNERS_QUERY: &str =
+    "query=query { viewer { login organizations(first: 100) { nodes { login } } } }";
 
 /// Which pull requests the list shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -211,6 +214,15 @@ impl MergeMethod {
     }
 }
 
+/// Whose repositories there are to list: the signed-in user's own, and those
+/// of each organization they belong to.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Owners {
+    pub login: String,
+    /// Sorted by name, so stepping through them goes in the order shown.
+    pub orgs: Vec<String>,
+}
+
 /// What the repository a checkout belongs to allows and prefers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoInfo {
@@ -253,16 +265,17 @@ pub fn pull_requests(filter: PrFilter) -> Result<Vec<PullRequest>> {
     parse_pull_requests(&run(&args)?)
 }
 
-/// The signed-in user's own repositories, most recently touched first.
-pub fn repositories() -> Result<Vec<Repository>> {
-    parse_repositories(&run(&[
-        "repo",
-        "list",
-        "--limit",
-        REPO_LIMIT,
-        "--json",
-        REPO_LIST_FIELDS,
-    ])?)
+/// The repositories of `owner` — an organization, or the signed-in user when
+/// there is none — most recently touched first.
+pub fn repositories(owner: Option<&str>) -> Result<Vec<Repository>> {
+    let mut args = vec!["repo", "list"];
+    args.extend(owner);
+    args.extend(["--limit", REPO_LIMIT, "--json", REPO_LIST_FIELDS]);
+    parse_repositories(&run(&args)?)
+}
+
+pub fn owners() -> Result<Owners> {
+    parse_owners(&run(&["api", "graphql", "-f", OWNERS_QUERY])?)
 }
 
 // ─── Acting ──────────────────────────────────────────────────────────────────
@@ -609,6 +622,29 @@ struct RawRepository {
     is_archived: bool,
 }
 
+#[derive(Deserialize)]
+struct RawOwnersAnswer {
+    data: RawOwnersData,
+}
+
+#[derive(Deserialize)]
+struct RawOwnersData {
+    viewer: RawViewer,
+}
+
+#[derive(Deserialize)]
+struct RawViewer {
+    login: String,
+    #[serde(default)]
+    organizations: Option<RawOrganizations>,
+}
+
+#[derive(Deserialize)]
+struct RawOrganizations {
+    #[serde(default)]
+    nodes: Vec<Option<RawActor>>,
+}
+
 enum Outcome {
     Passed,
     Pending,
@@ -747,6 +783,27 @@ pub fn parse_repositories(json: &str) -> Result<Vec<Repository>> {
             archived: repo.is_archived,
         })
         .collect())
+}
+
+pub fn parse_owners(json: &str) -> Result<Owners> {
+    let raw: RawOwnersAnswer =
+        serde_json::from_str(json).context("unexpected account details from gh")?;
+    let mut orgs: Vec<String> = raw
+        .data
+        .viewer
+        .organizations
+        .map(|orgs| orgs.nodes)
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .map(|org| org.login)
+        .filter(|login| !login.is_empty())
+        .collect();
+    orgs.sort_by_key(|login| login.to_lowercase());
+    Ok(Owners {
+        login: raw.data.viewer.login,
+        orgs,
+    })
 }
 
 // ─── Running gh ──────────────────────────────────────────────────────────────
@@ -982,6 +1039,28 @@ mod tests {
         assert_eq!(tool.description, "");
         let fork = repos.iter().find(|r| r.name == "me/fork").unwrap();
         assert!(fork.fork && fork.archived);
+    }
+
+    #[test]
+    fn the_signed_in_user_comes_back_with_their_organizations() {
+        let owners = parse_owners(
+            r#"{"data":{"viewer":{"login":"me","organizations":{"nodes":[
+                {"login":"zeta"},{"login":"Acme"},null]}}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(owners.login, "me");
+        assert_eq!(owners.orgs, ["Acme", "zeta"], "listed by name");
+    }
+
+    #[test]
+    fn a_user_in_no_organization_still_has_their_own_repositories() {
+        let owners =
+            parse_owners(r#"{"data":{"viewer":{"login":"me","organizations":{"nodes":[]}}}}"#)
+                .unwrap();
+
+        assert_eq!(owners.login, "me");
+        assert!(owners.orgs.is_empty());
     }
 
     #[test]

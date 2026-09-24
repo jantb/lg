@@ -1,6 +1,6 @@
 //! GitHub from inside lg: the pull requests of the checkout on screen — check
-//! one out, review it, merge it, open a new one — and the user's repositories,
-//! to clone one.
+//! one out, review it, merge it, open a new one — and the repositories of the
+//! user or one of their organizations, to clone one.
 //!
 //! Everything goes through `gh` (see [`crate::github`]). Lists are read on a
 //! thread of their own and picked up by [`poll`]; anything that changes
@@ -12,7 +12,9 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, Mou
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-use crate::github::{MergeMethod, NewPullRequest, PrFilter, PullRequest, RepoInfo, Repository};
+use crate::github::{
+    MergeMethod, NewPullRequest, Owners, PrFilter, PullRequest, RepoInfo, Repository,
+};
 use crate::state::{AppState, GitHubAction, Modal, PendingAction};
 
 mod draw;
@@ -144,6 +146,12 @@ pub struct GitHub {
     pub repo_idx: usize,
     pub repos_error: Option<String>,
     pub repos_loading: Option<Pending<Vec<Repository>>>,
+    /// Whose repositories are listed: one of the organizations in `owners`,
+    /// or the signed-in user when `None`.
+    pub owner: Option<String>,
+    /// The user and their organizations, read with the first repository list.
+    pub owners: Option<Owners>,
+    pub owners_loading: Option<Pending<Owners>>,
     /// What the repository list is narrowed to, typed straight into the tab.
     pub query: String,
 
@@ -153,7 +161,16 @@ pub struct GitHub {
 
 impl GitHub {
     pub fn loading(&self) -> bool {
-        self.prs_loading.is_some() || self.repos_loading.is_some()
+        self.prs_loading.is_some() || self.repos_loading.is_some() || self.owners_loading.is_some()
+    }
+
+    /// Everyone whose repositories can be listed, in the order ←/→ steps
+    /// through them: the user first, then each organization.
+    pub fn owner_choices(&self) -> Vec<Option<String>> {
+        let orgs = self.owners.iter().flat_map(|owners| owners.orgs.iter());
+        std::iter::once(None)
+            .chain(orgs.cloned().map(Some))
+            .collect()
     }
 }
 
@@ -212,12 +229,60 @@ pub fn load_pull_requests(state: &mut AppState) {
 }
 
 pub fn load_repositories(state: &mut AppState) {
+    let owner = state.github.owner.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     drop(crate::git::spawn_pinned(move || {
-        let _ = tx.send(crate::github::repositories().map_err(|err| format!("{err:#}")));
+        let repos = crate::github::repositories(owner.as_deref());
+        let _ = tx.send(repos.map_err(|err| format!("{err:#}")));
     }));
     state.github.repos_loading = Some(rx);
     state.github.repos_error = None;
+    if state.github.owners.is_none() {
+        load_owners(state);
+    }
+}
+
+/// Read which organizations the user belongs to, unless that is already
+/// under way.
+fn load_owners(state: &mut AppState) {
+    if state.github.owners_loading.is_some() {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    drop(crate::git::spawn_pinned(move || {
+        let _ = tx.send(crate::github::owners().map_err(|err| format!("{err:#}")));
+    }));
+    state.github.owners_loading = Some(rx);
+}
+
+/// List the repositories of the next owner along — or the previous one.
+fn step_owner(state: &mut AppState, forward: bool) {
+    let choices = state.github.owner_choices();
+    if choices.len() < 2 {
+        let why = if state.github.owners_loading.is_some() {
+            "still reading your organizations"
+        } else {
+            "you belong to no organization gh can see; `gh auth refresh -s read:org` if you should"
+        };
+        state.set_status(why, false);
+        return;
+    }
+    let len = choices.len();
+    let idx = choices
+        .iter()
+        .position(|owner| *owner == state.github.owner)
+        .unwrap_or(0);
+    let next = if forward {
+        (idx + 1) % len
+    } else {
+        (idx + len - 1) % len
+    };
+    state.github.owner = choices[next].clone();
+    // The last owner's repositories must not be what Enter clones while this
+    // one's are still on their way.
+    state.github.repos.clear();
+    state.github.repo_idx = 0;
+    load_repositories(state);
 }
 
 /// A GitHub action has finished: what the list shows may no longer be true.
@@ -251,6 +316,15 @@ pub fn poll(state: &mut AppState) {
             }
             Err(err) => gh.repos_error = Some(err),
         }
+    }
+    let owners = take_answer(&mut gh.owners_loading);
+    match owners {
+        Some(Ok(owners)) => state.github.owners = Some(owners),
+        // Only the organizations are missing; the user's own list stands.
+        Some(Err(err)) => {
+            state.set_status(format!("could not read your organizations: {err}"), true)
+        }
+        None => {}
     }
     let visible = visible_repos(&state.github).len();
     state.github.repo_idx = state.github.repo_idx.min(visible.saturating_sub(1));
@@ -767,7 +841,12 @@ fn browse_repositories(state: &mut AppState, key: KeyEvent) {
             state.github.repo_idx = (state.github.repo_idx + 1).min(visible.saturating_sub(1))
         }
         KeyCode::Up => state.github.repo_idx = state.github.repo_idx.saturating_sub(1),
-        KeyCode::Char('r') if ctrl => load_repositories(state),
+        KeyCode::Right => step_owner(state, true),
+        KeyCode::Left => step_owner(state, false),
+        KeyCode::Char('r') if ctrl => {
+            load_owners(state);
+            load_repositories(state);
+        }
         KeyCode::Char('u') if ctrl => {
             state.github.query.clear();
             state.github.repo_idx = 0;
@@ -1219,6 +1298,91 @@ mod tests {
                 dir: "/nonexistent-lg-parent/rust".into(),
             }),
             "a clone goes beside the checkout, never inside it"
+        );
+    }
+
+    /// The repositories tab listing the user's own, with the organizations
+    /// they belong to already read.
+    fn with_owners(orgs: &[&str]) -> AppState {
+        let mut state = AppState::new();
+        state.workspace_root = Some("/nonexistent-lg-workspace".into());
+        state.modal = Modal::GitHub;
+        state.github.tab = Tab::Repositories;
+        state.github.owners = Some(Owners {
+            login: "me".into(),
+            orgs: orgs.iter().map(|org| org.to_string()).collect(),
+        });
+        state.github.repos = vec![repo("me/lg", "")];
+        state
+    }
+
+    #[test]
+    fn the_arrows_step_through_the_users_organizations_and_back_to_the_user() {
+        let mut state = with_owners(&["acme", "zeta"]);
+
+        handle_key(&mut state, key(KeyCode::Right)).unwrap();
+        assert_eq!(state.github.owner.as_deref(), Some("acme"));
+        handle_key(&mut state, key(KeyCode::Right)).unwrap();
+        assert_eq!(state.github.owner.as_deref(), Some("zeta"));
+        handle_key(&mut state, key(KeyCode::Right)).unwrap();
+        assert_eq!(
+            state.github.owner, None,
+            "past the last, the user's own again"
+        );
+        handle_key(&mut state, key(KeyCode::Left)).unwrap();
+        assert_eq!(state.github.owner.as_deref(), Some("zeta"));
+    }
+
+    #[test]
+    fn another_owners_list_never_clones_from_the_last_one() {
+        let mut state = with_owners(&["acme"]);
+
+        handle_key(&mut state, key(KeyCode::Right)).unwrap();
+        assert!(
+            visible_repos(&state.github).is_empty(),
+            "me/lg is not acme's to offer"
+        );
+
+        state.github.repos = vec![repo("acme/api", "")];
+        handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+        assert_eq!(
+            github_action(&state),
+            Some(GitHubAction::Clone {
+                repo: "acme/api".into(),
+                dir: "/nonexistent-lg-workspace/api".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn without_organizations_the_arrows_say_why_nothing_changed() {
+        let mut state = with_owners(&[]);
+
+        handle_key(&mut state, key(KeyCode::Right)).unwrap();
+
+        assert_eq!(state.github.owner, None);
+        assert_eq!(visible_repos(&state.github).len(), 1, "the list is kept");
+        assert!(state.status.is_some());
+    }
+
+    #[test]
+    fn organizations_that_could_not_be_read_leave_the_users_list_standing() {
+        let mut state = with_owners(&[]);
+        state.github.owners = None;
+        let (tx, rx) = std::sync::mpsc::channel();
+        state.github.owners_loading = Some(rx);
+        tx.send(Err("missing read:org scope".into())).unwrap();
+
+        poll(&mut state);
+
+        assert!(!state.github.loading());
+        assert!(state.status.as_ref().is_some_and(|status| status.is_error));
+        assert_eq!(
+            visible_repos(&state.github)
+                .iter()
+                .map(|r| r.name.as_str())
+                .collect::<Vec<_>>(),
+            ["me/lg"]
         );
     }
 

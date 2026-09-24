@@ -22,8 +22,8 @@ agents safely.
   approve, request changes, comment, merge (method, branch cleanup,
   auto-merge), close or reopen, and open a new pull request for the current
   branch — prefilled from its commits, or from the PR text review mode wrote.
-  A second tab lists your repositories to clone into the workspace. Needs
-  `gh auth login` once.
+  A second tab lists your repositories, or those of any organization you
+  belong to, to clone into the workspace. Needs `gh auth login` once.
 - **Assisted review.** Review the current branch against `main` in a
   finding-by-finding tree, either from the local model or from a Claude Code
   session that reads the checkout itself. `lg review` prints the same review
