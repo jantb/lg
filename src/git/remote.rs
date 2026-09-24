@@ -34,6 +34,15 @@ pub fn push(remote: &str, branch: &str) -> Result<String> {
     }
 }
 
+/// Push `branch` to `remote` and have it track what it was pushed to, for a
+/// branch the remote may not have seen yet.
+pub fn push_with_upstream(remote: &str, branch: &str) -> Result<String> {
+    if branch.trim().is_empty() {
+        anyhow::bail!("branch name must not be empty");
+    }
+    run_combined(&["push", "--set-upstream", remote, branch])
+}
+
 pub fn set_branch_upstream(branch: &str, upstream: &str) -> Result<String> {
     if branch.trim().is_empty() {
         anyhow::bail!("branch name must not be empty");

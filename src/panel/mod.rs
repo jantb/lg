@@ -10,6 +10,7 @@ pub mod delete_branch;
 pub mod environments;
 pub mod files;
 pub mod flow;
+pub mod github;
 pub mod help;
 pub mod keys;
 pub mod main;

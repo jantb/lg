@@ -32,8 +32,8 @@ pub use branches::{
 };
 use commits::preferred_commit_ref;
 pub use commits::{
-    Commit, counts_ahead_behind, list_commits, list_commits_for_ref, recent_commit_messages,
-    unpushed_shas,
+    Commit, commit_messages_since, counts_ahead_behind, list_commits, list_commits_for_ref,
+    recent_commit_messages, unpushed_shas,
 };
 pub use config::{
     AuthorConfig, IdeOpenCommand, add_to_gitignore, author_config, clear_local_author,
@@ -41,6 +41,7 @@ pub use config::{
     open_project_path_in_ide, project_open_command, set_local_author, set_subtree_author,
     subtree_author_rule_exists,
 };
+pub(crate) use context::repo_dir;
 pub use context::{active_repo, set_active_repo, spawn_pinned, with_repo};
 use context::{git_command, git_command_in_dir};
 pub use diff::{
@@ -73,7 +74,7 @@ pub use release::{
     BranchReleaseStatus, ReleaseBranches, ReleaseEnv, ReleaseTargetStatus, branch_release_status,
     configured_release_branches, release_branches,
 };
-pub use remote::{merge_upstream, pull, push, remote_url, set_branch_upstream};
+pub use remote::{merge_upstream, pull, push, push_with_upstream, remote_url, set_branch_upstream};
 pub use review::{
     AssistedReview, Language, REVIEW_AGENT_NODE_ID, REVIEW_PR_TEXT_NODE_ID, ReviewNode,
     assisted_review_against_main, build_assisted_review_against_main, is_test_path,
@@ -83,8 +84,8 @@ pub use status::{
 };
 pub use worktree::{
     Worktree, common_git_dir, default_worktree_path, main_worktree, parse_worktree_list,
-    preferred_base_ref, same_dir, worktree_add, worktree_bring_home, worktree_land,
-    worktree_land_with_progress, worktree_prune, worktree_remove, worktree_slug,
+    preferred_base_ref, same_dir, worktree_add, worktree_add_detached, worktree_bring_home,
+    worktree_land, worktree_land_with_progress, worktree_prune, worktree_remove, worktree_slug,
     worktree_sync_main, worktree_sync_main_with_progress, worktrees,
 };
 

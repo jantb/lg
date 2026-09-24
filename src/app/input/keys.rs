@@ -190,6 +190,10 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
             panel::review_chat::handle_key(host.state_mut(), k)?;
             return Ok(());
         }
+        Modal::GitHub => {
+            panel::github::handle_key(host.state_mut(), k)?;
+            return Ok(());
+        }
         Modal::None => {}
     }
 
@@ -308,6 +312,10 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
         }
         KeyCode::Char('E') => {
             panel::deployment::open(host.state_mut());
+            return Ok(());
+        }
+        KeyCode::Char('H') => {
+            panel::github::open(host.state_mut());
             return Ok(());
         }
         KeyCode::Char(',') => {

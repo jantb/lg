@@ -37,6 +37,7 @@ fn modal_section(modal: Modal) -> Option<&'static str> {
         Modal::Worktree => "New worktree",
         Modal::ReviewChat => "Review chat",
         Modal::ConfirmDestructive => "Confirm prompts",
+        Modal::GitHub => "GitHub",
     })
 }
 
@@ -362,6 +363,7 @@ mod tests {
             Modal::Worktree,
             Modal::ReviewChat,
             Modal::ConfirmDestructive,
+            Modal::GitHub,
         ];
         let state = AppState::new();
         for modal in modals {

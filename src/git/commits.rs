@@ -40,6 +40,27 @@ impl crate::graph::CommitNode for Commit {
 
 /// Recent commit messages, subject and body, as one blob. Used to derive this
 /// checkout's writing conventions rather than assuming the defaults.
+/// The subject and body of each commit on HEAD that `base` does not have,
+/// oldest first: what a pull request from this branch into `base` carries.
+pub fn commit_messages_since(base: &str) -> Result<Vec<(String, String)>> {
+    let range = format!("{base}..HEAD");
+    let out = run(&[
+        "log",
+        "--reverse",
+        "--no-merges",
+        "--format=%s%x1f%b%x1e",
+        &range,
+    ])?;
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .split('\x1e')
+        .filter_map(|record| {
+            let (subject, body) = record.trim_start_matches('\n').split_once('\x1f')?;
+            Some((subject.trim().to_string(), body.trim().to_string()))
+        })
+        .filter(|(subject, _)| !subject.is_empty())
+        .collect())
+}
+
 pub fn recent_commit_messages(limit: usize) -> Result<String> {
     let n = limit.to_string();
     let out = run(&["log", "-n", &n, "--no-merges", "--format=%B%x1e"])?;

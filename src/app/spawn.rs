@@ -26,7 +26,11 @@ fn operation_block_reason(state: &AppState, kind: OperationKind) -> Option<&'sta
     } else if state.fetch_job.is_some()
         && !matches!(
             kind,
-            OperationKind::Index | OperationKind::StageAllAndCommit | OperationKind::FileSystem
+            OperationKind::Index
+                | OperationKind::StageAllAndCommit
+                | OperationKind::FileSystem
+                | OperationKind::GitHub
+                | OperationKind::Clone
         )
     {
         Some("fetch in progress")
@@ -515,6 +519,23 @@ mod tests {
         assert!(operation_block_reason(&state, OperationKind::FileSystem).is_none());
         assert!(operation_block_reason(&state, OperationKind::WorkingTree).is_some());
         assert!(operation_block_reason(&state, OperationKind::Commit).is_some());
+    }
+
+    /// Reviews and merges only talk to GitHub, but opening a pull request
+    /// pushes first, and a push waits for a fetch like any other.
+    #[test]
+    fn only_github_actions_that_push_wait_for_a_fetch() {
+        let mut state = AppState::new();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        state.fetch_job = Some(FetchJob {
+            rx,
+            handle: None,
+            spinner: 0,
+        });
+
+        assert!(operation_block_reason(&state, OperationKind::GitHub).is_none());
+        assert!(operation_block_reason(&state, OperationKind::Clone).is_none());
+        assert!(operation_block_reason(&state, OperationKind::OpenPullRequest).is_some());
     }
 
     #[test]

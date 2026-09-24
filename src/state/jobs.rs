@@ -215,6 +215,14 @@ pub enum OperationKind {
     /// the working tree it rewrites, so `worktree` stays free for git's own
     /// linked worktrees.
     WorkingTree,
+    /// Changes something on GitHub and nothing here: a review, a merge, a new
+    /// pull request. What the GitHub modal lists is read again afterwards.
+    GitHub,
+    /// Pushes the current branch and opens a pull request for it. The push is
+    /// what keeps it behind a fetch, which [`Self::GitHub`] is not.
+    OpenPullRequest,
+    /// Clones a repository beside this one, which lg then moves to.
+    Clone,
 }
 
 #[derive(Debug)]

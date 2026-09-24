@@ -46,6 +46,11 @@ const ACTIONS: &[(&str, Run, bool)] = &[
         Run::Key(KeyCode::Char('E')),
         true,
     ),
+    (
+        "GitHub — pull requests, review, merge, clone",
+        Run::Key(KeyCode::Char('H')),
+        false,
+    ),
     ("Commit staged changes", Run::Key(KeyCode::Char('c')), true),
     ("Fetch remote updates", Run::Key(KeyCode::Char('f')), true),
     ("Push current branch", Run::Key(KeyCode::Char('P')), true),

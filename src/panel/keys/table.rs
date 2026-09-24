@@ -19,6 +19,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("E", "environments")),
             },
             Binding {
+                key: "H",
+                help: "GitHub: pull requests, review, merge, clone",
+                footer: Some(("H", "github")),
+            },
+            Binding {
                 key: ",",
                 help: "Settings and project preferences",
                 footer: Some((",", "settings")),
@@ -1050,6 +1055,104 @@ pub const SECTIONS: &[Section] = &[
         footer_order: &[],
     },
     Section {
+        title: "GitHub",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "j/k",
+                help: "Move between pull requests",
+                footer: Some(("j/k", "select")),
+            },
+            Binding {
+                key: "Enter",
+                help: "Check the pull request out here",
+                footer: Some(("Enter", "checkout")),
+            },
+            Binding {
+                key: "w",
+                help: "Check it out in a new worktree",
+                footer: Some(("w", "worktree")),
+            },
+            Binding {
+                key: "a",
+                help: "Approve, with an optional comment",
+                footer: Some(("a", "approve")),
+            },
+            Binding {
+                key: "x",
+                help: "Request changes",
+                footer: Some(("x", "changes")),
+            },
+            Binding {
+                key: "c",
+                help: "Comment on the pull request",
+                footer: Some(("c", "comment")),
+            },
+            Binding {
+                key: "m",
+                help: "Merge: method, branch cleanup, auto-merge",
+                footer: Some(("m", "merge")),
+            },
+            Binding {
+                key: "D",
+                help: "Mark ready for review, or back to draft",
+                footer: None,
+            },
+            Binding {
+                key: "X",
+                help: "Close without merging, or reopen",
+                footer: None,
+            },
+            Binding {
+                key: "n",
+                help: "Open a pull request for this branch",
+                footer: Some(("n", "new")),
+            },
+            Binding {
+                key: "o",
+                help: "Open the pull request in the browser",
+                footer: None,
+            },
+            Binding {
+                key: "s",
+                help: "Show open / review requested / mine / all",
+                footer: None,
+            },
+            Binding {
+                key: "r",
+                help: "Read the list again",
+                footer: None,
+            },
+            Binding {
+                key: "Ctrl-d / Ctrl-u",
+                help: "Scroll the description",
+                footer: None,
+            },
+            Binding {
+                key: "Tab",
+                help: "Pull requests or repositories to clone",
+                footer: Some(("Tab", "repos")),
+            },
+            Binding {
+                key: "type, Enter",
+                help: "Repositories: search, then clone and open",
+                footer: None,
+            },
+            Binding {
+                key: "Ctrl-S",
+                help: "New pull request: push and open it",
+                footer: None,
+            },
+            Binding {
+                key: "Esc",
+                help: "Back out of a form, then close",
+                footer: Some(("Esc", "close")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
         title: "Push modal",
         pane: None,
         bindings: &[
@@ -1148,6 +1251,12 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         prefix: "Confirm ",
         tone: Tone::Danger,
         order: &["y", "n / Esc"],
+    },
+    ModalFooter {
+        section: "GitHub",
+        prefix: "GitHub ",
+        tone: Tone::Normal,
+        order: &["j/k", "Enter", "w", "a", "x", "c", "m", "n", "Tab", "Esc"],
     },
     ModalFooter {
         section: "Review chat",

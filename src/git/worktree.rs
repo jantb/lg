@@ -146,6 +146,13 @@ pub fn worktree_add(path: &Path, branch: &str, base: &str) -> Result<String> {
     run_combined(&["worktree", "add", "--no-track", "-b", branch, &path, base])
 }
 
+/// Add a worktree at `path` on a detached HEAD, for a caller that will check
+/// something out in it straight away.
+pub fn worktree_add_detached(path: &Path) -> Result<String> {
+    let path = path.to_string_lossy().into_owned();
+    run_combined(&["worktree", "add", "--detach", &path])
+}
+
 /// Remove a worktree. Git refuses while it holds uncommitted work unless
 /// `force` is set, and that refusal is worth surfacing rather than overriding.
 pub fn worktree_remove(path: &Path, force: bool) -> Result<String> {

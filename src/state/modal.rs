@@ -142,6 +142,8 @@ pub enum Modal {
     Worktree,
     ReviewChat,
     ConfirmDestructive,
+    /// Pull requests of the checkout on screen, and repositories to clone.
+    GitHub,
 }
 
 /// Rows of the new-worktree form. The path derives from the branch until the
@@ -407,7 +409,57 @@ pub enum PendingAction {
         /// lg already knows about.
         prompt: Option<String>,
     },
+    GitHub(GitHubAction),
     Quit,
+}
+
+/// Something to do on GitHub, through `gh`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitHubAction {
+    /// Check a pull request out in the checkout on screen.
+    Checkout {
+        number: u64,
+    },
+    /// Check a pull request out in a new worktree at `path`.
+    CheckoutWorktree {
+        number: u64,
+        path: String,
+    },
+    Review {
+        number: u64,
+        verdict: crate::github::Verdict,
+        body: String,
+    },
+    Comment {
+        number: u64,
+        body: String,
+    },
+    Merge {
+        number: u64,
+        method: crate::github::MergeMethod,
+        delete_branch: bool,
+        auto: bool,
+    },
+    /// Turn a pull request into a draft, or mark a draft ready for review.
+    SetDraft {
+        number: u64,
+        draft: bool,
+    },
+    Close {
+        number: u64,
+    },
+    Reopen {
+        number: u64,
+    },
+    Create(crate::github::NewPullRequest),
+    /// Clone a repository into `dir` and point lg at it.
+    Clone {
+        repo: String,
+        dir: String,
+    },
+    OpenInBrowser {
+        url: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

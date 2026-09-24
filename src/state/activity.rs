@@ -96,6 +96,7 @@ impl AppState {
             || self.review_chat_job.is_some()
             || self.conflict_resolve_job.is_some()
             || self.workflow_job.is_some()
+            || self.github.loading()
     }
 
     /// What the running operation is doing right now, for the ones that report
@@ -159,6 +160,8 @@ impl AppState {
             Some("resolving conflicts")
         } else if self.workflow_job.is_some() {
             Some("running branch action")
+        } else if self.github.loading() {
+            Some("reading GitHub")
         } else {
             match &self.pending_action {
                 Some(PendingAction::GenerateMessage) => Some("starting generator"),
@@ -211,6 +214,7 @@ impl AppState {
                 Some(PendingAction::StartAgent { .. } | PendingAction::StartSession { .. }) => {
                     Some("starting session")
                 }
+                Some(PendingAction::GitHub(_)) => Some("starting GitHub action"),
                 Some(PendingAction::Quit) => Some("quitting"),
                 None => None,
             }

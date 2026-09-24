@@ -313,6 +313,7 @@ impl App {
         let kind = job.kind;
         join_worker(job.handle.take());
         self.state.current_branch_releases_ref = None;
+        let succeeded = matches!(msg, OperationMsg::Done(_));
         match msg {
             OperationMsg::Done(s) => {
                 if !matches!(self.state.modal, Modal::Conflict) {
@@ -349,6 +350,7 @@ impl App {
             // Filtered out above; only Done and Error reach here.
             OperationMsg::Progress(_) => {}
         }
+        self.after_github_operation(kind, succeeded);
         self.start_refresh(true);
         Ok(())
     }

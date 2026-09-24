@@ -478,6 +478,7 @@ impl App {
                     },
                 );
             }
+            PendingAction::GitHub(action) => self.run_github_action(action),
             PendingAction::Quit => self.state.should_quit = true,
             PendingAction::Promote(preview) => {
                 spawn_operation(

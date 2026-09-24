@@ -37,6 +37,7 @@ mod actions;
 mod conflict_assist;
 mod conflict_editor;
 mod footer;
+mod github;
 mod header;
 mod input;
 mod jobs;
@@ -289,6 +290,7 @@ impl App {
                         Event::Paste(text) => {
                             if !crate::panel::settings::handle_paste(&mut self.state, &text)
                                 && !crate::panel::conflict::handle_paste(&mut self.state, &text)
+                                && !crate::panel::github::handle_paste(&mut self.state, &text)
                             {
                                 session::forward_paste(&mut self.state, &text);
                             }

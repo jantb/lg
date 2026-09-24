@@ -83,6 +83,7 @@ fn prepare(state: &mut AppState, area: Rect) {
     let rects = layout_for(state, area);
     state.advance_animation();
     panel::settings::poll(state);
+    panel::github::poll(state);
     super::prepare_conflict_editor(state);
     state.diff_viewport_height = if state.modal == Modal::ReviewChat {
         panel::main::review_chat_layout(state, rects.main)[0]
@@ -146,6 +147,7 @@ fn draw(frame: &mut Frame, state: &AppState) -> Option<String> {
         Modal::DeleteBranch => panel::delete_branch::render(state, area, frame),
         Modal::Worktree => panel::worktree::render(state, area, frame),
         Modal::ConfirmDestructive => panel::confirm::render(state, area, frame),
+        Modal::GitHub => panel::github::render(state, area, frame),
         Modal::ReviewChat => {}
     }
     selected.flatten()
