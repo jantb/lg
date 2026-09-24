@@ -240,6 +240,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("x", "close session")),
             },
             Binding {
+                key: "D",
+                help: "Remove the selected worktree (confirms)",
+                footer: None,
+            },
+            Binding {
                 key: "o",
                 help: "Open selected repository in editor",
                 footer: Some(("o", "open IDE")),

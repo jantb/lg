@@ -60,6 +60,7 @@ impl RepoAction {
             Self::Terminal => "t",
             Self::NewWorktree => "n",
             Self::CloseSession => "x",
+            Self::RemoveWorktree => "D",
             Self::OpenIde => "o",
             Self::ToggleRemotes => "r",
             Self::Environments => "E",

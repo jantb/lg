@@ -1014,6 +1014,34 @@ fn removing_a_missing_worktree_prunes_instead() {
     assert_eq!(state.pending_action, Some(PendingAction::PruneWorktrees));
 }
 
+/// D removes a worktree straight from the tree, the way it deletes a branch
+/// in the branches pane, without going through the menu.
+#[test]
+fn shift_d_on_a_worktree_row_asks_to_remove_it() {
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        worktree("/workspace.worktrees/feat-x", "feat/x"),
+    ];
+
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('D'))).unwrap();
+
+    assert_eq!(state.modal, Modal::ConfirmDestructive);
+    assert_eq!(
+        state.confirm.as_ref().expect("confirm prompt").action,
+        PendingAction::RemoveWorktree {
+            path: "/workspace.worktrees/feat-x".into(),
+            force: false,
+        }
+    );
+}
+
 /// Where a started agent lands and how: the checkout, its label, which agent,
 /// and whether it runs confined. A profile's confinement is the sandbox choice.
 fn started_agent(state: &AppState) -> Option<(String, String, SessionKind, bool)> {

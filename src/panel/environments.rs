@@ -24,7 +24,7 @@ pub(crate) use draw::{nested_repo_scroll_offset, sync_scroll_offset};
 pub(crate) use tree::{nested_repo_tree_len, select_nested_repo_tree_row};
 
 use actions::{
-    close_selected_session, load_nested_repo_detail, open_commit_draft,
+    close_selected_session, load_nested_repo_detail, open_commit_draft, remove_selected_worktree,
     selected_repository_project_path, show_session_row,
 };
 use draw::render_nested_repositories;
@@ -131,6 +131,7 @@ pub fn handle_key(
         KeyCode::Char('s') => state.open_agent_picker(false),
         KeyCode::Char('t') => start_session_for_selection(state, SessionKind::Terminal, false),
         KeyCode::Char('x') => close_selected_session(state),
+        KeyCode::Char('D') => remove_selected_worktree(state),
         KeyCode::Char('r') if state.nested_repo_detail_path.is_some() => {
             toggle_remote_branches(state)
         }
