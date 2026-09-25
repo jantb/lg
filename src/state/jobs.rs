@@ -269,6 +269,11 @@ pub struct RefreshSnapshot {
     pub branch: Option<String>,
     pub remote_url: Option<String>,
     pub ahead_behind: Option<(u32, u32)>,
+    /// Who commits here, as `name <email>`. Read with the rest because it is
+    /// four git calls, and a snapshot is applied on the thread that draws.
+    pub commit_author: Option<String>,
+    /// Whether the decorative animations run, which depends on that author.
+    pub decorative_animations: bool,
     pub errors: Vec<String>,
 }
 

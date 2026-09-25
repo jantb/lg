@@ -236,8 +236,10 @@ pub(super) fn render_header(hub: &Settings, area: Rect, frame: &mut Frame) {
     let path = if hub.scope == Scope::Folder {
         hub.folder.clone()
     } else {
-        preferences::scope_path(hub.scope)
-            .map(|p| p.display().to_string())
+        hub.scope_files
+            .iter()
+            .find(|(scope, _)| *scope == hub.scope)
+            .map(|(_, path)| path.clone())
             .unwrap_or_default()
     };
     let third = if hub.searching {

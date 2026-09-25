@@ -115,6 +115,9 @@ pub struct Settings {
     searching: bool,
     reset_pending: bool,
     folder: String,
+    /// The file each scope saves to, found when the modal opens: the header
+    /// shows it every frame, and locating a checkout means asking git.
+    scope_files: Vec<(Scope, String)>,
     editing_folder: bool,
     cursor: usize,
     /// Local branch names, offered when a field names a branch.
@@ -154,6 +157,7 @@ impl Default for Settings {
             searching: false,
             reset_pending: false,
             folder: String::new(),
+            scope_files: Vec::new(),
             editing_folder: false,
             diagnostics: None,
             cursor: 0,
@@ -217,6 +221,15 @@ pub fn open(state: &mut AppState, category: usize) {
         ..Settings::default()
     };
     state.settings_hub.folder = preferences::default_folder().display().to_string();
+    state.settings_hub.scope_files = Scope::ALL
+        .into_iter()
+        .map(|scope| {
+            let path = preferences::scope_path(scope)
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            (scope, path)
+        })
+        .collect();
     state.settings_hub.branches = local_branches(state);
     if crate::llm::available_models().is_empty() {
         crate::llm::prime_models_async();

@@ -206,7 +206,7 @@ pub fn stream_review_chat(
     );
 }
 
-pub(crate) use provider::legacy_model;
+pub(crate) use provider::{legacy_model, legacy_model_file};
 
 #[cfg(test)]
 mod tests {

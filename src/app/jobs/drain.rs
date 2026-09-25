@@ -40,17 +40,18 @@ impl App {
         snapshot: crate::state::RefreshSnapshot,
         refresh_diff: bool,
     ) {
-        self.state.decorative_animations = crate::preferences::animations_enabled();
-        if let Ok(author) = crate::git::author_config() {
-            self.state.commit_author = format!(
-                "{} <{}>",
-                author.name.unwrap_or_default(),
-                author.email.unwrap_or_default()
-            );
+        self.state.decorative_animations = snapshot.decorative_animations;
+        if let Some(author) = snapshot.commit_author {
+            self.state.commit_author = author;
         }
         let repo_before = self.state.repo_root.clone();
         self.state.repo_root = snapshot.repo_root;
         let repo_changed = self.state.repo_root != repo_before;
+        if repo_changed {
+            // A folder that just became a checkout keeps its directory, so the
+            // preferences read for it before would otherwise stand.
+            crate::preferences::invalidate();
+        }
         if repo_changed && self.state.history_file.is_some() {
             self.state.enable_history();
         }

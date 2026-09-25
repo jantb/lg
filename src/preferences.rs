@@ -313,19 +313,75 @@ pub fn scope_path(scope: Scope) -> Result<PathBuf> {
     Ok(match scope {
         Scope::User => base_dir().join("preferences.toml"),
         Scope::Folder => folder_path(&default_folder()),
-        Scope::Repository => {
-            let out =
-                crate::git::run(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
-            base_dir()
-                .join("repositories")
-                .join(slug(String::from_utf8_lossy(&out.stdout).trim()))
-                .join("preferences.toml")
-        }
-        Scope::Worktree => base_dir()
-            .join("worktrees")
-            .join(slug(&crate::git::repo_root()?))
-            .join("preferences.toml"),
+        Scope::Repository => checkout()?.repository_file(),
+        Scope::Worktree => checkout()?.worktree_file(),
     })
+}
+/// Where a directory's checkout is: the top of its working tree and the
+/// repository's shared Git directory. Repository and worktree preferences are
+/// found through these, and neither moves while lg runs.
+#[derive(Debug, Clone)]
+struct Checkout {
+    root: String,
+    common_dir: PathBuf,
+}
+impl Checkout {
+    fn repository_file(&self) -> PathBuf {
+        base_dir()
+            .join("repositories")
+            .join(slug(&self.common_dir.to_string_lossy()))
+            .join("preferences.toml")
+    }
+    fn worktree_file(&self) -> PathBuf {
+        base_dir()
+            .join("worktrees")
+            .join(slug(&self.root))
+            .join("preferences.toml")
+    }
+}
+/// Checkouts already located, by the directory git was asked in. Each answer
+/// costs two git launches, and preferences are read on the thread that draws.
+/// A failure is not kept, since a folder that is no checkout may become one.
+static CHECKOUTS: std::sync::Mutex<BTreeMap<PathBuf, Checkout>> =
+    std::sync::Mutex::new(BTreeMap::new());
+/// The directory preferences are read for: the one git commands run in.
+fn context_dir() -> PathBuf {
+    crate::git::configuration_context()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+}
+fn checkout() -> Result<Checkout> {
+    let dir = context_dir();
+    let known = CHECKOUTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&dir)
+        .cloned();
+    if let Some(found) = known {
+        return Ok(found);
+    }
+    let root = crate::git::repo_root()?;
+    if root.is_empty() {
+        bail!("not inside a git checkout");
+    }
+    let found = Checkout {
+        root,
+        common_dir: common_dir()?,
+    };
+    CHECKOUTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(dir, found.clone());
+    Ok(found)
+}
+/// The per-folder preference files, in a stable order.
+fn folder_files() -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(base_dir().join("folders"))
+        .into_iter()
+        .flatten()
+        .filter_map(|e| Some(e.ok()?.path().join("preferences.toml")))
+        .collect();
+    files.sort();
+    files
 }
 pub(crate) fn merge(base: &mut serde_json::Value, patch: serde_json::Value) {
     if let (Some(base), Some(patch)) = (base.as_object_mut(), patch.as_object()) {
@@ -341,7 +397,7 @@ pub(crate) fn merge(base: &mut serde_json::Value, patch: serde_json::Value) {
     }
 }
 /// Missing configuration is fine. Invalid files remain visible and are never overwritten on load.
-fn load_uncached() -> Loaded {
+fn load_uncached(checkout: Option<&Checkout>) -> Loaded {
     let mut sources = BTreeMap::new();
     let mut errors = Vec::new();
     let mut config = serialized(
@@ -357,7 +413,9 @@ fn load_uncached() -> Loaded {
         );
     }
     // Existing files are an explicit compatibility layer; leave originals in place.
-    let legacy = crate::settings::load_legacy();
+    let legacy = checkout
+        .map(|c| crate::settings::load_legacy(&c.root))
+        .unwrap_or_default();
     config["writing"] = serialized(
         &mut errors,
         "legacy writing settings",
@@ -370,7 +428,7 @@ fn load_uncached() -> Loaded {
             review_style: legacy.review_style,
         }),
     );
-    if crate::settings::is_configured() {
+    if checkout.is_some_and(|c| crate::settings::is_configured_at(&c.root)) {
         sources.insert(
             "writing".into(),
             "Legacy checkout settings (preserved)".into(),
@@ -381,12 +439,10 @@ fn load_uncached() -> Loaded {
         Ok(path) => paths.push((Scope::User, path)),
         Err(e) => errors.push(format!("user preferences: {e}")),
     }
-    let root = crate::git::repo_root().ok().map(PathBuf::from);
-    let mut folders: Vec<(PathBuf, PathBuf)> = std::fs::read_dir(base_dir().join("folders"))
+    let root = checkout.map(|c| PathBuf::from(&c.root));
+    let mut folders: Vec<(PathBuf, PathBuf)> = folder_files()
         .into_iter()
-        .flatten()
-        .filter_map(|e| {
-            let path = e.ok()?.path().join("preferences.toml");
+        .filter_map(|path| {
             let patch = read_patch(&path).ok()?;
             let folder = PathBuf::from(patch.get("folder")?.as_str()?);
             root.as_ref().filter(|root| root.starts_with(&folder))?;
@@ -395,11 +451,10 @@ fn load_uncached() -> Loaded {
         .collect();
     folders.sort_by_key(|(folder, _)| folder.components().count());
     paths.extend(folders.into_iter().map(|(_, p)| (Scope::Folder, p)));
-    paths.extend(
-        [Scope::Repository, Scope::Worktree]
-            .into_iter()
-            .filter_map(|scope| scope_path(scope).ok().map(|p| (scope, p))),
-    );
+    if let Some(c) = checkout {
+        paths.push((Scope::Repository, c.repository_file()));
+        paths.push((Scope::Worktree, c.worktree_file()));
+    }
     for (scope, path) in paths {
         if !path.exists() {
             continue;
@@ -689,16 +744,33 @@ pub fn configured_category(category: &str) -> bool {
 }
 
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// One loaded configuration, kept for a moment so the many readers in a frame
-/// share a single read.
+/// How long the files behind a load are trusted before being looked at again.
+/// Readers come many times a frame, and an edit made outside lg need only show
+/// up about as soon as someone could look for it.
+const FILES_RECHECK: std::time::Duration = std::time::Duration::from_secs(1);
+/// One loaded configuration, kept until something it was read from changes, so
+/// the many readers in a frame share a single read and an idle lg asks git
+/// nothing.
 struct Cached {
-    at: std::time::Instant,
     root: PathBuf,
     generation: u64,
-    /// The repository's shared Git directory, where its branches are kept.
-    common_dir: Option<PathBuf>,
+    checkout: Option<Checkout>,
     refs: RefsFingerprint,
+    files: FilesFingerprint,
+    files_checked: std::time::Instant,
     loaded: Loaded,
+}
+impl Cached {
+    fn common_dir(&self) -> Option<&Path> {
+        self.checkout.as_ref().map(|c| c.common_dir.as_path())
+    }
+    fn files_unchanged(&mut self) -> bool {
+        if self.files_checked.elapsed() < FILES_RECHECK {
+            return true;
+        }
+        self.files_checked = std::time::Instant::now();
+        files_fingerprint(self.checkout.as_ref()) == self.files
+    }
 }
 /// When the top-level branches last changed: the modification times of the
 /// loose-refs directory and the packed-refs file. Branches are detected from
@@ -713,47 +785,74 @@ fn refs_fingerprint(common_dir: Option<&Path>) -> RefsFingerprint {
     };
     (modified("refs/heads"), modified("packed-refs"))
 }
-fn common_dir() -> Option<PathBuf> {
-    let out = crate::git::run(&["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok()?;
+/// Every file a load reads, and when each last changed: the user's, each
+/// folder's, the checkout's, and the legacy settings and model files.
+type FilesFingerprint = Vec<(PathBuf, Option<(std::time::SystemTime, u64)>)>;
+fn files_fingerprint(checkout: Option<&Checkout>) -> FilesFingerprint {
+    let mut files = vec![base_dir().join("preferences.toml")];
+    files.extend(folder_files());
+    if let Some(c) = checkout {
+        files.push(c.repository_file());
+        files.push(c.worktree_file());
+        files.extend(crate::settings::legacy_files(&c.root));
+    }
+    files.extend(crate::llm::legacy_model_file());
+    files
+        .into_iter()
+        .map(|path| {
+            let stamp = std::fs::metadata(&path)
+                .ok()
+                .and_then(|meta| Some((meta.modified().ok()?, meta.len())));
+            (path, stamp)
+        })
+        .collect()
+}
+fn common_dir() -> Result<PathBuf> {
+    let out = crate::git::run(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
     let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!path.is_empty()).then(|| PathBuf::from(path))
+    if path.is_empty() {
+        bail!("git reported no repository directory");
+    }
+    Ok(PathBuf::from(path))
 }
 thread_local! { static CACHE: std::cell::RefCell<Option<Cached>> = const { std::cell::RefCell::new(None) }; }
 pub fn invalidate() {
     GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 pub fn load() -> Loaded {
-    let root = crate::git::configuration_context()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let root = context_dir();
     let generation = GENERATION.load(std::sync::atomic::Ordering::Relaxed);
     CACHE.with(|cache| {
-        if let Some(cached) = cache.borrow().as_ref()
+        if let Some(cached) = cache.borrow_mut().as_mut()
             && cached.root == root
             && cached.generation == generation
-            && cached.at.elapsed() < std::time::Duration::from_secs(2)
-            && cached.refs == refs_fingerprint(cached.common_dir.as_deref())
+            && cached.refs == refs_fingerprint(cached.common_dir())
+            && cached.files_unchanged()
         {
             return cached.loaded.clone();
         }
-        let common_dir = common_dir();
-        let refs = refs_fingerprint(common_dir.as_deref());
-        let loaded = load_uncached();
+        let checkout = checkout().ok();
+        // Taken before reading, so a change that lands mid-read is seen as one
+        // on the next look rather than lost.
+        let refs = refs_fingerprint(checkout.as_ref().map(|c| c.common_dir.as_path()));
+        let files = files_fingerprint(checkout.as_ref());
+        let loaded = load_uncached(checkout.as_ref());
         *cache.borrow_mut() = Some(Cached {
-            at: std::time::Instant::now(),
             root,
             generation,
-            common_dir,
+            checkout,
             refs,
+            files,
+            files_checked: std::time::Instant::now(),
             loaded: loaded.clone(),
         });
         loaded
     })
 }
 pub fn default_folder() -> PathBuf {
-    let root = crate::git::repo_root()
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let root = checkout()
+        .map(|c| PathBuf::from(c.root))
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
     root.parent().unwrap_or(&root).to_path_buf()
 }
 fn folder_path(folder: &Path) -> PathBuf {
@@ -768,13 +867,17 @@ pub fn ai_enabled() -> bool {
     load().config.models.enabled
 }
 pub fn animations_enabled() -> bool {
+    load().config.tools.decorative_animations
+        && animations_enabled_for(crate::git::author_config().ok().as_ref())
+}
+/// [`animations_enabled`] for a caller that has already read who commits here.
+pub fn animations_enabled_for(author: Option<&crate::git::AuthorConfig>) -> bool {
     let tools = load().config.tools;
     if !tools.decorative_animations {
         return false;
     }
-    let email = crate::git::author_config()
-        .ok()
-        .and_then(|a| a.email)
+    let email = author
+        .and_then(|a| a.email.as_deref())
         .unwrap_or_default()
         .to_lowercase();
     !tools.quiet_author_emails.iter().any(|rule| {

@@ -328,6 +328,11 @@ pub(crate) fn legacy_model() -> Option<String> {
     saved_model()
 }
 
+/// The file [`legacy_model`] reads.
+pub(crate) fn legacy_model_file() -> Option<PathBuf> {
+    config_path().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

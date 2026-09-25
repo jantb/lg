@@ -15,6 +15,8 @@ const SETTINGS_DIR_ENV: &str = "LG_SETTINGS_DIR";
 const SETTINGS_FILE: &str = "settings";
 const COMMIT_PROMPT_FILE: &str = "commit-prompt.txt";
 const REVIEW_STYLE_FILE: &str = "review-style.md";
+/// Every file a checkout's settings are kept in.
+const SETTINGS_FILES: [&str; 3] = [SETTINGS_FILE, COMMIT_PROMPT_FILE, REVIEW_STYLE_FILE];
 const KEY_PR_LANGUAGE: &str = "pr_language";
 const KEY_COMMIT_SUBJECT_MAX_CHARS: &str = "commit_subject_max_chars";
 const KEY_COMMIT_BODY_MAX_LINES: &str = "commit_body_max_lines";
@@ -72,11 +74,11 @@ impl RepoSettings {
     }
 }
 
-/// Loads the settings for the current checkout, falling back to defaults for
-/// anything missing or unparsable. Settings are advisory, so a broken file must
-/// never block committing.
-pub(crate) fn load_legacy() -> RepoSettings {
-    match repo_settings_dir() {
+/// Loads the settings for the checkout whose top level is `root`, falling back
+/// to defaults for anything missing or unparsable. Settings are advisory, so a
+/// broken file must never block committing.
+pub(crate) fn load_legacy(root: &str) -> RepoSettings {
+    match checkout_settings_dir(root) {
         Ok(dir) => load_from_dir(&dir),
         Err(_) => RepoSettings::default(),
     }
@@ -85,9 +87,20 @@ pub(crate) fn load_legacy() -> RepoSettings {
 /// Whether this checkout has settings of its own yet. A fresh checkout gets
 /// values derived from its own history instead of the bare defaults.
 pub fn is_configured() -> bool {
-    repo_settings_dir()
-        .map(|dir| dir.join(SETTINGS_FILE).exists())
-        .unwrap_or(false)
+    checkout_root().is_ok_and(|root| is_configured_at(&root))
+}
+
+/// [`is_configured`] for the checkout whose top level is `root`.
+pub(crate) fn is_configured_at(root: &str) -> bool {
+    checkout_settings_dir(root).is_ok_and(|dir| dir.join(SETTINGS_FILE).exists())
+}
+
+/// The files the checkout whose top level is `root` keeps its settings in,
+/// whether or not they exist yet.
+pub(crate) fn legacy_files(root: &str) -> Vec<PathBuf> {
+    checkout_settings_dir(root)
+        .map(|dir| SETTINGS_FILES.map(|name| dir.join(name)).to_vec())
+        .unwrap_or_default()
 }
 
 pub fn save(settings: &RepoSettings) -> Result<()> {
@@ -102,7 +115,7 @@ pub fn save(settings: &RepoSettings) -> Result<()> {
 /// Removes this checkout's saved settings, returning it to the defaults.
 pub fn clear() -> Result<()> {
     let dir = repo_settings_dir()?;
-    for file in [SETTINGS_FILE, COMMIT_PROMPT_FILE, REVIEW_STYLE_FILE] {
+    for file in SETTINGS_FILES {
         let path = dir.join(file);
         if path.exists() {
             fs::remove_file(&path)
@@ -354,7 +367,11 @@ fn one_line(value: &str) -> String {
 }
 
 fn repo_settings_dir() -> Result<PathBuf> {
-    Ok(settings_base_dir()?.join(checkout_slug(&checkout_root()?)))
+    checkout_settings_dir(&checkout_root()?)
+}
+
+fn checkout_settings_dir(root: &str) -> Result<PathBuf> {
+    Ok(settings_base_dir()?.join(checkout_slug(root)))
 }
 
 /// Where the local model's conflict attempts are written down: every prompt,

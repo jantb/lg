@@ -66,6 +66,7 @@ pub(super) fn build_refresh_snapshot(workspace_root: Option<String>) -> RefreshS
             None
         }
     };
+    let (commit_author, decorative_animations) = author_and_animations();
     RefreshSnapshot {
         repo_root: current_root,
         workspace_root,
@@ -80,8 +81,24 @@ pub(super) fn build_refresh_snapshot(workspace_root: Option<String>) -> RefreshS
         branch,
         remote_url: crate::git::remote_url(configured_remote.as_str()).ok(),
         ahead_behind: crate::git::counts_ahead_behind().ok(),
+        commit_author,
+        decorative_animations,
         errors,
     }
+}
+
+/// Who commits here, and whether the decorative animations run for them.
+fn author_and_animations() -> (Option<String>, bool) {
+    let author = crate::git::author_config().ok();
+    let animations = crate::preferences::animations_enabled_for(author.as_ref());
+    let line = author.map(|author| {
+        format!(
+            "{} <{}>",
+            author.name.unwrap_or_default(),
+            author.email.unwrap_or_default()
+        )
+    });
+    (line, animations)
 }
 
 fn scan_nested_repositories(
@@ -122,6 +139,7 @@ fn no_repo_snapshot(workspace_root: Option<String>) -> RefreshSnapshot {
         ),
         None => (Vec::new(), Some(Vec::new())),
     };
+    let (commit_author, decorative_animations) = author_and_animations();
     RefreshSnapshot {
         repo_root: None,
         workspace_root,
@@ -136,6 +154,8 @@ fn no_repo_snapshot(workspace_root: Option<String>) -> RefreshSnapshot {
         branch: None,
         remote_url: None,
         ahead_behind: None,
+        commit_author,
+        decorative_animations,
         errors,
     }
 }
