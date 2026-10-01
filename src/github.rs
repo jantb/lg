@@ -333,6 +333,148 @@ pub fn comment(number: u64, body: &str) -> Result<String> {
     Ok(format!("commented on #{number}"))
 }
 
+/// The pull request's change as a unified diff, the way GitHub shows it.
+pub fn pr_diff(number: u64) -> Result<String> {
+    run(&["pr", "diff", &number.to_string()])
+}
+
+/// The commit the pull request's head is at, which inline comments are
+/// pinned to.
+pub fn pr_head(number: u64) -> Result<String> {
+    let out = run(&[
+        "pr",
+        "view",
+        &number.to_string(),
+        "--json",
+        "headRefOid",
+        "--jq",
+        ".headRefOid",
+    ])?;
+    let oid = out.trim();
+    if oid.is_empty() {
+        anyhow::bail!("gh did not report the head commit of #{number}");
+    }
+    Ok(oid.to_string())
+}
+
+/// How a submitted review settles the pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewEvent {
+    Comment,
+    Approve,
+    RequestChanges,
+}
+
+impl ReviewEvent {
+    pub const ALL: [Self; 3] = [Self::Comment, Self::Approve, Self::RequestChanges];
+
+    fn api(self) -> &'static str {
+        match self {
+            Self::Comment => "COMMENT",
+            Self::Approve => "APPROVE",
+            Self::RequestChanges => "REQUEST_CHANGES",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Comment => "comment",
+            Self::Approve => "approve",
+            Self::RequestChanges => "request changes",
+        }
+    }
+}
+
+/// One inline comment of a review, on one line of the diff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineComment {
+    pub path: String,
+    pub line: usize,
+    /// `LEFT` for a removed line, `RIGHT` for any other.
+    pub side: &'static str,
+    pub body: String,
+}
+
+/// Submit one review of a pull request with its inline comments, all at once,
+/// so the author is notified once rather than per comment.
+pub fn submit_review(
+    number: u64,
+    commit: &str,
+    event: ReviewEvent,
+    body: &str,
+    comments: &[LineComment],
+) -> Result<String> {
+    let payload = review_payload(commit, event, body, comments);
+    let path = format!("repos/{{owner}}/{{repo}}/pulls/{number}/reviews");
+    let args = ["api", "--method", "POST", path.as_str(), "--input", "-"];
+    let mut child = command(None, &args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(spawn_failure)?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        stdin
+            .write_all(payload.to_string().as_bytes())
+            .context("send the review to gh")?;
+    }
+    let out = child.wait_with_output().context("wait for gh")?;
+    if !out.status.success() {
+        return Err(failure(
+            &args,
+            &String::from_utf8_lossy(&out.stdout),
+            &String::from_utf8_lossy(&out.stderr),
+        ));
+    }
+    let noun = if comments.len() == 1 {
+        "comment"
+    } else {
+        "comments"
+    };
+    Ok(format!(
+        "submitted a review ({}) on #{number} with {} inline {noun}",
+        event.label(),
+        comments.len()
+    ))
+}
+
+fn review_payload(
+    commit: &str,
+    event: ReviewEvent,
+    body: &str,
+    comments: &[LineComment],
+) -> serde_json::Value {
+    // GitHub refuses a comment or change request with no body, even one
+    // carrying inline comments, so one is always sent.
+    let body = if body.trim().is_empty() {
+        match event {
+            ReviewEvent::Approve => String::new(),
+            _ => format!(
+                "{} inline comment{}.",
+                comments.len(),
+                if comments.len() == 1 { "" } else { "s" }
+            ),
+        }
+    } else {
+        body.trim().to_string()
+    };
+    serde_json::json!({
+        "commit_id": commit,
+        "event": event.api(),
+        "body": body,
+        "comments": comments
+            .iter()
+            .map(|c| serde_json::json!({
+                "path": c.path,
+                "line": c.line,
+                "side": c.side,
+                "body": c.body,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
 /// Merge a pull request. `auto` queues the merge for when the branch
 /// protection rules are met, which is the only way through while required
 /// checks are still running.
@@ -891,6 +1033,28 @@ fn run_combined(dir: Option<&Path>, args: &[&str]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_review_carries_every_inline_comment_and_always_a_body() {
+        let payload = review_payload(
+            "abc123",
+            ReviewEvent::RequestChanges,
+            "  ",
+            &[LineComment {
+                path: "src/a.rs".into(),
+                line: 11,
+                side: "LEFT",
+                body: "why remove this?".into(),
+            }],
+        );
+
+        assert_eq!(payload["commit_id"], "abc123");
+        assert_eq!(payload["event"], "REQUEST_CHANGES");
+        assert!(!payload["body"].as_str().unwrap().is_empty());
+        assert_eq!(payload["comments"][0]["path"], "src/a.rs");
+        assert_eq!(payload["comments"][0]["line"], 11);
+        assert_eq!(payload["comments"][0]["side"], "LEFT");
+    }
 
     const PR_JSON: &str = r#"[
       {

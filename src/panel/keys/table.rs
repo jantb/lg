@@ -94,6 +94,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: None,
             },
             Binding {
+                key: "V",
+                help: "Guided review (on main: uncommitted)",
+                footer: Some(("V", "guided review")),
+            },
+            Binding {
                 key: "Ctrl-n / Ctrl-p",
                 help: "Next or previous session (Ctrl-] first)",
                 footer: None,
@@ -197,6 +202,7 @@ pub const SECTIONS: &[Section] = &[
             "p",
             "P",
             "f",
+            "V",
             "?",
         ],
     },
@@ -286,6 +292,7 @@ pub const SECTIONS: &[Section] = &[
             "x",
             "o",
             "w",
+            "V",
             "?",
             "Ctrl-C / q",
         ],
@@ -362,7 +369,7 @@ pub const SECTIONS: &[Section] = &[
         ],
         footer_meta: Some((3, "Branches")),
         footer_order: &[
-            "Enter", "r", "m", "M", "d", "D", "o", "u", "p", "a", "L", "f", "F", "?",
+            "Enter", "r", "m", "M", "d", "D", "o", "u", "p", "a", "L", "f", "F", "V", "?",
         ],
     },
     Section {
@@ -396,7 +403,7 @@ pub const SECTIONS: &[Section] = &[
             },
         ],
         footer_meta: Some((4, "Commits")),
-        footer_order: &["j/k", "Enter", "p", "a", "L", "f", "?"],
+        footer_order: &["j/k", "Enter", "p", "a", "L", "f", "V", "?"],
     },
     Section {
         title: "Session",
@@ -529,6 +536,7 @@ pub const SECTIONS: &[Section] = &[
             "L",
             "R",
             "Esc",
+            "V",
             "?",
         ],
     },
@@ -588,7 +596,7 @@ pub const SECTIONS: &[Section] = &[
             },
         ],
         footer_meta: Some((0, "Diff")),
-        footer_order: &["R", "v", "o", "j/k", "g/G", "p", "a", "L", "f", "?"],
+        footer_order: &["R", "v", "o", "j/k", "g/G", "p", "a", "L", "f", "V", "?"],
     },
     Section {
         title: "Review chat",
@@ -1060,6 +1068,99 @@ pub const SECTIONS: &[Section] = &[
         footer_order: &[],
     },
     Section {
+        title: "Guided review",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "\u{2192} / \u{2190}",
+                help: "Next step (marks reviewed) / previous",
+                footer: Some(("\u{2192}/\u{2190}", "step")),
+            },
+            Binding {
+                key: "] / [",
+                help: "First hunk of the next / previous file",
+                footer: None,
+            },
+            Binding {
+                key: "j/k",
+                help: "Move the line cursor in the hunk",
+                footer: None,
+            },
+            Binding {
+                key: "c / Enter",
+                help: "Write or edit a note on the cursor line",
+                footer: Some(("c", "note")),
+            },
+            Binding {
+                key: "x",
+                help: "Delete the note on the cursor line",
+                footer: None,
+            },
+            Binding {
+                key: "a",
+                help: "Ask the model about this step",
+                footer: Some(("a", "ask")),
+            },
+            Binding {
+                key: "r",
+                help: "Ask for this step's commentary again",
+                footer: None,
+            },
+            Binding {
+                key: "e / o",
+                help: "Edit at the cursor in $EDITOR / the IDE",
+                footer: Some(("e", "edit")),
+            },
+            Binding {
+                key: "f / F",
+                help: "Have Claude make a change / fix all notes",
+                footer: Some(("f", "fix")),
+            },
+            Binding {
+                key: "m / u",
+                help: "Toggle reviewed / jump to next unreviewed",
+                footer: None,
+            },
+            Binding {
+                key: "J/K",
+                help: "Scroll the commentary",
+                footer: None,
+            },
+            Binding {
+                key: "s",
+                help: "All notes; for a PR, submit the review",
+                footer: Some(("s", "notes/submit")),
+            },
+            Binding {
+                key: "y",
+                help: "Copy every note as Markdown",
+                footer: None,
+            },
+            Binding {
+                key: "R",
+                help: "Read the change again",
+                footer: None,
+            },
+            Binding {
+                key: "g / G",
+                help: "Overview / last step",
+                footer: None,
+            },
+            Binding {
+                key: "?",
+                help: "This help",
+                footer: Some(("?", "help")),
+            },
+            Binding {
+                key: "Esc / q",
+                help: "Leave; progress and notes are kept",
+                footer: Some(("Esc", "leave")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
         title: "GitHub",
         pane: None,
         bindings: &[
@@ -1077,6 +1178,11 @@ pub const SECTIONS: &[Section] = &[
                 key: "w",
                 help: "Check it out in a new worktree",
                 footer: Some(("w", "worktree")),
+            },
+            Binding {
+                key: "v",
+                help: "Guided review of the pull request",
+                footer: Some(("v", "guided review")),
             },
             Binding {
                 key: "a",
@@ -1266,7 +1372,24 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         section: "GitHub",
         prefix: "GitHub ",
         tone: Tone::Normal,
-        order: &["j/k", "Enter", "w", "a", "x", "c", "m", "n", "Tab", "Esc"],
+        order: &[
+            "j/k", "Enter", "w", "v", "a", "x", "c", "m", "n", "Tab", "Esc",
+        ],
+    },
+    ModalFooter {
+        section: "Guided review",
+        prefix: "Guided review ",
+        tone: Tone::Normal,
+        order: &[
+            "\u{2192} / \u{2190}",
+            "c / Enter",
+            "a",
+            "e / o",
+            "f / F",
+            "s",
+            "?",
+            "Esc / q",
+        ],
     },
     ModalFooter {
         section: "Review chat",

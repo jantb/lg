@@ -115,24 +115,26 @@ fn render_main_content(state: &AppState, area: Rect, frame: &mut Frame, focused:
     );
 
     let viewport_width = state.diff_viewport_width.max(area.width.saturating_sub(2));
-    let lines: Vec<ratatui::text::Line> = if matches!(state.diff_source, DiffSource::Branch(_)) {
-        log_render_lines(&state.diff_text)
-            .into_iter()
-            .map(ui::highlight_log_line)
-            .collect()
-    } else if side_by_side_diff_enabled(state) {
-        ui::highlight_side_by_side_diff_text(&state.diff_text, viewport_width)
-    } else {
-        ui::highlight_diff_text_wrapped(&state.diff_text, viewport_width)
-    };
-
     let max_offset = max_scroll_offset(state);
     let offset = state.diff_offset.min(max_offset);
 
-    let para = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false })
-        .scroll((offset, 0));
+    let para = if matches!(state.diff_source, DiffSource::Branch(_)) {
+        let lines: Vec<ratatui::text::Line> = log_render_lines(&state.diff_text)
+            .into_iter()
+            .map(ui::highlight_log_line)
+            .collect();
+        Paragraph::new(lines).scroll((offset, 0))
+    } else {
+        // Diff rows come pre-wrapped to the pane, one row per screen line, so
+        // the window on screen is a slice of them.
+        Paragraph::new(visible_diff_rows(
+            state,
+            viewport_width,
+            offset as usize,
+            area.height.saturating_sub(2) as usize,
+        ))
+    };
+    let para = para.block(block).wrap(Wrap { trim: false });
 
     frame.render_widget(para, area);
 }
@@ -276,6 +278,43 @@ pub fn select_mouse_row(state: &mut AppState, area: Rect, row: u16) {
     if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
         review::select_mouse_row(state, area, row);
     }
+}
+
+/// The highlighted diff rows from `offset` for `height` rows, highlighting the
+/// whole diff only when the text, the width or the view has changed since the
+/// last frame.
+fn visible_diff_rows(
+    state: &AppState,
+    width: u16,
+    offset: usize,
+    height: usize,
+) -> Vec<ratatui::text::Line<'static>> {
+    let key = (
+        crate::state::DiffRowCountKey {
+            text_version: state.diff_text_version,
+            viewport_width: width,
+            view_mode: state.diff_view_mode,
+            log_view: false,
+        },
+        state.diff_text.len(),
+        state.diff_text.as_ptr() as usize,
+    );
+    let mut cache = state.diff_render_cache.borrow_mut();
+    if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {
+        let rows = if side_by_side_diff_enabled(state) {
+            ui::highlight_side_by_side_diff_text(&state.diff_text, width)
+        } else {
+            ui::highlight_diff_text_wrapped(&state.diff_text, width)
+        };
+        *cache = Some((key, rows));
+    }
+    let rows = cache
+        .as_ref()
+        .map(|(_, rows)| rows.as_slice())
+        .unwrap_or_default();
+    let start = offset.min(rows.len());
+    let end = start.saturating_add(height).min(rows.len());
+    rows[start..end].to_vec()
 }
 
 pub fn max_scroll_offset(state: &AppState) -> u16 {

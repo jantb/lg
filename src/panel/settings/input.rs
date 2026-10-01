@@ -247,6 +247,10 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
             }
             state.decorative_animations = preferences::animations_enabled();
             state.ai_assist = preferences::ai_enabled();
+            // The footer names the provider and model; a switch to claude
+            // shows at once rather than after the next restart.
+            state.llm_provider = crate::llm::current_provider();
+            state.llm_model = crate::llm::current_model();
             if let Ok(author) = crate::git::author_config() {
                 state.commit_author = format!(
                     "{} <{}>",

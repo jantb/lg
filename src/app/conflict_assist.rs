@@ -16,14 +16,38 @@ use std::sync::mpsc::Sender;
 use crate::git::{ConflictHunk, ConflictSides, ConflictedFile, holds_conflict_marker};
 use crate::state::{AppState, ConflictResolveJob, ConflictResolveMsg};
 
-/// How many conflicts in one file the local model may try. Past this the file
-/// is a merge rather than a hunk, and the odds of getting every one of them
-/// right are not what they look like per conflict.
-const MAX_LOCAL_HUNKS: usize = 6;
+/// How much of a conflict the model is trusted with before it goes to claude.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    /// How many conflicts in one file may be tried. Past this the file is a
+    /// merge rather than a hunk, and the odds of getting every one of them
+    /// right are not what they look like per conflict.
+    hunks: usize,
+    /// How many lines either side of a single conflict may span. A
+    /// disagreement this large is a design decision written down twice, not a
+    /// merge.
+    hunk_lines: usize,
+}
 
-/// How many lines either side of a single conflict may span. A disagreement
-/// this large is a design decision written down twice, not a merge.
-const MAX_LOCAL_HUNK_LINES: usize = 40;
+/// What the local model is trusted with.
+const LOCAL_LIMITS: Limits = Limits {
+    hunks: 6,
+    hunk_lines: 40,
+};
+
+/// What Claude is trusted with when it is the provider: it holds a whole file
+/// of conflicts in mind, so only the truly sprawling ones are left alone.
+const CLAUDE_LIMITS: Limits = Limits {
+    hunks: 40,
+    hunk_lines: 400,
+};
+
+fn limits() -> Limits {
+    match crate::llm::current_provider() {
+        crate::llm::LlmProvider::Claude => CLAUDE_LIMITS,
+        crate::llm::LlmProvider::Mtplx => LOCAL_LIMITS,
+    }
+}
 
 /// How many merged lines either side of a conflict travel with it, so the model
 /// can see what the code around it is doing.
@@ -167,7 +191,7 @@ fn resolve_file(root: &Path, path: &str, ask: &mut Ask<'_>) -> Result<Vec<String
     let text = std::fs::read_to_string(&full)
         .map_err(|err| Decline::Refused(format!("cannot read the file: {err}")))?;
     let sides = crate::git::conflict_sides(root, path);
-    let (resolved, verdicts) = resolve_conflicted_text(path, &text, &sides, ask)?;
+    let (resolved, verdicts) = resolve_conflicted_text(path, &text, &sides, limits(), ask)?;
     std::fs::write(&full, resolved)
         .map_err(|err| Decline::Refused(format!("cannot write the file back: {err}")))?;
     Ok(verdicts)
@@ -226,6 +250,7 @@ fn resolve_conflicted_text(
     path: &str,
     text: &str,
     sides: &ConflictSides,
+    limits: Limits,
     ask: &mut Ask<'_>,
 ) -> Result<(String, Vec<String>), Decline> {
     let Some(file) = ConflictedFile::parse(text) else {
@@ -234,7 +259,7 @@ fn resolve_conflicted_text(
         ));
     };
     let count = file.hunk_count();
-    if count > MAX_LOCAL_HUNKS {
+    if count > limits.hunks {
         return Err(Decline::Refused(format!(
             "{count} conflicts in one file is more than the local model is trusted with"
         )));
@@ -249,7 +274,7 @@ fn resolve_conflicted_text(
             continue;
         }
         let widest = hunk.widest_side_lines();
-        if widest > MAX_LOCAL_HUNK_LINES {
+        if widest > limits.hunk_lines {
             return Err(Decline::Refused(format!(
                 "conflict {} spans {widest} lines, too much of a decision for the local model",
                 index + 1
@@ -470,6 +495,7 @@ mod tests {
             "src/main.rs",
             CONFLICT,
             &no_sides(),
+            LOCAL_LIMITS,
             &mut answering("    a();\n    b();\n"),
         )
         .expect("a small conflict the model answered");
@@ -482,16 +508,22 @@ mod tests {
     #[test]
     fn the_conflict_and_the_code_around_it_reach_the_model() {
         let mut seen = None;
-        let _ = resolve_conflicted_text("src/main.rs", CONFLICT, &no_sides(), &mut |q| {
-            seen = Some((
-                q.path.to_string(),
-                q.hunk.ours.clone(),
-                q.hunk.theirs.clone(),
-                q.before.clone(),
-                q.after.clone(),
-            ));
-            finished("    a();\n")
-        });
+        let _ = resolve_conflicted_text(
+            "src/main.rs",
+            CONFLICT,
+            &no_sides(),
+            LOCAL_LIMITS,
+            &mut |q| {
+                seen = Some((
+                    q.path.to_string(),
+                    q.hunk.ours.clone(),
+                    q.hunk.theirs.clone(),
+                    q.before.clone(),
+                    q.after.clone(),
+                ));
+                finished("    a();\n")
+            },
+        );
 
         let (path, ours, theirs, before, after) = seen.expect("the model was asked");
         assert_eq!(path, "src/main.rs");
@@ -511,6 +543,7 @@ mod tests {
             ".halvnais/app.yaml",
             text,
             &no_sides(),
+            LOCAL_LIMITS,
             &mut answering("tag: \"sha-1685629\"\n"),
         )
         .expect("a picked side is a resolution");
@@ -525,11 +558,12 @@ mod tests {
     fn a_conflict_both_sides_wrote_the_same_way_needs_no_model() {
         let text = "<<<<<<< HEAD\nsame\n=======\nsame\n>>>>>>> them\n";
         let mut asked = false;
-        let (resolved, _) = resolve_conflicted_text("doc.md", text, &no_sides(), &mut |_| {
-            asked = true;
-            finished("")
-        })
-        .expect("nothing to decide");
+        let (resolved, _) =
+            resolve_conflicted_text("doc.md", text, &no_sides(), LOCAL_LIMITS, &mut |_| {
+                asked = true;
+                finished("")
+            })
+            .expect("nothing to decide");
 
         assert_eq!(resolved, "same\n");
         assert!(!asked, "there was no decision to put to a model");
@@ -537,12 +571,13 @@ mod tests {
 
     #[test]
     fn a_file_full_of_conflicts_goes_straight_on_without_being_asked_about() {
-        let text = "<<<<<<< HEAD\na\n=======\nb\n>>>>>>> them\n".repeat(MAX_LOCAL_HUNKS + 1);
+        let text = "<<<<<<< HEAD\na\n=======\nb\n>>>>>>> them\n".repeat(LOCAL_LIMITS.hunks + 1);
         let mut asked = false;
-        let outcome = resolve_conflicted_text("src/main.rs", &text, &no_sides(), &mut |_| {
-            asked = true;
-            finished("a\n")
-        });
+        let outcome =
+            resolve_conflicted_text("src/main.rs", &text, &no_sides(), LOCAL_LIMITS, &mut |_| {
+                asked = true;
+                finished("a\n")
+            });
 
         assert!(outcome.is_err(), "too many conflicts to try locally");
         assert!(!asked, "declining early is the point of the gate");
@@ -550,13 +585,14 @@ mod tests {
 
     #[test]
     fn a_conflict_too_large_to_be_a_merge_is_declined_before_it_is_asked_about() {
-        let side = "line\n".repeat(MAX_LOCAL_HUNK_LINES + 1);
+        let side = "line\n".repeat(LOCAL_LIMITS.hunk_lines + 1);
         let text = format!("<<<<<<< HEAD\n{side}=======\nother\n>>>>>>> them\n");
         let mut asked = false;
-        let outcome = resolve_conflicted_text("src/main.rs", &text, &no_sides(), &mut |_| {
-            asked = true;
-            finished("line\n")
-        });
+        let outcome =
+            resolve_conflicted_text("src/main.rs", &text, &no_sides(), LOCAL_LIMITS, &mut |_| {
+                asked = true;
+                finished("line\n")
+            });
 
         assert!(outcome.is_err());
         assert!(!asked);
@@ -568,6 +604,7 @@ mod tests {
             "src/main.rs",
             CONFLICT,
             &no_sides(),
+            LOCAL_LIMITS,
             &mut answering(crate::llm::GIVE_UP_PHRASE),
         );
 
@@ -580,6 +617,7 @@ mod tests {
             "src/main.rs",
             CONFLICT,
             &no_sides(),
+            LOCAL_LIMITS,
             &mut answering("<<<<<<< HEAD\n    a();\n"),
         );
 
@@ -592,6 +630,7 @@ mod tests {
             "src/main.rs",
             CONFLICT,
             &no_sides(),
+            LOCAL_LIMITS,
             &mut answering(&"filler\n".repeat(64)),
         );
 
@@ -600,8 +639,13 @@ mod tests {
 
     #[test]
     fn an_answer_that_silently_deletes_both_sides_is_refused() {
-        let outcome =
-            resolve_conflicted_text("src/main.rs", CONFLICT, &no_sides(), &mut answering(""));
+        let outcome = resolve_conflicted_text(
+            "src/main.rs",
+            CONFLICT,
+            &no_sides(),
+            LOCAL_LIMITS,
+            &mut answering(""),
+        );
 
         assert!(outcome.is_err());
     }
@@ -616,6 +660,7 @@ mod tests {
             "src/main.rs",
             CONFLICT,
             &no_sides(),
+            LOCAL_LIMITS,
             &mut answering_truncated("    a();\n    b("),
         );
 
@@ -633,6 +678,7 @@ mod tests {
             "src/main.rs",
             CONFLICT,
             &no_sides(),
+            LOCAL_LIMITS,
             &mut answering("    a();\n"),
         )
         .expect("a finished answer is a resolution");
@@ -714,20 +760,31 @@ mod tests {
     #[test]
     fn a_deletion_is_accepted_when_one_side_deleted() {
         let text = "keep\n<<<<<<< HEAD\ngone\n=======\n>>>>>>> them\nkeep\n";
-        let (resolved, _) =
-            resolve_conflicted_text("src/main.rs", text, &no_sides(), &mut answering(""))
-                .expect("deleting what one side deleted");
+        let (resolved, _) = resolve_conflicted_text(
+            "src/main.rs",
+            text,
+            &no_sides(),
+            LOCAL_LIMITS,
+            &mut answering(""),
+        )
+        .expect("deleting what one side deleted");
 
         assert_eq!(resolved, "keep\nkeep\n");
     }
 
     #[test]
     fn a_model_that_errors_leaves_the_file_alone() {
-        let outcome = resolve_conflicted_text("src/main.rs", CONFLICT, &no_sides(), &mut |_| {
-            Err(Decline::Unavailable(
-                "mtplx request: connection refused".to_string(),
-            ))
-        });
+        let outcome = resolve_conflicted_text(
+            "src/main.rs",
+            CONFLICT,
+            &no_sides(),
+            LOCAL_LIMITS,
+            &mut |_| {
+                Err(Decline::Unavailable(
+                    "mtplx request: connection refused".to_string(),
+                ))
+            },
+        );
 
         let decline = outcome.expect_err("a file nothing answered for");
         assert_eq!(
@@ -745,9 +802,10 @@ mod tests {
     fn every_conflict_in_a_file_has_to_be_settled_for_any_of_it_to_count() {
         let text = "<<<<<<< HEAD\na\n=======\nb\n>>>>>>> them\nmid\n<<<<<<< HEAD\nc\n=======\nd\n>>>>>>> them\n";
         let mut answers = ["a\n".to_string(), crate::llm::GIVE_UP_PHRASE.to_string()].into_iter();
-        let outcome = resolve_conflicted_text("src/main.rs", text, &no_sides(), &mut |_| {
-            finished(&answers.next().unwrap())
-        });
+        let outcome =
+            resolve_conflicted_text("src/main.rs", text, &no_sides(), LOCAL_LIMITS, &mut |_| {
+                finished(&answers.next().unwrap())
+            });
 
         assert!(
             outcome.is_err(),

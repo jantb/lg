@@ -9,6 +9,24 @@ pub fn kind(agent: &Agent) -> SessionKind {
         _ => SessionKind::Terminal,
     }
 }
+/// The claude profile from Settings, the default one when several are
+/// configured, or a plain `claude` when none is. Anything that needs claude
+/// specifically — the agent review, the Claude provider — runs this one.
+pub fn claude_profile() -> Agent {
+    let agents = crate::preferences::load().config.agents;
+    agents
+        .iter()
+        .find(|agent| agent.adapter == "claude" && agent.default)
+        .or_else(|| agents.iter().find(|agent| agent.adapter == "claude"))
+        .cloned()
+        .unwrap_or_else(|| Agent {
+            name: "Claude".into(),
+            adapter: "claude".into(),
+            executable: "claude".into(),
+            confinement: crate::preferences::default_confinement("claude").into(),
+            ..Default::default()
+        })
+}
 pub fn resolve(program: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let executable = |p: &Path| {

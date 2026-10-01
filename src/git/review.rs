@@ -77,7 +77,47 @@ pub fn assisted_review_against_main() -> Result<String> {
     Ok(build_assisted_review_against_main()?.report)
 }
 
-pub fn build_assisted_review_against_main() -> Result<AssistedReview> {
+/// The branch's whole change against main, as the review reads it: the working
+/// tree against the merge-base, untracked files included and generated files
+/// suppressed, so an edit made a moment ago is part of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchDiff {
+    pub branch: String,
+    pub base_ref: String,
+    /// One line per commit on the branch: short hash, subject, compact body.
+    pub commits: Vec<String>,
+    pub diff: String,
+}
+
+pub fn branch_diff_against_main() -> Result<BranchDiff> {
+    let (branch, base_ref, merge_base) = review_bases()?;
+    let diff_base = if merge_base.is_empty() {
+        base_ref.as_str()
+    } else {
+        merge_base.as_str()
+    };
+    Ok(BranchDiff {
+        commits: branch_review_commits(&base_ref)?,
+        diff: worktree_review_diff(diff_base)?,
+        branch,
+        base_ref,
+    })
+}
+
+/// What is not committed yet: the working tree against `HEAD`, staged,
+/// unstaged and untracked alike, read the way the branch review reads it.
+pub fn uncommitted_diff() -> Result<BranchDiff> {
+    Ok(BranchDiff {
+        branch: head_branch().unwrap_or_else(|_| "HEAD".to_string()),
+        base_ref: "HEAD".to_string(),
+        commits: Vec::new(),
+        diff: worktree_review_diff("HEAD")?,
+    })
+}
+
+/// The branch on screen, the main ref it is reviewed against, and where the
+/// two diverged (empty when they share no history).
+fn review_bases() -> Result<(String, String, String)> {
     let configured_base = crate::preferences::base_branch();
     let configured_remote = crate::preferences::remote();
     let base_ref = preferred_commit_ref(
@@ -92,6 +132,11 @@ pub fn build_assisted_review_against_main() -> Result<AssistedReview> {
     let merge_base = run(&["merge-base", &base_ref, "HEAD"])
         .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
         .unwrap_or_default();
+    Ok((branch, base_ref, merge_base))
+}
+
+pub fn build_assisted_review_against_main() -> Result<AssistedReview> {
+    let (branch, base_ref, merge_base) = review_bases()?;
     let diff_base = if merge_base.is_empty() {
         base_ref.as_str()
     } else {

@@ -129,6 +129,12 @@ impl App {
     pub(super) fn sync_session_keyboard(&mut self) {
         let wanted = self.state.session_capture
             || self.state.modal == Modal::Settings
+            || (self.state.modal == Modal::GuidedReview
+                && self
+                    .state
+                    .guided
+                    .as_ref()
+                    .is_some_and(|guided| guided.typing()))
             || (self.state.modal == Modal::Conflict
                 && self
                     .state

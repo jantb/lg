@@ -58,19 +58,23 @@ fn drain_review_stream(
 ) -> Option<(String, bool)> {
     let mut status = None;
     let mut handle = None;
+    // The answer so far is copied into the review once per batch rather than
+    // once per chunk: a long answer arrives in thousands of chunks, and copying
+    // all of it each time made streaming it quadratic.
+    let mut grew = false;
     for msg in drain_messages(slot) {
         match msg {
             GenMsg::Thinking(_) => {}
             GenMsg::Output(output) => {
                 if let Some(job) = slot.as_mut() {
                     job.output.push_str(&output);
-                    assists.insert(job.node_id.clone(), job.output.clone());
+                    grew = true;
                 }
             }
             GenMsg::Reset => {
                 if let Some(job) = slot.as_mut() {
                     job.output.clear();
-                    assists.insert(job.node_id.clone(), String::new());
+                    grew = true;
                 }
             }
             GenMsg::Done {
@@ -100,6 +104,9 @@ fn drain_review_stream(
                 status = Some((error, true));
             }
         }
+    }
+    if grew && let Some(job) = slot.as_ref() {
+        assists.insert(job.node_id.clone(), job.output.clone());
     }
     join_worker(handle);
     tick_spinner(slot);

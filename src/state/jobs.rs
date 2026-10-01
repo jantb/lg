@@ -223,6 +223,9 @@ pub enum OperationKind {
     OpenPullRequest,
     /// Clones a repository beside this one, which lg then moves to.
     Clone,
+    /// Submits a guided review's notes as a pull request review; the notes
+    /// are cleared once GitHub has them, so they are never sent twice.
+    SubmitReview,
 }
 
 #[derive(Debug)]

@@ -194,6 +194,23 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
             panel::github::handle_key(host.state_mut(), k)?;
             return Ok(());
         }
+        Modal::GuidedReview => {
+            let typing = host
+                .state()
+                .guided
+                .as_ref()
+                .is_some_and(|guided| guided.typing());
+            if k.code == KeyCode::Char('?') && !typing {
+                let area = host.area()?;
+                let state = host.state_mut();
+                state.help_return = Modal::GuidedReview;
+                state.modal = Modal::Help;
+                state.help_offset = panel::help::open_offset(state, area);
+                return Ok(());
+            }
+            panel::guided::handle_key(host.state_mut(), k)?;
+            return Ok(());
+        }
         Modal::None => {}
     }
 
@@ -348,6 +365,10 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
         }
         KeyCode::Char('R') => {
             spawn_assisted_review(host.state_mut());
+            return Ok(());
+        }
+        KeyCode::Char('V') => {
+            panel::guided::open_branch(host.state_mut());
             return Ok(());
         }
         _ => {}

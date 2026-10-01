@@ -38,6 +38,7 @@ fn modal_section(modal: Modal) -> Option<&'static str> {
         Modal::ReviewChat => "Review chat",
         Modal::ConfirmDestructive => "Confirm prompts",
         Modal::GitHub => "GitHub",
+        Modal::GuidedReview => "Guided review",
     })
 }
 
@@ -170,6 +171,8 @@ fn default_spans(state: &AppState) -> Vec<Span<'static>> {
 fn shortcut_visible(state: &AppState, key: &str, label: &str) -> bool {
     match (key, label) {
         ("F", _) => state.branch_actions_available(),
+        // A guided review needs a checkout to read the change from.
+        ("V", _) => state.repo_root.is_some(),
         ("p", _) => state.pull_available(),
         ("v", _) => diff_view_toggle_available(state),
         // Only a session row has a session to close.
@@ -403,6 +406,25 @@ mod tests {
     /// the configured name is a request and the answered name is the fact.
     /// Naming the wrong one made the footer confidently wrong about which model
     /// had just written a commit message.
+    /// A guided review reads the change from a checkout, so the footer only
+    /// offers it when there is one to read.
+    #[test]
+    fn the_footer_offers_a_guided_review_only_with_a_checkout_open() {
+        let text = |state: &AppState| {
+            default_spans(state)
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+        let mut state = AppState::new();
+        state.focus = Pane::Files;
+        state.repo_root = None;
+        assert!(!text(&state).contains("guided review"), "{}", text(&state));
+
+        state.repo_root = Some("/repo".into());
+        assert!(text(&state).contains("V guided review"), "{}", text(&state));
+    }
+
     #[test]
     fn the_footer_names_the_model_that_answered() {
         let mut state = AppState::new();

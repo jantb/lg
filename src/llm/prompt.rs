@@ -98,6 +98,72 @@ pub fn review_style(settings: &RepoSettings, reviewed: &str) -> String {
     out
 }
 
+/// What one step of a guided review asks: a reviewer's read of this hunk, in
+/// the light of the change it belongs to, short enough to read before moving
+/// on.
+pub fn build_guided_step_prompt(context: &str, settings: &RepoSettings) -> String {
+    format!(
+        "You are walking a reviewer through a change one hunk at a time. Below is the overview of\n\
+         the whole change, then the one hunk on screen now with the source around it.\n\
+         Explain this hunk to someone about to approve it:\n\
+         1. What it does, in one or two sentences, in terms of behavior rather than lines.\n\
+         2. Anything wrong or risky in it: a bug, an unhandled case, a broken contract, a missing\n\
+            test, or a concrete violation of the repo style below. Cite the line (`L123`) for each.\n\
+            Say plainly when there is nothing to flag.\n\
+         3. What to check next, if the answer depends on code not shown.\n\
+         End with exactly one line `Verdict: ok`, `Verdict: nit` or `Verdict: issue`.\n\
+         Be brief: at most 10 lines before the verdict. Do not restate the diff. Do not use code\n\
+         fences. Do not invent code that is not shown.\n\n\
+         {}\n\n\
+         {}\n\
+         {context}",
+        review_style(settings, context),
+        crate::settings::language_instruction(settings)
+    )
+}
+
+/// The opening of a guided review: what the change is for and the order its
+/// files are best read in.
+pub fn build_guided_overview_prompt(context: &str, settings: &RepoSettings) -> String {
+    format!(
+        "You are about to walk a reviewer through this change one hunk at a time.\n\
+         From the commits and the file list below, write:\n\
+         - One short paragraph on what the change is for.\n\
+         - The two or three things most worth the reviewer's attention, each with its file.\n\
+         Keep it under 12 lines. No code fences. Do not invent behavior that is not shown.\n\n\
+         {}\n\
+         {context}",
+        crate::settings::language_instruction(settings)
+    )
+}
+
+/// The system prompt for a question asked about the step on screen.
+pub fn build_guided_question_system_prompt(context: &str, settings: &RepoSettings) -> String {
+    format!(
+        "You are helping a reviewer understand one hunk of a change they are reviewing. Answer\n\
+         their question from the context below; say what is missing rather than guessing. Be\n\
+         brief and concrete, cite lines as `L123`, and do not use code fences unless asked for\n\
+         replacement code.\n\n\
+         {}\n\
+         {context}",
+        crate::settings::language_instruction(settings)
+    )
+}
+
+/// What a headless Claude Code run is asked when the reviewer wants a step
+/// fixed: the one change, in the one place, and nothing else.
+pub fn build_guided_fix_prompt(context: &str, instruction: &str) -> String {
+    format!(
+        "You are making one small change requested during a code review of this checkout.\n\
+         Apply exactly what the reviewer asks below, in the hunk shown, editing the file in place.\n\
+         Read what you need to get it right, keep the change minimal, match the surrounding style,\n\
+         and do not touch unrelated code, commit, or run anything that changes git state.\n\
+         When done, reply with one line saying what you changed.\n\n\
+         Reviewer's request:\n{instruction}\n\n\
+         {context}"
+    )
+}
+
 pub fn build_review_chat_system_prompt(context: &str, settings: &RepoSettings) -> String {
     format!(
         "You are a senior code reviewer helping inspect a full branch review against main.\n\

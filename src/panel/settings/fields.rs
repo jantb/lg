@@ -41,6 +41,11 @@ pub(super) fn options(hub: &Settings, field: &Field) -> Option<Picker> {
     let group = field.groups.first().map(String::as_str).unwrap_or_default();
     Some(match (hub.key(), group, field.key.as_str()) {
         ("writing", _, "language") => Picker::fixed(preferences::LANGUAGES, "language"),
+        ("models", _, "provider") => Picker::fixed(preferences::PROVIDERS, "provider"),
+        ("models", _, "claude_model") => Picker {
+            fixed: false,
+            ..Picker::fixed(crate::llm::CLAUDE_MODEL_CHOICES, "Claude model")
+        },
         ("agents", _, "adapter") => Picker::fixed(preferences::ADAPTERS, "adapter"),
         ("agents", _, "confinement") => Picker::fixed(preferences::CONFINEMENTS, "confinement"),
         ("branches", "promotions", "strategy") => {
@@ -307,8 +312,14 @@ pub(super) fn describe(category: &str, field: &Field) -> Option<&'static str> {
         ("models", _, "enabled") => {
             "Whether lg asks the model at all. Off, commit messages are typed by hand and conflicts and reviews are left alone; use it when no model server is running."
         }
+        ("models", _, "provider") => {
+            "Who answers every AI request — commit messages, review assists, the review chat, guided reviews and conflict resolutions. local uses the chat endpoint below; claude runs the claude CLI (tools off, your Claude Code login). Enter chooses from the list."
+        }
+        ("models", _, "claude_model") => {
+            "Model the claude provider asks for: sonnet, opus, haiku or a full model id. Empty uses the Claude agent profile's model, or the CLI default."
+        }
         ("models", _, "model") => {
-            "Model used for commit messages, reviews and summaries. Enter picks from the models the endpoint serves; L opens the model modal with connectivity checks."
+            "Local model used for commit messages, reviews and summaries when the provider is local. Enter picks from the models the endpoint serves; L opens the model modal with connectivity checks."
         }
         ("models", _, "endpoint") => "Chat completions endpoint the model is reached at.",
         ("agents", _, "name") => "How the agent is listed in the session picker.",

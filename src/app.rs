@@ -141,6 +141,33 @@ fn set_key_disambiguation<W: Write>(output: &mut W, on: bool) {
     }
 }
 
+/// The terminal editor a file is edited in: `$VISUAL`, else `$EDITOR`, else
+/// `vi`, split into the program and the arguments it was given.
+fn terminal_editor() -> (String, Vec<String>) {
+    let configured = ["VISUAL", "EDITOR"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .find(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "vi".to_string());
+    let mut words = configured.split_whitespace().map(str::to_string);
+    let program = words.next().unwrap_or_else(|| "vi".to_string());
+    (program, words.collect())
+}
+
+/// How `program` is told to open `path` at `line`. Most terminal editors take
+/// `+LINE`; the few that do not take `path:line`.
+fn editor_line_args(program: &str, path: &str, line: usize) -> Vec<String> {
+    let name = std::path::Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program);
+    match name {
+        "hx" | "helix" | "zed" => vec![format!("{path}:{line}")],
+        "code" | "cursor" | "codium" => vec!["-g".into(), format!("{path}:{line}")],
+        _ => vec![format!("+{line}"), path.to_string()],
+    }
+}
+
 fn restore_terminal<W: Write>(output: &mut W) {
     set_key_disambiguation(output, false);
     let _ = execute!(output, DisableMouseCapture, DisableBracketedPaste);
@@ -169,6 +196,45 @@ where
 // ─── App ─────────────────────────────────────────────────────────────────────
 
 impl App {
+    /// Hand the terminal to the editor on `path` at `line`, and take it back
+    /// once the editor exits.
+    ///
+    /// lg leaves its screen exactly as it does when quitting, so the editor
+    /// gets a plain terminal, and puts it back the way [`App::new`] set it up.
+    /// Nothing is read from the keyboard meanwhile: the loop is right here,
+    /// waiting.
+    pub(super) fn edit_in_terminal(&mut self, path: &str, line: usize) -> Result<()> {
+        let root = self
+            .state
+            .repo_root
+            .clone()
+            .context("no checkout to edit in")?;
+        let (program, mut args) = terminal_editor();
+        args.extend(editor_line_args(&program, path, line));
+        restore_terminal(self.terminal.backend_mut());
+        let status = std::process::Command::new(&program)
+            .args(&args)
+            .current_dir(&root)
+            .status();
+        enable_raw_mode().context("enable raw mode")?;
+        execute!(
+            self.terminal.backend_mut(),
+            EnterAlternateScreen,
+            EnableMouseCapture
+        )
+        .context("enter alt screen")?;
+        // restore_terminal turned off what session mode had on; the next
+        // frame puts back whatever the screen it returns to wants.
+        self.session_keyboard = false;
+        self.sync_session_keyboard();
+        self.terminal.clear().context("redraw after the editor")?;
+        let status = status.with_context(|| format!("could not start {program}"))?;
+        if !status.success() {
+            anyhow::bail!("{program} exited with {status}");
+        }
+        Ok(())
+    }
+
     pub fn new() -> Result<Self> {
         // Pin git to the directory lg opens on up front: every command runs
         // against a directory lg chose, not whichever one the process happens
@@ -291,6 +357,7 @@ impl App {
                             if !crate::panel::settings::handle_paste(&mut self.state, &text)
                                 && !crate::panel::conflict::handle_paste(&mut self.state, &text)
                                 && !crate::panel::github::handle_paste(&mut self.state, &text)
+                                && !crate::panel::guided::handle_paste(&mut self.state, &text)
                             {
                                 session::forward_paste(&mut self.state, &text);
                             }
@@ -348,6 +415,14 @@ impl Drop for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_editor_is_told_the_line_the_way_it_reads_it() {
+        assert_eq!(editor_line_args("vim", "src/a.rs", 12), ["+12", "src/a.rs"]);
+        assert_eq!(editor_line_args("/usr/bin/nvim", "a.rs", 3), ["+3", "a.rs"]);
+        assert_eq!(editor_line_args("hx", "a.rs", 3), ["a.rs:3"]);
+        assert_eq!(editor_line_args("code", "a.rs", 3), ["-g", "a.rs:3"]);
+    }
     use crate::state::PendingAction;
 
     #[test]

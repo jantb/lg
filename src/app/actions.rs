@@ -22,7 +22,11 @@ fn save_settings(
     commit_subject_max_chars: &str,
     commit_body_max_lines: &str,
 ) -> Result<()> {
-    crate::llm::save_llm_settings(model, provider)?;
+    // With claude answering, the field shows the Claude model, which is
+    // chosen in Settings; saving it here would overwrite the local model.
+    if provider != crate::llm::LlmProvider::Claude {
+        crate::llm::save_llm_settings(model, provider)?;
+    }
     // The footer names the model that last answered over the one configured.
     // That was right until now; the next answer will come from this one.
     crate::llm::forget_last_stats();
@@ -361,6 +365,15 @@ impl App {
                 Ok(status) => self.state.set_status(status, false),
                 Err(err) => self.state.set_status(format!("open failed: {err}"), true),
             },
+            PendingAction::EditFile { path, line } => {
+                match self.edit_in_terminal(&path, line) {
+                    Ok(()) => self.state.set_status(format!("edited {path}"), false),
+                    Err(err) => self.state.set_status(format!("edit failed: {err:#}"), true),
+                }
+                // Whatever the editor did is part of the change now.
+                crate::panel::guided::reload(&mut self.state);
+                self.start_refresh(false);
+            }
             PendingAction::DeleteBranch {
                 name,
                 delete_local,

@@ -121,10 +121,14 @@ pub fn stream_messages(
     finalizer: impl Fn(&str) -> String,
     tx: Sender<GenMsg>,
 ) {
+    let provider = current_provider();
+    if provider == LlmProvider::Claude {
+        super::claude::stream_claude(messages, task, finalizer, tx);
+        return;
+    }
     let num_predict = task.num_predict;
     let start = Instant::now();
     let model = current_model();
-    let provider = current_provider();
     let endpoint = endpoint_for_provider(provider);
     let prompt_bytes = messages
         .iter()
@@ -197,7 +201,7 @@ fn open_chat_stream(
 
 /// The word every "could not reach the server" error carries, so that a
 /// consumer can tell it from a server that answered with a refusal.
-const UNREACHABLE: &str = "unreachable";
+pub(super) const UNREACHABLE: &str = "unreachable";
 
 /// Whether a [`GenMsg::Error`] message means the server could not be reached
 /// at all — a refused connection, a timeout — as opposed to a server that was

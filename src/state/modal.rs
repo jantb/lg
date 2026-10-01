@@ -144,6 +144,8 @@ pub enum Modal {
     ConfirmDestructive,
     /// Pull requests of the checkout on screen, and repositories to clone.
     GitHub,
+    /// A branch or pull request walked one hunk at a time.
+    GuidedReview,
 }
 
 /// Rows of the new-worktree form. The path derives from the branch until the
@@ -358,6 +360,12 @@ pub enum PendingAction {
     OpenProject,
     OpenProjectAt(String),
     OpenFile(String),
+    /// Open a file at a line in the terminal editor, with lg suspended until
+    /// it exits.
+    EditFile {
+        path: String,
+        line: usize,
+    },
     DeleteBranch {
         name: String,
         delete_local: bool,
@@ -433,6 +441,14 @@ pub enum GitHubAction {
     Comment {
         number: u64,
         body: String,
+    },
+    /// One review with inline comments, from a guided review's notes.
+    SubmitReview {
+        number: u64,
+        commit: String,
+        event: crate::github::ReviewEvent,
+        body: String,
+        comments: Vec<crate::github::LineComment>,
     },
     Merge {
         number: u64,

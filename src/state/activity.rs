@@ -97,6 +97,7 @@ impl AppState {
             || self.conflict_resolve_job.is_some()
             || self.workflow_job.is_some()
             || self.github.loading()
+            || self.guided.as_ref().is_some_and(|guided| guided.working())
     }
 
     /// What the running operation is doing right now, for the ones that report
@@ -171,6 +172,7 @@ impl AppState {
                 Some(PendingAction::ReviewAgent) => Some("starting agent review"),
                 Some(PendingAction::ReviewChat(_)) => Some("starting chat"),
                 Some(PendingAction::CopyToClipboard { .. }) => Some("copying"),
+                Some(PendingAction::EditFile { .. }) => Some("opening the editor"),
                 Some(PendingAction::Commit) => Some("committing"),
                 Some(PendingAction::StageAllAndCommit) => Some("staging"),
                 Some(PendingAction::Push) => Some("starting push"),

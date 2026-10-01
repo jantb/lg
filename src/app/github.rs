@@ -40,6 +40,20 @@ impl App {
                     crate::github::review(number, verdict, &body)
                 });
             }
+            GitHubAction::SubmitReview {
+                number,
+                commit,
+                event,
+                body,
+                comments,
+            } => {
+                spawn_operation(
+                    state,
+                    "submitting review",
+                    OperationKind::SubmitReview,
+                    move || crate::github::submit_review(number, &commit, event, &body, &comments),
+                );
+            }
             GitHubAction::Comment { number, body } => {
                 spawn_operation(state, "commenting", OperationKind::GitHub, move || {
                     crate::github::comment(number, &body)
@@ -114,6 +128,10 @@ impl App {
         match kind {
             OperationKind::GitHub | OperationKind::OpenPullRequest => {
                 crate::panel::github::after_action(&mut self.state)
+            }
+            OperationKind::SubmitReview => {
+                crate::panel::guided::after_submit(&mut self.state, succeeded);
+                crate::panel::github::after_action(&mut self.state);
             }
             OperationKind::Clone => {
                 let Some(dir) = self.state.github.clone_target.take() else {

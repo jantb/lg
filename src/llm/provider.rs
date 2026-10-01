@@ -12,37 +12,55 @@ use crate::config::{LLM_MODEL, MTPLX_CHAT_ENDPOINT};
 const CONFIG_FILE_ENV: &str = "LG_CONFIG_FILE";
 const CONFIG_MODEL_KEY: &str = "llm_model";
 const CONFIG_PROVIDER_KEY: &str = "llm_provider";
+/// What stands in for an endpoint when the answer comes from the CLI.
+const CLAUDE_ENDPOINT: &str = "claude -p (Claude Code CLI, tools off)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmProvider {
+    /// An OpenAI-compatible chat endpoint, local by default.
     Mtplx,
+    /// The `claude` CLI, run once per request with its tools turned off.
+    Claude,
 }
 
 impl LlmProvider {
-    pub const ALL: [Self; 1] = [Self::Mtplx];
+    pub const ALL: [Self; 2] = [Self::Mtplx, Self::Claude];
 
     pub fn label(self) -> &'static str {
-        "mtplx"
+        match self {
+            Self::Mtplx => "mtplx",
+            Self::Claude => "claude",
+        }
     }
 
-    fn config_value(self) -> &'static str {
-        "mtplx"
+    /// The value `models.provider` stores for this provider.
+    pub fn config_value(self) -> &'static str {
+        match self {
+            Self::Mtplx => "local",
+            Self::Claude => "claude",
+        }
     }
 
-    fn from_config(value: &str) -> Option<Self> {
+    pub fn from_config(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "mtplx" | "mtplx-server" | "mtplx_server" | "omlx" | "mlx" | "openai-compatible" => {
-                Some(Self::Mtplx)
-            }
+            "local" | "mtplx" | "mtplx-server" | "mtplx_server" | "omlx" | "mlx"
+            | "openai-compatible" => Some(Self::Mtplx),
+            "claude" | "claude-code" | "anthropic" => Some(Self::Claude),
             _ => None,
         }
     }
 
     fn default_endpoint(self) -> &'static str {
-        MTPLX_CHAT_ENDPOINT
+        match self {
+            Self::Mtplx => MTPLX_CHAT_ENDPOINT,
+            Self::Claude => CLAUDE_ENDPOINT,
+        }
     }
 
     fn endpoint_env(self) -> Option<String> {
+        if self == Self::Claude {
+            return None;
+        }
         std::env::var("LG_MTPLX_CHAT_ENDPOINT")
             .or_else(|_| std::env::var("LG_MTPLX_URL"))
             .ok()
@@ -64,6 +82,9 @@ pub fn api_key() -> Option<String> {
 }
 
 pub fn current_model() -> String {
+    if current_provider() == LlmProvider::Claude {
+        return current_claude_model();
+    }
     env_model()
         .or_else(|| {
             crate::preferences::configured_category("models")
@@ -74,10 +95,43 @@ pub fn current_model() -> String {
         .unwrap_or_else(|| LLM_MODEL.to_owned())
 }
 
+/// Which provider answers: the environment's, else the one Settings names,
+/// else the one the legacy config file saved, else the local endpoint.
 pub fn current_provider() -> LlmProvider {
     env_provider()
+        .or_else(|| {
+            crate::preferences::configured_category("models")
+                .then(|| {
+                    LlmProvider::from_config(&crate::preferences::load().config.models.provider)
+                })
+                .flatten()
+        })
         .or_else(saved_provider)
         .unwrap_or(LlmProvider::Mtplx)
+}
+
+/// The Claude model requests ask for, in the words the CLI takes: Settings'
+/// `models.claude_model`, else the Claude agent profile's model, else the
+/// CLI's own default.
+pub fn current_claude_model() -> String {
+    let model = configured_claude_model();
+    if model.is_empty() {
+        "claude default".to_string()
+    } else {
+        model
+    }
+}
+
+/// [`current_claude_model`], empty when nothing names one and the CLI's
+/// default applies.
+pub(super) fn configured_claude_model() -> String {
+    let configured = crate::preferences::load().config.models.claude_model;
+    let model = if configured.trim().is_empty() {
+        crate::agents::claude_profile().model
+    } else {
+        configured
+    };
+    model.trim().to_string()
 }
 
 pub fn current_endpoint() -> String {
@@ -85,6 +139,9 @@ pub fn current_endpoint() -> String {
 }
 
 pub fn endpoint_for_provider(provider: LlmProvider) -> String {
+    if provider == LlmProvider::Claude {
+        return provider.default_endpoint().to_owned();
+    }
     provider.endpoint_env().unwrap_or_else(|| {
         if crate::preferences::configured_category("models") {
             normalize_mtplx_chat_endpoint(&crate::preferences::load().config.models.endpoint)
@@ -146,6 +203,9 @@ pub fn available_models() -> Vec<String> {
 /// Ask the server what it serves and remember the answer. Blocks, so it belongs
 /// on a thread of its own; [`prime_models_async`] is the usual way in.
 pub fn prime_models() {
+    if current_provider() == LlmProvider::Claude {
+        return;
+    }
     let fetched = fetch_models();
     if !fetched.is_empty() {
         *models() = fetched;
@@ -290,7 +350,36 @@ fn config_path() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".config/lg/config"))
 }
 
+/// The legacy config file's entries as last read, and the file's stamp then.
+///
+/// The provider and model are looked up on the way into every request and on
+/// redraws, and the file almost never changes, so it is read again only when
+/// its modification time or length says it did.
+type EntriesCache = Option<(
+    PathBuf,
+    Option<(std::time::SystemTime, u64)>,
+    Vec<(String, String)>,
+)>;
+static ENTRIES: Mutex<EntriesCache> = Mutex::new(None);
+
 fn read_config_entries(path: &std::path::Path) -> Vec<(String, String)> {
+    let stamp = fs::metadata(path)
+        .ok()
+        .and_then(|meta| Some((meta.modified().ok()?, meta.len())));
+    let mut cache = ENTRIES.lock().unwrap_or_else(|err| err.into_inner());
+    if let Some((cached_path, cached_stamp, entries)) = cache.as_ref()
+        && cached_path == path
+        && *cached_stamp == stamp
+        && stamp.is_some()
+    {
+        return entries.clone();
+    }
+    let entries = parse_config_entries(path);
+    *cache = Some((path.to_path_buf(), stamp, entries.clone()));
+    entries
+}
+
+fn parse_config_entries(path: &std::path::Path) -> Vec<(String, String)> {
     fs::read_to_string(path)
         .unwrap_or_default()
         .lines()
@@ -350,6 +439,20 @@ mod tests {
         );
         assert_eq!(LlmProvider::from_config("omlx"), Some(LlmProvider::Mtplx));
         assert_eq!(LlmProvider::from_config("unsupported"), None);
+    }
+
+    #[test]
+    fn a_provider_reads_back_from_the_value_it_stores() {
+        for provider in LlmProvider::ALL {
+            assert_eq!(
+                LlmProvider::from_config(provider.config_value()),
+                Some(provider)
+            );
+        }
+        assert_eq!(
+            LlmProvider::from_config("Claude"),
+            Some(LlmProvider::Claude)
+        );
     }
 
     #[test]

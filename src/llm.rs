@@ -4,6 +4,7 @@ use std::sync::mpsc::Sender;
 
 use crate::state::{GenMsg, ReviewChatMessage};
 
+mod claude;
 mod diff;
 mod prompt;
 mod provider;
@@ -12,11 +13,12 @@ mod stats;
 mod stream;
 mod think;
 
+pub use claude::{CLAUDE_MODEL_CHOICES, run_claude_fix};
 pub use prompt::{GIVE_UP_PHRASE, build_conflict_hunk_prompt};
 pub use provider::{
     LlmProvider, api_key, available_models, clear_saved_llm_settings, config_file_display,
-    current_endpoint, current_model, current_provider, endpoint_for_provider, env_model_active,
-    env_provider_active, prime_models_async, save_llm_settings,
+    current_claude_model, current_endpoint, current_model, current_provider, endpoint_for_provider,
+    env_model_active, env_provider_active, prime_models_async, save_llm_settings,
 };
 pub use reply::parse_review_style_finding;
 
@@ -30,11 +32,12 @@ pub const TRUNCATED_NOTE: &str = "\u{2026} [cut off at the token budget]";
 pub use stats::{GenStats, LlmPhase, forget_last_stats, last_stats, phase, progress};
 pub use stream::error_means_unreachable;
 
-pub use prompt::build_review_agent_prompt;
 use prompt::{
-    build_commit_prompt, build_conventions_prompt, build_review_assist_prompt,
+    build_commit_prompt, build_conventions_prompt, build_guided_overview_prompt,
+    build_guided_question_system_prompt, build_guided_step_prompt, build_review_assist_prompt,
     build_review_chat_system_prompt, build_review_pr_text_prompt, build_review_style_flag_prompt,
 };
+pub use prompt::{build_guided_fix_prompt, build_review_agent_prompt};
 use reply::{
     finalize, finalize_conflict_hunk, finalize_review_assist, finalize_review_chat,
     finalize_review_pr_text, finalize_review_style_flag_for_path, parse_conventions,
@@ -60,6 +63,9 @@ const REVIEW_CHAT_NUM_PREDICT: i32 = 768;
 /// How many of the most recent chat turns travel with a follow-up question.
 const REVIEW_CHAT_HISTORY_TURNS: usize = 8;
 const REVIEW_STYLE_FLAG_NUM_PREDICT: i32 = 96;
+const GUIDED_STEP_NUM_PREDICT: i32 = 2_048;
+const GUIDED_OVERVIEW_NUM_PREDICT: i32 = 1_024;
+const GUIDED_QUESTION_NUM_PREDICT: i32 = 1_024;
 /// Enough for a conflict the local model is allowed to try at all: both sides
 /// of one hunk and a little joining. A budget large enough for a whole file
 /// would only buy a longer wrong answer.
@@ -149,6 +155,59 @@ pub fn stream_review_pr_text(context: String, tx: Sender<GenMsg>) {
         build_review_pr_text_prompt(&context, &crate::settings::load()),
         ChatTask::new("lg-review-pr", REVIEW_PR_NUM_PREDICT, false),
         finalize_review_pr_text,
+        tx,
+    );
+}
+
+/// A reviewer's read of one step of a guided review.
+pub fn stream_guided_step(context: String, tx: Sender<GenMsg>) {
+    stream_prompt(
+        build_guided_step_prompt(&context, &crate::settings::load()),
+        ChatTask::new("lg-guided-step", GUIDED_STEP_NUM_PREDICT, false),
+        finalize_review_chat,
+        tx,
+    );
+}
+
+/// What a guided review opens on: the point of the change and where to look.
+pub fn stream_guided_overview(context: String, tx: Sender<GenMsg>) {
+    stream_prompt(
+        build_guided_overview_prompt(&context, &crate::settings::load()),
+        ChatTask::new("lg-guided-overview", GUIDED_OVERVIEW_NUM_PREDICT, false),
+        finalize_review_chat,
+        tx,
+    );
+}
+
+/// A question about the step on screen, with what was already said about it.
+pub fn stream_guided_question(
+    context: String,
+    commentary: String,
+    question: String,
+    tx: Sender<GenMsg>,
+) {
+    let mut messages = vec![ChatMessage {
+        role: "system",
+        content: build_guided_question_system_prompt(&context, &crate::settings::load()),
+    }];
+    if !commentary.trim().is_empty() {
+        messages.push(ChatMessage {
+            role: "user",
+            content: "What do you make of this hunk?".to_string(),
+        });
+        messages.push(ChatMessage {
+            role: "assistant",
+            content: commentary,
+        });
+    }
+    messages.push(ChatMessage {
+        role: "user",
+        content: question,
+    });
+    stream_messages(
+        messages,
+        ChatTask::new("lg-guided-question", GUIDED_QUESTION_NUM_PREDICT, false),
+        finalize_review_chat,
         tx,
     );
 }

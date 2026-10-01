@@ -9,9 +9,23 @@ pub(in crate::panel::main) fn visible_review_node_indices(state: &AppState) -> V
     let Some(review) = &state.review else {
         return Vec::new();
     };
+    // One pass, parents before children: a node shows when its parent shows
+    // and is expanded. Walking every node's ancestors instead made this
+    // quadratic, and it runs several times a frame.
+    let mut open: std::collections::HashMap<&str, bool> =
+        std::collections::HashMap::with_capacity(review.nodes.len());
     let mut visible = Vec::new();
     for (idx, node) in review.nodes.iter().enumerate() {
-        if ancestors_expanded(state, &node.id) {
+        let shown = match node.parent.as_deref() {
+            None => true,
+            Some(parent) => match open.get(parent) {
+                Some(&parent_open) => parent_open,
+                None => ancestors_expanded(state, &node.id),
+            },
+        };
+        open.entry(node.id.as_str())
+            .or_insert(shown && !state.review_collapsed.contains(&node.id));
+        if shown {
             visible.push(idx);
         }
     }

@@ -51,6 +51,11 @@ const ACTIONS: &[(&str, Run, bool)] = &[
         Run::Key(KeyCode::Char('H')),
         false,
     ),
+    (
+        "Guided review — walk the branch (or, on main, uncommitted changes) hunk by hunk",
+        Run::Key(KeyCode::Char('V')),
+        true,
+    ),
     ("Commit staged changes", Run::Key(KeyCode::Char('c')), true),
     ("Fetch remote updates", Run::Key(KeyCode::Char('f')), true),
     ("Push current branch", Run::Key(KeyCode::Char('P')), true),

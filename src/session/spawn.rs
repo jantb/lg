@@ -182,7 +182,7 @@ pub(super) fn session_env() -> Vec<(String, String)> {
 /// Variables that tell claude it is running inside another claude. lg may
 /// itself have been started from inside a session; without dropping these the
 /// child would think it is nested in one.
-pub(super) fn nested_claude_markers() -> Vec<String> {
+pub(crate) fn nested_claude_markers() -> Vec<String> {
     vec![
         "CLAUDECODE".to_string(),
         "CLAUDE_CODE_CHILD_SESSION".to_string(),

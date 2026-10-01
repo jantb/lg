@@ -40,6 +40,9 @@ pub struct AppState {
     pub focus: Pane,
     pub modal: Modal,
     pub prev_focus: Pane,
+    /// The modal the help overlay goes back to when it closes, for help
+    /// opened from inside one rather than from the panes.
+    pub help_return: Modal,
     pub help_offset: u16,
 
     pub files: Vec<FileEntry>,
@@ -91,6 +94,10 @@ pub struct AppState {
     /// from. Counting rows means highlighting and wrapping the whole diff,
     /// and it is asked for several times a frame.
     pub diff_row_count_cache: std::cell::Cell<Option<(DiffRowCountKey, usize)>>,
+    /// The diff pane's highlighted rows, kept until the text, width or view
+    /// changes, so a frame only copies the rows it shows instead of
+    /// highlighting the whole diff again.
+    pub diff_render_cache: crate::state::DiffRenderCache,
     pub diff_offset: u16,
     pub diff_source: DiffSource,
     pub diff_view_mode: DiffViewMode,
@@ -171,6 +178,9 @@ pub struct AppState {
     pub commands: crate::panel::commands::Commands,
     pub settings_hub: crate::panel::settings::Settings,
     pub github: crate::panel::github::GitHub,
+    /// The guided review under way, kept while it is not on screen so that
+    /// coming back resumes it.
+    pub guided: Option<Box<crate::panel::guided::Guided>>,
     pub agent_profiles: Vec<crate::preferences::Agent>,
     pub pending_action: Option<PendingAction>,
     pub confirm: Option<ConfirmPrompt>,
@@ -282,6 +292,7 @@ impl AppState {
             focus: Pane::Status,
             modal: Modal::None,
             prev_focus: Pane::Status,
+            help_return: Modal::None,
             help_offset: 0,
 
             files: Vec::new(),
@@ -323,6 +334,7 @@ impl AppState {
             diff_text: String::new(),
             diff_text_version: 0,
             diff_row_count_cache: std::cell::Cell::new(None),
+            diff_render_cache: Default::default(),
             diff_offset: 0,
             diff_source: DiffSource::None,
             diff_view_mode: DiffViewMode::SideBySide,
@@ -391,6 +403,7 @@ impl AppState {
             commands: Default::default(),
             settings_hub: Default::default(),
             github: Default::default(),
+            guided: None,
             agent_profiles: Vec::new(),
             pending_action: None,
             confirm: None,

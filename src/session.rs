@@ -23,6 +23,7 @@ mod registry;
 mod spawn;
 use reading::*;
 pub use registry::{EndedSession, Sessions};
+pub(crate) use spawn::nested_claude_markers;
 pub use spawn::{claude_spawn, codex_spawn, pi_spawn, shell_spawn};
 
 /// How many lines of scrolled-off output each session keeps.

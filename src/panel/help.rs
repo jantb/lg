@@ -28,6 +28,9 @@ const DESC_WIDTH: usize = OVERLAY_WIDTH as usize - 2 - 2 - KEY_COLUMN;
 /// The section the overlay opens at and highlights: the one whose keys the
 /// pane behind it is listening for.
 fn active_title(state: &AppState) -> Option<&'static str> {
+    if state.help_return == Modal::GuidedReview {
+        return Some("Guided review");
+    }
     keys::active_section(state.prev_focus, state.main_keys()).map(|section| section.title)
 }
 
@@ -173,7 +176,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent, area: Rect) -> Result<()>
         KeyCode::Char('g') => state.help_offset = 0,
         KeyCode::Char('G') => state.help_offset = max_offset(area),
         _ => {
-            state.modal = Modal::None;
+            state.modal = std::mem::replace(&mut state.help_return, Modal::None);
             state.help_offset = 0;
         }
     }

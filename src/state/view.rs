@@ -57,6 +57,15 @@ pub enum DiffViewMode {
     SideBySide,
 }
 
+/// What the diff pane's highlighted rows were built from: the row-count key,
+/// plus the text's length and buffer, which also catch a text replaced without
+/// [`AppState::set_diff_text`].
+pub type DiffRenderKey = (DiffRowCountKey, usize, usize);
+
+/// The diff pane's highlighted rows and what they were built from.
+pub type DiffRenderCache =
+    std::cell::RefCell<Option<(DiffRenderKey, Vec<ratatui::text::Line<'static>>)>>;
+
 /// Everything the rendered row count of the diff pane depends on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiffRowCountKey {

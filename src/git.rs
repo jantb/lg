@@ -12,6 +12,7 @@ mod context;
 mod diff;
 pub mod environments;
 mod flow;
+pub mod guided;
 mod index;
 mod merge_editor;
 mod nested;
@@ -76,8 +77,9 @@ pub use release::{
 };
 pub use remote::{merge_upstream, pull, push, push_with_upstream, remote_url, set_branch_upstream};
 pub use review::{
-    AssistedReview, Language, REVIEW_AGENT_NODE_ID, REVIEW_PR_TEXT_NODE_ID, ReviewNode,
-    assisted_review_against_main, build_assisted_review_against_main, is_test_path,
+    AssistedReview, BranchDiff, Language, REVIEW_AGENT_NODE_ID, REVIEW_PR_TEXT_NODE_ID, ReviewNode,
+    assisted_review_against_main, branch_diff_against_main, build_assisted_review_against_main,
+    is_test_path, uncommitted_diff,
 };
 pub use status::{
     FileEntry, parse_porcelain, parse_porcelain_xy, status_entries, status_porcelain,

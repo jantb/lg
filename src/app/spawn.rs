@@ -30,6 +30,7 @@ fn operation_block_reason(state: &AppState, kind: OperationKind) -> Option<&'sta
                 | OperationKind::StageAllAndCommit
                 | OperationKind::FileSystem
                 | OperationKind::GitHub
+                | OperationKind::SubmitReview
                 | OperationKind::Clone
         )
     {

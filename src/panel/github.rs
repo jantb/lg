@@ -531,6 +531,7 @@ fn browse_pull_requests(state: &mut AppState, key: KeyEvent) {
             }
             None => state.set_status("no main worktree to put a new one next to", true),
         },
+        KeyCode::Char('v') => crate::panel::guided::open_pull_request(state, &pr),
         KeyCode::Char('a') if still_open(state) => compose(state, Compose::Approve),
         KeyCode::Char('x') if still_open(state) => compose(state, Compose::RequestChanges),
         KeyCode::Char('c') => compose(state, Compose::Comment),

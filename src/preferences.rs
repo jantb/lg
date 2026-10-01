@@ -44,18 +44,30 @@ pub struct Models {
     /// conflicts are left to the person, and the review assists stay quiet,
     /// so nothing waits on a server that is not running.
     pub enabled: bool,
+    /// Who answers: `local` for the chat endpoint below, or `claude` for the
+    /// `claude` CLI, which then writes every commit message, review assist,
+    /// chat reply and conflict resolution.
+    pub provider: String,
     pub model: String,
     pub endpoint: String,
+    /// The model the `claude` provider asks for (`sonnet`, `opus`, `haiku` or
+    /// a full id). Empty uses the Claude agent profile's model, or the CLI's
+    /// default.
+    pub claude_model: String,
 }
 impl Default for Models {
     fn default() -> Self {
         Self {
             enabled: true,
+            provider: "local".into(),
             model: crate::config::LLM_MODEL.into(),
             endpoint: crate::config::MTPLX_CHAT_ENDPOINT.into(),
+            claude_model: String::new(),
         }
     }
 }
+/// The providers `models.provider` may name.
+pub const PROVIDERS: &[&str] = &["local", "claude"];
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Agent {
@@ -621,6 +633,9 @@ impl Preferences {
         }
         if self.writing.language.trim().is_empty() {
             bail!("writing.language must not be empty");
+        }
+        if !PROVIDERS.contains(&self.models.provider.as_str()) {
+            bail!("models.provider must be one of {}", PROVIDERS.join(", "));
         }
         if !self.models.endpoint.starts_with("http://")
             && !self.models.endpoint.starts_with("https://")
