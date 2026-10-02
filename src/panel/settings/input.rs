@@ -1,6 +1,8 @@
 //! Keys, mouse and pastes into the settings screen.
 
 use super::*;
+use crate::panel::text_input::Edit;
+use crate::state::{Poll, poll_once, stopped_unexpectedly};
 
 /// Clicks choose categories and fields, a second click on the selected field
 /// opens it, and the wheel moves whichever pane it is over.
@@ -19,7 +21,7 @@ pub fn handle_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) {
         }
         MouseEventKind::Down(MouseButton::Left) if r.fields.contains(at) => {
             let hub = &mut state.settings_hub;
-            if hub.editing || hub.key() == "activity" {
+            if hub.editing || hub.current_category() == Category::Activity {
                 return;
             }
             let fields = fields(hub);
@@ -60,8 +62,9 @@ pub fn handle_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) {
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     let result = handle(state, key);
     if let Err(e) = result {
-        state.settings_hub.notice = format!("{e:#}");
-        state.settings_hub.notice_error = true;
+        state
+            .settings_hub
+            .notify(NoticeKind::Error, format!("{e:#}"));
     }
     Ok(())
 }
@@ -72,8 +75,14 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
         state.settings_hub.models = models;
     }
     let hub = &mut state.settings_hub;
-    hub.notice_error = false;
+    // An error is about the key that caused it; the next key leaves its
+    // text up but no longer in red.
+    if hub.notice_kind == NoticeKind::Error {
+        hub.notice_kind = NoticeKind::Info;
+    }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    // Only the very next key can confirm stopping a busy session.
+    let armed = hub.session_armed.take();
     if hub.searching {
         match key.code {
             KeyCode::Esc | KeyCode::Enter => hub.searching = false,
@@ -103,59 +112,46 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 let up = matches!(key.code, KeyCode::Up | KeyCode::PageUp);
                 step_number(hub, if up { size } else { -size });
             }
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => insert(hub, "\n"),
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                hub.input.insert_char('\n');
+            }
             KeyCode::Enter => commit_edit(hub)?,
-            KeyCode::Backspace if hub.cursor > 0 => {
-                let mut chars: Vec<_> = hub.input.chars().collect();
-                chars.remove(hub.cursor - 1);
-                hub.cursor -= 1;
-                hub.input = chars.into_iter().collect();
-                hub.choice = None;
-                hub.typed = true;
-            }
-            KeyCode::Delete if hub.cursor < hub.input.chars().count() => {
-                let mut chars: Vec<_> = hub.input.chars().collect();
-                chars.remove(hub.cursor);
-                hub.input = chars.into_iter().collect();
-                hub.choice = None;
-                hub.typed = true;
-            }
-            KeyCode::Left => hub.cursor = hub.cursor.saturating_sub(1),
-            KeyCode::Right => hub.cursor = (hub.cursor + 1).min(hub.input.chars().count()),
-            KeyCode::Home => hub.cursor = 0,
-            KeyCode::End => hub.cursor = hub.input.chars().count(),
             KeyCode::Char('u') if ctrl => {
                 hub.input.clear();
-                hub.cursor = 0;
                 hub.choice = None;
                 hub.typed = true;
             }
-            KeyCode::Char(c) if !ctrl => {
-                // The carried-over branch name is a suggestion; typing
-                // replaces it rather than appending to it.
-                if picking && !hub.typed {
-                    hub.input.clear();
-                    hub.cursor = 0;
+            // The carried-over branch name is a suggestion; typing replaces
+            // it rather than appending to it.
+            KeyCode::Char(_) if !ctrl && picking && !hub.typed => {
+                hub.input.clear();
+                hub.input.edit_key(key);
+                hub.choice = None;
+                hub.typed = true;
+            }
+            _ => {
+                if hub.input.edit_key(key) == Edit::Changed {
+                    hub.choice = None;
+                    hub.typed = true;
                 }
-                insert(hub, &c.to_string());
-                hub.choice = None;
-                hub.typed = true;
             }
-            _ => {}
         }
         return Ok(());
     }
     match key.code {
         KeyCode::Esc => {
-            if hub.dirty() && hub.notice != "Unsaved changes. Ctrl-S saves; Esc again discards." {
-                hub.notice = "Unsaved changes. Ctrl-S saves; Esc again discards.".into();
+            if hub.dirty() && !hub.discard_armed {
+                hub.notify(
+                    NoticeKind::Warning,
+                    "Unsaved changes. Ctrl-S saves; Esc again discards.",
+                );
+                hub.discard_armed = true;
             } else {
                 state.modal = Modal::None;
             }
         }
         KeyCode::Char('f') if hub.scope == Scope::Folder => {
-            hub.input = hub.folder.clone();
-            hub.cursor = hub.input.chars().count();
+            hub.input.set(hub.folder.clone());
             hub.editing_folder = true;
             hub.editing = true;
         }
@@ -176,9 +172,10 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 };
             switch_category(state, next);
         }
-        KeyCode::Char('s') if !ctrl => {
-            hub.notice = "Save or discard edits before changing category or scope.".into()
-        }
+        KeyCode::Char('s') if !ctrl => hub.notify(
+            NoticeKind::Warning,
+            "Save or discard edits before changing category or scope.",
+        ),
         KeyCode::Char('/') => hub.searching = true,
         KeyCode::Left => hub.focus = Focus::Categories,
         KeyCode::Right => hub.focus = Focus::Fields,
@@ -198,9 +195,15 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Home => hub.selected = 0,
         KeyCode::End => move_selection(state, true, usize::MAX / 2),
         KeyCode::Enter => start_edit(hub),
-        KeyCode::Char('L') if hub.key() == "writing" || hub.key() == "models" => {
+        KeyCode::Char('L')
+            if hub.current_category() == Category::Writing
+                || hub.current_category() == Category::Models =>
+        {
             if hub.dirty() {
-                hub.notice = "Save or discard edits before opening the model modal.".into();
+                hub.notify(
+                    NoticeKind::Warning,
+                    "Save or discard edits before opening the model modal.",
+                );
             } else {
                 crate::app::open_model_modal(state);
             }
@@ -209,7 +212,7 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
             if hub.editing {
                 commit_edit(hub)?;
             }
-            if hub.key() == "sessions" {
+            if hub.current_category() == Category::Sessions {
                 for row in hub.draft.as_array().context("sessions")? {
                     let id = state
                         .sessions
@@ -222,7 +225,7 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
                             .rename(id, row["label"].as_str().unwrap_or_default())?;
                     }
                 }
-            } else if hub.key() == "identity" {
+            } else if hub.current_category() == Category::Identity {
                 let name = hub.draft["name"].as_str().unwrap_or_default();
                 let email = hub.draft["email"].as_str().unwrap_or_default();
                 match hub.draft["scope"].as_str() {
@@ -234,7 +237,9 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
                     )?,
                     _ => anyhow::bail!("Identity scope must be Repository or Folder"),
                 }
-            } else if hub.key() == "sandbox" && hub.draft.get("profile").is_some() {
+            } else if hub.current_category() == Category::Sandbox
+                && hub.draft.get("profile").is_some()
+            {
                 crate::terrarium::save_profile(hub.draft["profile"].as_str().unwrap_or_default())?;
             } else if hub.scope == Scope::Folder {
                 preferences::save_folder(
@@ -251,6 +256,8 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
             // shows at once rather than after the next restart.
             state.llm_provider = crate::llm::current_provider();
             state.llm_model = crate::llm::current_model();
+            // A new endpoint or provider deserves to be asked again.
+            state.model_server_unreachable = false;
             if let Ok(author) = crate::git::author_config() {
                 state.commit_author = format!(
                     "{} <{}>",
@@ -259,11 +266,14 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 );
             }
             hub.reload();
-            hub.notice = "Saved. New sessions use the updated configuration.".into();
+            hub.notify(
+                NoticeKind::Success,
+                "Saved. New sessions use the updated configuration.",
+            );
         }
         KeyCode::Char('r') => {
             if hub.reset_pending {
-                if hub.key() == "identity" {
+                if hub.current_category() == Category::Identity {
                     if hub.draft["scope"] == "Folder" {
                         crate::git::clear_subtree_author(
                             hub.draft["folder"].as_str().unwrap_or_default(),
@@ -279,14 +289,15 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 hub.reload();
             } else {
                 hub.reset_pending = true;
-                hub.notice = format!(
+                let text = format!(
                     "Remove the {} override for {} and use inherited settings. Press r again to apply.",
                     hub.scope.label(),
                     hub.key()
                 );
+                hub.notify(NoticeKind::Warning, text);
             }
         }
-        KeyCode::Char('n') if hub.key() == "agents" => {
+        KeyCode::Char('n') if hub.current_category() == Category::Agents => {
             let n = hub.draft.as_array().map_or(0, Vec::len) + 1;
             hub.draft
                 .as_array_mut()
@@ -297,7 +308,7 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
                     ..preferences::Agent::default()
                 })?);
         }
-        KeyCode::Char('n') if hub.key() == "branches" => {
+        KeyCode::Char('n') if hub.current_category() == Category::Branches => {
             let n = hub.draft["environments"].as_array().map_or(0, Vec::len) + 1;
             hub.draft["environments"]
                 .as_array_mut()
@@ -308,14 +319,19 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
                     ..preferences::Environment::default()
                 })?);
         }
-        KeyCode::Char('p') if hub.key() == "branches" => hub.draft["promotions"]
-            .as_array_mut()
-            .context("promotions")?
-            .push(serde_json::to_value(preferences::Promotion::default())?),
-        KeyCode::Char('D') if hub.key() == "agents" || hub.key() == "branches" => {
+        KeyCode::Char('p') if hub.current_category() == Category::Branches => {
+            hub.draft["promotions"]
+                .as_array_mut()
+                .context("promotions")?
+                .push(serde_json::to_value(preferences::Promotion::default())?)
+        }
+        KeyCode::Char('D')
+            if hub.current_category() == Category::Agents
+                || hub.current_category() == Category::Branches =>
+        {
             if let Some(field) = fields(hub).get(hub.selected) {
                 let parts: Vec<_> = field.path.trim_start_matches('/').split('/').collect();
-                if hub.key() == "agents" {
+                if hub.current_category() == Category::Agents {
                     if let Some(i) = parts.first().and_then(|p| p.parse::<usize>().ok())
                         && let Some(agents) = hub.draft.as_array_mut()
                         && i < agents.len()
@@ -333,42 +349,37 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
             }
             hub.selected = 0;
         }
-        KeyCode::Char('t') if hub.key() == "branches" => {
+        KeyCode::Char('t') if hub.current_category() == Category::Branches => {
             hub.draft = serde_json::to_value(preferences::Branches::default())?
         }
-        KeyCode::Char('b') if hub.key() == "branches" => {
+        KeyCode::Char('b') if hub.current_category() == Category::Branches => {
             hub.draft = serde_json::to_value(preferences::detect_branches(&hub.branches))?
         }
-        KeyCode::Char('i') if hub.key() == "sandbox" => {
+        KeyCode::Char('i') if hub.current_category() == Category::Sandbox => {
             crate::terrarium::initialize_current(hub.draft["preset"].as_str().unwrap_or("none"))?;
-            hub.notice =
-                "Created private profile. Press v to validate or e to inspect permissions.".into();
+            hub.notify(
+                NoticeKind::Info,
+                "Created private profile. Press v to validate or e to inspect permissions.",
+            );
         }
-        KeyCode::Char('e') if hub.key() == "sandbox" => {
+        KeyCode::Char('e') if hub.current_category() == Category::Sandbox => {
             hub.draft = json!({"profile":crate::terrarium::read_profile()?});
             hub.original = hub.draft.clone();
             hub.selected = 0;
         }
-        KeyCode::Char('v') if hub.key() == "sandbox" => {
+        KeyCode::Char('v') if hub.current_category() == Category::Sandbox => {
             ::terrarium::validate(std::path::Path::new(&crate::git::repo_root()?))?;
-            hub.notice = "Profile validated by the bundled Seatbelt backend.".into();
+            hub.notify(
+                NoticeKind::Success,
+                "Profile validated by the bundled Seatbelt backend.",
+            );
         }
-        KeyCode::Char('v') if hub.key() == "agents" => {
+        KeyCode::Char('v') if hub.current_category() == Category::Agents => {
             let profiles = serde_json::from_value::<Vec<preferences::Agent>>(hub.draft.clone())?;
-            let (tx, rx) = std::sync::mpsc::channel();
-            hub.diagnostics = Some(rx);
-            hub.notice = "Checking agent versions…".into();
-            std::thread::spawn(move || {
-                let _ = tx.send(
-                    profiles
-                        .iter()
-                        .map(crate::agents::diagnose)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                );
-            });
+            hub.diagnostics = Some(diagnose_agents(profiles));
+            hub.notify(NoticeKind::Info, "Checking agent versions…");
         }
-        KeyCode::Char('R' | 'x') if hub.key() == "sessions" => {
+        KeyCode::Char('R' | 'x') if hub.current_category() == Category::Sessions => {
             let row = fields(hub)
                 .get(hub.selected)
                 .and_then(|f| f.path.trim_start_matches('/').split('/').next())
@@ -381,51 +392,82 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
                     .find(|s| s.id.to_string() == id_text)
                     .map(|s| s.id);
                 if let Some(id) = id {
-                    if key.code == KeyCode::Char('R') {
+                    let pressed = if key.code == KeyCode::Char('R') {
+                        'R'
+                    } else {
+                        'x'
+                    };
+                    // Stopping an agent mid-turn, or a shell mid-command,
+                    // loses work: the first press says so, the second does it.
+                    let busy = state.sessions.get(id).is_some_and(|session| {
+                        session.is_running()
+                            && (session.kind.is_agent()
+                                || session.activity() != crate::session::SessionActivity::Idle)
+                    });
+                    if busy && armed != Some((pressed, id)) {
+                        let verb = if pressed == 'R' { "restarts" } else { "stops" };
+                        state.settings_hub.session_armed = Some((pressed, id));
+                        state.settings_hub.notify(
+                            NoticeKind::Warning,
+                            format!(
+                                "This session is still running. {pressed} again {verb} it; any other key keeps it."
+                            ),
+                        );
+                        return Ok(());
+                    }
+                    if pressed == 'R' {
                         state.sessions.restart(id)?;
                     } else {
                         state.sessions.close(id);
                     }
-                    open(state, 8);
+                    open(state, Category::Sessions);
                 }
             }
         }
-        KeyCode::Char('v') if hub.key() == "writing" => {
+        KeyCode::Char('v') if hub.current_category() == Category::Writing => {
             let writing: preferences::Writing = serde_json::from_value(hub.draft.clone())?;
-            let mut settings = crate::settings::load();
-            settings.pr_language = writing.language;
-            settings.comment_style = writing.comment_style;
-            settings.commit_subject_max_chars = writing.subject_max;
-            settings.commit_body_max_lines = writing.body_lines;
-            settings.commit_prompt = writing.commit_prompt;
-            hub.notice = crate::settings::commit_prompt_prefix(&settings);
+            hub.notify(
+                NoticeKind::Info,
+                crate::settings::commit_prompt_prefix(&writing.into()),
+            );
         }
         _ => {}
     }
     Ok(())
 }
 
-pub fn poll(state: &mut AppState) {
-    if let Some(message) = state
-        .settings_hub
-        .diagnostics
-        .as_ref()
-        .and_then(|rx| rx.try_recv().ok())
-    {
-        state.settings_hub.notice = message;
-        state.settings_hub.diagnostics = None;
-    }
+/// Check every agent's executable on a worker of its own; the report is one
+/// line per agent.
+fn diagnose_agents(profiles: Vec<preferences::Agent>) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(
+            profiles
+                .iter()
+                .map(crate::agents::diagnose)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    });
+    rx
 }
 
-pub(super) fn insert(hub: &mut Settings, text: &str) {
-    let at = hub
-        .input
-        .char_indices()
-        .nth(hub.cursor)
-        .map_or(hub.input.len(), |(i, _)| i);
-    hub.input.insert_str(at, text);
-    hub.cursor += text.chars().count();
+pub fn poll(state: &mut AppState) {
+    let hub = &mut state.settings_hub;
+    let Some(rx) = hub.diagnostics.as_ref() else {
+        return;
+    };
+    match poll_once(rx) {
+        Poll::Pending => return,
+        Poll::Message(report) => hub.notify(NoticeKind::Info, report),
+        Poll::Disconnected => hub.notify(
+            NoticeKind::Error,
+            stopped_unexpectedly("the agent version check"),
+        ),
+    }
+    hub.diagnostics = None;
 }
+
 pub(super) fn cursor_position(text: &str, cursor: usize, width: usize) -> (usize, usize) {
     let mut row = 0;
     let mut col = 0;
@@ -450,9 +492,8 @@ pub fn handle_paste(state: &mut AppState, text: &str) -> bool {
     let hub = &mut state.settings_hub;
     if picking(hub) && !hub.typed {
         hub.input.clear();
-        hub.cursor = 0;
     }
-    insert(hub, text);
+    hub.input.insert_str(text);
     hub.choice = None;
     hub.typed = true;
     true

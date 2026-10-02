@@ -142,7 +142,8 @@ fn gutter_arrows_preview_without_mutation_then_take_sides_in_order_and_save() {
     app.render().unwrap();
     let editor = |app: &HeadlessApp<TestBackend>| {
         app.state
-            .conflict_preview
+            .conflict
+            .preview
             .as_ref()
             .unwrap()
             .editor
@@ -330,7 +331,7 @@ fn inline_editor_routes_typing_paste_save_and_navigation_without_triggering_merg
     app.send_key(key(KeyCode::Char(']'))).unwrap();
     app.send_key(key(KeyCode::Char('2'))).unwrap();
     app.send_key(ctrl('s')).unwrap();
-    assert!(app.state.conflict_resolved.contains(FILE));
+    assert!(app.state.conflict.resolved.contains(FILE));
     let text = fs::read_to_string(dir.path().join(FILE)).unwrap();
     assert!(
         text.contains("// custom resolution\nacvlbase first"),
@@ -471,7 +472,8 @@ fn x_reverts_a_conflict_to_the_way_it_was_found() {
     let hunk = |app: &HeadlessApp<TestBackend>| {
         let editor = app
             .state
-            .conflict_preview
+            .conflict
+            .preview
             .as_ref()
             .unwrap()
             .editor
@@ -532,7 +534,7 @@ fn the_file_is_saved_as_soon_as_every_conflict_is_settled() {
         "{saved}"
     );
     assert!(!lg::git::holds_conflict_marker(&saved));
-    assert!(app.state.conflict_resolved.contains(FILE));
+    assert!(app.state.conflict.resolved.contains(FILE));
     // A change after that is written too.
     app.send_key(key(KeyCode::Char('1'))).unwrap();
     assert!(
@@ -556,7 +558,7 @@ fn a_file_the_local_model_settled_says_how_beside_each_conflict() {
     let mut app = HeadlessApp::new(TestBackend::new(160, 42)).unwrap();
     app.state.repo_root = Some(dir.path().to_string_lossy().into_owned());
     app.state.set_conflicts(vec![FILE.into()]);
-    app.state.conflict_model_notes.insert(
+    app.state.conflict.model_notes.insert(
         FILE.into(),
         vec!["took theirs".into(), "wrote its own merge".into()],
     );
@@ -617,7 +619,8 @@ fn a_merge_draft_survives_closing_and_prevents_accidental_quit() {
     assert_eq!(app.state.modal, Modal::Conflict);
     assert!(
         app.state
-            .conflict_preview
+            .conflict
+            .preview
             .as_ref()
             .unwrap()
             .editor
@@ -628,7 +631,8 @@ fn a_merge_draft_survives_closing_and_prevents_accidental_quit() {
     app.send_key(ctrl('r')).unwrap();
     assert!(
         !app.state
-            .conflict_preview
+            .conflict
+            .preview
             .as_ref()
             .unwrap()
             .editor

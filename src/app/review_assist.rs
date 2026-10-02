@@ -34,18 +34,7 @@ pub(super) fn spawn_assisted_review(state: &mut AppState) {
     state.focus = Pane::Main;
     state.diff_source = DiffSource::Review;
     state.diff_offset = 0;
-    state.review = None;
-    state.review_idx = 0;
-    state.review_collapsed.clear();
-    state.review_context_open.clear();
-    state.review_context_restore_collapsed.clear();
-    state.review_assists.clear();
-    state.review_style_findings.clear();
-    state.review_flag_active_path = None;
-    state.review_chat_messages.clear();
-    state.review_chat_input.clear();
-    state.review_chat_cursor = 0;
-    state.review_chat_scroll = 0;
+    state.review.reset();
     if let Some(mut job) = state.review_assist_job.take() {
         state.defer_thread_join(job.handle.take());
     }
@@ -93,7 +82,7 @@ pub(super) fn spawn_review_pr_text(state: &mut AppState) {
     if let Some(mut job) = state.review_pr_job.take() {
         state.defer_thread_join(job.handle.take());
     }
-    state.review_assists.remove(REVIEW_PR_NODE_ID);
+    state.review.assists.remove(REVIEW_PR_NODE_ID);
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
         crate::llm::stream_review_pr_text(context, tx);
@@ -111,16 +100,16 @@ pub(super) fn spawn_review_pr_text(state: &mut AppState) {
 pub(super) fn spawn_review_style_flags(state: &mut AppState) {
     let file_contexts = review_flag_contexts(state);
     if file_contexts.is_empty() {
-        state.review_style_findings.clear();
-        state.review_flag_active_path = None;
+        state.review.style_findings.clear();
+        state.review.flag_active_path = None;
         state.set_status("no source files to flag", false);
         return;
     }
     if let Some(mut job) = state.review_flag_job.take() {
         state.defer_thread_join(job.handle.take());
     }
-    state.review_style_findings.clear();
-    state.review_flag_active_path = None;
+    state.review.style_findings.clear();
+    state.review.flag_active_path = None;
     let total = file_contexts.len();
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
@@ -170,7 +159,7 @@ pub(super) fn spawn_review_chat(state: &mut AppState, prompt: String) {
         state.set_status("review chat already running", false);
         return;
     }
-    let mut history = state.review_chat_messages.clone();
+    let mut history = state.review.chat_messages.clone();
     if history.last().is_some_and(|message| {
         message.role == crate::state::ReviewChatRole::User && message.content == prompt
     }) {
@@ -199,7 +188,7 @@ fn review_flag_contexts(state: &AppState) -> Vec<(String, String)> {
 }
 
 fn review_flag_context_for_path(state: &AppState, path: &str) -> Option<String> {
-    let review = state.review.as_ref()?;
+    let review = state.review.assisted.as_ref()?;
     let mut out = String::new();
     push_limited_line(
         &mut out,
@@ -251,7 +240,7 @@ fn review_flag_context_for_path(state: &AppState, path: &str) -> Option<String> 
 }
 
 fn review_flag_candidates(state: &AppState) -> Vec<String> {
-    let Some(review) = &state.review else {
+    let Some(review) = &state.review.assisted else {
         return Vec::new();
     };
     let mut paths = Vec::new();
@@ -270,7 +259,7 @@ fn review_flag_candidates(state: &AppState) -> Vec<String> {
 }
 
 fn review_chat_context(state: &AppState) -> Option<String> {
-    let report = &state.review.as_ref()?.report;
+    let report = &state.review.assisted.as_ref()?.report;
     let mut out = String::new();
     push_limited_line(
         &mut out,
@@ -349,7 +338,7 @@ fn review_style_flag_file(
 }
 
 fn review_assist_context(state: &AppState, node_id: &str) -> Option<String> {
-    let review = state.review.as_ref()?;
+    let review = state.review.assisted.as_ref()?;
     let selected = review.nodes.iter().find(|node| node.id == node_id)?;
     let mut out = String::new();
     push_review_overview(&mut out, &review.report);
@@ -572,7 +561,7 @@ mod tests {
     #[test]
     fn review_assist_context_includes_branch_overview_before_subtree() {
         let mut state = AppState::new();
-        state.review = Some(AssistedReview {
+        state.review.assisted = Some(AssistedReview {
             report: "\
 Assisted review against main
 ============================
@@ -644,7 +633,7 @@ diff --git a/src/main/kotlin/me/spenn/BalanceService.kt b/src/main/kotlin/me/spe
     #[test]
     fn review_flag_candidates_include_kotlin_and_rust_source_files() {
         let mut state = AppState::new();
-        state.review = Some(AssistedReview {
+        state.review.assisted = Some(AssistedReview {
             report: "flat report".into(),
             nodes: vec![
                 ReviewNode {
@@ -683,7 +672,7 @@ diff --git a/src/main/kotlin/me/spenn/BalanceService.kt b/src/main/kotlin/me/spe
     #[test]
     fn review_style_flag_pass_reports_when_no_source_files_are_available() {
         let mut state = AppState::new();
-        state.review = Some(AssistedReview {
+        state.review.assisted = Some(AssistedReview {
             report: "flat report".into(),
             nodes: vec![ReviewNode {
                 id: "branch:file:0".into(),

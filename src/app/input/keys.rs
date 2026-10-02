@@ -91,6 +91,42 @@ pub(super) fn report_unbound(state: &mut AppState, pane: Pane, k: KeyEvent) {
     );
 }
 
+/// A key typed into the focused list's filter. Typing narrows the list as it
+/// goes and puts the selection on the first row left; Enter keeps the filter
+/// and gives the keys back to the list; Esc drops it.
+fn filter_key<H: AppHost>(host: &mut H, k: KeyEvent) {
+    let focus = host.state().focus;
+    let state = host.state_mut();
+    match k.code {
+        KeyCode::Esc => {
+            if let Some(filter) = state.list_filter_mut(focus) {
+                filter.clear();
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(filter) = state.list_filter_mut(focus) {
+                filter.typing = false;
+            }
+        }
+        KeyCode::Up | KeyCode::Down => {
+            let down = k.code == KeyCode::Down;
+            if !state.step_filtered(focus, down, 1) {
+                crate::app::mouse::scroll_list(state, focus, down, 1);
+            }
+        }
+        _ => {
+            let changed = state
+                .list_filter_mut(focus)
+                .is_some_and(|filter| filter.text.edit_key(k) == panel::text_input::Edit::Changed);
+            if changed {
+                state.select_first_filtered(focus);
+            }
+        }
+    }
+    host.diff_for_focus();
+    host.sync_commit_log();
+}
+
 /// Route one key press. Modals get it first, then lg's global bindings, then the
 /// focused pane.
 pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> {
@@ -141,8 +177,10 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
             return Ok(());
         }
         Modal::Commands => {
-            if let Some(key) = panel::commands::handle_key(host.state_mut(), k) {
-                return dispatch_key(host, key);
+            // An action runs as the keys that do it: focus its pane, then
+            // press its key there.
+            for key in panel::commands::handle_key(host.state_mut(), k) {
+                dispatch_key(host, key)?;
             }
             return Ok(());
         }
@@ -186,6 +224,15 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
             panel::confirm::handle_key(host.state_mut(), k)?;
             return Ok(());
         }
+        Modal::Stash => {
+            panel::stash::handle_key(host.state_mut(), k)?;
+            return Ok(());
+        }
+        Modal::StatusDetails => {
+            let area = host.area()?;
+            panel::details::handle_key(host.state_mut(), k, area)?;
+            return Ok(());
+        }
         Modal::ReviewChat => {
             panel::review_chat::handle_key(host.state_mut(), k)?;
             return Ok(());
@@ -212,6 +259,13 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
             return Ok(());
         }
         Modal::None => {}
+    }
+
+    // A list filter being typed takes every key, letters lg would otherwise
+    // act on included.
+    if host.state().filter_typing() {
+        filter_key(host, k);
+        return Ok(());
     }
 
     match k.code {
@@ -258,8 +312,39 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
             host.state_mut().request_quit();
             return Ok(());
         }
+        KeyCode::Char('!') => {
+            panel::details::open(host.state_mut());
+            return Ok(());
+        }
         KeyCode::Esc if host.state().status.as_ref().is_some_and(|s| s.is_error) => {
             host.state_mut().status = None;
+            return Ok(());
+        }
+        // A filter on the focused list goes before anything Esc would stop.
+        KeyCode::Esc
+            if host
+                .state()
+                .list_filter(host.state().focus)
+                .is_some_and(crate::state::ListFilter::active) =>
+        {
+            let focus = host.state().focus;
+            if let Some(filter) = host.state_mut().list_filter_mut(focus) {
+                filter.clear();
+            }
+            host.diff_for_focus();
+            host.sync_commit_log();
+            return Ok(());
+        }
+        KeyCode::Char('/')
+            if matches!(
+                host.state().focus,
+                Pane::Files | Pane::Branches | Pane::Commits
+            ) =>
+        {
+            let focus = host.state().focus;
+            if let Some(filter) = host.state_mut().list_filter_mut(focus) {
+                filter.typing = true;
+            }
             return Ok(());
         }
         KeyCode::Esc if host.state().llm_job_running() => {
@@ -336,7 +421,7 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
             return Ok(());
         }
         KeyCode::Char(',') => {
-            panel::settings::open(host.state_mut(), 0);
+            panel::settings::open(host.state_mut(), panel::settings::Category::Identity);
             return Ok(());
         }
         KeyCode::Char('L') => {

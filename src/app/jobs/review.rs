@@ -6,8 +6,8 @@ use crate::state::{DiffSource, GenMsg, ReviewFlagMsg, ReviewMsg};
 
 use super::super::App;
 use super::{
-    drain_messages, drain_review_stream, first_status_line, join_worker, take_finished,
-    tick_spinner,
+    drain_messages, drain_review_stream, first_status_line, join_worker, reap_stopped,
+    take_finished, tick_spinner,
 };
 
 pub(super) fn default_review_collapsed_nodes(
@@ -111,22 +111,22 @@ impl App {
         join_worker(job.handle.take());
         {
             match msg {
-                ReviewMsg::Done(review) => {
+                Ok(ReviewMsg::Done(review)) => {
                     let report = review.report.clone();
-                    self.state.review = Some(*review);
-                    self.state.review_collapsed.clear();
-                    self.state.review_context_open.clear();
-                    self.state.review_context_restore_collapsed.clear();
-                    if let Some(review) = &self.state.review {
-                        self.state.review_collapsed = default_review_collapsed_nodes(review);
-                        self.state.review_idx = initial_review_index(review);
+                    self.state.review.assisted = Some(*review);
+                    self.state.review.collapsed.clear();
+                    self.state.review.context_open.clear();
+                    self.state.review.context_restore_collapsed.clear();
+                    if let Some(review) = &self.state.review.assisted {
+                        self.state.review.collapsed = default_review_collapsed_nodes(review);
+                        self.state.review.idx = initial_review_index(review);
                     }
                     self.state.diff_source = DiffSource::Review;
                     self.state.set_diff_text(report);
                     self.state.diff_offset = 0;
                     self.state.set_status("review ready", false);
                 }
-                ReviewMsg::Error(err) => {
+                Ok(ReviewMsg::Error(err)) | Err(err) => {
                     self.state
                         .set_diff_text(format!("error building assisted review: {err}"));
                     self.state.set_status(first_status_line(&err), true);
@@ -137,7 +137,8 @@ impl App {
 
     pub(in crate::app) fn drain_review_flag_job(&mut self) {
         let mut handle = None;
-        for msg in drain_messages(&self.state.review_flag_job) {
+        let drained = drain_messages(&self.state.review_flag_job);
+        for msg in drained.messages {
             match msg {
                 ReviewFlagMsg::Started { path, index, total } => {
                     if let Some(job) = self.state.review_flag_job.as_mut() {
@@ -146,13 +147,14 @@ impl App {
                     let reveal_ids = self
                         .state
                         .review
+                        .assisted
                         .as_ref()
                         .map(|review| review_path_ancestor_ids(review, &path))
                         .unwrap_or_default();
                     for id in reveal_ids {
-                        self.state.review_collapsed.remove(&id);
+                        self.state.review.collapsed.remove(&id);
                     }
-                    self.state.review_flag_active_path = Some(path.clone());
+                    self.state.review.flag_active_path = Some(path.clone());
                     self.state
                         .set_status(format!("analyzing style {index}/{total}: {path}"), false);
                 }
@@ -160,13 +162,14 @@ impl App {
                     if let Some(job) = self.state.review_flag_job.as_mut() {
                         job.completed = job.completed.saturating_add(1);
                     }
-                    if self.state.review_flag_active_path.as_deref() == Some(path.as_str()) {
-                        self.state.review_flag_active_path = None;
+                    if self.state.review.flag_active_path.as_deref() == Some(path.as_str()) {
+                        self.state.review.flag_active_path = None;
                     }
                     let severity = finding.severity;
                     let is_error = !matches!(severity, crate::state::ReviewStyleSeverity::Ok);
                     self.state
-                        .review_style_findings
+                        .review
+                        .style_findings
                         .insert(path.clone(), finding);
                     self.state.set_status(
                         format!("style {}: {path}", severity.label().to_ascii_lowercase()),
@@ -177,8 +180,8 @@ impl App {
                     if let Some(job) = self.state.review_flag_job.as_mut() {
                         job.completed = job.completed.saturating_add(1);
                     }
-                    if self.state.review_flag_active_path.as_deref() == Some(path.as_str()) {
-                        self.state.review_flag_active_path = None;
+                    if self.state.review.flag_active_path.as_deref() == Some(path.as_str()) {
+                        self.state.review.flag_active_path = None;
                     }
                     self.state
                         .set_status(format!("style check failed for {path}: {message}"), true);
@@ -188,10 +191,11 @@ impl App {
                         handle = job.handle.take();
                     }
                     self.state.review_flag_job = None;
-                    self.state.review_flag_active_path = None;
+                    self.state.review.flag_active_path = None;
                     let warn_count = self
                         .state
-                        .review_style_findings
+                        .review
+                        .style_findings
                         .values()
                         .filter(|finding| {
                             matches!(finding.severity, crate::state::ReviewStyleSeverity::Warn)
@@ -199,7 +203,8 @@ impl App {
                         .count();
                     let fail_count = self
                         .state
-                        .review_style_findings
+                        .review
+                        .style_findings
                         .values()
                         .filter(|finding| {
                             matches!(finding.severity, crate::state::ReviewStyleSeverity::Fail)
@@ -212,6 +217,12 @@ impl App {
                 }
             }
         }
+        if let Some((_, stopped)) =
+            reap_stopped(&mut self.state.review_flag_job, drained.disconnected)
+        {
+            self.state.review.flag_active_path = None;
+            self.state.set_status(stopped, true);
+        }
         join_worker(handle);
         tick_spinner(&mut self.state.review_flag_job);
     }
@@ -219,7 +230,7 @@ impl App {
     pub(in crate::app) fn drain_review_assist(&mut self) {
         let status = drain_review_stream(
             &mut self.state.review_assist_job,
-            &mut self.state.review_assists,
+            &mut self.state.review.assists,
             "review explanation ready",
         );
         if let Some((text, is_error)) = status {
@@ -230,7 +241,7 @@ impl App {
     pub(in crate::app) fn drain_review_pr_text(&mut self) {
         let status = drain_review_stream(
             &mut self.state.review_pr_job,
-            &mut self.state.review_assists,
+            &mut self.state.review.assists,
             "PR text ready",
         );
         if let Some((text, is_error)) = status {
@@ -240,7 +251,8 @@ impl App {
 
     pub(in crate::app) fn drain_review_chat(&mut self) {
         let mut handle = None;
-        for msg in drain_messages(&self.state.review_chat_job) {
+        let drained = drain_messages(&self.state.review_chat_job);
+        for msg in drained.messages {
             match msg {
                 GenMsg::Thinking(_) => {}
                 GenMsg::Output(output) => {
@@ -263,13 +275,14 @@ impl App {
                     }
                     self.state.review_chat_job = None;
                     self.state
-                        .review_chat_messages
+                        .review
+                        .chat_messages
                         .push(crate::state::ReviewChatMessage {
                             role: crate::state::ReviewChatRole::Assistant,
                             content: final_msg,
                             note: truncated.then(|| crate::llm::TRUNCATED_NOTE.to_string()),
                         });
-                    self.state.review_chat_scroll = u16::MAX;
+                    self.state.review.chat_scroll = u16::MAX;
                     self.state.set_status(
                         if truncated {
                             "review chat answer cut off at the token budget"
@@ -285,21 +298,36 @@ impl App {
                     }
                     self.state.review_chat_job = None;
                     self.state
-                        .review_chat_messages
+                        .review
+                        .chat_messages
                         .push(crate::state::ReviewChatMessage {
                             role: crate::state::ReviewChatRole::Assistant,
                             content: String::new(),
                             note: Some(format!("llm error: {error}")),
                         });
-                    self.state.review_chat_scroll = u16::MAX;
+                    self.state.review.chat_scroll = u16::MAX;
                     self.state.set_status(error, true);
                 }
             }
         }
+        if let Some((_, stopped)) =
+            reap_stopped(&mut self.state.review_chat_job, drained.disconnected)
+        {
+            self.state
+                .review
+                .chat_messages
+                .push(crate::state::ReviewChatMessage {
+                    role: crate::state::ReviewChatRole::Assistant,
+                    content: String::new(),
+                    note: Some(format!("llm error: {stopped}")),
+                });
+            self.state.review.chat_scroll = u16::MAX;
+            self.state.set_status(stopped, true);
+        }
         join_worker(handle);
         if self.state.review_chat_job.is_some() {
             tick_spinner(&mut self.state.review_chat_job);
-            self.state.review_chat_scroll = u16::MAX;
+            self.state.review.chat_scroll = u16::MAX;
         }
     }
 }

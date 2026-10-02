@@ -38,7 +38,8 @@ fn files_width(state: &AppState, width: u16) -> u16 {
         return 0;
     }
     let longest = state
-        .conflicts
+        .conflict
+        .files
         .iter()
         .map(|path| path.chars().count())
         .max()
@@ -99,8 +100,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         frame,
         modal,
         state
-            .conflicts
-            .get(state.conflict_idx)
+            .conflict
+            .files
+            .get(state.conflict.idx)
             .map_or("Conflict", String::as_str),
     );
     ui::draw_dividers(frame, &regions.dividers);
@@ -118,8 +120,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         )),
         if state.conflict_resolve_job.is_some() {
             local_pass_line(state)
-        } else if !state.conflict_log.is_empty() {
-            Line::from(state.conflict_log.clone())
+        } else if !state.conflict.log.is_empty() {
+            Line::from(state.conflict.log.clone())
         } else {
             local_pass_line(state)
         },
@@ -127,32 +129,35 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     frame.render_widget(Paragraph::new(header), regions.header);
 
     let items: Vec<ListItem> = state
-        .conflicts
+        .conflict
+        .files
         .iter()
         .map(|path| ListItem::new(conflict_row(state, path)))
         .collect();
     let list = List::new(items)
         .highlight_style(crate::ui::palette::selection())
         .highlight_symbol("\u{203a} ");
-    let selected_idx = clamp_index(state.conflict_idx, state.conflicts.len());
+    let selected_idx = clamp_index(state.conflict.idx, state.conflict.files.len());
     let offset = scroll::selection_scroll_offset(
         selected_idx,
-        state.conflicts.len(),
+        state.conflict.files.len(),
         regions.files.height as usize,
-        state.conflict_scroll_offset,
+        state.conflict.scroll_offset,
     );
     let mut list_state = scroll::list_state(selected_idx, offset);
     frame.render_stateful_widget(list, regions.files, &mut list_state);
     ui::section_title(frame, regions.files, "Files");
 
     match state
-        .conflict_preview
+        .conflict
+        .preview
         .as_ref()
         .map(|preview| (&preview.editor, &preview.path))
     {
         Some((Ok(editor), path)) => {
             let notes = state
-                .conflict_model_notes
+                .conflict
+                .model_notes
                 .get(path)
                 .map_or(&[][..], Vec::as_slice);
             merge::render(editor, notes, regions.preview, frame)
@@ -171,7 +176,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     }
 
     let editing = state
-        .conflict_preview
+        .conflict
+        .preview
         .as_ref()
         .is_some_and(|p| p.editor.as_ref().is_ok_and(|e| e.editing));
     let controls = if editing {
@@ -180,7 +186,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
                 "EDIT RESULT   arrows/Home/End move   Enter newline   Tab indent   Ctrl-z undo",
             ),
             Line::from("Esc finish editing   Ctrl-s save file   Paste supported"),
-            Line::from(state.conflict_log.clone()),
+            Line::from(state.conflict.log.clone()),
         ]
     } else if modal.width < 100 {
         vec![
@@ -222,13 +228,13 @@ fn local_pass_line(state: &AppState) -> Line<'static> {
             Style::default().fg(Color::LightGreen),
         ));
     }
-    if state.conflict_resolved.is_empty() {
+    if state.conflict.resolved.is_empty() {
         return Line::from("Committing the resolution yourself is fine; v continues either way.");
     }
     Line::from(Span::styled(
         format!(
             "{} file(s) resolved in lg \u{2014} read them before v.",
-            state.conflict_resolved.len()
+            state.conflict.resolved.len()
         ),
         Style::default().fg(Color::LightGreen),
     ))
@@ -238,7 +244,7 @@ fn local_pass_line(state: &AppState) -> Line<'static> {
 /// it. The mark is what separates a file waiting to be read from one waiting
 /// to be resolved; both are still conflicted as far as git is concerned.
 fn conflict_row(state: &AppState, path: &str) -> Line<'static> {
-    if state.conflict_resolved.contains(path) {
+    if state.conflict.resolved.contains(path) {
         Line::from(vec![
             Span::styled("\u{2713} ", Style::default().fg(Color::LightGreen)),
             Span::raw(path.to_string()),
@@ -250,21 +256,21 @@ fn conflict_row(state: &AppState, path: &str) -> Line<'static> {
 
 pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
     let regions = regions(state, area);
-    state.conflict_scroll_offset = scroll::selection_scroll_offset(
-        clamp_index(state.conflict_idx, state.conflicts.len()),
-        state.conflicts.len(),
+    state.conflict.scroll_offset = scroll::selection_scroll_offset(
+        clamp_index(state.conflict.idx, state.conflict.files.len()),
+        state.conflict.files.len(),
         regions.files.height as usize,
-        state.conflict_scroll_offset,
+        state.conflict.scroll_offset,
     );
-    if let Some(Ok(editor)) = state.conflict_preview.as_mut().map(|p| &mut p.editor) {
+    if let Some(Ok(editor)) = state.conflict.preview.as_mut().map(|p| &mut p.editor) {
         editor.viewport = Some(regions.preview);
     }
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
-    state.conflict_idx = clamp_index(state.conflict_idx, state.conflicts.len()).unwrap_or(0);
+    state.conflict.idx = clamp_index(state.conflict.idx, state.conflict.files.len()).unwrap_or(0);
     app::prepare_conflict_editor(state);
-    if let Some(Ok(editor)) = state.conflict_preview.as_mut().map(|p| &mut p.editor) {
+    if let Some(Ok(editor)) = state.conflict.preview.as_mut().map(|p| &mut p.editor) {
         editor.hovered = None;
     }
     if handle_merge_key(state, key) {
@@ -286,16 +292,17 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     }
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            state.conflict_idx = state
-                .conflict_idx
+            state.conflict.idx = state
+                .conflict
+                .idx
                 .saturating_add(1)
-                .min(state.conflicts.len().saturating_sub(1));
+                .min(state.conflict.files.len().saturating_sub(1));
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            state.conflict_idx = state.conflict_idx.saturating_sub(1);
+            state.conflict.idx = state.conflict.idx.saturating_sub(1);
         }
         KeyCode::Char('o') => {
-            if let Some(path) = state.conflicts.get(state.conflict_idx) {
+            if let Some(path) = state.conflict.files.get(state.conflict.idx) {
                 state.pending_action = Some(PendingAction::OpenFile(path.clone()));
             } else {
                 state.set_status("no conflicted file selected", false);
@@ -331,8 +338,8 @@ fn handle_merge_key(state: &mut AppState, key: KeyEvent) -> bool {
         return false;
     }
     if ctrl && key.code == KeyCode::Char('r') {
-        state.conflict_preview = None;
-        state.conflict_log.clear();
+        state.conflict.preview = None;
+        state.conflict.log.clear();
         app::prepare_conflict_editor(state);
         return true;
     }
@@ -340,7 +347,7 @@ fn handle_merge_key(state: &mut AppState, key: KeyEvent) -> bool {
         app::save_conflict_editor(state);
         return true;
     }
-    let Some(Ok(editor)) = state.conflict_preview.as_mut().map(|p| &mut p.editor) else {
+    let Some(Ok(editor)) = state.conflict.preview.as_mut().map(|p| &mut p.editor) else {
         if key.code == KeyCode::Enter {
             state.set_status(
                 "inline preview unavailable; press o to open externally",
@@ -410,7 +417,8 @@ fn handle_merge_key(state: &mut AppState, key: KeyEvent) -> bool {
 /// conflict is still open wait for the next decision, or for Ctrl-s.
 fn autosave(state: &mut AppState) {
     let settled = state
-        .conflict_preview
+        .conflict
+        .preview
         .as_ref()
         .is_some_and(|p| p.editor.as_ref().is_ok_and(|e| e.settled() && e.dirty()));
     if settled {
@@ -422,7 +430,7 @@ pub fn handle_paste(state: &mut AppState, text: &str) -> bool {
     if state.modal != crate::state::Modal::Conflict {
         return false;
     }
-    if let Some(Ok(editor)) = state.conflict_preview.as_mut().map(|p| &mut p.editor)
+    if let Some(Ok(editor)) = state.conflict.preview.as_mut().map(|p| &mut p.editor)
         && editor.editing
         && state.conflict_resolve_job.is_none()
     {
@@ -449,7 +457,8 @@ pub(crate) fn handle_mouse(state: &mut AppState, area: Rect, event: &MouseEvent)
     let point = ratatui::layout::Position::new(event.column, event.row);
     if files.contains(point) && event.kind == MouseEventKind::Down(MouseButton::Left) {
         let dirty = state
-            .conflict_preview
+            .conflict
+            .preview
             .as_ref()
             .is_some_and(|p| p.editor.as_ref().is_ok_and(|e| e.dirty()));
         if dirty {
@@ -459,14 +468,15 @@ pub(crate) fn handle_mouse(state: &mut AppState, area: Rect, event: &MouseEvent)
             );
             return;
         }
-        let index = state.conflict_scroll_offset + (event.row - files.y) as usize;
-        if index < state.conflicts.len() {
-            state.conflict_idx = index;
+        let index = state.conflict.scroll_offset + (event.row - files.y) as usize;
+        if index < state.conflict.files.len() {
+            state.conflict.idx = index;
         }
         return;
     }
     let action = state
-        .conflict_preview
+        .conflict
+        .preview
         .as_mut()
         .and_then(|p| p.editor.as_mut().ok())
         .and_then(|editor| merge::mouse(editor, regions.preview, event));
@@ -477,7 +487,7 @@ pub(crate) fn handle_mouse(state: &mut AppState, area: Rect, event: &MouseEvent)
         app::save_conflict_editor(state);
         return;
     }
-    if let Some(Ok(editor)) = state.conflict_preview.as_mut().map(|p| &mut p.editor) {
+    if let Some(Ok(editor)) = state.conflict.preview.as_mut().map(|p| &mut p.editor) {
         editor.apply(hunk, action);
     }
     autosave(state);
@@ -494,7 +504,7 @@ mod tests {
     fn clicking_a_file_in_the_list_selects_the_one_that_was_clicked() {
         let area = Rect::new(0, 0, 120, 26);
         let mut state = AppState::default();
-        state.conflicts = vec![
+        state.conflict.files = vec![
             "src/first.rs".to_owned(),
             "src/second.rs".to_owned(),
             "src/third.rs".to_owned(),
@@ -526,6 +536,6 @@ mod tests {
             },
         );
 
-        assert_eq!(state.conflict_idx, 2);
+        assert_eq!(state.conflict.idx, 2);
     }
 }

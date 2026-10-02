@@ -29,9 +29,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         return;
     }
 
-    let status = if state.author_has_subtree_rule {
+    let status = if state.author.has_subtree_rule {
         "subtree rule"
-    } else if state.author_has_local_override {
+    } else if state.author.has_local_override {
         "repo-local override"
     } else {
         "using inherited/default author"
@@ -44,18 +44,18 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         Line::from(""),
         field_line(
             "Folder",
-            &state.author_path_input,
-            state.author_field == AuthorField::Path,
+            state.author.path.as_str(),
+            state.author.field == AuthorField::Path,
         ),
         field_line(
             "Name",
-            &state.author_name_input,
-            state.author_field == AuthorField::Name,
+            state.author.name.as_str(),
+            state.author.field == AuthorField::Name,
         ),
         field_line(
             "Email",
-            &state.author_email_input,
-            state.author_field == AuthorField::Email,
+            state.author.email.as_str(),
+            state.author.field == AuthorField::Email,
         ),
         Line::from(""),
         Line::from(vec![
@@ -109,10 +109,10 @@ fn active_field_cursor(state: &AppState, modal: Rect) -> Option<(u16, u16)> {
     if modal.width <= 2 || modal.height <= 2 {
         return None;
     }
-    let (row, value_len) = match state.author_field {
-        AuthorField::Path => (3, state.author_path_input.chars().count()),
-        AuthorField::Name => (4, state.author_name_input.chars().count()),
-        AuthorField::Email => (5, state.author_email_input.chars().count()),
+    let (row, value_len) = match state.author.field {
+        AuthorField::Path => (3, state.author.path.before_cursor().chars().count()),
+        AuthorField::Name => (4, state.author.name.before_cursor().chars().count()),
+        AuthorField::Email => (5, state.author.email.before_cursor().chars().count()),
     };
     let content_width = modal.width.saturating_sub(2);
     let label_width = 6u16;
@@ -129,14 +129,14 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             state.modal = Modal::None;
         }
         KeyCode::Tab | KeyCode::Down => {
-            state.author_field = match state.author_field {
+            state.author.field = match state.author.field {
                 AuthorField::Path => AuthorField::Name,
                 AuthorField::Name => AuthorField::Email,
                 AuthorField::Email => AuthorField::Path,
             };
         }
         KeyCode::Up => {
-            state.author_field = match state.author_field {
+            state.author.field = match state.author.field {
                 AuthorField::Path => AuthorField::Email,
                 AuthorField::Name => AuthorField::Path,
                 AuthorField::Email => AuthorField::Name,
@@ -144,40 +144,27 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Enter => {
             state.pending_action = Some(PendingAction::SaveAuthor {
-                name: state.author_name_input.clone(),
-                email: state.author_email_input.clone(),
+                name: state.author.name.text.clone(),
+                email: state.author.email.text.clone(),
             });
         }
         KeyCode::Char('l') if ctrl => {
             state.pending_action = Some(PendingAction::SaveAuthor {
-                name: state.author_name_input.clone(),
-                email: state.author_email_input.clone(),
+                name: state.author.name.text.clone(),
+                email: state.author.email.text.clone(),
             });
         }
         KeyCode::Char('u') if ctrl => {
             state.pending_action = Some(PendingAction::ClearSubtreeAuthor {
-                path: state.author_path_input.clone(),
+                path: state.author.path.text.clone(),
             });
         }
         KeyCode::Char('x') if ctrl => {
             state.pending_action = Some(PendingAction::ClearAuthor);
         }
-        KeyCode::Backspace if !ctrl => match state.author_field {
-            AuthorField::Path => {
-                state.author_path_input.pop();
-            }
-            AuthorField::Name => {
-                state.author_name_input.pop();
-            }
-            AuthorField::Email => {
-                state.author_email_input.pop();
-            }
-        },
-        KeyCode::Char(c) if !ctrl => match state.author_field {
-            AuthorField::Path => state.author_path_input.push(c),
-            AuthorField::Name => state.author_name_input.push(c),
-            AuthorField::Email => state.author_email_input.push(c),
-        },
+        _ if !ctrl => {
+            state.author.focused_mut().handle_key(key);
+        }
         _ => {}
     }
     Ok(())

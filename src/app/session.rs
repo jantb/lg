@@ -67,30 +67,53 @@ pub(crate) fn forward_paste(state: &mut AppState, text: &str) -> bool {
 /// the flow can carry on — otherwise the flow is left waiting behind a diff
 /// with nothing to say it is there.
 ///
-/// Returns what to say about it, and whether the keyboard has to be taken back
-/// off a session that is no longer there.
-pub(crate) fn pump(state: &mut AppState) -> Option<SessionEnded> {
+/// Returns what happened: whether the session on screen has something new to
+/// draw, and what to say about one that ended.
+pub(crate) fn pump(state: &mut AppState) -> SessionPump {
     let shown = state.session_view();
-    let ended = state.sessions.pump();
-    let gone = ended
+    let report = state.sessions.pump();
+    let mut pumped = SessionPump {
+        shown_changed: shown.is_some_and(|id| report.changed.contains(&id)),
+        more: report.more,
+        ended_any: false,
+        ended: None,
+    };
+    let Some(gone) = report
+        .ended
         .iter()
         .find(|session| Some(session.id) == shown)
-        .or_else(|| ended.last())?;
+        .or_else(|| report.ended.last())
+    else {
+        return pumped;
+    };
     let was_shown = Some(gone.id) == shown;
     let had_keyboard = was_shown && state.session_capture;
     let mut notice = format!("the session in {} {}", gone.label, gone.notice);
     if was_shown {
         state.show_diff();
-        if !state.conflicts.is_empty() {
+        if !state.conflict.files.is_empty() {
             state.modal = Modal::Conflict;
             notice.push_str(" \u{2014} press v to continue the flow");
         }
     }
     state.clamp();
-    Some(SessionEnded {
+    pumped.ended = Some(SessionEnded {
         notice,
         had_keyboard,
-    })
+    });
+    pumped
+}
+
+/// What one pass over the sessions found.
+pub(crate) struct SessionPump {
+    /// The session on screen has new output (or changed otherwise).
+    pub(crate) shown_changed: bool,
+    /// A session has output or a reading left over for the next pass.
+    pub(crate) more: bool,
+    /// A session ended: the tree lost a row, and the status bar says why.
+    pub(crate) ended_any: bool,
+    /// A session that ended, if one did, until it has been reported.
+    ended: Option<SessionEnded>,
 }
 
 /// A session that ended, ready to be reported.
@@ -138,7 +161,8 @@ impl App {
             || (self.state.modal == Modal::Conflict
                 && self
                     .state
-                    .conflict_preview
+                    .conflict
+                    .preview
                     .as_ref()
                     .is_some_and(|p| p.editor.as_ref().is_ok_and(|editor| editor.editing)));
         if wanted == self.session_keyboard {
@@ -166,14 +190,16 @@ impl App {
         }
     }
 
-    pub(super) fn drain_sessions(&mut self) {
-        let Some(ended) = pump(&mut self.state) else {
-            return;
-        };
-        if ended.had_keyboard {
-            self.set_session_capture(false);
+    pub(super) fn drain_sessions(&mut self) -> SessionPump {
+        let mut pumped = pump(&mut self.state);
+        if let Some(ended) = pumped.ended.take() {
+            if ended.had_keyboard {
+                self.set_session_capture(false);
+            }
+            self.state.set_status(ended.notice, false);
+            pumped.ended_any = true;
         }
-        self.state.set_status(ended.notice, false);
+        pumped
     }
 }
 
@@ -181,7 +207,7 @@ impl<B: Backend> HeadlessApp<B> {
     /// What the real loop does to the sessions each frame, without a terminal
     /// to keep in step. This is the seam tests drive.
     pub fn drain_sessions(&mut self) {
-        if let Some(ended) = pump(&mut self.state) {
+        if let Some(ended) = pump(&mut self.state).ended {
             self.state.set_status(ended.notice, false);
         }
     }

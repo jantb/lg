@@ -14,11 +14,12 @@ use super::{
     clone_request, is_current_branch, selected_pr, visible_repos,
 };
 use crate::github::{Mergeable, PrState, PullRequest, ReviewDecision};
+use crate::panel::keys;
+use crate::panel::text_input::TextInput;
 use crate::state::{AppState, SPINNER_FRAMES};
 use crate::ui::{self, palette};
 
 const LABEL: Style = Style::new().fg(Color::DarkGray);
-const HINT_KEY: Style = Style::new().fg(Color::Yellow);
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     // Tall enough to read a description, and clear of the footer, where the
@@ -565,6 +566,8 @@ fn draw_create(form: &CreateForm, area: Rect, frame: &mut Frame) {
         ..area
     };
     let value_width = inner.width.saturating_sub(8) as usize;
+    let title = window(&form.title, value_width);
+    let base = window(&form.base, value_width);
     let mut lines = vec![
         Line::from(vec![
             Span::styled("From    ", LABEL),
@@ -573,11 +576,11 @@ fn draw_create(form: &CreateForm, area: Rect, frame: &mut Frame) {
         ]),
         Line::from(vec![
             label(CreateField::Title, "Title   "),
-            Span::styled(tail(&form.title, value_width), value(CreateField::Title)),
+            Span::styled(title.0.clone(), value(CreateField::Title)),
         ]),
         Line::from(vec![
             label(CreateField::Base, "Base    "),
-            Span::styled(tail(&form.base, value_width), value(CreateField::Base)),
+            Span::styled(base.0.clone(), value(CreateField::Base)),
         ]),
         Line::from(vec![
             label(CreateField::Draft, "Draft   "),
@@ -591,9 +594,19 @@ fn draw_create(form: &CreateForm, area: Rect, frame: &mut Frame) {
     let body_top = lines.len() as u16;
     let body_width = inner.width.saturating_sub(2).max(1) as usize;
     let body_rows = wrap_body(&form.body, body_width);
-    let room = inner.height.saturating_sub(body_top) as usize;
-    // Keep the end of the body in sight: that is where the typing happens.
-    let skip = body_rows.len().saturating_sub(room);
+    let room = (inner.height.saturating_sub(body_top) as usize).max(1);
+    // Where the cursor is among the wrapped rows: the rows every line above
+    // it takes, then the row of its own line it falls on.
+    let (line, column) = form.body.line_and_column();
+    let cursor_row = form
+        .body
+        .split('\n')
+        .take(line)
+        .map(|text| text.chars().count().div_ceil(body_width).max(1))
+        .sum::<usize>()
+        + column / body_width;
+    // Keep the cursor's row in sight: that is where the typing happens.
+    let skip = cursor_row.saturating_sub(room - 1);
     for row in body_rows.iter().skip(skip) {
         lines.push(Line::from(Span::styled(
             format!("  {row}"),
@@ -603,13 +616,12 @@ fn draw_create(form: &CreateForm, area: Rect, frame: &mut Frame) {
     frame.render_widget(Paragraph::new(lines), inner);
 
     let cursor = match form.field {
-        CreateField::Title => Some((8 + form.title.chars().count().min(value_width), 1)),
-        CreateField::Base => Some((8 + form.base.chars().count().min(value_width), 2)),
-        CreateField::Body => {
-            let last = body_rows.last().map(|row| row.chars().count()).unwrap_or(0);
-            let row = body_rows.len().saturating_sub(1).saturating_sub(skip);
-            Some((2 + last, body_top as usize + row))
-        }
+        CreateField::Title => Some((8 + title.1, 1)),
+        CreateField::Base => Some((8 + base.1, 2)),
+        CreateField::Body => Some((
+            2 + column % body_width,
+            body_top as usize + cursor_row - skip,
+        )),
         CreateField::Draft => None,
     };
     if let Some((x, y)) = cursor
@@ -636,15 +648,23 @@ fn wrap_body(body: &str, width: usize) -> Vec<String> {
     rows
 }
 
-/// Keep the end of a value in view when it is too long: that is where the
-/// cursor is.
-fn tail(value: &str, width: usize) -> String {
-    let len = value.chars().count();
-    if len <= width {
-        return value.to_string();
+/// The part of a value that fits in `width` columns, with the column the
+/// cursor is drawn at. A value too long to show whole is shown around the
+/// cursor, the cut marked.
+fn window(input: &TextInput, width: usize) -> (String, usize) {
+    let chars: Vec<char> = input.chars().collect();
+    let cursor = input.cursor.min(chars.len());
+    if chars.len() < width {
+        return (input.to_string(), cursor);
     }
-    let skip = len - width.saturating_sub(1);
-    format!("\u{2026}{}", value.chars().skip(skip).collect::<String>())
+    let room = width.saturating_sub(1).max(1);
+    let start = (cursor + 1).saturating_sub(room);
+    if start == 0 {
+        return (chars[..room.min(chars.len())].iter().collect(), cursor);
+    }
+    let end = (start + room).min(chars.len());
+    let shown: String = chars[start..end].iter().collect();
+    (format!("\u{2026}{shown}"), 1 + cursor - start)
 }
 
 fn draw_repo_list(state: &AppState, area: Rect, frame: &mut Frame) {
@@ -654,12 +674,12 @@ fn draw_repo_list(state: &AppState, area: Rect, frame: &mut Frame) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" Search ", LABEL),
-            Span::styled(gh.query.clone(), Style::default().fg(Color::White)),
+            Span::styled(gh.query.to_string(), Style::default().fg(Color::White)),
         ])),
         search,
     );
     frame.set_cursor_position(Position::new(
-        search.x + 8 + gh.query.chars().count() as u16,
+        search.x + 8 + gh.query.before_cursor().chars().count() as u16,
         search.y,
     ));
 
@@ -777,73 +797,45 @@ fn draw_repo_detail(state: &AppState, area: Rect, frame: &mut Frame) {
 }
 
 fn draw_bottom(state: &AppState, area: Rect, frame: &mut Frame) {
+    let hints = |section: &str| ui::key_hints(&keys::footer_pairs(section));
     let line = match (&state.github.mode, state.github.tab) {
         (Mode::Compose { kind, text }, _) => {
             let number = selected_pr(state).map(|pr| pr.number).unwrap_or(0);
             let prompt = format!("{} #{number}: ", kind.label());
+            let keys = keys::footer_pairs("GitHub review text")
+                .iter()
+                .map(|(key, label)| format!("{key} {label}"))
+                .collect::<Vec<_>>()
+                .join("  ");
             let hint = match kind {
-                Compose::Approve => "  (optional)  Enter send  Esc cancel",
-                _ => "  Enter send  Esc cancel",
+                Compose::Approve => format!("  (optional)  {keys}"),
+                _ => format!("  {keys}"),
             };
-            let x = area.x + (prompt.chars().count() + text.chars().count()) as u16;
+            let x = area.x + (prompt.chars().count() + text.before_cursor().chars().count()) as u16;
             if x < area.x + area.width {
                 frame.set_cursor_position(Position::new(x, area.y));
             }
             Line::from(vec![
                 Span::styled(prompt, Style::default().fg(Color::Cyan)),
-                Span::styled(text.clone(), Style::default().fg(Color::White)),
-                Span::styled(if text.is_empty() { hint } else { "" }, LABEL),
+                Span::styled(text.to_string(), Style::default().fg(Color::White)),
+                Span::styled(if text.is_empty() { hint } else { String::new() }, LABEL),
             ])
         }
         (Mode::ConfirmClose, _) => {
             let (number, title) = selected_pr(state)
                 .map(|pr| (pr.number, pr.title.clone()))
                 .unwrap_or_default();
-            Line::from(vec![
-                Span::styled(
-                    format!("Close #{number} \u{201c}{title}\u{201d} without merging?  "),
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("y", Style::default().fg(Color::Red)),
-                Span::raw(" close  "),
-                Span::styled("n/Esc", HINT_KEY),
-                Span::raw(" keep it"),
-            ])
+            let mut spans = vec![Span::styled(
+                format!("Close #{number} \u{201c}{title}\u{201d} without merging?  "),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )];
+            spans.extend(hints("GitHub close").spans);
+            Line::from(spans)
         }
-        (Mode::Merge(_), _) => ui::key_hints(&[
-            ("j/k", "row"),
-            ("Space/\u{2190}\u{2192}", "change"),
-            ("Enter", "merge"),
-            ("Esc", "back"),
-        ]),
-        (Mode::Create(_), _) => ui::key_hints(&[
-            ("Ctrl-S", "open pull request"),
-            ("Tab", "field"),
-            ("Enter", "next / newline in body"),
-            ("Esc", "cancel"),
-        ]),
-        (Mode::Browse, Tab::PullRequests) => ui::key_hints(&[
-            ("Enter", "checkout"),
-            ("w", "worktree"),
-            ("a", "approve"),
-            ("x", "request changes"),
-            ("c", "comment"),
-            ("m", "merge"),
-            ("D", "draft"),
-            ("X", "close"),
-            ("n", "new"),
-            ("o", "browser"),
-            ("Tab", "repos"),
-        ]),
-        (Mode::Browse, Tab::Repositories) => ui::key_hints(&[
-            ("type", "search"),
-            ("\u{2191}\u{2193}", "select"),
-            ("\u{2190}\u{2192}", "owner"),
-            ("Enter", "clone"),
-            ("Ctrl-R", "reload"),
-            ("Tab", "pull requests"),
-            ("Esc", "close"),
-        ]),
+        (Mode::Merge(_), _) => hints("GitHub merge"),
+        (Mode::Create(_), _) => hints("GitHub new pull request"),
+        (Mode::Browse, Tab::PullRequests) => hints("GitHub"),
+        (Mode::Browse, Tab::Repositories) => hints("GitHub repositories"),
     };
     frame.render_widget(Paragraph::new(line), area);
 }

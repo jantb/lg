@@ -57,9 +57,7 @@ struct ReviewHunk {
 }
 
 fn parse_review_diff_path(line: &str) -> Option<String> {
-    let rest = line.strip_prefix("diff --git ")?;
-    let (_, b_path) = rest.split_once(" b/")?;
-    Some(b_path.to_owned())
+    crate::git::patch::diff_git_paths(line).map(|(_, new)| new)
 }
 
 fn flush_review_hunk(entries: &mut Vec<ReviewEntryPoint>, path: &str, hunk: Option<ReviewHunk>) {
@@ -115,7 +113,7 @@ fn is_import_only_hunk(path: &str, patch: &[String]) -> bool {
 }
 
 fn is_import_line(path: &str, line: &str) -> bool {
-    match Language::of_path(path) {
+    match Language::from_path(path) {
         Some(language) => language.is_import_line(line),
         // Python, Go and the rest: the common spellings, without claiming to
         // know the language.
@@ -196,12 +194,7 @@ fn is_low_signal_word(word: &str) -> bool {
 }
 
 fn parse_new_hunk_start(line: &str) -> Option<usize> {
-    let plus = line.find(" +")? + 2;
-    let rest = &line[plus..];
-    let end = rest
-        .find(|c: char| c == ',' || c.is_whitespace())
-        .unwrap_or(rest.len());
-    rest[..end].parse().ok()
+    crate::git::patch::parse_hunk_header(line).map(|hunk| hunk.new_start)
 }
 
 #[cfg(test)]

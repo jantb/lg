@@ -15,6 +15,7 @@ where
 {
     pub fn render(&mut self) -> Result<()> {
         let area = terminal_area(self.terminal.size()?);
+        poll_panels(&mut self.state);
         prepare(&mut self.state, area);
         let mut selected = None;
         self.terminal
@@ -77,14 +78,20 @@ pub(super) fn layout_for(state: &AppState, area: Rect) -> ui::LayoutRects {
     }
 }
 
+/// Take delivery of what the panels' own workers sent. The loop does this on
+/// every pass, whether or not it then draws.
+pub(super) fn poll_panels(state: &mut AppState) {
+    panel::settings::poll(state);
+    panel::github::poll(state);
+    panel::guided::poll(state);
+    panel::environments::poll_nested_repo_detail(state);
+}
+
 /// Everything that has to be measured against the layout before the frame is
 /// drawn: viewport sizes, scroll offsets, and the size of a running session.
 fn prepare(state: &mut AppState, area: Rect) {
     let rects = layout_for(state, area);
     state.advance_animation();
-    panel::settings::poll(state);
-    panel::github::poll(state);
-    panel::guided::poll(state);
     super::prepare_conflict_editor(state);
     state.diff_viewport_height = if state.modal == Modal::ReviewChat {
         panel::main::review_chat_layout(state, rects.main)[0]
@@ -150,6 +157,8 @@ fn draw(frame: &mut Frame, state: &AppState) -> Option<String> {
         Modal::ConfirmDestructive => panel::confirm::render(state, area, frame),
         Modal::GitHub => panel::github::render(state, area, frame),
         Modal::GuidedReview => panel::guided::render(state, area, frame),
+        Modal::Stash => panel::stash::render(state, area, frame),
+        Modal::StatusDetails => panel::details::render(state, area, frame),
         Modal::ReviewChat => {}
     }
     selected.flatten()

@@ -5,6 +5,7 @@ pub mod git;
 pub mod github;
 pub mod graph;
 pub mod hooks;
+pub mod language;
 pub mod llm;
 pub mod panel;
 pub mod preferences;

@@ -69,7 +69,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.modal = Modal::None;
             }
         }
-        KeyCode::Char(',') => super::settings::open(state, 5),
+        KeyCode::Char(',') => super::settings::open(state, super::settings::Category::Branches),
         KeyCode::Down | KeyCode::Char('j') if choosing => {
             select(state, state.environment_view.selected + 1, count)
         }
@@ -83,12 +83,12 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Char('a') => {
             let selected = state
                 .branches
-                .get(state.branches_idx)
+                .get(state.branches_list.idx)
                 .map(|b| b.name.clone())
                 .or_else(|| state.branch.clone());
             if let Some(branch) = selected {
                 let index = state.environment_view.selected;
-                super::settings::open(state, 5);
+                super::settings::open(state, super::settings::Category::Branches);
                 if let Some(e) = state.settings_hub.draft["environments"].get_mut(index) {
                     e["branch"] = branch.into();
                 }

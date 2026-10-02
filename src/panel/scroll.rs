@@ -42,6 +42,34 @@ pub(crate) fn selection_scroll_offset(
     }
 }
 
+/// The rows of a `len`-row list that fit in a pane `area_height` tall when it
+/// is scrolled to `offset`: the only ones worth building items for.
+pub(crate) fn visible_window(
+    len: usize,
+    offset: usize,
+    area_height: u16,
+) -> std::ops::Range<usize> {
+    let start = offset.min(len);
+    start
+        ..start
+            .saturating_add(list_viewport_height(area_height))
+            .min(len)
+}
+
+/// [`list_state`] for a list built from `window` alone: the selection
+/// counted from the window's first row, and no offset left to apply.
+pub(crate) fn window_list_state(
+    selected: Option<usize>,
+    window: &std::ops::Range<usize>,
+) -> ListState {
+    list_state(
+        selected
+            .filter(|idx| window.contains(idx))
+            .map(|idx| idx - window.start),
+        0,
+    )
+}
+
 pub(crate) fn list_state(selected: Option<usize>, offset: usize) -> ListState {
     let mut state = ListState::default();
     state.select(selected);
@@ -52,6 +80,16 @@ pub(crate) fn list_state(selected: Option<usize>, offset: usize) -> ListState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_holds_what_fits_from_the_offset() {
+        assert_eq!(visible_window(100, 10, 12), 10..20);
+        assert_eq!(visible_window(15, 10, 12), 10..15);
+        assert_eq!(visible_window(5, 10, 12), 5..5);
+        let window = visible_window(100, 10, 12);
+        assert_eq!(window_list_state(Some(12), &window).selected(), Some(2));
+        assert_eq!(window_list_state(Some(3), &window).selected(), None);
+    }
 
     #[test]
     fn selection_moves_freely_inside_three_row_edges() {

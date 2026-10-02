@@ -122,6 +122,10 @@ pub fn protected_branch_list() -> String {
     names.join(", ")
 }
 pub const STATUS_BAR_HEIGHT: u16 = 1;
+/// Lines of a diff the diff pane shows. Every line shown is highlighted and
+/// wrapped, and a generated file or a vendored tree can run to millions; past
+/// this the pane shows the start and says how much it left out.
+pub const DIFF_LINE_CAP: usize = 20_000;
 pub const STATUS_MSG_LIFETIME_SECS: i64 = 3;
 /// Errors linger far longer than successes so a failure cannot scroll past unseen.
 /// Esc dismisses one early.
@@ -129,20 +133,36 @@ pub const ERROR_MSG_LIFETIME_SECS: i64 = 30;
 pub const BORDER_COLOR: Color = Color::LightBlue;
 pub const TICK_MS: u64 = 250;
 
-/// Poll interval while a session is on screen: its output is the echo of what
-/// is being typed into it, so it has to keep up with typing.
+/// Redraw interval while the session on screen is writing: its output is the
+/// echo of what is being typed into it, so it has to keep up with typing. About
+/// 60 frames a second, and only for the session being looked at — one busy in
+/// the background does not raise the rate.
 pub const SESSION_TICK_MS: u64 = 16;
+/// How long after the session on screen last wrote (or was typed into) it still
+/// counts as live, and is polled at [`SESSION_TICK_MS`]. A key's echo comes back
+/// within this.
+pub const SESSION_LIVE_MS: u64 = 500;
+/// Poll interval while a session is on screen but quiet: often enough that its
+/// first output after a pause shows up without a visible lag.
+pub const SESSION_QUIET_TICK_MS: u64 = 50;
+/// Poll interval while sessions run out of sight: their output still has to be
+/// read, so the tree's dots and attention marks stay true, but nothing of them
+/// is on screen to be redrawn.
+pub const BACKGROUND_SESSION_TICK_MS: u64 = 100;
 
 /// How long one animation step lasts. Spinners and other frame-by-frame
 /// animations advance on this clock rather than once per redraw, because the
-/// poll interval ranges from `ANIMATION_FRAME_MS` to `TICK_MS` and a per-frame
-/// animation runs at whatever rate that happens to be.
+/// redraw interval ranges from `ANIMATION_FRAME_MS` to `TICK_MS` and a
+/// per-frame animation runs at whatever rate that happens to be.
 pub const ANIMATION_STEP_MS: u64 = 120;
-/// Poll interval while something on screen is moving: a pulsing frame, a
+/// Redraw interval while something on screen is moving: a pulsing frame, a
 /// settling status line, a running job's spinner. Colour fades are continuous
-/// in time, so the more often they are drawn the smoother they look; this is
-/// about 120 frames a second.
-pub const ANIMATION_FRAME_MS: u64 = 8;
+/// in time, so the more often they are drawn the smoother they look; about 30
+/// frames a second is smooth enough without keeping a core busy for it.
+pub const ANIMATION_FRAME_MS: u64 = 33;
+/// The shortest the loop ever waits for input. Whatever a frame costs, the wait
+/// after it never drops to nothing, so the loop cannot spin.
+pub const MIN_POLL_MS: u64 = 4;
 /// How many queued input events one frame may take before drawing again. A
 /// trackpad sends wheel events far faster than lg redraws, so they are handled
 /// in a batch rather than one per frame — but a flood must not starve the
@@ -159,6 +179,14 @@ pub const MAX_EVENTS_PER_FRAME: usize = 64;
 /// write over it. A buffer that holds a whole frame makes it one write.
 pub const FRAME_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 pub const BACKGROUND_FETCH_INTERVAL_SECS: u64 = 300;
+/// How long the file watcher has to fall quiet before the changes it reported
+/// are refreshed. A save, a formatter run or a build arrives as a burst of
+/// events, and one refresh after the burst shows the same thing as one per
+/// event.
+pub const FILE_EVENT_DEBOUNCE_MS: u64 = 250;
+/// The longest a change waits for that quiet, so a file written to without
+/// pause is still refreshed every so often.
+pub const FILE_EVENT_MAX_WAIT_MS: u64 = 1_000;
 pub const COMMIT_LIST_LIMIT: usize = 200;
 
 /// How much context one review task may send.

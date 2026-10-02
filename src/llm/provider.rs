@@ -15,7 +15,9 @@ const CONFIG_PROVIDER_KEY: &str = "llm_provider";
 /// What stands in for an endpoint when the answer comes from the CLI.
 const CLAUDE_ENDPOINT: &str = "claude -p (Claude Code CLI, tools off)";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Stored in `models.provider` as its [`LlmProvider::config_value`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(try_from = "String", into = "&'static str")]
 pub enum LlmProvider {
     /// An OpenAI-compatible chat endpoint, local by default.
     Mtplx,
@@ -25,6 +27,9 @@ pub enum LlmProvider {
 
 impl LlmProvider {
     pub const ALL: [Self; 2] = [Self::Mtplx, Self::Claude];
+    /// Every value `models.provider` may hold.
+    pub const CONFIG_VALUES: [&'static str; 2] =
+        [Self::Mtplx.config_value(), Self::Claude.config_value()];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -34,7 +39,7 @@ impl LlmProvider {
     }
 
     /// The value `models.provider` stores for this provider.
-    pub fn config_value(self) -> &'static str {
+    pub const fn config_value(self) -> &'static str {
         match self {
             Self::Mtplx => "local",
             Self::Claude => "claude",
@@ -70,6 +75,27 @@ impl LlmProvider {
     }
 }
 
+impl TryFrom<String> for LlmProvider {
+    type Error = String;
+    fn try_from(value: String) -> std::result::Result<Self, String> {
+        Self::ALL
+            .into_iter()
+            .find(|provider| provider.config_value() == value)
+            .ok_or_else(|| {
+                format!(
+                    "models.provider must be one of {}",
+                    Self::CONFIG_VALUES.join(", ")
+                )
+            })
+    }
+}
+
+impl From<LlmProvider> for &'static str {
+    fn from(provider: LlmProvider) -> Self {
+        provider.config_value()
+    }
+}
+
 /// The key mtplx requires on every request, when the environment names one.
 ///
 /// mtplx rejects an unauthenticated request outright, so a missing key surfaces
@@ -101,10 +127,7 @@ pub fn current_provider() -> LlmProvider {
     env_provider()
         .or_else(|| {
             crate::preferences::configured_category("models")
-                .then(|| {
-                    LlmProvider::from_config(&crate::preferences::load().config.models.provider)
-                })
-                .flatten()
+                .then(|| crate::preferences::load().config.models.provider)
         })
         .or_else(saved_provider)
         .unwrap_or(LlmProvider::Mtplx)
@@ -271,6 +294,15 @@ pub fn config_file_display() -> String {
         .unwrap_or_else(|_| "$HOME/.config/lg/config".to_string())
 }
 
+/// The `models` fields the settings modal edits.
+const MODAL_FIELDS: [&str; 2] = ["model", "provider"];
+
+/// Save the model and provider chosen in the settings modal.
+///
+/// They go into the preferences, at the user scope the legacy
+/// `~/.config/lg/config` file stood for — or in a file more specific still that
+/// already decides the models, so the choice saved is the one that answers
+/// next. The legacy file is only ever read now, beneath every preference.
 pub fn save_llm_settings(model: &str, provider: LlmProvider) -> Result<()> {
     let model = model.trim();
     if model.is_empty() {
@@ -279,19 +311,14 @@ pub fn save_llm_settings(model: &str, provider: LlmProvider) -> Result<()> {
     if model.chars().any(|ch| ch == '\n' || ch == '\r') {
         anyhow::bail!("model must fit on one line");
     }
-    let path = config_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let mut entries = read_config_entries(&path);
-    set_config_entry(&mut entries, CONFIG_MODEL_KEY, model);
-    set_config_entry(&mut entries, CONFIG_PROVIDER_KEY, provider.config_value());
-    fs::write(&path, render_config_entries(&entries))
-        .with_context(|| format!("failed to write {}", path.display()))
+    let mut fields = serde_json::Map::new();
+    fields.insert("model".into(), model.into());
+    fields.insert("provider".into(), provider.config_value().into());
+    crate::preferences::save_fields(crate::preferences::Scope::User, "models", fields)
 }
 
 pub fn clear_saved_llm_settings() -> Result<()> {
+    crate::preferences::clear_fields(crate::preferences::Scope::User, "models", &MODAL_FIELDS)?;
     let path = config_path()?;
     let mut entries = read_config_entries(&path);
     let before = entries.len();
@@ -392,14 +419,6 @@ fn parse_config_entries(path: &std::path::Path) -> Vec<(String, String)> {
             Some((key.trim().to_string(), value.trim().to_string()))
         })
         .collect()
-}
-
-fn set_config_entry(entries: &mut Vec<(String, String)>, key: &str, value: &str) {
-    if let Some((_, existing)) = entries.iter_mut().find(|(candidate, _)| candidate == key) {
-        *existing = value.to_string();
-    } else {
-        entries.push((key.to_string(), value.to_string()));
-    }
 }
 
 fn render_config_entries(entries: &[(String, String)]) -> String {

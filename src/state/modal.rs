@@ -46,11 +46,11 @@ impl AppState {
     /// Only a validation picks the flow back up. Aborting is giving up on it,
     /// and starting it again would be the opposite of what was asked for.
     pub fn settle_conflict(&mut self, validated: bool) {
-        let followup = self.conflict_followup.take();
-        self.conflicts.clear();
-        self.conflict_preview = None;
-        self.conflict_resolved.clear();
-        self.conflict_model_notes.clear();
+        let followup = self.conflict.followup.take();
+        self.conflict.files.clear();
+        self.conflict.preview = None;
+        self.conflict.resolved.clear();
+        self.conflict.model_notes.clear();
         self.modal = Modal::None;
         if validated && let Some(resume) = followup.and_then(|followup| followup.resume) {
             self.pending_action = Some(*resume);
@@ -61,12 +61,12 @@ impl AppState {
     /// earlier conflict's local pass had settled. A file resolved during the
     /// last conflict says nothing about a file of the same name in this one.
     pub fn set_conflicts(&mut self, conflicts: Vec<String>) {
-        self.conflicts = conflicts;
-        self.conflict_preview = None;
-        self.conflict_idx = 0;
-        self.conflict_scroll_offset = 0;
-        self.conflict_resolved.clear();
-        self.conflict_model_notes.clear();
+        self.conflict.files = conflicts;
+        self.conflict.preview = None;
+        self.conflict.idx = 0;
+        self.conflict.scroll_offset = 0;
+        self.conflict.resolved.clear();
+        self.conflict.model_notes.clear();
     }
 
     /// Open the picker that says which agent to start in the selected checkout.
@@ -89,9 +89,8 @@ impl AppState {
             self.agent_pick_idx = index;
         }
         for profile in &mut self.agent_profiles {
-            if !sandboxed || profile.adapter == "terminal" {
-                profile.confinement =
-                    crate::preferences::default_confinement(&profile.adapter).into();
+            if !sandboxed || profile.adapter == crate::preferences::Adapter::Terminal {
+                profile.confinement = crate::preferences::default_confinement(profile.adapter);
             }
         }
         self.modal = Modal::Agent;
@@ -106,9 +105,10 @@ impl AppState {
     /// The conflicted files the local model has not settled — what is left for
     /// somebody to read.
     pub fn unresolved_conflicts(&self) -> Vec<String> {
-        self.conflicts
+        self.conflict
+            .files
             .iter()
-            .filter(|path| !self.conflict_resolved.contains(*path))
+            .filter(|path| !self.conflict.resolved.contains(*path))
             .cloned()
             .collect()
     }
@@ -146,6 +146,10 @@ pub enum Modal {
     GitHub,
     /// A branch or pull request walked one hunk at a time.
     GuidedReview,
+    /// The stash: its entries, and a new one being named.
+    Stash,
+    /// The whole of the last error, which the status bar had to cut short.
+    StatusDetails,
 }
 
 /// Rows of the new-worktree form. The path derives from the branch until the
@@ -335,12 +339,44 @@ pub enum PendingAction {
         provider: crate::llm::LlmProvider,
         pr_language: String,
         comment_style: String,
-        commit_subject_max_chars: String,
-        commit_body_max_lines: String,
+        /// `None` keeps the limit already saved; `Some(0)` is unlimited.
+        commit_subject_max_chars: Option<usize>,
+        commit_body_max_lines: Option<usize>,
     },
     ClearSettings,
     EditCommitPrompt,
     EditReviewStyle,
+    /// Commit what is staged as a replacement for the last commit.
+    AmendCommit,
+    /// Stage, unstage or discard one hunk of the diff pane.
+    ApplyHunk {
+        op: crate::git::hunk::HunkOp,
+        hunk: Box<crate::git::hunk::ShownHunk>,
+    },
+    /// Add a commit undoing this one.
+    RevertCommit {
+        sha: String,
+    },
+    /// Replay this commit, from another branch, onto the current one.
+    CherryPick {
+        sha: String,
+    },
+    /// Stash every change, untracked files too.
+    StashPush {
+        message: String,
+    },
+    StashApply {
+        sha: String,
+    },
+    StashPop {
+        sha: String,
+    },
+    StashDrop {
+        sha: String,
+    },
+    /// Push over a diverged upstream, only while it is where it was when the
+    /// prompt showed what it would overwrite.
+    ForcePushWithLease(Box<crate::git::ForcePushPlan>),
     StageAll,
     UnstageAll,
     StagePath(String),
@@ -419,6 +455,13 @@ pub enum PendingAction {
     },
     GitHub(GitHubAction),
     Quit,
+    /// Stop a session and forget it. `follow` puts the next session on
+    /// screen, as closing one from the session pane does; the tree leaves the
+    /// view alone.
+    CloseSession {
+        id: crate::session::SessionId,
+        follow: bool,
+    },
 }
 
 /// Something to do on GitHub, through `gh`.
@@ -520,7 +563,8 @@ impl AppState {
     /// something to discover afterwards.
     pub fn request_quit(&mut self) {
         if self
-            .conflict_preview
+            .conflict
+            .preview
             .as_ref()
             .is_some_and(|preview| preview.editor.as_ref().is_ok_and(|editor| editor.dirty()))
         {
@@ -588,39 +632,47 @@ impl AppState {
     /// Open the new-worktree form for the active repository. The path follows
     /// the branch name until the user edits it.
     pub fn open_worktree_modal(&mut self, base_ref: String) {
-        self.worktree_repo_dir = self
+        self.worktree_form.repo_dir = self
             .worktrees
             .iter()
             .find(|worktree| worktree.is_main)
             .map(|worktree| worktree.path.clone())
             .or_else(|| self.repo_root.clone())
             .unwrap_or_default();
-        self.worktree_branch_input.clear();
-        self.worktree_base_input = base_ref;
-        self.worktree_path_edited = false;
-        self.worktree_field = WorktreeField::Branch;
+        self.worktree_form.branch.clear();
+        self.worktree_form.base.set(base_ref);
+        self.worktree_form.path_edited = false;
+        self.worktree_form.field = WorktreeField::Branch;
         self.sync_worktree_path();
         self.modal = Modal::Worktree;
     }
 
     /// Re-derive the path from the branch name, unless the user took it over.
     pub fn sync_worktree_path(&mut self) {
-        if self.worktree_path_edited {
+        if self.worktree_form.path_edited {
             return;
         }
-        let repo_dir = Path::new(&self.worktree_repo_dir);
-        let branch = self.worktree_branch_input.trim();
-        self.worktree_path_input = if branch.is_empty() {
+        let repo_dir = Path::new(&self.worktree_form.repo_dir);
+        let branch = self.worktree_form.branch.as_str().trim();
+        let path = if branch.is_empty() {
             String::new()
         } else {
             crate::git::default_worktree_path(repo_dir, branch)
                 .to_string_lossy()
                 .into_owned()
         };
+        self.worktree_form.path.set(path);
     }
 
     pub fn open_commit_modal(&mut self) {
         self.modal = Modal::Commit;
+        if self.commit_amend {
+            // The last commit's message is what is being edited; a draft the
+            // model wrote for a new commit is not, and stays where it is.
+            self.commit_files_scroll = 0;
+            self.commit_cursor = self.commit_message.chars().count();
+            return;
+        }
         // A message written for this checkout while the modal was closed has
         // been waiting in its draft; this is where it is picked up. Another
         // checkout's draft stays where it is.
@@ -628,9 +680,56 @@ impl AppState {
         self.commit_files_scroll = 0;
         self.commit_cursor = self.commit_message.chars().count();
         if self.commit_message.is_empty() && !self.generating() && self.ai_assist {
-            self.set_status("generating\u{2026}", false);
-            self.pending_action = Some(PendingAction::GenerateMessage);
+            if self.model_server_unreachable {
+                self.set_status(
+                    "no model server answered earlier \u{2014} type the message, or Ctrl+R to ask again",
+                    false,
+                );
+            } else {
+                self.set_status("generating\u{2026}", false);
+                self.pending_action = Some(PendingAction::GenerateMessage);
+            }
         }
+    }
+
+    /// Open the commit modal on amending the last commit: its message in the
+    /// editor, ready to be changed, and the staged changes going into it.
+    pub fn open_amend_modal(&mut self) {
+        if self.generating() {
+            self.set_status(
+                "a message is being written: wait for it, or Ctrl+R in the commit modal",
+                false,
+            );
+            return;
+        }
+        let message = match crate::git::head_commit_message() {
+            Ok(message) => message,
+            Err(err) => {
+                self.set_status(format!("nothing to amend: {err}"), true);
+                return;
+            }
+        };
+        if !self.commit_amend {
+            self.commit_amend_draft = Some(std::mem::take(&mut self.commit_message));
+        }
+        self.commit_amend = true;
+        self.commit_message = message;
+        self.modal = Modal::Commit;
+        self.commit_files_scroll = 0;
+        self.commit_cursor = self.commit_message.chars().count();
+        self.set_status(
+            "amending the last commit \u{2014} Ctrl+S replaces it, Ctrl+T makes a new commit instead",
+            false,
+        );
+    }
+
+    /// Turn amending off, putting back the message that was being written
+    /// before it was turned on.
+    pub fn leave_amend(&mut self) {
+        self.commit_amend = false;
+        self.commit_message = self.commit_amend_draft.take().unwrap_or_default();
+        self.commit_cursor = self.commit_message.chars().count();
+        self.set_status("writing a new commit", false);
     }
 
     pub fn open_commit_or_stage_all_prompt(&mut self) {
@@ -646,14 +745,15 @@ impl AppState {
     }
 
     pub fn open_delete_branch_modal(&mut self, branch: &Branch) {
-        self.delete_branch_target = branch.name.clone();
-        self.delete_branch_local = true;
-        // Default: also delete the remote when one is tracked, so a single
-        // confirm cleans up both. Skip the toggle when there is no remote.
-        self.delete_branch_remote_available = branch.upstream.is_some() && !branch.upstream_gone;
-        self.delete_branch_remote = self.delete_branch_remote_available;
-        self.delete_branch_force = false;
-        self.delete_branch_field = if self.delete_branch_remote_available {
+        self.delete_branch.target = branch.name.clone();
+        self.delete_branch.local = true;
+        // The remote is offered when one is tracked, but left unticked: a
+        // remote branch may be someone else's work too, and deleting it is
+        // the half of this that cannot be taken back locally.
+        self.delete_branch.remote_available = branch.upstream.is_some() && !branch.upstream_gone;
+        self.delete_branch.remote = false;
+        self.delete_branch.force = false;
+        self.delete_branch.field = if self.delete_branch.remote_available {
             DeleteBranchField::Local
         } else {
             DeleteBranchField::Force

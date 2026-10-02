@@ -1,31 +1,46 @@
 //! Everything the running app knows, and the reads and writes over it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::thread::JoinHandle;
 use std::time::Instant;
 
 use crate::git::{
-    AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry, NestedRepo, ReleaseBranches,
-    RemoteBranch, Worktree,
+    Branch, BranchReleaseStatus, Commit, FileEntry, NestedRepo, ReleaseBranches, RemoteBranch,
+    Worktree,
 };
 
 mod activity;
 mod branches;
+mod conflict;
+mod filter;
 mod flow;
+mod forms;
 mod jobs;
 mod merge_editor;
 mod modal;
+mod review;
 mod tree;
 mod view;
 
 pub use activity::*;
 pub use branches::*;
+pub use conflict::ConflictState;
+pub use filter::{ListFilter, visible_position};
 pub use flow::*;
+pub use forms::{AuthorForm, DeleteBranchForm, StashForm, WorktreeForm};
 pub use jobs::*;
 pub use merge_editor::*;
 pub use modal::*;
+pub use review::{ReviewRenderCache, ReviewState};
 pub use tree::{TreeKind, TreeRow, build_tree_rows};
 pub use view::*;
+
+/// Where a list's selection is, and the first row it shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ListCursor {
+    pub idx: usize,
+    pub scroll: usize,
+}
 
 pub fn clamp_index(idx: usize, len: usize) -> Option<usize> {
     if len == 0 {
@@ -44,6 +59,10 @@ pub struct AppState {
     /// opened from inside one rather than from the panes.
     pub help_return: Modal,
     pub help_offset: u16,
+    /// What the help overlay's rows are narrowed to, and whether keys are
+    /// being typed into it.
+    pub help_filter: crate::panel::text_input::TextInput,
+    pub help_filtering: bool,
 
     pub files: Vec<FileEntry>,
     pub branches: Vec<Branch>,
@@ -61,23 +80,20 @@ pub struct AppState {
     pub release_branches: ReleaseBranches,
     pub unpushed_shas: HashSet<String>,
 
-    pub files_idx: usize,
-    pub branches_idx: usize,
-    pub remote_branches_idx: usize,
-    pub nested_repositories_idx: usize,
+    pub files_list: ListCursor,
+    pub branches_list: ListCursor,
+    pub remote_branches_list: ListCursor,
+    pub nested_repositories_list: ListCursor,
     pub nested_repo_tree_idx: usize,
-    pub nested_repo_branches_idx: usize,
-    pub nested_repo_remote_branches_idx: usize,
-    pub commits_idx: usize,
-    pub files_scroll_offset: usize,
-    pub branches_scroll_offset: usize,
-    pub remote_branches_scroll_offset: usize,
-    pub nested_repositories_scroll_offset: usize,
-    pub nested_repo_branches_scroll_offset: usize,
-    pub nested_repo_remote_branches_scroll_offset: usize,
-    pub commits_scroll_offset: usize,
+    pub nested_repo_branches_list: ListCursor,
+    pub nested_repo_remote_branches_list: ListCursor,
+    pub commits_list: ListCursor,
 
     pub collapsed_dirs: HashSet<String>,
+    /// What `/` has narrowed each list to.
+    pub files_filter: ListFilter,
+    pub branches_filter: ListFilter,
+    pub commits_filter: ListFilter,
 
     /// Terminal sessions lg is keeping alive: one agent of each kind per
     /// checkout, and any number of shells.
@@ -98,39 +114,45 @@ pub struct AppState {
     /// changes, so a frame only copies the rows it shows instead of
     /// highlighting the whole diff again.
     pub diff_render_cache: crate::state::DiffRenderCache,
+    /// The file pane's rows with the files and folds they were built from.
+    /// Several things ask for the rows each frame and on every key, and
+    /// building them sorts and nests every path.
+    pub tree_rows_cache: std::cell::RefCell<Option<crate::state::TreeRowsCache>>,
+    /// The commit graph's lanes with the commits they were drawn for.
+    pub pipe_sets_cache: std::cell::RefCell<Option<crate::state::PipeSetsCache>>,
+    /// The review pane's drawn nodes.
+    pub review_render_cache: std::cell::RefCell<crate::state::ReviewRenderCache>,
+    /// Bumped each time the checkout's files are read again, so whatever was
+    /// read off disk for them — the review's source context — is read afresh.
+    pub files_generation: u64,
     pub diff_offset: u16,
     pub diff_source: DiffSource,
     pub diff_view_mode: DiffViewMode,
     pub diff_line_count: u16,
     pub diff_viewport_height: u16,
     pub diff_viewport_width: u16,
-    pub review: Option<AssistedReview>,
-    pub review_idx: usize,
-    pub review_collapsed: HashSet<String>,
-    pub review_context_open: HashSet<String>,
-    pub review_context_restore_collapsed: HashSet<String>,
-    pub review_assists: HashMap<String, String>,
-    pub review_style_findings: HashMap<String, ReviewStyleFinding>,
-    pub review_flag_active_path: Option<String>,
-    pub review_chat_messages: Vec<ReviewChatMessage>,
-    pub review_chat_input: String,
-    pub review_chat_cursor: usize,
-    pub review_chat_scroll: u16,
-    pub review_chat_height: Option<u16>,
-    pub review_chat_drag_active: bool,
+    /// The hunk the diff pane's hunk keys act on.
+    pub diff_hunk: HunkCursor,
+    /// The commit of the branch log the log view's keys act on, counted from
+    /// the top of the log.
+    pub log_commit: usize,
+    /// The hunks of `diff_text`, read once per text.
+    pub diff_hunks_cache:
+        std::cell::RefCell<Option<(u64, std::sync::Arc<Vec<crate::git::hunk::ShownHunk>>)>>,
+    pub review: ReviewState,
 
     pub commit_message: String,
     pub commit_cursor: usize,
     pub commit_scroll_offset: usize,
     /// First visible row of the staged-files list beside the commit editor.
     pub commit_files_scroll: usize,
+    /// The commit modal replaces the last commit rather than adding one.
+    pub commit_amend: bool,
+    /// The message that was being written before amend put the last commit's
+    /// in its place, for turning amend off again.
+    pub commit_amend_draft: Option<String>,
     pub commit_author: String,
-    pub author_path_input: String,
-    pub author_name_input: String,
-    pub author_email_input: String,
-    pub author_field: AuthorField,
-    pub author_has_local_override: bool,
-    pub author_has_subtree_rule: bool,
+    pub author: AuthorForm,
     pub llm_model: String,
     pub llm_model_input: String,
     pub llm_model_idx: usize,
@@ -168,10 +190,19 @@ pub struct AppState {
     pub nested_repo_detail_path: Option<String>,
 
     pub status: Option<StatusMsg>,
+    /// The last error this session, whole, for the details popup `!` opens
+    /// after the status bar has cut it short or it has expired.
+    pub last_error: Option<StatusMsg>,
+    /// First line the details popup shows.
+    pub details_offset: u16,
     pub decorative_animations: bool,
     /// Whether the model is asked for anything. Off, the commit message is
     /// typed by hand and conflicts and reviews are left alone.
     pub ai_assist: bool,
+    /// The model server could not be reached this session, so opening the
+    /// commit modal stops asking it. Ctrl+R still does, and saving the model
+    /// settings clears this.
+    pub model_server_unreachable: bool,
     pub history_file: Option<std::path::PathBuf>,
     pub status_history: Vec<StatusMsg>,
     pub environment_view: crate::panel::deployment::Environments,
@@ -185,6 +216,9 @@ pub struct AppState {
     pub pending_action: Option<PendingAction>,
     pub confirm: Option<ConfirmPrompt>,
     pub push_after_commit: bool,
+    /// A push or pull asked for while a fetch held the git job slot, started
+    /// once the fetch is done rather than dropped.
+    pub queued_after_fetch: Option<QueuedAfterFetch>,
     pub should_quit: bool,
     /// The animation clock in whole steps of `ANIMATION_STEP_MS`, for things
     /// that move frame by frame: spinners, a travelling marker, a blink.
@@ -201,14 +235,19 @@ pub struct AppState {
     /// own checkout in the workspace tree. The modal shows the one belonging
     /// to the repository on screen.
     pub commit_drafts: Vec<CommitDraft>,
+    /// Finished messages put away from the tree with `x`, by checkout, for
+    /// `c` to bring back. A row for each would be the clutter `x` removed.
+    pub set_aside_messages: Vec<(String, String)>,
     pub push_job: Option<PushJob>,
     pub checkout_job: Option<CheckoutJob>,
     pub operation_job: Option<OperationJob>,
     pub fetch_job: Option<FetchJob>,
     pub refresh_job: Option<RefreshJob>,
-    pub refresh_pending: bool,
+    /// A refresh asked for while one was running, and how much it has to read.
+    pub refresh_pending: Option<RefreshScope>,
     pub refresh_pending_diff: bool,
     pub release_status_job: Option<ReleaseStatusJob>,
+    pub nested_detail_job: Option<NestedDetailJob>,
     pub settings_suggest_job: Option<SettingsSuggestJob>,
     pub commit_log_job: Option<CommitLogJob>,
     pub diff_job: Option<DiffJob>,
@@ -229,11 +268,13 @@ pub struct AppState {
     /// Text being selected with the mouse, or just selected and not yet copied.
     pub selection: Option<crate::ui::TextSelection>,
 
-    pub flow_idx: usize,
-    pub flow_scroll_offset: usize,
+    pub flow_list: ListCursor,
     pub flow_confirm: Option<FlowAction>,
+    /// What the action waiting on `flow_confirm` would touch, worked out when
+    /// the prompt opened — for cleaning orphans, the branches it would delete.
+    pub flow_confirm_detail: Vec<String>,
     pub flow_input: Option<FlowAction>,
-    pub flow_text: String,
+    pub flow_text: crate::panel::text_input::TextInput,
 
     /// Which agent `s` starts and which one a conflict is handed to. It
     /// follows the last one picked, so running the same agent again is the
@@ -244,37 +285,11 @@ pub struct AppState {
     /// The highlighted entry of the repository action menu.
     pub repo_menu_idx: usize,
 
-    pub conflicts: Vec<String>,
-    pub conflict_idx: usize,
-    pub conflict_preview: Option<ConflictPreview>,
-    pub conflict_scroll_offset: usize,
-    pub conflict_log: String,
-    pub conflict_followup: Option<ConflictFollowup>,
-    /// Files settled by the inline editor or local model in this conflict. They are still
-    /// conflicted as far as git is concerned — nothing is staged until `v` —
-    /// so this is what tells the panel which ones are waiting to be read
-    /// rather than waiting to be resolved.
-    pub conflict_resolved: std::collections::HashSet<String>,
-    /// How the local model settled each conflict of the files it resolved,
-    /// by path, for the editor to show beside them.
-    pub conflict_model_notes: std::collections::HashMap<String, Vec<String>>,
+    pub conflict: ConflictState,
 
-    pub delete_branch_target: String,
-    pub delete_branch_local: bool,
-    pub delete_branch_remote: bool,
-    pub delete_branch_remote_available: bool,
-    pub delete_branch_force: bool,
-    pub delete_branch_field: DeleteBranchField,
-    pub worktree_branch_input: String,
-    pub worktree_base_input: String,
-    pub worktree_path_input: String,
-    pub worktree_field: WorktreeField,
-    /// Stops the path following the branch name once the user has typed a path
-    /// of their own.
-    pub worktree_path_edited: bool,
-    /// Main worktree the new one will be created next to, captured when the
-    /// form opens so the path preview does not have to re-derive it.
-    pub worktree_repo_dir: String,
+    pub delete_branch: DeleteBranchForm,
+    pub worktree_form: WorktreeForm,
+    pub stash: StashForm,
     pub branch_view: BranchView,
     pub nested_repo_branch_view: BranchView,
 }
@@ -294,6 +309,8 @@ impl AppState {
             prev_focus: Pane::Status,
             help_return: Modal::None,
             help_offset: 0,
+            help_filter: Default::default(),
+            help_filtering: false,
 
             files: Vec::new(),
             branches: Vec::new(),
@@ -309,23 +326,19 @@ impl AppState {
             release_branches: ReleaseBranches::default(),
             unpushed_shas: HashSet::new(),
 
-            files_idx: 0,
-            branches_idx: 0,
-            remote_branches_idx: 0,
-            nested_repositories_idx: 0,
+            files_list: ListCursor::default(),
+            branches_list: ListCursor::default(),
+            remote_branches_list: ListCursor::default(),
+            nested_repositories_list: ListCursor::default(),
             nested_repo_tree_idx: 0,
-            nested_repo_branches_idx: 0,
-            nested_repo_remote_branches_idx: 0,
-            commits_idx: 0,
-            files_scroll_offset: 0,
-            branches_scroll_offset: 0,
-            remote_branches_scroll_offset: 0,
-            nested_repositories_scroll_offset: 0,
-            nested_repo_branches_scroll_offset: 0,
-            nested_repo_remote_branches_scroll_offset: 0,
-            commits_scroll_offset: 0,
+            nested_repo_branches_list: ListCursor::default(),
+            nested_repo_remote_branches_list: ListCursor::default(),
+            commits_list: ListCursor::default(),
 
             collapsed_dirs: HashSet::new(),
+            files_filter: ListFilter::default(),
+            branches_filter: ListFilter::default(),
+            commits_filter: ListFilter::default(),
 
             sessions: crate::session::Sessions::new(),
             main_view: MainView::Diff,
@@ -335,38 +348,29 @@ impl AppState {
             diff_text_version: 0,
             diff_row_count_cache: std::cell::Cell::new(None),
             diff_render_cache: Default::default(),
+            tree_rows_cache: Default::default(),
+            pipe_sets_cache: Default::default(),
+            review_render_cache: Default::default(),
+            files_generation: 0,
             diff_offset: 0,
             diff_source: DiffSource::None,
             diff_view_mode: DiffViewMode::SideBySide,
             diff_line_count: 0,
             diff_viewport_height: 0,
             diff_viewport_width: 0,
-            review: None,
-            review_idx: 0,
-            review_collapsed: HashSet::new(),
-            review_context_open: HashSet::new(),
-            review_context_restore_collapsed: HashSet::new(),
-            review_assists: HashMap::new(),
-            review_style_findings: HashMap::new(),
-            review_flag_active_path: None,
-            review_chat_messages: Vec::new(),
-            review_chat_input: String::new(),
-            review_chat_cursor: 0,
-            review_chat_scroll: 0,
-            review_chat_height: None,
-            review_chat_drag_active: false,
+            diff_hunk: HunkCursor::default(),
+            log_commit: 0,
+            diff_hunks_cache: Default::default(),
+            review: ReviewState::default(),
 
             commit_message: String::new(),
             commit_cursor: 0,
             commit_scroll_offset: 0,
             commit_files_scroll: 0,
+            commit_amend: false,
+            commit_amend_draft: None,
             commit_author: String::new(),
-            author_path_input: String::new(),
-            author_name_input: String::new(),
-            author_email_input: String::new(),
-            author_field: AuthorField::Path,
-            author_has_local_override: false,
-            author_has_subtree_rule: false,
+            author: AuthorForm::default(),
             llm_model: crate::llm::current_model(),
             llm_model_input: String::new(),
             llm_model_idx: 0,
@@ -395,8 +399,11 @@ impl AppState {
             nested_repo_detail_path: None,
 
             status: None,
+            last_error: None,
+            details_offset: 0,
             decorative_animations: true,
             ai_assist: crate::preferences::ai_enabled(),
+            model_server_unreachable: false,
             history_file: None,
             status_history: Vec::new(),
             environment_view: Default::default(),
@@ -408,20 +415,23 @@ impl AppState {
             pending_action: None,
             confirm: None,
             push_after_commit: false,
+            queued_after_fetch: None,
             should_quit: false,
             animation_tick: 0,
             animation_ms: 0,
             animation_started: Instant::now(),
 
             commit_drafts: Vec::new(),
+            set_aside_messages: Vec::new(),
             push_job: None,
             checkout_job: None,
             operation_job: None,
             fetch_job: None,
             refresh_job: None,
-            refresh_pending: false,
+            refresh_pending: None,
             refresh_pending_diff: false,
             release_status_job: None,
+            nested_detail_job: None,
             settings_suggest_job: None,
             commit_log_job: None,
             diff_job: None,
@@ -441,38 +451,22 @@ impl AppState {
             row_drag_active: None,
             selection: None,
 
-            flow_idx: 0,
-            flow_scroll_offset: 0,
+            flow_list: ListCursor::default(),
             flow_confirm: None,
+            flow_confirm_detail: Vec::new(),
             flow_input: None,
-            flow_text: String::new(),
+            flow_text: Default::default(),
 
             preferred_agent: crate::session::SessionKind::Claude,
             agent_pick_idx: 0,
             agent_pick_sandboxed: true,
             repo_menu_idx: 0,
 
-            conflicts: Vec::new(),
-            conflict_idx: 0,
-            conflict_preview: None,
-            conflict_scroll_offset: 0,
-            conflict_log: String::new(),
-            conflict_followup: None,
-            conflict_resolved: std::collections::HashSet::new(),
-            conflict_model_notes: std::collections::HashMap::new(),
+            conflict: ConflictState::default(),
 
-            delete_branch_target: String::new(),
-            delete_branch_local: true,
-            delete_branch_remote: false,
-            delete_branch_remote_available: false,
-            delete_branch_force: false,
-            delete_branch_field: DeleteBranchField::Local,
-            worktree_branch_input: String::new(),
-            worktree_base_input: String::new(),
-            worktree_path_input: String::new(),
-            worktree_field: WorktreeField::Branch,
-            worktree_path_edited: false,
-            worktree_repo_dir: String::new(),
+            delete_branch: DeleteBranchForm::default(),
+            worktree_form: WorktreeForm::default(),
+            stash: StashForm::default(),
             branch_view: BranchView::Local,
             nested_repo_branch_view: BranchView::Local,
         }
@@ -483,12 +477,12 @@ impl AppState {
         let clamp_idx = |idx: &mut usize, len: usize| *idx = clamp_index(*idx, len).unwrap_or(0);
         // files_idx indexes into the virtual tree-rows list (always >=1: AllChanges + descendants).
         let tree_len = self.tree_rows().len().max(1);
-        self.files_idx = clamp_index(self.files_idx, tree_len).unwrap_or(0);
-        clamp_idx(&mut self.branches_idx, self.branches.len());
+        self.files_list.idx = clamp_index(self.files_list.idx, tree_len).unwrap_or(0);
+        clamp_idx(&mut self.branches_list.idx, self.branches.len());
         let remote_len = self.visible_remote_branches().count();
-        clamp_idx(&mut self.remote_branches_idx, remote_len);
+        clamp_idx(&mut self.remote_branches_list.idx, remote_len);
         clamp_idx(
-            &mut self.nested_repositories_idx,
+            &mut self.nested_repositories_list.idx,
             self.nested_repositories.len(),
         );
         // The repository tree is built by the panel, and now carries worktree
@@ -497,18 +491,21 @@ impl AppState {
         let tree_len = crate::panel::environments::nested_repo_tree_len(self);
         clamp_idx(&mut self.nested_repo_tree_idx, tree_len);
         clamp_idx(
-            &mut self.nested_repo_branches_idx,
+            &mut self.nested_repo_branches_list.idx,
             self.nested_repo_branches.len(),
         );
         let nested_remote_len = self.visible_nested_repo_remote_branches().count();
-        clamp_idx(&mut self.nested_repo_remote_branches_idx, nested_remote_len);
-        clamp_idx(&mut self.commits_idx, self.commits.len());
+        clamp_idx(
+            &mut self.nested_repo_remote_branches_list.idx,
+            nested_remote_len,
+        );
+        clamp_idx(&mut self.commits_list.idx, self.commits.len());
         if self
             .commits
-            .get(self.commits_idx)
+            .get(self.commits_list.idx)
             .is_some_and(crate::git::Commit::is_graph_row)
         {
-            self.commits_idx = self
+            self.commits_list.idx = self
                 .commits
                 .iter()
                 .enumerate()
@@ -516,6 +513,7 @@ impl AppState {
                 .unwrap_or(0);
         }
         let flow_len = usize::from(self.branch_actions_available()) * FlowAction::ALL.len();
-        clamp_idx(&mut self.flow_idx, flow_len);
+        clamp_idx(&mut self.flow_list.idx, flow_len);
+        self.clamp_filtered();
     }
 }

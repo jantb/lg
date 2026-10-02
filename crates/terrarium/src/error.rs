@@ -20,6 +20,11 @@ pub enum TerrariumError {
     #[error("registry lock failed")]
     RegistryLockFailed,
 
+    /// A JSON file terrarium edits in place could not be read as one. It is
+    /// left exactly as it is: rewriting it would drop whatever else it held.
+    #[error("{path} is not a JSON object terrarium can edit ({reason}); fix or remove it")]
+    InvalidJson { path: String, reason: String },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 

@@ -62,6 +62,7 @@ impl AppState {
             fetch_job,
             refresh_job,
             release_status_job,
+            nested_detail_job,
             settings_suggest_job,
             commit_log_job,
             diff_job,
@@ -86,6 +87,7 @@ impl AppState {
             || self.fetch_job.is_some()
             || self.refresh_job.is_some()
             || self.release_status_job.is_some()
+            || self.nested_detail_job.is_some()
             || self.settings_suggest_job.is_some()
             || self.commit_log_job.is_some()
             || self.diff_job.is_some()
@@ -174,6 +176,17 @@ impl AppState {
                 Some(PendingAction::CopyToClipboard { .. }) => Some("copying"),
                 Some(PendingAction::EditFile { .. }) => Some("opening the editor"),
                 Some(PendingAction::Commit) => Some("committing"),
+                Some(PendingAction::AmendCommit) => Some("amending"),
+                Some(PendingAction::ApplyHunk { .. }) => Some("applying hunk"),
+                Some(PendingAction::RevertCommit { .. }) => Some("reverting"),
+                Some(PendingAction::CherryPick { .. }) => Some("cherry-picking"),
+                Some(
+                    PendingAction::StashPush { .. }
+                    | PendingAction::StashApply { .. }
+                    | PendingAction::StashPop { .. }
+                    | PendingAction::StashDrop { .. },
+                ) => Some("updating stash"),
+                Some(PendingAction::ForcePushWithLease(_)) => Some("starting force push"),
                 Some(PendingAction::StageAllAndCommit) => Some("staging"),
                 Some(PendingAction::Push) => Some("starting push"),
                 Some(PendingAction::Pull) => Some("starting pull"),
@@ -218,6 +231,7 @@ impl AppState {
                 }
                 Some(PendingAction::GitHub(_)) => Some("starting GitHub action"),
                 Some(PendingAction::Quit) => Some("quitting"),
+                Some(PendingAction::CloseSession { .. }) => Some("closing session"),
                 None => None,
             }
         }
@@ -334,7 +348,7 @@ impl AppState {
         }
         if let Some(mut job) = self.review_flag_job.take() {
             self.defer_thread_join(job.handle.take());
-            self.review_flag_active_path = None;
+            self.review.flag_active_path = None;
             cancelled = Some("style flag pass cancelled");
         }
         if let Some(mut job) = self.review_pr_job.take() {
@@ -445,6 +459,7 @@ impl AppState {
     /// another checkout's into the editor.
     pub fn take_ready_draft(&mut self) {
         let Some(i) = self.draft_idx(&self.commit_dir()) else {
+            self.take_set_aside_message();
             return;
         };
         if self.commit_drafts[i].generating() {
@@ -454,6 +469,42 @@ impl AppState {
             self.commit_message = draft.text;
             self.commit_cursor = self.commit_message.chars().count();
         }
+    }
+
+    /// Put a finished draft away: its row goes, its text is kept for `c`.
+    pub fn set_aside_draft(&mut self, i: usize) {
+        let Some(draft) = self.drop_draft(i) else {
+            return;
+        };
+        if draft.text.trim().is_empty() {
+            return;
+        }
+        self.forget_set_aside_message(&draft.dir);
+        self.set_aside_messages.push((draft.dir, draft.text));
+    }
+
+    /// The message set aside for the checkout on screen, back in the editor —
+    /// unless something is being typed there already.
+    fn take_set_aside_message(&mut self) {
+        if !self.commit_message.is_empty() {
+            return;
+        }
+        let dir = self.commit_dir();
+        let Some(at) = self.set_aside_messages.iter().position(|(kept, _)| {
+            crate::session::same_dir(std::path::Path::new(kept), std::path::Path::new(&dir))
+        }) else {
+            return;
+        };
+        let (_, text) = self.set_aside_messages.remove(at);
+        self.commit_message = text;
+        self.commit_cursor = self.commit_message.chars().count();
+    }
+
+    /// Drop what was set aside for `dir`: committed, or replaced.
+    pub fn forget_set_aside_message(&mut self, dir: &str) {
+        self.set_aside_messages.retain(|(kept, _)| {
+            !crate::session::same_dir(std::path::Path::new(kept), std::path::Path::new(dir))
+        });
     }
 
     pub fn enable_history(&mut self) {
@@ -471,6 +522,27 @@ impl AppState {
         }
     }
 
+    /// Report a commit message the model could not write.
+    ///
+    /// With no server listening — a first run, before one is set up — every
+    /// commit modal used to open on the same red connection error. Once the
+    /// server proves unreachable lg says what to do about it, once, and stops
+    /// asking on its own for the rest of the session.
+    pub fn report_generation_error(&mut self, error: String) {
+        if crate::llm::error_means_unreachable(&error) {
+            self.model_server_unreachable = true;
+            let endpoint = crate::llm::current_endpoint();
+            self.set_status(
+                format!(
+                    "no model server at {endpoint} \u{2014} L to point lg at one, set models.provider to claude, or turn models.enabled off (, \u{2192} Models)\n{error}"
+                ),
+                true,
+            );
+        } else {
+            self.set_status(error, true);
+        }
+    }
+
     pub fn set_status(&mut self, text: impl Into<String>, is_error: bool) {
         let status = StatusMsg {
             text: text.into(),
@@ -481,6 +553,9 @@ impl AppState {
             self.status_history.remove(0);
         }
         self.status_history.push(status.clone());
+        if status.is_error {
+            self.last_error = Some(status.clone());
+        }
         if let Some(path) = &self.history_file
             && let Ok(data) = serde_json::to_vec(&self.status_history)
         {
@@ -496,6 +571,58 @@ mod tests {
 
     use super::super::ReviewJob;
     use super::*;
+
+    /// With no server running, every commit modal opened on the same red
+    /// connection error. Now the first says what to do and the rest do not
+    /// ask, until the user asks with Ctrl+R.
+    #[test]
+    fn an_unreachable_model_server_is_explained_once_and_not_asked_again() {
+        let mut state = AppState::new();
+        state.ai_assist = true;
+        state.report_generation_error(
+            "model server at http://localhost:8000/v1/chat/completions unreachable: error sending request"
+                .to_string(),
+        );
+
+        let status = state.status.as_ref().expect("a status");
+        assert!(status.is_error);
+        assert!(
+            status.text.starts_with("no model server at"),
+            "{}",
+            status.text
+        );
+        assert!(!status.text.contains("mtplx"), "{}", status.text);
+
+        state.open_commit_modal();
+        assert!(
+            state.pending_action.is_none(),
+            "opening the modal again does not ask the server"
+        );
+        assert!(
+            state
+                .status
+                .as_ref()
+                .is_some_and(|s| s.text.contains("Ctrl+R"))
+        );
+    }
+
+    /// A server that answered and refused this one request says nothing about
+    /// the next, so the modal goes on asking.
+    #[test]
+    fn a_refusal_from_a_reachable_server_keeps_generation_automatic() {
+        let mut state = AppState::new();
+        state.ai_assist = true;
+        state.report_generation_error(
+            "model server at http://localhost:8000 answered with an error: HTTP 413".to_string(),
+        );
+
+        state.open_commit_modal();
+
+        assert!(matches!(
+            state.pending_action,
+            Some(crate::state::PendingAction::GenerateMessage)
+        ));
+    }
 
     #[test]
     fn the_animation_clock_ignores_extra_frames() {

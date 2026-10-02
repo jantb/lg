@@ -42,50 +42,12 @@ pub fn local_branch_names() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// What `git branch` is asked to print for every branch, one field per
+/// branch separated by unit separators.
+const BRANCH_FORMAT: &str = "%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)\x1f%(upstream:track)\x1f%(committerdate:unix)";
+
 pub fn list_branches() -> Result<Vec<Branch>> {
-    let configured_base = crate::preferences::base_branch();
-    let configured_remote = crate::preferences::remote();
-    let main_ref = preferred_commit_ref(
-        &format!("{configured_remote}/{configured_base}"),
-        configured_base.as_str(),
-    );
-    let out = run(&[
-        "branch",
-        "--format=%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)\x1f%(upstream:track)\x1f%(committerdate:unix)",
-    ])?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut branches: Vec<_> = text
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.splitn(5, '\x1f');
-            let name = parts.next()?.trim().to_owned();
-            let head = parts.next()?.trim();
-            let upstream = parts.next().unwrap_or("").trim();
-            let track = parts.next().unwrap_or("").trim();
-            let (ahead, behind) = parse_upstream_track(track);
-            let last_commit_unix = parse_unix_timestamp(parts.next().unwrap_or("").trim());
-            if name.is_empty() {
-                return None;
-            }
-            let behind_main = branch_behind_main(&name, main_ref.as_deref());
-            Some(Branch {
-                name,
-                is_current: head == "*",
-                upstream: (!upstream.is_empty()).then(|| upstream.to_owned()),
-                upstream_gone: track.contains("gone"),
-                ahead,
-                behind,
-                behind_main,
-                last_commit_unix,
-            })
-        })
-        .collect();
-    sort_refs_by_recent_commit(
-        &mut branches,
-        |branch| branch.last_commit_unix,
-        |branch| branch.name.as_str(),
-    );
-    Ok(branches)
+    list_branches_at(None)
 }
 
 pub fn nested_repo_branches(repo_path: &str) -> Result<Vec<Branch>> {
@@ -99,25 +61,52 @@ pub fn nested_repo_branches_at(root: &Path, repo_path: &str) -> Result<Vec<Branc
 }
 
 fn list_branches_in_dir(dir: &Path) -> Result<Vec<Branch>> {
+    list_branches_at(Some(dir))
+}
+
+/// Git in `dir`, or in the checkout lg is pointed at.
+fn git_at(dir: Option<&Path>, args: &[&str]) -> Result<std::process::Output> {
+    match dir {
+        Some(dir) => run_in_dir(dir, args),
+        None => run(args),
+    }
+}
+
+/// The local branches in `dir` (or the active checkout), newest first, each
+/// with how far it trails main.
+///
+/// How far behind main every branch is comes from the same `git branch` call
+/// through `%(ahead-behind:...)`, rather than one `rev-list` per branch. Git
+/// older than 2.41 does not know that atom and refuses the whole format, and
+/// then the counts are taken the old way, one branch at a time.
+fn list_branches_at(dir: Option<&Path>) -> Result<Vec<Branch>> {
     let configured_base = crate::preferences::base_branch();
     let configured_remote = crate::preferences::remote();
-    let main_ref = preferred_commit_ref_in_dir(
-        dir,
-        &format!("{configured_remote}/{configured_base}"),
-        configured_base.as_str(),
-    );
-    let out = run_in_dir(
-        dir,
-        &[
-            "branch",
-            "--format=%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)\x1f%(upstream:track)\x1f%(committerdate:unix)",
-        ],
-    )?;
+    let remote_main = format!("{configured_remote}/{configured_base}");
+    let main_ref = match dir {
+        Some(dir) => preferred_commit_ref_in_dir(dir, &remote_main, configured_base.as_str()),
+        None => preferred_commit_ref(&remote_main, configured_base.as_str()),
+    };
+    let counted = main_ref
+        .as_deref()
+        // A ref name may hold a `)`, which would end the atom early.
+        .filter(|main| !main.contains(')'))
+        .and_then(|main| {
+            let format = format!("--format={BRANCH_FORMAT}\x1f%(ahead-behind:{main})");
+            git_at(dir, &["branch", &format]).ok()
+        });
+    let (out, counted) = match counted {
+        Some(out) => (out, true),
+        None => (
+            git_at(dir, &["branch", &format!("--format={BRANCH_FORMAT}")])?,
+            false,
+        ),
+    };
     let text = String::from_utf8_lossy(&out.stdout);
     let mut branches: Vec<_> = text
         .lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(5, '\x1f');
+            let mut parts = line.splitn(6, '\x1f');
             let name = parts.next()?.trim().to_owned();
             let head = parts.next()?.trim();
             let upstream = parts.next().unwrap_or("").trim();
@@ -127,7 +116,14 @@ fn list_branches_in_dir(dir: &Path) -> Result<Vec<Branch>> {
             if name.is_empty() {
                 return None;
             }
-            let behind_main = branch_behind_main_in_dir(dir, &name, main_ref.as_deref());
+            let counts = parts.next().unwrap_or("");
+            let behind_main = if !counts_against_main(&name, main_ref.as_deref()) {
+                0
+            } else if counted {
+                parse_ahead_behind(counts).map_or(0, |(_, behind)| behind)
+            } else {
+                branch_behind_main(dir, &name, main_ref.as_deref())
+            };
             Some(Branch {
                 name,
                 is_current: head == "*",
@@ -146,6 +142,46 @@ fn list_branches_in_dir(dir: &Path) -> Result<Vec<Branch>> {
         |branch| branch.name.as_str(),
     );
     Ok(branches)
+}
+
+/// How far every local branch is ahead of and behind `base`, by branch name,
+/// from one `for-each-ref` call. `None` when git is too old to say that way,
+/// or `base` does not resolve.
+pub(super) fn ahead_behind_all(
+    base: &str,
+) -> Option<std::collections::HashMap<String, (u32, u32)>> {
+    if base.contains(')') {
+        return None;
+    }
+    let format = format!("--format=%(refname:short)\x1f%(ahead-behind:{base})");
+    let out = run(&["for-each-ref", "refs/heads", &format]).ok()?;
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| {
+                let (name, counts) = line.split_once('\x1f')?;
+                Some((name.trim().to_owned(), parse_ahead_behind(counts)?))
+            })
+            .collect(),
+    )
+}
+
+/// `%(ahead-behind:...)`'s answer: commits ahead, then commits behind.
+fn parse_ahead_behind(value: &str) -> Option<(u32, u32)> {
+    let mut counts = value.split_whitespace().map(str::parse::<u32>);
+    match (counts.next(), counts.next(), counts.next()) {
+        (Some(Ok(ahead)), Some(Ok(behind)), None) => Some((ahead, behind)),
+        _ => None,
+    }
+}
+
+/// Whether `branch` is one whose distance from main means anything: not main
+/// itself, and not the detached-HEAD row `git branch` lists in brackets.
+fn counts_against_main(branch: &str, main_ref: Option<&str>) -> bool {
+    let configured_base = crate::preferences::base_branch();
+    main_ref.is_some_and(|main_ref| {
+        branch != configured_base.as_str() && branch != main_ref && !branch.starts_with('(')
+    })
 }
 
 pub fn list_remote_branches() -> Result<Vec<RemoteBranch>> {
@@ -247,32 +283,13 @@ fn parse_upstream_track(value: &str) -> (u32, u32) {
     (ahead, behind)
 }
 
-fn branch_behind_main(branch: &str, main_ref: Option<&str>) -> u32 {
-    let configured_base = crate::preferences::base_branch();
+/// How many commits `main_ref` has that `branch` does not, asked on its own:
+/// the way it was done before git could answer for every branch at once.
+fn branch_behind_main(dir: Option<&Path>, branch: &str, main_ref: Option<&str>) -> u32 {
     let Some(main_ref) = main_ref else {
         return 0;
     };
-    if branch == configured_base.as_str() || branch == main_ref {
-        return 0;
-    }
-    let Ok(out) = run(&["rev-list", "--count", main_ref, "--not", branch]) else {
-        return 0;
-    };
-    String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .parse()
-        .unwrap_or(0)
-}
-
-fn branch_behind_main_in_dir(dir: &Path, branch: &str, main_ref: Option<&str>) -> u32 {
-    let configured_base = crate::preferences::base_branch();
-    let Some(main_ref) = main_ref else {
-        return 0;
-    };
-    if branch == configured_base.as_str() || branch == main_ref {
-        return 0;
-    }
-    let Ok(out) = run_in_dir(dir, &["rev-list", "--count", main_ref, "--not", branch]) else {
+    let Ok(out) = git_at(dir, &["rev-list", "--count", main_ref, "--not", branch]) else {
         return 0;
     };
     String::from_utf8_lossy(&out.stdout)
@@ -304,5 +321,17 @@ mod tests {
         assert_eq!(parse_upstream_track("[ahead 1, behind 6]"), (1, 6));
         assert_eq!(parse_upstream_track("[gone]"), (0, 0));
         assert_eq!(parse_upstream_track(""), (0, 0));
+    }
+
+    #[test]
+    fn parses_ahead_behind_counts() {
+        assert_eq!(parse_ahead_behind("3 12"), Some((3, 12)));
+        assert_eq!(parse_ahead_behind("0 0\n"), Some((0, 0)));
+        assert_eq!(
+            parse_ahead_behind("%(ahead-behind:main)"),
+            None,
+            "a git that printed the atom back did not count anything"
+        );
+        assert_eq!(parse_ahead_behind(""), None);
     }
 }

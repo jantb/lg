@@ -27,7 +27,7 @@ Tests use Rust's built-in test framework plus `tempfile` for hermetic repositori
 
 ## Commit & Pull Request Guidelines
 
-This repository currently has no committed history, so there is no established local commit convention. Use clear, imperative commit subjects such as `Add push panel validation`; Conventional Commit prefixes like `feat:` or `fix:` are acceptable when helpful. Pull requests should describe the user-facing change, list verification commands run, link related issues, and include terminal screenshots or recordings for TUI layout changes.
+Commits follow Conventional Commits with a scope: `feat(scope): ...`, `fix(scope): ...`, `refactor(scope): ...`, for example `feat(review): add guided review and claude provider`. Keep the subject short, lowercase and imperative. Pull requests should describe the user-facing change, list verification commands run, link related issues, and include terminal screenshots or recordings for TUI layout changes.
 
 ## Agent-Specific Instructions
 

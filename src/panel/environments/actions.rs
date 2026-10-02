@@ -2,10 +2,16 @@
 
 use crate::{
     git::Worktree,
-    state::{AppState, BranchView, CommitDraft},
+    state::{
+        AppState, BranchView, CommitDraft, NestedDetailJob, NestedDetailMsg, Poll, poll_once,
+        stopped_unexpectedly,
+    },
 };
 
-use super::tree::{NestedRepoTreeRow, selected_tree_row, tree_idx_for_repo_path};
+use super::tree::{
+    NestedRepoTreeRow, restore_selection, selected_tree_row, selection_anchor,
+    tree_idx_for_repo_path,
+};
 
 pub(crate) fn activate_selected_repository_row(state: &mut AppState) -> bool {
     match selected_tree_row(state) {
@@ -267,15 +273,25 @@ pub(super) fn close_selected_session(state: &mut AppState) {
             .commit_drafts
             .get(draft_idx)
             .is_some_and(CommitDraft::generating);
-        state.drop_draft(draft_idx);
-        state.set_status(
-            if was_running {
-                "commit message generation cancelled"
-            } else {
-                "commit message set aside \u{b7} c reopens it"
-            },
-            false,
-        );
+        let elsewhere = state.commit_drafts.get(draft_idx).and_then(|draft| {
+            let here = state.commit_dir();
+            (!crate::session::same_dir(
+                std::path::Path::new(&draft.dir),
+                std::path::Path::new(&here),
+            ))
+            .then(|| dir_name(&draft.dir).to_string())
+        });
+        if was_running {
+            state.drop_draft(draft_idx);
+            state.set_status("commit message generation cancelled", false);
+        } else {
+            state.set_aside_draft(draft_idx);
+            let status = match elsewhere {
+                Some(name) => format!("commit message set aside \u{b7} c in {name} reopens it"),
+                None => "commit message set aside \u{b7} c reopens it".to_string(),
+            };
+            state.set_status(status, false);
+        }
         state.clamp();
         return;
     }
@@ -283,13 +299,54 @@ pub(super) fn close_selected_session(state: &mut AppState) {
         state.set_status("select a session row to close it", false);
         return;
     };
+    request_close_session(state, id, false);
+}
+
+/// Close a session, asking first when that would stop work: an agent that is
+/// still running, or a shell with a command going. A shell sitting at its
+/// prompt, or a session that has already ended, loses nothing and just goes.
+pub(crate) fn request_close_session(
+    state: &mut AppState,
+    id: crate::session::SessionId,
+    follow: bool,
+) {
+    let Some(session) = state.sessions.get(id) else {
+        return;
+    };
+    let action = crate::state::PendingAction::CloseSession { id, follow };
+    let busy = session.is_running()
+        && (session.kind.is_agent() || session.activity() != crate::session::SessionActivity::Idle);
+    if !busy {
+        close_session(state, id, follow);
+        return;
+    }
+    let what = format!("{} in {}", session.kind_label(), session.label);
+    let detail = if session.kind.is_agent() {
+        format!(
+            "The {} is stopped mid-conversation; whatever it was doing ends here.",
+            session.kind_label()
+        )
+    } else {
+        "A command is still running in it, and it is stopped.".to_string()
+    };
+    state.confirm_action("Close Session", format!("Stop the {what}?"), detail, action);
+}
+
+/// Stop a session and forget it, saying so.
+pub fn close_session(state: &mut AppState, id: crate::session::SessionId, follow: bool) {
     let closed = state
         .sessions
         .get(id)
         .map(|session| format!("{} in {}", session.kind_label(), session.label))
         .unwrap_or_else(|| "session".to_string());
+    let was_shown = state.session_view() == Some(id);
     state.sessions.close(id);
-    if state.session_view().is_none() {
+    if follow && was_shown {
+        match state.sessions.focused() {
+            Some(next) => state.show_session(next),
+            None => state.show_diff(),
+        }
+    } else if state.session_view().is_none() {
         state.show_diff();
     }
     state.clamp();
@@ -466,43 +523,124 @@ pub(super) fn selected_repository_project_path(state: &AppState) -> Option<Strin
     }
 }
 
+/// Expand a nested repository to its branches. They are read in the
+/// background and land through [`poll_nested_repo_detail`]; until then the
+/// repository shows expanded with nothing under it.
 pub(crate) fn open_nested_repo_detail(state: &mut AppState, path: String) {
-    match load_nested_repo_detail(state, &path) {
-        Ok(()) => {
-            state.nested_repo_detail_path = Some(path.clone());
-            state.nested_repo_branch_view = BranchView::Local;
-            state.nested_repo_branches_idx = state
-                .nested_repo_branches
-                .iter()
-                .position(|branch| branch.is_current)
-                .unwrap_or(0);
-            state.nested_repo_remote_branches_idx = 0;
-            state.nested_repo_tree_idx = tree_idx_for_repo_path(state, &path).unwrap_or(0);
-            state.set_status(format!("opened {path} branches"), false);
-        }
-        Err(err) => state.set_status(format!("load nested branches failed: {err}"), true),
-    }
+    state.nested_repo_detail_path = Some(path.clone());
+    state.nested_repo_branches.clear();
+    state.nested_repo_remote_branches.clear();
+    state.nested_repo_branch_view = BranchView::Local;
+    state.nested_repo_branches_list.idx = 0;
+    state.nested_repo_remote_branches_list.idx = 0;
+    state.nested_repo_tree_idx = tree_idx_for_repo_path(state, &path).unwrap_or(0);
+    start_nested_repo_detail(state, path.clone(), true);
+    state.set_status(format!("loading {path} branches\u{2026}"), false);
 }
 
+/// Read the expanded repository's branches again, after a push say. What is
+/// on screen stays until the new lists land.
 pub(crate) fn reload_nested_repo_detail(state: &mut AppState) {
-    if let Some(path) = state.nested_repo_detail_path.clone()
-        && let Err(err) = load_nested_repo_detail(state, &path)
-    {
-        state.set_status(format!("load nested branches failed: {err}"), true);
+    if let Some(path) = state.nested_repo_detail_path.clone() {
+        start_nested_repo_detail(state, path, false);
     }
 }
 
-pub(super) fn load_nested_repo_detail(state: &mut AppState, path: &str) -> anyhow::Result<()> {
-    if let Some(root) = state.workspace_root.as_deref() {
-        let root = std::path::Path::new(root);
-        state.nested_repo_branches = crate::git::nested_repo_branches_at(root, path)?;
-        state.nested_repo_remote_branches = crate::git::nested_repo_remote_branches_at(root, path)?;
-    } else {
-        state.nested_repo_branches = crate::git::nested_repo_branches(path)?;
-        state.nested_repo_remote_branches = crate::git::nested_repo_remote_branches(path)?;
+fn start_nested_repo_detail(state: &mut AppState, path: String, opening: bool) {
+    // A read already under way is for a repository no longer wanted, or for
+    // this one as it was a moment ago; either way its answer is not needed.
+    if let Some(mut job) = state.nested_detail_job.take() {
+        state.defer_thread_join(job.handle.take());
     }
-    state.clamp();
-    Ok(())
+    let root = state.workspace_root.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let read = path.clone();
+    let handle = crate::git::spawn_pinned(move || {
+        let _ = tx.send(match read_nested_repo_detail(root.as_deref(), &read) {
+            Ok((branches, remote_branches)) => NestedDetailMsg::Done {
+                branches,
+                remote_branches,
+            },
+            Err(err) => NestedDetailMsg::Error(format!("{err:#}")),
+        });
+    });
+    state.nested_detail_job = Some(NestedDetailJob {
+        rx,
+        handle: Some(handle),
+        spinner: 0,
+        path,
+        opening,
+    });
+}
+
+type NestedBranches = (Vec<crate::git::Branch>, Vec<crate::git::RemoteBranch>);
+
+fn read_nested_repo_detail(root: Option<&str>, path: &str) -> anyhow::Result<NestedBranches> {
+    Ok(match root {
+        Some(root) => {
+            let root = std::path::Path::new(root);
+            (
+                crate::git::nested_repo_branches_at(root, path)?,
+                crate::git::nested_repo_remote_branches_at(root, path)?,
+            )
+        }
+        None => (
+            crate::git::nested_repo_branches(path)?,
+            crate::git::nested_repo_remote_branches(path)?,
+        ),
+    })
+}
+
+/// Take in the branches of the expanded repository once they have been read.
+///
+/// The rows under the repository change when they land, and the selection is
+/// a row number, so it is put back on the row it was on — the user may well
+/// have moved while the read ran — rather than left on whatever row now has
+/// that number.
+pub fn poll_nested_repo_detail(state: &mut AppState) {
+    let Some(job) = state.nested_detail_job.as_ref() else {
+        return;
+    };
+    let msg = match poll_once(&job.rx) {
+        Poll::Pending => return,
+        Poll::Message(msg) => msg,
+        Poll::Disconnected => NestedDetailMsg::Error(stopped_unexpectedly("nested branches")),
+    };
+    let Some(mut job) = state.nested_detail_job.take() else {
+        return;
+    };
+    state.defer_thread_join(job.handle.take());
+    // Collapsed, or another repository expanded, while this was read.
+    if state.nested_repo_detail_path.as_deref() != Some(job.path.as_str()) {
+        return;
+    }
+    match msg {
+        NestedDetailMsg::Done {
+            branches,
+            remote_branches,
+        } => {
+            let anchor = selection_anchor(state);
+            state.nested_repo_branches = branches;
+            state.nested_repo_remote_branches = remote_branches;
+            if job.opening {
+                state.nested_repo_branches_list.idx = state
+                    .nested_repo_branches
+                    .iter()
+                    .position(|branch| branch.is_current)
+                    .unwrap_or(0);
+                state.nested_repo_remote_branches_list.idx = 0;
+                state.set_status(format!("opened {} branches", job.path), false);
+            }
+            restore_selection(state, anchor);
+            state.clamp();
+        }
+        NestedDetailMsg::Error(err) => {
+            if job.opening {
+                close_nested_repo_detail(state);
+            }
+            state.set_status(format!("load nested branches failed: {err}"), true);
+        }
+    }
 }
 
 pub(crate) fn close_nested_repo_detail(state: &mut AppState) {
@@ -510,8 +648,8 @@ pub(crate) fn close_nested_repo_detail(state: &mut AppState) {
         state.nested_repo_branches.clear();
         state.nested_repo_remote_branches.clear();
         state.nested_repo_branch_view = BranchView::Local;
-        state.nested_repo_branches_idx = 0;
-        state.nested_repo_remote_branches_idx = 0;
+        state.nested_repo_branches_list.idx = 0;
+        state.nested_repo_remote_branches_list.idx = 0;
         state.nested_repo_tree_idx = tree_idx_for_repo_path(state, &path).unwrap_or(0);
     }
 }

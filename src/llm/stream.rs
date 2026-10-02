@@ -159,7 +159,7 @@ pub fn stream_messages(
         ),
     );
 
-    let resp = match open_chat_stream(&endpoint, &body, provider) {
+    let resp = match open_chat_stream(&endpoint, &body) {
         Ok(resp) => resp,
         Err(message) => {
             fail(&mut trace, &tx, message);
@@ -182,7 +182,6 @@ pub fn stream_messages(
 fn open_chat_stream(
     endpoint: &str,
     body: &serde_json::Value,
-    provider: LlmProvider,
 ) -> std::result::Result<reqwest::blocking::Response, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(300))
@@ -194,9 +193,9 @@ fn open_chat_stream(
     }
     request
         .send()
-        .map_err(|e| format!("{} {UNREACHABLE}: {e}", provider.label()))?
+        .map_err(|e| format!("model server at {endpoint} {UNREACHABLE}: {e}"))?
         .error_for_status()
-        .map_err(|e| format!("{} status: {e}", provider.label()))
+        .map_err(|e| format!("model server at {endpoint} answered with an error: {e}"))
 }
 
 /// The word every "could not reach the server" error carries, so that a
@@ -742,6 +741,22 @@ mod tests {
         assert!(
             matches!(&msgs[0], GenMsg::Error(s) if s.contains("session lg-commit is already in flight")),
             "{msgs:?}"
+        );
+    }
+
+    /// The message names the endpoint it could not reach, in words a user
+    /// can act on, and still reads as unreachable to the code that stops
+    /// asking.
+    #[test]
+    fn a_refused_connection_names_the_endpoint() {
+        let endpoint = "http://127.0.0.1:1/v1/chat/completions";
+        let Err(message) = open_chat_stream(endpoint, &serde_json::json!({})) else {
+            panic!("nothing listens on port 1");
+        };
+        assert!(error_means_unreachable(&message), "{message}");
+        assert!(
+            message.starts_with(&format!("model server at {endpoint} unreachable")),
+            "{message}"
         );
     }
 

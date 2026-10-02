@@ -148,106 +148,70 @@ impl GuidedHunk {
 /// change — still becomes one step, so the walk passes over every file the
 /// diff names.
 pub fn parse_hunks(diff: &str) -> Vec<GuidedHunk> {
-    let mut files: Vec<(String, Option<String>, Vec<GuidedHunk>)> = Vec::new();
-    let mut old = 0usize;
-    let mut new = 0usize;
-    for line in diff.lines() {
-        if let Some(rest) = line.strip_prefix("diff --git ") {
-            let path = rest
-                .split_once(" b/")
-                .map(|(_, b)| b.to_string())
-                .unwrap_or_else(|| rest.to_string());
-            files.push((path, None, Vec::new()));
-            continue;
-        }
-        let Some((_, note, hunks)) = files.last_mut() else {
-            continue;
-        };
-        if line.starts_with("@@") {
-            let (old_start, new_start) = hunk_starts(line).unwrap_or((1, 1));
-            old = old_start;
-            new = new_start;
-            hunks.push(GuidedHunk {
-                path: String::new(),
-                header: line.to_string(),
-                lines: Vec::new(),
-                file_index: 0,
-                hunk_index: 0,
-                hunks_in_file: 0,
-                file_note: None,
-            });
-            continue;
-        }
-        let Some(hunk) = hunks.last_mut() else {
-            // Between the file header and its first hunk.
-            if line.starts_with("new file mode") {
-                *note = Some("new file".to_string());
-            } else if line.starts_with("deleted file mode") {
-                *note = Some("deleted file".to_string());
-            } else if line.starts_with("Binary files") {
-                *note = Some("binary file".to_string());
-            } else if let Some(from) = line.strip_prefix("rename from ") {
-                *note = Some(format!("renamed from {from}"));
-            }
-            continue;
-        };
-        let (kind, old_no, new_no) = match line.as_bytes().first() {
-            Some(b'+') => {
-                new += 1;
-                (LineKind::Added, None, Some(new - 1))
-            }
-            Some(b'-') => {
-                old += 1;
-                (LineKind::Removed, Some(old - 1), None)
-            }
-            Some(b'\\') => (LineKind::Meta, None, None),
-            _ => {
-                old += 1;
-                new += 1;
-                (LineKind::Context, Some(old - 1), Some(new - 1))
-            }
-        };
-        hunk.lines.push(HunkLine {
-            kind,
-            text: line.to_string(),
-            old: old_no,
-            new: new_no,
-        });
-    }
-
+    let files = super::patch::parse_patch(diff).into_iter().filter(|file| {
+        file.header
+            .first()
+            .is_some_and(|line| line.starts_with("diff --git "))
+    });
     let mut steps = Vec::new();
-    for (file_index, (path, note, mut hunks)) in files.into_iter().enumerate() {
+    for (file_index, file) in files.enumerate() {
+        let note = file_note(&file);
+        let path = file.path().to_string();
+        let mut hunks: Vec<(String, Vec<HunkLine>)> = file
+            .hunks
+            .into_iter()
+            .map(|hunk| (hunk.header, hunk.lines.iter().map(hunk_line).collect()))
+            .collect();
         if hunks.is_empty() {
-            hunks.push(GuidedHunk {
-                path: String::new(),
-                header: String::new(),
-                lines: Vec::new(),
-                file_index: 0,
-                hunk_index: 0,
-                hunks_in_file: 0,
-                file_note: None,
-            });
+            hunks.push((String::new(), Vec::new()));
         }
         let count = hunks.len();
-        for (hunk_index, mut hunk) in hunks.into_iter().enumerate() {
-            hunk.path = path.clone();
-            hunk.file_index = file_index;
-            hunk.hunk_index = hunk_index;
-            hunk.hunks_in_file = count;
-            hunk.file_note = if hunk_index == 0 { note.clone() } else { None };
-            steps.push(hunk);
+        for (hunk_index, (header, lines)) in hunks.into_iter().enumerate() {
+            steps.push(GuidedHunk {
+                path: path.clone(),
+                header,
+                lines,
+                file_index,
+                hunk_index,
+                hunks_in_file: count,
+                file_note: if hunk_index == 0 { note.clone() } else { None },
+            });
         }
     }
     steps
 }
 
-/// The old and new start lines of an `@@ -a,b +c,d @@` header.
-fn hunk_starts(header: &str) -> Option<(usize, usize)> {
-    let mut parts = header.split_whitespace().skip(1);
-    let old = parts.next()?.strip_prefix('-')?;
-    let new = parts.next()?.strip_prefix('+')?;
-    let start = |range: &str| range.split(',').next()?.parse::<usize>().ok();
-    Some((start(old)?, start(new)?))
+/// What a file's header says about it that its hunks cannot: the last thing
+/// git reports, so a binary file reads as binary however else it changed.
+fn file_note(file: &super::patch::FilePatch) -> Option<String> {
+    if file.is_binary {
+        Some("binary file".to_string())
+    } else if file.is_rename {
+        Some(format!("renamed from {}", file.old_path))
+    } else if file.is_deleted {
+        Some("deleted file".to_string())
+    } else if file.is_new {
+        Some("new file".to_string())
+    } else {
+        None
+    }
+}
+
+fn hunk_line(line: &super::patch::PatchLine) -> HunkLine {
+    use super::patch::LineKind as Patch;
+    let kind = match line.kind {
+        Patch::Context => LineKind::Context,
+        Patch::Added => LineKind::Added,
+        Patch::Removed => LineKind::Removed,
+        Patch::NoNewline => LineKind::Meta,
+    };
+    let text = line.to_patch_line();
+    HunkLine {
+        kind,
+        text: text.strip_suffix('\r').map(str::to_string).unwrap_or(text),
+        old: line.old_no,
+        new: line.new_no,
+    }
 }
 
 /// A note written during a guided review, pinned to one line of one hunk.

@@ -10,16 +10,62 @@
 //! where the review stopped.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::Receiver;
 
 use crate::git::guided::{GuidedHunk, GuidedNote, GuidedProgress, Side};
-use crate::state::{AppState, GenMsg, Modal, PendingAction};
+use crate::panel::text_input::TextInput;
+use crate::state::{AppState, GenMsg, Modal, PendingAction, Poll, poll_once, stopped_unexpectedly};
+use ratatui::crossterm::event::MouseEvent;
 
 mod draw;
 mod keys;
+mod work;
 
 pub use draw::render;
 pub use keys::{handle_key, handle_paste};
+
+/// The wheel over the step list moves between steps, and over the pane beside
+/// it scrolls the commentary (or the notes, in the summary). A click on a step
+/// in the list goes to it. None of it marks a step reviewed: that stays with
+/// the keys that say so.
+pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &MouseEvent) {
+    use crate::panel::pointer;
+    let Some(guided) = state.guided.as_deref() else {
+        return;
+    };
+    if guided.typing() && !matches!(guided.mode, Mode::Summary { .. }) {
+        return;
+    }
+    let Some((list, side)) = draw::pane_areas(guided, area) else {
+        return;
+    };
+    let current = guided.current;
+    let total = guided.total();
+    let browsing = matches!(guided.mode, Mode::Browse);
+    match pointer::wheel(m) {
+        Some(down) if pointer::inside(list, m.column, m.row) && browsing => {
+            let next = if down {
+                (current + 1).min(total)
+            } else {
+                current.saturating_sub(1)
+            };
+            go_to(state, next, false);
+        }
+        Some(down) if pointer::inside(side, m.column, m.row) => {
+            keys::scroll_side(state, if down { 3 } else { -3 });
+        }
+        Some(_) => {}
+        None if pointer::left_click(m) && browsing => {
+            let (rows, first) = draw::step_rows(guided, list.height);
+            if let Some(at) = pointer::list_row(list, first, rows.len(), m.column, m.row)
+                && let Some(step) = rows[at]
+            {
+                go_to(state, step, false);
+            }
+        }
+        None => {}
+    }
+}
 
 /// The step before the first hunk: what the change is for.
 pub const OVERVIEW: usize = 0;
@@ -157,15 +203,15 @@ pub enum Mode {
     Browse,
     /// Writing a note on the cursor line; `editing` is the note being changed.
     Note {
-        text: String,
+        text: TextInput,
         editing: Option<usize>,
     },
     /// Asking the model about the step on screen.
-    Question { text: String },
+    Question { text: TextInput },
     /// Telling Claude what to change.
-    Fix { text: String, all_notes: bool },
+    Fix { text: TextInput, all_notes: bool },
     /// Every note, and for a pull request the review they are submitted as.
-    Summary { event: usize, body: String },
+    Summary { event: usize, body: TextInput },
 }
 
 /// The loaded walk: everything but the receivers that feed it.
@@ -203,6 +249,8 @@ pub struct Guided {
     /// Steps whose commentary was asked for and failed, so they are not asked
     /// again every frame.
     failed: HashSet<String>,
+    /// The note `x` was pressed on once; pressing it again deletes it.
+    pub(super) delete_armed: Option<usize>,
 }
 
 impl Guided {
@@ -225,6 +273,7 @@ impl Guided {
             pull_request: None,
             asks: Vec::new(),
             failed: HashSet::new(),
+            delete_armed: None,
         }
     }
 
@@ -331,7 +380,7 @@ pub fn open_branch(state: &mut AppState) {
         _ => "the branch",
     };
     let mut guided = Guided::new(source);
-    guided.loading = Some(load_local(&guided.source));
+    guided.loading = Some(work::load_local(&guided.source));
     state.guided = Some(Box::new(guided));
     state.modal = Modal::GuidedReview;
     state.set_status(format!("reading {what} for a guided review\u{2026}"), false);
@@ -354,7 +403,7 @@ pub fn open_pull_request(state: &mut AppState, pr: &crate::github::PullRequest) 
         commit: String::new(),
         local,
     });
-    guided.loading = Some(load_pull_request(pr.clone(), local));
+    guided.loading = Some(work::load_pull_request(pr.clone(), local));
     guided.pull_request = Some(pr.clone());
     state.guided = Some(Box::new(guided));
     state.modal = Modal::GuidedReview;
@@ -374,90 +423,9 @@ pub fn reload(state: &mut AppState) {
         return;
     }
     guided.loading = Some(match (&guided.source, guided.pull_request.clone()) {
-        (Source::PullRequest { local, .. }, Some(pr)) => load_pull_request(pr, *local),
-        (source, _) => load_local(source),
+        (Source::PullRequest { local, .. }, Some(pr)) => work::load_pull_request(pr, *local),
+        (source, _) => work::load_local(source),
     });
-}
-
-/// Read a walk over the checkout itself: the branch against main, or the
-/// uncommitted changes.
-fn load_local(source: &Source) -> Receiver<Result<Loaded, String>> {
-    let changes = matches!(source, Source::Changes { .. });
-    let (tx, rx) = std::sync::mpsc::channel();
-    crate::git::spawn_pinned(move || {
-        let diff = if changes {
-            crate::git::uncommitted_diff()
-        } else {
-            crate::git::branch_diff_against_main()
-        };
-        let result = diff
-            .map(|diff| {
-                let steps = crate::git::guided::parse_hunks(&diff.diff);
-                let (title, source) = if changes {
-                    (
-                        format!("Uncommitted changes on {}", diff.branch),
-                        Source::Changes {
-                            branch: diff.branch,
-                        },
-                    )
-                } else {
-                    (
-                        format!("Branch {} against {}", diff.branch, diff.base_ref),
-                        Source::Branch {
-                            branch: diff.branch,
-                            base_ref: diff.base_ref,
-                        },
-                    )
-                };
-                let overview = overview_text(&title, "", &diff.commits, &steps);
-                Loaded {
-                    source,
-                    steps,
-                    overview,
-                }
-            })
-            .map_err(|e| format!("{e:#}"));
-        let _ = tx.send(result);
-    });
-    rx
-}
-
-fn load_pull_request(
-    pr: crate::github::PullRequest,
-    local: bool,
-) -> Receiver<Result<Loaded, String>> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    crate::git::spawn_pinned(move || {
-        let result = (|| -> anyhow::Result<Loaded> {
-            let diff = crate::github::pr_diff(pr.number)?;
-            let commit = crate::github::pr_head(pr.number)?;
-            let steps = crate::git::guided::parse_hunks(&diff);
-            let overview = overview_text(
-                &format!(
-                    "Pull request #{} {} ({} into {})",
-                    pr.number, pr.title, pr.head, pr.base
-                ),
-                &pr.body,
-                &[],
-                &steps,
-            );
-            Ok(Loaded {
-                source: Source::PullRequest {
-                    number: pr.number,
-                    title: pr.title,
-                    head: pr.head,
-                    base: pr.base,
-                    commit,
-                    local,
-                },
-                steps,
-                overview,
-            })
-        })()
-        .map_err(|e| format!("{e:#}"));
-        let _ = tx.send(result);
-    });
-    rx
 }
 
 /// What every prompt opens with: what the change says it is, and every file
@@ -510,8 +478,8 @@ pub fn poll(state: &mut AppState) {
     let mut notices: Vec<(String, bool)> = Vec::new();
 
     if let Some(rx) = guided.loading.as_ref() {
-        match rx.try_recv() {
-            Ok(Ok(loaded)) => {
+        match poll_once(rx) {
+            Poll::Message(Ok(loaded)) => {
                 guided.loading = None;
                 let first_load = guided.steps.is_empty() && guided.overview.is_empty();
                 apply_loaded(guided, loaded, first_load);
@@ -527,19 +495,28 @@ pub fn poll(state: &mut AppState) {
                     notices.push(("guided review refreshed".to_string(), false));
                 }
             }
-            Ok(Err(message)) => {
+            Poll::Message(Err(message)) => {
                 guided.loading = None;
                 notices.push((format!("guided review: {message}"), true));
             }
-            Err(TryRecvError::Disconnected) => guided.loading = None,
-            Err(TryRecvError::Empty) => {}
+            Poll::Disconnected => {
+                guided.loading = None;
+                notices.push((
+                    format!(
+                        "guided review: {}",
+                        stopped_unexpectedly("reading the change")
+                    ),
+                    true,
+                ));
+            }
+            Poll::Pending => {}
         }
     }
 
     let mut reload_after_fix = false;
     if let Some((rx, _)) = guided.fixing.as_ref() {
-        match rx.try_recv() {
-            Ok(result) => {
+        match poll_once(rx) {
+            Poll::Message(result) => {
                 guided.fixing = None;
                 match result {
                     Ok(said) => {
@@ -549,8 +526,11 @@ pub fn poll(state: &mut AppState) {
                     Err(message) => notices.push((message, true)),
                 }
             }
-            Err(TryRecvError::Disconnected) => guided.fixing = None,
-            Err(TryRecvError::Empty) => {}
+            Poll::Disconnected => {
+                guided.fixing = None;
+                notices.push((stopped_unexpectedly("the claude fix"), true));
+            }
+            Poll::Pending => {}
         }
     }
 
@@ -621,14 +601,14 @@ fn drain_asks(guided: &mut Guided) {
             },
         };
         loop {
-            match ask.rx.try_recv() {
-                Ok(GenMsg::Thinking(_)) => entry.thinking = true,
-                Ok(GenMsg::Output(chunk)) => {
+            match poll_once(&ask.rx) {
+                Poll::Message(GenMsg::Thinking(_)) => entry.thinking = true,
+                Poll::Message(GenMsg::Output(chunk)) => {
                     entry.thinking = false;
                     entry.text.push_str(&chunk);
                 }
-                Ok(GenMsg::Reset) => entry.text.clear(),
-                Ok(GenMsg::Done { text, stats }) => {
+                Poll::Message(GenMsg::Reset) => entry.text.clear(),
+                Poll::Message(GenMsg::Done { text, stats }) => {
                     entry.text = text;
                     if stats.truncated {
                         entry.text.push('\n');
@@ -639,7 +619,7 @@ fn drain_asks(guided: &mut Guided) {
                     finished.push(index);
                     break;
                 }
-                Ok(GenMsg::Error(message)) => {
+                Poll::Message(GenMsg::Error(message)) => {
                     entry.error = Some(message);
                     entry.done = true;
                     entry.thinking = false;
@@ -649,9 +629,12 @@ fn drain_asks(guided: &mut Guided) {
                     finished.push(index);
                     break;
                 }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
+                Poll::Pending => break,
+                // The worker died before the answer was done.
+                Poll::Disconnected => {
+                    entry.error = Some(stopped_unexpectedly("the model request"));
                     entry.done = true;
+                    entry.thinking = false;
                     finished.push(index);
                     break;
                 }
@@ -705,14 +688,11 @@ fn start_wanted_commentary(guided: &mut Guided) {
         if asked {
             continue;
         }
-        let (tx, rx) = std::sync::mpsc::channel();
-        if index == OVERVIEW {
-            let context = guided.overview.clone();
-            crate::git::spawn_pinned(move || crate::llm::stream_guided_overview(context, tx));
+        let rx = if index == OVERVIEW {
+            work::ask_overview(guided.overview.clone())
         } else {
-            let context = step_context(guided, index);
-            crate::git::spawn_pinned(move || crate::llm::stream_guided_step(context, tx));
-        }
+            work::ask_step(step_context(guided, index))
+        };
         guided.commentary.insert(key.clone(), Commentary::default());
         guided.asks.push(Ask {
             target: Target::Commentary(key),
@@ -988,10 +968,18 @@ pub(super) fn delete_note_at_cursor(state: &mut AppState) {
     let Some(guided) = state.guided.as_mut() else {
         return;
     };
+    let armed = guided.delete_armed.take();
     let Some(index) = guided.note_at_cursor() else {
         state.set_status("no note on this line", false);
         return;
     };
+    // A note is the one thing the walk cannot give back, so the first press
+    // only asks.
+    if armed != Some(index) {
+        guided.delete_armed = Some(index);
+        state.set_status("x again deletes the note on this line", false);
+        return;
+    }
     guided.progress.notes.remove(index);
     match guided.save() {
         Ok(()) => state.set_status("note deleted", false),
@@ -1033,10 +1021,7 @@ pub(super) fn ask_question(state: &mut AppState) {
         answer: Commentary::default(),
     });
     let at = exchanges.len() - 1;
-    let (tx, rx) = std::sync::mpsc::channel();
-    crate::git::spawn_pinned(move || {
-        crate::llm::stream_guided_question(context, commentary, question, tx)
-    });
+    let rx = work::ask_question(context, commentary, question);
     guided.asks.push(Ask {
         target: Target::Answer(key, at),
         rx,
@@ -1114,13 +1099,7 @@ pub(super) fn start_fix(state: &mut AppState) {
         instruction
     };
     let prompt = crate::llm::build_guided_fix_prompt(&context, &instruction);
-    let (tx, rx) = std::sync::mpsc::channel();
-    crate::git::spawn_pinned(move || {
-        let result = crate::llm::run_claude_fix(std::path::Path::new(&root), &prompt)
-            .map_err(|e| format!("{e:#}"));
-        let _ = tx.send(result);
-    });
-    guided.fixing = Some((rx, what.clone()));
+    guided.fixing = Some((work::run_fix(root, prompt), what.clone()));
     state.set_status(format!("claude is changing {what}\u{2026}"), false);
 }
 
@@ -1160,7 +1139,7 @@ pub(super) fn open_summary(state: &mut AppState) {
     };
     guided.mode = Mode::Summary {
         event: 0,
-        body: String::new(),
+        body: TextInput::default(),
     };
     guided.side_scroll = 0;
 }
@@ -1296,6 +1275,31 @@ mod tests {
             done: true,
             ..Default::default()
         }
+    }
+
+    /// A read whose worker died must end the loading state and say why,
+    /// rather than leave the walk waiting on it.
+    #[test]
+    fn a_read_of_the_change_that_dies_is_reported() {
+        let mut guided = Guided::new(Source::Changes {
+            branch: "feature".into(),
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        guided.loading = Some(rx);
+        drop(tx);
+        let mut state = AppState::new();
+        state.guided = Some(Box::new(guided));
+
+        poll(&mut state);
+
+        assert!(state.guided.as_ref().unwrap().loading.is_none());
+        let status = state.status.expect("the failure is reported");
+        assert!(status.is_error);
+        assert!(
+            status.text.contains("stopped unexpectedly"),
+            "{}",
+            status.text
+        );
     }
 
     #[test]

@@ -250,7 +250,7 @@ pub fn build_review_style_flag_prompt(
 /// violation by placement, and that is a verdict about a convention the
 /// checkout does not use.
 pub fn review_style_file_role(path: &str) -> &'static str {
-    if !Language::of_path(path).is_some_and(Language::is_layered) {
+    if !Language::from_path(path).is_some_and(Language::is_layered) {
         return "unclassified";
     }
     let lower = path.to_ascii_lowercase();

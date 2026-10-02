@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::thread::JoinHandle;
 
 use crate::git::{
@@ -9,7 +9,7 @@ use crate::git::{
 
 use super::{DiffSource, FlowRun};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReviewStyleSeverity {
     Ok,
     Warn,
@@ -26,11 +26,83 @@ impl ReviewStyleSeverity {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ReviewStyleFinding {
     pub severity: ReviewStyleSeverity,
     pub line: Option<usize>,
     pub reason: String,
+}
+
+/// What a worker's channel held when it was looked at once.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Poll<M> {
+    /// Nothing yet, and the worker is still at it.
+    Pending,
+    Message(M),
+    /// The worker is gone and nothing more will come. After the message that
+    /// ends a job this is how a worker says goodbye; before it, the worker
+    /// died without finishing — one that panicked, typically.
+    Disconnected,
+}
+
+thread_local! {
+    /// How many times [`poll_once`] has found something on this thread.
+    static DELIVERIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many messages (and goodbyes) the workers have delivered to this thread
+/// so far. Every job is drained through [`poll_once`], so the loop compares
+/// this before and after a pass to tell whether any of them changed something
+/// worth redrawing — without every drain having to say so itself.
+pub fn deliveries() -> u64 {
+    DELIVERIES.with(std::cell::Cell::get)
+}
+
+/// Look at `rx` once, without waiting.
+pub fn poll_once<M>(rx: &Receiver<M>) -> Poll<M> {
+    let poll = match rx.try_recv() {
+        Ok(msg) => Poll::Message(msg),
+        Err(TryRecvError::Empty) => return Poll::Pending,
+        Err(TryRecvError::Disconnected) => Poll::Disconnected,
+    };
+    DELIVERIES.with(|count| count.set(count.get().wrapping_add(1)));
+    poll
+}
+
+/// Everything a channel held when it was looked at.
+pub struct Drained<M> {
+    pub messages: Vec<M>,
+    /// Whether the worker is gone. It drops its end of the channel when it
+    /// returns, after the message that ends the job — or, when it panicked,
+    /// without ever sending one.
+    pub disconnected: bool,
+}
+
+/// Take every message `rx` holds, without waiting for more.
+pub fn drain_receiver<M>(rx: &Receiver<M>) -> Drained<M> {
+    let mut messages = Vec::new();
+    loop {
+        match poll_once(rx) {
+            Poll::Message(msg) => messages.push(msg),
+            Poll::Pending => {
+                return Drained {
+                    messages,
+                    disconnected: false,
+                };
+            }
+            Poll::Disconnected => {
+                return Drained {
+                    messages,
+                    disconnected: true,
+                };
+            }
+        }
+    }
+}
+
+/// What to say about work whose worker ended before it answered.
+pub fn stopped_unexpectedly(name: &str) -> String {
+    format!("{name} stopped unexpectedly")
 }
 
 /// A background job: the channel its worker reports on, the worker's handle, and
@@ -38,6 +110,9 @@ pub struct ReviewStyleFinding {
 /// same way, whatever else the job carries.
 pub trait BackgroundJob {
     type Msg;
+    /// What the job is called when it has to be reported on, as in "push
+    /// stopped unexpectedly".
+    const NAME: &'static str;
 
     fn rx(&self) -> &Receiver<Self::Msg>;
     fn handle_mut(&mut self) -> &mut Option<JoinHandle<()>>;
@@ -45,9 +120,10 @@ pub trait BackgroundJob {
 }
 
 macro_rules! impl_background_job {
-    ($($job:ident => $msg:ty),+ $(,)?) => { $(
+    ($($job:ident => $msg:ty, $name:literal),+ $(,)?) => { $(
         impl BackgroundJob for $job {
             type Msg = $msg;
+            const NAME: &'static str = $name;
 
             fn rx(&self) -> &Receiver<Self::Msg> {
                 &self.rx
@@ -65,22 +141,23 @@ macro_rules! impl_background_job {
 }
 
 impl_background_job! {
-    Generation => GenMsg,
-    PushJob => PushMsg,
-    CheckoutJob => CheckoutMsg,
-    OperationJob => OperationMsg,
-    FetchJob => FetchMsg,
-    RefreshJob => RefreshMsg,
-    ReleaseStatusJob => ReleaseStatusMsg,
-    SettingsSuggestJob => SettingsSuggestMsg,
-    CommitLogJob => CommitLogMsg,
-    DiffJob => DiffMsg,
-    ReviewJob => ReviewMsg,
-    ReviewAssistJob => GenMsg,
-    ReviewFlagJob => ReviewFlagMsg,
-    ReviewChatJob => GenMsg,
-    ConflictResolveJob => ConflictResolveMsg,
-    WorkflowJob => WorkflowMsg,
+    Generation => GenMsg, "message generation",
+    PushJob => PushMsg, "push",
+    CheckoutJob => CheckoutMsg, "checkout",
+    OperationJob => OperationMsg, "git operation",
+    FetchJob => FetchMsg, "fetch",
+    RefreshJob => RefreshMsg, "refresh",
+    ReleaseStatusJob => ReleaseStatusMsg, "deployment status",
+    NestedDetailJob => NestedDetailMsg, "nested branches",
+    SettingsSuggestJob => SettingsSuggestMsg, "convention scan",
+    CommitLogJob => CommitLogMsg, "commit log",
+    DiffJob => DiffMsg, "diff",
+    ReviewJob => ReviewMsg, "review",
+    ReviewAssistJob => GenMsg, "review assist",
+    ReviewFlagJob => ReviewFlagMsg, "style pass",
+    ReviewChatJob => GenMsg, "review chat",
+    ConflictResolveJob => ConflictResolveMsg, "conflict resolution",
+    WorkflowJob => WorkflowMsg, "branch action",
 }
 
 #[derive(Debug)]
@@ -226,6 +303,9 @@ pub enum OperationKind {
     /// Submits a guided review's notes as a pull request review; the notes
     /// are cleared once GitHub has them, so they are never sent twice.
     SubmitReview,
+    /// Adds to, applies or drops from the stash; an open stash list is read
+    /// again afterwards.
+    Stash,
 }
 
 #[derive(Debug)]
@@ -242,7 +322,32 @@ pub struct OperationJob {
 #[derive(Debug)]
 pub enum FetchMsg {
     Done(String),
+    /// Nothing to fetch from: not worth a status line.
+    NoRemotes,
     Error(String),
+}
+
+/// What waits for a running fetch to finish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueuedAfterFetch {
+    Push,
+    Pull,
+}
+
+impl QueuedAfterFetch {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Push => "push",
+            Self::Pull => "pull",
+        }
+    }
+
+    pub fn action(self) -> crate::state::PendingAction {
+        match self {
+            Self::Push => crate::state::PendingAction::Push,
+            Self::Pull => crate::state::PendingAction::Pull,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -257,8 +362,25 @@ pub enum RefreshMsg {
     Done(Box<RefreshSnapshot>),
 }
 
+/// How much a refresh reads again. Each scope takes in the ones before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RefreshScope {
+    /// The current checkout's files, and its diff: what editing a file can
+    /// change, and nothing else.
+    Files,
+    /// Everything git knows about the repository as well: branches, commits,
+    /// worktrees, remotes, who commits here.
+    Repository,
+    /// The repository plus the scan of the workspace for the repositories in
+    /// it, which walks the directory tree.
+    Workspace,
+}
+
 #[derive(Debug)]
 pub struct RefreshSnapshot {
+    /// What was read. Below [`RefreshScope::Repository`] only `files` (and
+    /// `errors`) say anything; the rest is left as it was.
+    pub scope: RefreshScope,
     pub repo_root: Option<String>,
     pub workspace_root: Option<String>,
     pub files: Option<Vec<FileEntry>>,
@@ -290,6 +412,29 @@ pub enum ReleaseStatusMsg {
         branch: String,
         message: String,
     },
+}
+
+/// The branches of the nested repository the tree has expanded, read off the
+/// main thread: a repository with a slow remote or thousands of branches used
+/// to hold the whole interface still while they were listed.
+#[derive(Debug)]
+pub struct NestedDetailJob {
+    pub rx: Receiver<NestedDetailMsg>,
+    pub handle: Option<JoinHandle<()>>,
+    pub spinner: usize,
+    /// The repository read, relative to the workspace.
+    pub path: String,
+    /// The repository is being expanded, rather than read again after a push.
+    pub opening: bool,
+}
+
+#[derive(Debug)]
+pub enum NestedDetailMsg {
+    Done {
+        branches: Vec<Branch>,
+        remote_branches: Vec<RemoteBranch>,
+    },
+    Error(String),
 }
 
 #[derive(Debug)]
@@ -346,6 +491,7 @@ pub struct RefreshJob {
     pub handle: Option<JoinHandle<()>>,
     pub spinner: usize,
     pub refresh_diff: bool,
+    pub scope: RefreshScope,
 }
 
 #[derive(Debug)]

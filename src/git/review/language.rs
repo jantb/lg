@@ -6,67 +6,20 @@
 //! a block of review notes the model applies on top of the checkout's own
 //! style guide. Anything else is reviewed by file, with no item names.
 
-use std::path::Path;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Language {
-    Rust,
-    Kotlin,
-    Java,
-    JavaScript,
-    TypeScript,
-    CSharp,
-    Markdown,
-}
+pub use crate::language::Language;
 
 impl Language {
-    pub const ALL: [Self; 7] = [
-        Self::Rust,
-        Self::Kotlin,
-        Self::Java,
-        Self::JavaScript,
-        Self::TypeScript,
-        Self::CSharp,
-        Self::Markdown,
-    ];
-
-    pub fn of_path(path: &str) -> Option<Self> {
-        let extension = Path::new(path).extension()?.to_str()?;
-        Some(match extension {
-            "rs" => Self::Rust,
-            "kt" | "kts" => Self::Kotlin,
-            "java" => Self::Java,
-            "js" | "jsx" | "mjs" | "cjs" => Self::JavaScript,
-            "ts" | "tsx" | "mts" | "cts" => Self::TypeScript,
-            "cs" | "csx" => Self::CSharp,
-            "md" | "markdown" => Self::Markdown,
-            _ => return None,
-        })
-    }
-
     /// Every language a piece of review text mentions a file of, in a fixed
     /// order, so the notes appended to a prompt do not reshuffle between runs.
     pub fn mentioned_in(text: &str) -> Vec<Self> {
         let mut found: Vec<Self> = text
             .split(|c: char| c.is_whitespace() || matches!(c, ':' | '(' | ')' | '`' | '"' | ','))
             .filter(|token| token.contains('.'))
-            .filter_map(Self::of_path)
+            .filter_map(Self::from_path)
             .collect();
         found.sort();
         found.dedup();
         found
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Rust => "Rust",
-            Self::Kotlin => "Kotlin",
-            Self::Java => "Java",
-            Self::JavaScript => "JavaScript",
-            Self::TypeScript => "TypeScript",
-            Self::CSharp => "C#",
-            Self::Markdown => "Markdown",
-        }
     }
 
     /// Whether the language is written in layers (controllers, services,
@@ -476,23 +429,6 @@ fn is_statement_keyword(word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_path_names_its_language_by_extension() {
-        assert_eq!(Language::of_path("src/lib.rs"), Some(Language::Rust));
-        assert_eq!(Language::of_path("App.kt"), Some(Language::Kotlin));
-        assert_eq!(
-            Language::of_path("build.gradle.kts"),
-            Some(Language::Kotlin)
-        );
-        assert_eq!(Language::of_path("a/b/Main.java"), Some(Language::Java));
-        assert_eq!(Language::of_path("web/app.jsx"), Some(Language::JavaScript));
-        assert_eq!(Language::of_path("web/app.tsx"), Some(Language::TypeScript));
-        assert_eq!(Language::of_path("Api/Program.cs"), Some(Language::CSharp));
-        assert_eq!(Language::of_path("README.md"), Some(Language::Markdown));
-        assert_eq!(Language::of_path("Makefile"), None);
-        assert_eq!(Language::of_path("data.json"), None);
-    }
 
     #[test]
     fn the_languages_of_a_review_are_read_from_the_paths_it_mentions() {

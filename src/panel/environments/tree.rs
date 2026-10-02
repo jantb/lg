@@ -26,7 +26,7 @@ pub(crate) fn select_nested_repo_tree_row(state: &mut AppState, idx: usize) {
             NestedRepoTreeRow::Repo { repo_idx }
             | NestedRepoTreeRow::Branch { repo_idx, .. }
             | NestedRepoTreeRow::Remote { repo_idx, .. },
-        ) => state.nested_repositories_idx = repo_idx,
+        ) => state.nested_repositories_list.idx = repo_idx,
         Some(
             NestedRepoTreeRow::Root
             | NestedRepoTreeRow::Worktree { .. }
@@ -45,7 +45,7 @@ pub(super) fn move_selection(state: &mut AppState, down: bool, amount: usize) {
             NestedRepoTreeRow::Repo { repo_idx }
             | NestedRepoTreeRow::Branch { repo_idx, .. }
             | NestedRepoTreeRow::Remote { repo_idx, .. },
-        ) => state.nested_repositories_idx = repo_idx,
+        ) => state.nested_repositories_list.idx = repo_idx,
         Some(
             NestedRepoTreeRow::Root
             | NestedRepoTreeRow::Worktree { .. }
@@ -259,6 +259,90 @@ pub(super) fn selected_tree_row(state: &AppState) -> Option<NestedRepoTreeRow> {
     nested_repo_tree_rows(state)
         .get(state.nested_repo_tree_idx)
         .copied()
+}
+
+/// The selected row in terms that survive the expanded repository's branches
+/// being read again. Every other row is named by something the branch lists
+/// do not touch; a branch row is named by its branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RowAnchor {
+    Row(NestedRepoTreeRow),
+    Branch { repo_idx: usize, name: String },
+    Remote { repo_idx: usize, name: String },
+}
+
+pub(super) fn selection_anchor(state: &AppState) -> Option<RowAnchor> {
+    Some(match selected_tree_row(state)? {
+        NestedRepoTreeRow::Branch {
+            repo_idx,
+            branch_idx,
+        } => RowAnchor::Branch {
+            repo_idx,
+            name: state.nested_repo_branches.get(branch_idx)?.name.clone(),
+        },
+        NestedRepoTreeRow::Remote {
+            repo_idx,
+            branch_idx,
+        } => RowAnchor::Remote {
+            repo_idx,
+            name: state
+                .visible_nested_repo_remote_branches()
+                .nth(branch_idx)?
+                .name
+                .clone(),
+        },
+        row => RowAnchor::Row(row),
+    })
+}
+
+/// Put the selection back on `anchor`'s row in the tree as it is now. A branch
+/// that is gone leaves it on its repository.
+pub(super) fn restore_selection(state: &mut AppState, anchor: Option<RowAnchor>) {
+    let Some(anchor) = anchor else {
+        return;
+    };
+    let rows = nested_repo_tree_rows(state);
+    let remote_names: Vec<String> = state
+        .visible_nested_repo_remote_branches()
+        .map(|branch| branch.name.clone())
+        .collect();
+    let found = rows.iter().position(|row| match (&anchor, *row) {
+        (RowAnchor::Row(wanted), row) => *wanted == row,
+        (
+            RowAnchor::Branch { repo_idx, name },
+            NestedRepoTreeRow::Branch {
+                repo_idx: at,
+                branch_idx,
+            },
+        ) => {
+            *repo_idx == at
+                && state
+                    .nested_repo_branches
+                    .get(branch_idx)
+                    .is_some_and(|branch| &branch.name == name)
+        }
+        (
+            RowAnchor::Remote { repo_idx, name },
+            NestedRepoTreeRow::Remote {
+                repo_idx: at,
+                branch_idx,
+            },
+        ) => *repo_idx == at && remote_names.get(branch_idx) == Some(name),
+        _ => false,
+    });
+    let fallback = || match &anchor {
+        RowAnchor::Branch { repo_idx, .. } | RowAnchor::Remote { repo_idx, .. } => {
+            rows.iter().position(|row| {
+                *row == NestedRepoTreeRow::Repo {
+                    repo_idx: *repo_idx,
+                }
+            })
+        }
+        RowAnchor::Row(_) => None,
+    };
+    if let Some(idx) = found.or_else(fallback) {
+        state.nested_repo_tree_idx = idx;
+    }
 }
 
 pub(super) fn tree_idx_for_repo_path(state: &AppState, path: &str) -> Option<usize> {

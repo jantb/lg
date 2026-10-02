@@ -22,7 +22,7 @@ mod reading;
 mod registry;
 mod spawn;
 use reading::*;
-pub use registry::{EndedSession, Sessions};
+pub use registry::{EndedSession, PumpReport, Sessions};
 pub(crate) use spawn::nested_claude_markers;
 pub use spawn::{claude_spawn, codex_spawn, pi_spawn, shell_spawn};
 
@@ -34,6 +34,18 @@ const DEFAULT_SIZE: (u16, u16) = (24, 80);
 
 /// Shell a terminal session falls back to when `SHELL` says nothing useful.
 const FALLBACK_SHELL: &str = "/bin/sh";
+
+/// How much of a session's output one frame parses. A program that floods its
+/// terminal — a build dumping a log, `cat` on a large file — would otherwise
+/// hold the frame until every queued byte had gone through the parser; what is
+/// left over waits in the channel for the next frame, which comes right away.
+const PUMP_BUDGET_BYTES: usize = 256 * 1024;
+
+/// How often a session that keeps writing has its screen re-read for a
+/// question. Reading means copying out and lowercasing the whole screen, which
+/// is too much to do for every chunk of a stream; a question stays up until it
+/// is answered, so being a tenth of a second late to it loses nothing.
+const READING_INTERVAL_MS: u128 = 100;
 
 /// Screen lines an `LG_SESSION_TRACE` entry keeps — enough to hold the status
 /// line and whatever claude drew under it.
@@ -119,7 +131,7 @@ impl SessionKind {
 /// across the room. A shell also hands its terminal to whatever it runs, so a
 /// command that is running but silent reads as [`SessionActivity::Running`]
 /// rather than as a prompt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SessionActivity {
     /// Sitting at its prompt with nothing to do — ready for a command.
     Idle,
@@ -180,8 +192,30 @@ pub struct Session {
     /// When the program last wrote to its screen, for the kinds that have no
     /// hooks to say what they are doing.
     last_output: Option<std::time::Instant>,
+    /// Whether the screen still has to be read for a question, and when it was
+    /// last read.
+    reading: Reading,
     parser: vt100::Parser,
     process: Option<PtyProcess>,
+}
+
+/// Bookkeeping for [`READING_INTERVAL_MS`].
+#[derive(Debug, Default)]
+struct Reading {
+    /// The screen changed since it was last read.
+    due: bool,
+    last: Option<std::time::Instant>,
+}
+
+/// What reading a session's output did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Pumped {
+    /// Something about the session changed: its screen, its activity, or
+    /// whether it is still running.
+    pub changed: bool,
+    /// Work was left for the next frame: output past the frame's budget, or a
+    /// screen still waiting to be read for a question.
+    pub more: bool,
 }
 
 impl Session {
@@ -334,19 +368,27 @@ impl Session {
         Some(self.parser.screen().cursor_position())
     }
 
-    /// Read whatever the program has written since the last call. Returns
-    /// whether anything changed.
-    fn pump(&mut self, focused: bool) -> bool {
+    /// Read what the program has written since the last call, up to
+    /// [`PUMP_BUDGET_BYTES`].
+    fn pump(&mut self, focused: bool) -> Pumped {
         let Some(process) = self.process.as_ref() else {
-            return false;
+            return Pumped::default();
         };
         let mut changed = false;
         let mut ended = None;
+        let mut parsed = 0usize;
+        let mut more = false;
         loop {
+            if parsed >= PUMP_BUDGET_BYTES {
+                more = true;
+                break;
+            }
             match process.try_recv() {
                 Ok(PtyMsg::Output(bytes)) => {
                     self.parser.process(&bytes);
+                    parsed += bytes.len();
                     self.last_output = Some(std::time::Instant::now());
+                    self.reading.due = true;
                     changed = true;
                     if !focused {
                         self.attention = true;
@@ -365,16 +407,8 @@ impl Session {
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
             }
         }
-        // Scrolled back, the visible screen is history, and a question in it
-        // has long since been answered. The last live reading stands until the
-        // view returns to the bottom.
-        if changed && self.parser.screen().scrollback() == 0 {
-            let screen = self.parser.screen().contents();
-            let asking = is_asking(&screen);
-            if asking != self.asking {
-                self.asking = asking;
-                trace_reading(&self.label, self.activity(), &screen);
-            }
+        if self.reread_question() {
+            changed = true;
         }
         for event in self
             .events
@@ -391,9 +425,44 @@ impl Session {
             // Keep the final screen readable, but let go of the pty.
             self.process = None;
             self.attention = !focused;
+            self.reading.due = false;
             changed = true;
         }
-        changed
+        let unread = self.reading.due && self.parser.screen().scrollback() == 0;
+        Pumped {
+            changed,
+            more: more || unread,
+        }
+    }
+
+    /// Read the screen for a question, if it changed since it was last read
+    /// and the last reading is at least [`READING_INTERVAL_MS`] old. Returns
+    /// whether the answer changed.
+    ///
+    /// Scrolled back, the visible screen is history, and a question in it has
+    /// long since been answered. The last live reading stands until the view
+    /// returns to the bottom.
+    fn reread_question(&mut self) -> bool {
+        if !self.reading.due || self.parser.screen().scrollback() != 0 {
+            return false;
+        }
+        if self
+            .reading
+            .last
+            .is_some_and(|at| at.elapsed().as_millis() < READING_INTERVAL_MS)
+        {
+            return false;
+        }
+        self.reading.due = false;
+        self.reading.last = Some(std::time::Instant::now());
+        let screen = self.parser.screen().contents();
+        let asking = is_asking(&screen);
+        if asking == self.asking {
+            return false;
+        }
+        self.asking = asking;
+        trace_reading(&self.label, self.activity(), &screen);
+        true
     }
 }
 
@@ -406,13 +475,7 @@ pub fn size_for_pane(area: ratatui::layout::Rect) -> (u16, u16) {
 
 /// Whether two paths name the same directory, by spelling or once resolved.
 pub(crate) fn same_dir(a: &Path, b: &Path) -> bool {
-    if a == b {
-        return true;
-    }
-    match (a.canonicalize(), b.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
+    crate::git::same_dir(a, b)
 }
 
 impl Default for SessionSpec {
@@ -766,6 +829,7 @@ mod tests {
             asking: false,
             events: None,
             last_output: None,
+            reading: Reading::default(),
             parser: vt100::Parser::new(24, 80, 0),
             process: None,
         }

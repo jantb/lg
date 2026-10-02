@@ -20,11 +20,13 @@ pub(crate) use actions::{
     reload_nested_repo_detail, selected_checkout, selected_checkout_label, selected_session,
     start_session_for_selection,
 };
+pub use actions::{close_session, poll_nested_repo_detail};
+pub(crate) use actions::{request_close_session, selected_linked_worktree};
 pub(crate) use draw::{nested_repo_scroll_offset, sync_scroll_offset};
 pub(crate) use tree::{nested_repo_tree_len, select_nested_repo_tree_row};
 
 use actions::{
-    close_selected_session, load_nested_repo_detail, open_commit_draft, remove_selected_worktree,
+    close_selected_session, open_commit_draft, remove_selected_worktree,
     selected_repository_project_path, show_session_row,
 };
 use draw::render_nested_repositories;
@@ -36,10 +38,8 @@ fn toggle_remote_branches(state: &mut AppState) {
         BranchView::Local => BranchView::Remote,
         BranchView::Remote => BranchView::Local,
     };
-    if let Some(path) = state.nested_repo_detail_path.clone() {
-        let _ = load_nested_repo_detail(state, &path);
-    }
     state.clamp();
+    reload_nested_repo_detail(state);
 }
 
 /// Borders plus the branch line plus the `main` row. Deploy branches add one

@@ -28,6 +28,18 @@ impl EndedSession {
 }
 
 /// Every live session, and which one is being shown.
+/// What one [`Sessions::pump`] did.
+#[derive(Debug, Default)]
+pub struct PumpReport {
+    /// Sessions whose program ended, now dropped.
+    pub ended: Vec<EndedSession>,
+    /// Sessions with something new to draw.
+    pub changed: Vec<SessionId>,
+    /// Output is still queued, or a screen still waits to be read: the next
+    /// pump should not be long in coming.
+    pub more: bool,
+}
+
 pub struct Sessions {
     pub(super) items: Vec<Session>,
     pub(super) focused: Option<SessionId>,
@@ -187,7 +199,7 @@ impl Sessions {
         profile: &crate::preferences::Agent,
         size: (u16, u16),
     ) -> Result<SessionId> {
-        let hooks = if profile.adapter == "claude" {
+        let hooks = if profile.adapter == crate::preferences::Adapter::Claude {
             crate::hooks::install(&spec.cwd).ok()
         } else {
             None
@@ -266,6 +278,7 @@ impl Sessions {
             asking: false,
             events: None,
             last_output: None,
+            reading: Reading::default(),
             parser: vt100::Parser::new(size.0, size.1, SCROLLBACK),
             process: None,
         });
@@ -320,11 +333,19 @@ impl Sessions {
     /// into, so it goes as soon as it stops rather than staying on as a row
     /// waiting to be dismissed by hand.
     ///
-    /// Returns what was dropped, so the caller can say what happened to it.
-    pub fn pump(&mut self) -> Vec<EndedSession> {
+    /// Reports what was dropped, so the caller can say what happened to it,
+    /// and which sessions changed, so it knows whether there is anything new
+    /// to draw.
+    pub fn pump(&mut self) -> PumpReport {
         let focused = self.focused;
+        let mut changed = Vec::new();
+        let mut more = false;
         for session in &mut self.items {
-            session.pump(focused == Some(session.id));
+            let pumped = session.pump(focused == Some(session.id));
+            if pumped.changed {
+                changed.push(session.id);
+            }
+            more |= pumped.more;
         }
         let ended: Vec<EndedSession> = self
             .items
@@ -335,7 +356,29 @@ impl Sessions {
         for session in &ended {
             self.close(session.id);
         }
-        ended
+        PumpReport {
+            ended,
+            changed,
+            more,
+        }
+    }
+
+    /// Whether any session still has a program running in it.
+    pub fn any_running(&self) -> bool {
+        self.items.iter().any(Session::is_running)
+    }
+
+    /// What every session is doing, folded into one number that changes when
+    /// any dot in the tree or the header would be drawn differently.
+    pub fn activity_signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for session in &self.items {
+            session.id.hash(&mut hasher);
+            session.activity().hash(&mut hasher);
+            session.attention.hash(&mut hasher);
+        }
+        hasher.finish()
     }
 
     /// The session after (or before) the one being shown, wrapping round. Used

@@ -179,7 +179,7 @@ fn render_screenshot_dag_to_stdout() {
     }
 
     // Now with the merge commit selected.
-    state.commits_idx = 2;
+    state.commits_list.idx = 2;
     state.focus = lg::state::Pane::Commits;
     let mut terminal = Terminal::new(TestBackend::new(140, 25)).unwrap();
     terminal

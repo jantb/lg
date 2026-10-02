@@ -11,7 +11,6 @@ use crate::{state::AppState, ui};
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let active = state.activity_label().is_some();
     let block = ui::framed_with_activity(1, "Status", focused, None, state.animation_ms, active);
-    let inner = block.inner(area);
 
     // Line 1: branch
     let branch_line = match &state.branch {
@@ -81,5 +80,4 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
 
     let para = Paragraph::new(vec![branch_line, meta_line, files_line]).block(block);
     frame.render_widget(para, area);
-    let _ = inner; // inner used implicitly via block.inner above
 }

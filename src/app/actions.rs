@@ -8,7 +8,7 @@ use std::{
 use crate::state::{AppState, Modal, OperationKind, PendingAction};
 
 use super::{
-    App, spawn_operation, spawn_operation_with_progress, spawn_pull, spawn_push,
+    App, spawn_force_push, spawn_operation, spawn_operation_with_progress, spawn_pull, spawn_push,
     spawn_review_assist, spawn_review_chat, spawn_review_pr_text, spawn_review_style_flags,
 };
 
@@ -19,8 +19,8 @@ fn save_settings(
     provider: crate::llm::LlmProvider,
     pr_language: &str,
     comment_style: &str,
-    commit_subject_max_chars: &str,
-    commit_body_max_lines: &str,
+    commit_subject_max_chars: Option<usize>,
+    commit_body_max_lines: Option<usize>,
 ) -> Result<()> {
     // With claude answering, the field shows the Claude model, which is
     // chosen in Settings; saving it here would overwrite the local model.
@@ -34,24 +34,12 @@ fn save_settings(
     crate::settings::save(&crate::settings::RepoSettings {
         pr_language: pr_language.trim().to_string(),
         comment_style: comment_style.trim().to_string(),
-        commit_subject_max_chars: parse_limit(
-            commit_subject_max_chars,
-            current.commit_subject_max_chars,
-        ),
-        commit_body_max_lines: parse_limit(commit_body_max_lines, current.commit_body_max_lines),
+        commit_subject_max_chars: commit_subject_max_chars
+            .unwrap_or(current.commit_subject_max_chars),
+        commit_body_max_lines: commit_body_max_lines.unwrap_or(current.commit_body_max_lines),
         commit_prompt: current.commit_prompt,
         review_style: current.review_style,
     })
-}
-
-/// An empty limit field means "unlimited"; anything unparsable keeps the value
-/// already stored rather than silently resetting it.
-fn parse_limit(value: &str, fallback: usize) -> usize {
-    let value = value.trim();
-    if value.is_empty() {
-        return 0;
-    }
-    value.parse::<usize>().unwrap_or(fallback)
 }
 
 fn refresh_llm_settings_state(state: &mut AppState) {
@@ -62,6 +50,8 @@ fn refresh_llm_settings_state(state: &mut AppState) {
         .position(|provider| *provider == state.llm_provider)
         .unwrap_or(0);
     state.llm_config_path = crate::llm::config_file_display();
+    // The server may be somewhere else now; let the commit modal ask it.
+    state.model_server_unreachable = false;
 }
 
 /// The actions that send a request to the model server.
@@ -84,145 +74,143 @@ impl App {
             return;
         }
         match action {
-            PendingAction::GenerateMessage => match crate::git::staged_diff() {
-                Ok(diff) => {
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    // The scene shows the very diff that went to the model,
-                    // streaming into the network a character at a time.
-                    let feed = crate::panel::commit_art::Feed::from_diff(&diff);
-                    let handle = std::thread::spawn(move || {
-                        crate::llm::stream_commit_message(diff, tx);
-                    });
-                    self.state.start_generation(rx, handle, feed);
-                    self.state.set_status("generating\u{2026}", false);
-                }
-                Err(e) => {
-                    self.state.set_status(e.to_string(), true);
-                }
-            },
-            PendingAction::ReviewAssist(node_id) => {
-                spawn_review_assist(&mut self.state, node_id);
-            }
-            PendingAction::ReviewPrText => {
-                spawn_review_pr_text(&mut self.state);
-            }
-            PendingAction::ReviewStyleFlags => {
-                spawn_review_style_flags(&mut self.state);
-            }
+            PendingAction::GenerateMessage => self.generate_message(),
+            PendingAction::ReviewAssist(node_id) => spawn_review_assist(&mut self.state, node_id),
+            PendingAction::ReviewPrText => spawn_review_pr_text(&mut self.state),
+            PendingAction::ReviewStyleFlags => spawn_review_style_flags(&mut self.state),
             PendingAction::ReviewAgent => self.start_review_agent(),
-            PendingAction::ReviewChat(prompt) => {
-                spawn_review_chat(&mut self.state, prompt);
+            PendingAction::ReviewChat(prompt) => spawn_review_chat(&mut self.state, prompt),
+
+            PendingAction::Commit => self.commit(),
+            PendingAction::AmendCommit => self.amend(),
+            PendingAction::ApplyHunk { op, hunk } => self.apply_hunk(op, *hunk),
+            PendingAction::RevertCommit { sha } => self.replay_commit("reverting", move || {
+                Ok(last_line_or(&crate::git::revert_commit(&sha)?, "reverted"))
+            }),
+            PendingAction::CherryPick { sha } => self.replay_commit("cherry-picking", move || {
+                Ok(last_line_or(
+                    &crate::git::cherry_pick_commit(&sha)?,
+                    "cherry-picked",
+                ))
+            }),
+            PendingAction::StashPush { message } => {
+                self.stash_operation("stashing", move || crate::git::stash_push(&message))
             }
-            PendingAction::CopyToClipboard { label, text } => match copy_to_clipboard(&text) {
-                Ok(()) => self
-                    .state
-                    .set_status(format!("copied {label} to clipboard"), false),
-                Err(err) => self.state.set_status(format!("copy failed: {err}"), true),
-            },
-            PendingAction::Commit => {
-                let msg = self.state.commit_message.clone();
-                spawn_operation(
-                    &mut self.state,
-                    "committing",
-                    OperationKind::Commit,
-                    move || {
-                        let out = crate::git::commit(&msg)?;
-                        Ok(out.lines().next().unwrap_or("committed").to_owned())
-                    },
-                );
+            PendingAction::StashApply { sha } => {
+                self.stash_operation("applying stash", move || crate::git::stash_apply(&sha))
             }
-            PendingAction::StageAllAndCommit => {
-                spawn_operation(
-                    &mut self.state,
-                    "staging",
-                    OperationKind::StageAllAndCommit,
-                    || {
-                        crate::git::stage_all()?;
-                        Ok("staged all".to_string())
-                    },
-                );
+            PendingAction::StashPop { sha } => {
+                self.stash_operation("popping stash", move || crate::git::stash_pop(&sha))
             }
+            PendingAction::StashDrop { sha } => {
+                // Dropping is confirmed from the stash list, and the list is
+                // where the reader goes on from.
+                self.state.modal = Modal::Stash;
+                self.stash_operation("dropping stash", move || crate::git::stash_drop(&sha))
+            }
+            PendingAction::StageAllAndCommit => spawn_operation(
+                &mut self.state,
+                "staging",
+                OperationKind::StageAllAndCommit,
+                || {
+                    crate::git::stage_all()?;
+                    Ok("staged all".to_string())
+                },
+            ),
+            PendingAction::StageAll => self.index_operation("staging", || {
+                crate::git::stage_all()?;
+                Ok("staged all".to_string())
+            }),
+            PendingAction::UnstageAll => self.index_operation("unstaging", || {
+                crate::git::unstage_all()?;
+                Ok("unstaged all".to_string())
+            }),
+            PendingAction::StagePath(path) => self.index_operation("staging", move || {
+                crate::git::stage(&path)?;
+                Ok(format!("staged {path}"))
+            }),
+            PendingAction::UnstagePath(path) => self.index_operation("unstaging", move || {
+                crate::git::unstage(&path)?;
+                Ok(format!("unstaged {path}"))
+            }),
+            PendingAction::RollbackPath { path, is_dir } => spawn_operation(
+                &mut self.state,
+                "rolling back",
+                OperationKind::FileSystem,
+                move || {
+                    crate::git::rollback_worktree_path(&path)?;
+                    let label = if is_dir { "folder" } else { "file" };
+                    Ok(format!("rolled back {label} {path}"))
+                },
+            ),
+            PendingAction::DeletePath { path, is_dir } => spawn_operation(
+                &mut self.state,
+                "deleting",
+                OperationKind::FileSystem,
+                move || {
+                    crate::git::delete_worktree_path(&path, is_dir)?;
+                    Ok(format!("deleted {path}"))
+                },
+            ),
+            PendingAction::IgnorePath { path, is_dir } => self.settle(
+                crate::git::add_to_gitignore(&path, is_dir),
+                "gitignore update failed",
+                |app, status| {
+                    app.state.set_status(status, false);
+                    app.start_refresh_with_status(false, false);
+                },
+            ),
+
             PendingAction::Push => spawn_push(&mut self.state),
+            PendingAction::ForcePushWithLease(plan) => spawn_force_push(&mut self.state, *plan),
             PendingAction::Pull => spawn_pull(&mut self.state),
-            PendingAction::MergeUpstream => {
-                spawn_operation(
-                    &mut self.state,
-                    "merging",
-                    OperationKind::MergeUpstream,
-                    || {
-                        let out = crate::git::merge_upstream()?;
-                        Ok(out
-                            .lines()
-                            .rfind(|line| !line.trim().is_empty())
-                            .unwrap_or("merged upstream")
-                            .to_owned())
-                    },
-                );
-            }
-            PendingAction::MergeMainAllBranches => {
-                // Where the sync starts is read from git rather than the
-                // state, because a resumed sync queues itself before the
-                // refresh that would notice the validation checked another
-                // branch out.
-                self.state.conflict_followup = Some(
-                    crate::state::ConflictFollowup::for_branch_sync(crate::git::head_branch().ok()),
-                );
-                spawn_operation(
-                    &mut self.state,
-                    "syncing branches",
-                    OperationKind::WorkingTree,
-                    crate::git::flow_merge_main_into_all_local_branches,
-                );
-            }
-            PendingAction::Flow(action) => {
-                super::run_flow_action(&mut self.state, action, None);
-            }
-            PendingAction::SaveAuthor { name, email } => {
-                match crate::git::set_local_author(&name, &email) {
-                    Ok(()) => {
-                        self.state.author_has_local_override = true;
-                        self.state.modal = Modal::None;
-                        self.state.set_status("saved repo author", false);
-                    }
-                    Err(err) => self
-                        .state
-                        .set_status(format!("author save failed: {err}"), true),
-                }
-            }
-            PendingAction::ClearAuthor => match crate::git::clear_local_author() {
-                Ok(()) => {
-                    self.state.author_has_local_override = false;
-                    self.state.modal = Modal::None;
-                    self.state.set_status("cleared repo author", false);
-                }
-                Err(err) => self
-                    .state
-                    .set_status(format!("author clear failed: {err}"), true),
-            },
-            PendingAction::SaveSubtreeAuthor { path, name, email } => {
-                match crate::git::set_subtree_author(&path, &name, &email) {
-                    Ok(()) => {
-                        self.state.author_has_subtree_rule = true;
-                        self.state.modal = Modal::None;
-                        self.state.set_status("saved subtree author", false);
-                    }
-                    Err(err) => self
-                        .state
-                        .set_status(format!("author save failed: {err}"), true),
-                }
-            }
-            PendingAction::ClearSubtreeAuthor { path } => {
-                match crate::git::clear_subtree_author(&path) {
-                    Ok(()) => {
-                        self.state.author_has_subtree_rule = false;
-                        self.state.modal = Modal::None;
-                        self.state.set_status("cleared subtree author", false);
-                    }
-                    Err(err) => self
-                        .state
-                        .set_status(format!("author clear failed: {err}"), true),
-                }
-            }
+            PendingAction::MergeUpstream => self.merge_upstream(),
+            PendingAction::MergeMainAllBranches => self.merge_main_into_all_branches(),
+            PendingAction::Flow(action) => super::run_flow_action(&mut self.state, action, None),
+            PendingAction::DeleteBranch {
+                name,
+                delete_local,
+                delete_remote,
+                force,
+            } => self.delete_branch(name, delete_local, delete_remote, force),
+            PendingAction::SetBranchUpstream { branch, upstream } => spawn_operation(
+                &mut self.state,
+                "setting upstream",
+                OperationKind::WorkingTree,
+                move || crate::git::set_branch_upstream(&branch, &upstream),
+            ),
+            PendingAction::Promote(preview) => spawn_operation(
+                &mut self.state,
+                "promoting",
+                OperationKind::WorkingTree,
+                move || crate::git::environments::promote(&preview),
+            ),
+
+            PendingAction::SaveAuthor { name, email } => self.change_author(
+                crate::git::set_local_author(&name, &email),
+                "saved repo author",
+                "author save failed",
+                |state| state.author.has_local_override = true,
+            ),
+            PendingAction::ClearAuthor => self.change_author(
+                crate::git::clear_local_author(),
+                "cleared repo author",
+                "author clear failed",
+                |state| state.author.has_local_override = false,
+            ),
+            PendingAction::SaveSubtreeAuthor { path, name, email } => self.change_author(
+                crate::git::set_subtree_author(&path, &name, &email),
+                "saved subtree author",
+                "author save failed",
+                |state| state.author.has_subtree_rule = true,
+            ),
+            PendingAction::ClearSubtreeAuthor { path } => self.change_author(
+                crate::git::clear_subtree_author(&path),
+                "cleared subtree author",
+                "author clear failed",
+                |state| state.author.has_subtree_rule = false,
+            ),
+
             PendingAction::SaveSettings {
                 model,
                 provider,
@@ -230,213 +218,69 @@ impl App {
                 comment_style,
                 commit_subject_max_chars,
                 commit_body_max_lines,
-            } => match save_settings(
-                &model,
-                provider,
-                &pr_language,
-                &comment_style,
-                &commit_subject_max_chars,
-                &commit_body_max_lines,
-            ) {
-                Ok(()) => {
-                    refresh_llm_settings_state(&mut self.state);
-                    super::spawn::load_repo_settings_into_state(&mut self.state);
-                    self.state.llm_model_input = self.state.llm_model.clone();
-                    self.state.modal = Modal::None;
+            } => self.settle(
+                save_settings(
+                    &model,
+                    provider,
+                    &pr_language,
+                    &comment_style,
+                    commit_subject_max_chars,
+                    commit_body_max_lines,
+                ),
+                "settings save failed",
+                |app, ()| {
+                    app.reload_settings_state();
+                    app.state.modal = Modal::None;
                     if crate::llm::env_model_active() || crate::llm::env_provider_active() {
-                        self.state
+                        app.state
                             .set_status("saved settings; env override is active", false);
                     } else {
-                        self.state.set_status("saved settings", false);
+                        app.state.set_status("saved settings", false);
                     }
-                }
-                Err(err) => self
-                    .state
-                    .set_status(format!("settings save failed: {err}"), true),
-            },
-            PendingAction::ClearSettings => {
-                match crate::llm::clear_saved_llm_settings().and_then(|()| crate::settings::clear())
-                {
-                    Ok(()) => {
-                        refresh_llm_settings_state(&mut self.state);
-                        super::spawn::load_repo_settings_into_state(&mut self.state);
-                        self.state.llm_model_input = self.state.llm_model.clone();
-                        // The modal stays open so the re-detected conventions land
-                        // in front of the user instead of behind a closed dialog.
-                        super::spawn::suggest_repo_settings_if_unset(&mut self.state);
-                        self.state.set_status("reset settings to defaults", false);
-                    }
-                    Err(err) => self
-                        .state
-                        .set_status(format!("settings reset failed: {err}"), true),
-                }
-            }
-            PendingAction::EditCommitPrompt => {
-                self.edit_settings_file(
-                    "commit prompt",
-                    crate::settings::ensure_commit_prompt_file(),
-                );
-            }
+                },
+            ),
+            PendingAction::ClearSettings => self.settle(
+                crate::llm::clear_saved_llm_settings().and_then(|()| crate::settings::clear()),
+                "settings reset failed",
+                |app, ()| {
+                    app.reload_settings_state();
+                    // The modal stays open so the re-detected conventions land
+                    // in front of the user instead of behind a closed dialog.
+                    super::spawn::suggest_repo_settings_if_unset(&mut app.state);
+                    app.state.set_status("reset settings to defaults", false);
+                },
+            ),
+            PendingAction::EditCommitPrompt => self.edit_settings_file(
+                "commit prompt",
+                crate::settings::ensure_commit_prompt_file(),
+            ),
             PendingAction::EditReviewStyle => {
-                self.edit_settings_file(
-                    "review style",
-                    crate::settings::ensure_review_style_file(),
-                );
+                self.edit_settings_file("review style", crate::settings::ensure_review_style_file())
             }
-            PendingAction::StageAll => {
-                spawn_operation(&mut self.state, "staging", OperationKind::Index, || {
-                    crate::git::stage_all()?;
-                    Ok("staged all".to_string())
-                });
-            }
-            PendingAction::UnstageAll => {
-                spawn_operation(&mut self.state, "unstaging", OperationKind::Index, || {
-                    crate::git::unstage_all()?;
-                    Ok("unstaged all".to_string())
-                });
-            }
-            PendingAction::StagePath(path) => {
-                spawn_operation(
-                    &mut self.state,
-                    "staging",
-                    OperationKind::Index,
-                    move || {
-                        crate::git::stage(&path)?;
-                        Ok(format!("staged {path}"))
-                    },
-                );
-            }
-            PendingAction::UnstagePath(path) => {
-                spawn_operation(
-                    &mut self.state,
-                    "unstaging",
-                    OperationKind::Index,
-                    move || {
-                        crate::git::unstage(&path)?;
-                        Ok(format!("unstaged {path}"))
-                    },
-                );
-            }
-            PendingAction::RollbackPath { path, is_dir } => {
-                spawn_operation(
-                    &mut self.state,
-                    "rolling back",
-                    OperationKind::FileSystem,
-                    move || {
-                        crate::git::rollback_worktree_path(&path)?;
-                        let label = if is_dir { "folder" } else { "file" };
-                        Ok(format!("rolled back {label} {path}"))
-                    },
-                );
-            }
-            PendingAction::DeletePath { path, is_dir } => {
-                spawn_operation(
-                    &mut self.state,
-                    "deleting",
-                    OperationKind::FileSystem,
-                    move || {
-                        crate::git::delete_worktree_path(&path, is_dir)?;
-                        Ok(format!("deleted {path}"))
-                    },
-                );
-            }
-            PendingAction::IgnorePath { path, is_dir } => {
-                match crate::git::add_to_gitignore(&path, is_dir) {
-                    Ok(status) => {
-                        self.state.set_status(status, false);
-                        self.start_refresh_with_status(false, false);
-                    }
-                    Err(err) => self
-                        .state
-                        .set_status(format!("gitignore update failed: {err}"), true),
-                }
-            }
-            PendingAction::OpenProject => match crate::git::open_project_in_ide() {
-                Ok(status) => self.state.set_status(status, false),
-                Err(err) => self.state.set_status(format!("open failed: {err}"), true),
-            },
+
+            PendingAction::OpenProject => self.report_open(crate::git::open_project_in_ide()),
             PendingAction::OpenProjectAt(path) => {
-                match crate::git::open_project_path_in_ide(&PathBuf::from(path)) {
-                    Ok(status) => self.state.set_status(status, false),
-                    Err(err) => self.state.set_status(format!("open failed: {err}"), true),
-                }
+                self.report_open(crate::git::open_project_path_in_ide(&PathBuf::from(path)))
             }
-            PendingAction::OpenFile(path) => match crate::git::open_file_in_ide(&path) {
-                Ok(status) => self.state.set_status(status, false),
-                Err(err) => self.state.set_status(format!("open failed: {err}"), true),
-            },
-            PendingAction::EditFile { path, line } => {
-                match self.edit_in_terminal(&path, line) {
-                    Ok(()) => self.state.set_status(format!("edited {path}"), false),
-                    Err(err) => self.state.set_status(format!("edit failed: {err:#}"), true),
-                }
-                // Whatever the editor did is part of the change now.
-                crate::panel::guided::reload(&mut self.state);
-                self.start_refresh(false);
+            PendingAction::OpenFile(path) => self.report_open(crate::git::open_file_in_ide(&path)),
+            PendingAction::EditFile { path, line } => self.edit_file(&path, line),
+            PendingAction::CopyToClipboard { label, text } => {
+                self.settle(copy_to_clipboard(&text), "copy failed", |app, ()| {
+                    app.state
+                        .set_status(format!("copied {label} to clipboard"), false)
+                })
             }
-            PendingAction::DeleteBranch {
-                name,
-                delete_local,
-                delete_remote,
-                force,
-            } => {
-                self.state.modal = Modal::None;
-                spawn_operation(
-                    &mut self.state,
-                    "deleting branch",
-                    OperationKind::WorkingTree,
-                    move || {
-                        let mut report = Vec::new();
-                        if delete_local {
-                            let line = crate::git::delete_local_branch(&name, force)?;
-                            report.push(format!("local: {line}"));
-                        }
-                        if delete_remote {
-                            let line = crate::git::delete_remote_branch(&name)?;
-                            report.push(format!("remote: {line}"));
-                        }
-                        Ok(report.join(" | "))
-                    },
-                );
-            }
-            PendingAction::SetBranchUpstream { branch, upstream } => {
-                spawn_operation(
-                    &mut self.state,
-                    "setting upstream",
-                    OperationKind::WorkingTree,
-                    move || crate::git::set_branch_upstream(&branch, &upstream),
-                );
-            }
+
             PendingAction::CreateWorktree { path, branch, base } => {
-                spawn_operation(
-                    &mut self.state,
-                    "adding worktree",
-                    OperationKind::WorkingTree,
-                    move || {
-                        let out = crate::git::worktree_add(Path::new(&path), &branch, &base)?;
-                        Ok(out
-                            .lines()
-                            .rfind(|line| !line.trim().is_empty())
-                            .unwrap_or("worktree added")
-                            .to_owned())
-                    },
-                );
+                self.worktree_operation("adding worktree", "worktree added", move || {
+                    crate::git::worktree_add(Path::new(&path), &branch, &base)
+                })
             }
             PendingAction::RemoveWorktree { path, force } => {
                 self.leave_checkout_before_removal(&path);
-                spawn_operation(
-                    &mut self.state,
-                    "removing worktree",
-                    OperationKind::WorkingTree,
-                    move || {
-                        let out = crate::git::worktree_remove(Path::new(&path), force)?;
-                        Ok(out
-                            .lines()
-                            .rfind(|line| !line.trim().is_empty())
-                            .unwrap_or("worktree removed")
-                            .to_owned())
-                    },
-                );
+                self.worktree_operation("removing worktree", "worktree removed", move || {
+                    crate::git::worktree_remove(Path::new(&path), force)
+                });
             }
             PendingAction::LandWorktree { path, branch } => {
                 self.leave_checkout_before_removal(&path);
@@ -477,152 +321,379 @@ impl App {
                 );
             }
             PendingAction::PruneWorktrees => {
-                spawn_operation(
-                    &mut self.state,
-                    "pruning worktrees",
-                    OperationKind::WorkingTree,
-                    || {
-                        let out = crate::git::worktree_prune()?;
-                        Ok(out
-                            .lines()
-                            .rfind(|line| !line.trim().is_empty())
-                            .unwrap_or("pruned")
-                            .to_owned())
-                    },
-                );
+                self.worktree_operation("pruning worktrees", "pruned", crate::git::worktree_prune)
             }
-            PendingAction::GitHub(action) => self.run_github_action(action),
-            PendingAction::Quit => self.state.should_quit = true,
-            PendingAction::Promote(preview) => {
-                spawn_operation(
-                    &mut self.state,
-                    "promoting",
-                    OperationKind::WorkingTree,
-                    move || crate::git::environments::promote(&preview),
-                );
-            }
+
             PendingAction::StartAgent {
                 path,
                 label,
                 profile,
-            } => {
-                let cwd = PathBuf::from(&path);
-                let sandboxed = profile.sandboxed();
-                let result = (|| {
-                    if sandboxed {
-                        prepare_sandbox(&cwd)?;
-                    }
-                    let spec = crate::session::SessionSpec {
-                        cwd,
-                        label: format!("{label} · {}", profile.name),
-                        sandboxed,
-                        kind: crate::agents::kind(&profile),
-                        prompt: None,
-                    };
-                    self.state.sessions.start_profile(
-                        spec,
-                        &profile,
-                        crate::session::default_size(),
-                    )
-                })();
-                match result {
-                    Ok(id) => {
-                        self.state.show_session(id);
-                        self.set_session_capture(true);
-                    }
-                    Err(e) => self
-                        .state
-                        .set_status(format!("start agent failed: {e:#}"), true),
-                }
-            }
+            } => self.start_agent(&path, &label, &profile),
             PendingAction::StartSession {
                 path,
                 label,
                 sandboxed,
                 kind,
                 prompt,
-            } => {
-                let cwd = PathBuf::from(&path);
-                // A terminal is the user's own shell and is never confined.
-                let sandboxed = sandboxed && kind != crate::session::SessionKind::Terminal;
-                if sandboxed {
-                    match prepare_sandbox(&cwd) {
-                        Ok(Some(note)) => self.state.set_status(note, false),
-                        Ok(None) => {}
-                        Err(err) => {
-                            // Running unsandboxed instead would quietly hand the
-                            // session the whole filesystem, which is the
-                            // opposite of what was asked for.
-                            self.state
-                                .set_status(format!("sandbox setup failed: {err:#}"), true);
-                            return;
-                        }
-                    }
-                }
-                let spec = crate::session::SessionSpec {
-                    label,
-                    cwd,
-                    sandboxed,
-                    kind,
-                    prompt,
-                };
-                let size = crate::session::default_size();
-                match self.state.sessions.start(spec, size) {
-                    Ok(id) => {
-                        self.state.show_session(id);
-                        self.set_session_capture(true);
-                        let label = self
-                            .state
-                            .sessions
-                            .get(id)
-                            .map(|session| session.label.clone())
-                            .unwrap_or_default();
-                        self.state
-                            .set_status(format!("{} for {label}", kind.label()), false);
-                    }
-                    Err(err) => self
-                        .state
-                        .set_status(format!("start session failed: {err}"), true),
-                }
-            }
-            PendingAction::InitRepository { path } => {
-                let dir = PathBuf::from(&path);
-                let label = dir
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.clone());
-                match crate::git::init_repository(&dir) {
-                    Ok(message) => {
-                        // Point lg at what it just created: the folder is a
-                        // checkout now, and every panel was showing it as a
-                        // directory with no history a moment ago.
-                        self.switch_to_repository(&dir, &label);
-                        self.state.set_status(message, false);
-                    }
-                    Err(err) => self.state.set_status(err.to_string(), true),
-                }
-            }
-            PendingAction::SwitchRepository { target } => {
-                let root = self
-                    .state
-                    .workspace_root
-                    .clone()
-                    .or_else(|| self.state.repo_root.clone())
-                    .unwrap_or_default();
-                if root.is_empty() {
-                    self.state.set_status("workspace root is unknown", true);
-                    return;
-                }
-                let dir = target.resolve(Path::new(&root));
-                if !dir.is_dir() {
-                    self.state
-                        .set_status(format!("{} is not a directory", dir.display()), true);
-                    return;
-                }
-                self.switch_to_repository(&dir, &target.label());
+            } => self.start_session(&path, label, sandboxed, kind, prompt),
+
+            PendingAction::InitRepository { path } => self.init_repository(&path),
+            PendingAction::SwitchRepository { target } => self.switch_repository(&target),
+            PendingAction::GitHub(action) => self.run_github_action(action),
+            PendingAction::Quit => self.state.should_quit = true,
+            PendingAction::CloseSession { id, follow } => {
+                crate::panel::environments::close_session(&mut self.state, id, follow)
             }
         }
     }
+
+    /// What became of an action that ran here and now: `done` with its
+    /// result, or a status line saying it failed and why.
+    fn settle<T>(&mut self, result: Result<T>, failed: &str, done: impl FnOnce(&mut Self, T)) {
+        match result {
+            Ok(value) => done(self, value),
+            Err(err) => self.state.set_status(format!("{failed}: {err}"), true),
+        }
+    }
+
+    fn report_open(&mut self, result: Result<String>) {
+        self.settle(result, "open failed", |app, status| {
+            app.state.set_status(status, false)
+        });
+    }
+}
+
+/// The model.
+impl App {
+    fn generate_message(&mut self) {
+        match crate::git::staged_diff() {
+            Ok(diff) => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                // The scene shows the very diff that went to the model,
+                // streaming into the network a character at a time.
+                let feed = crate::panel::commit_art::Feed::from_diff(&diff);
+                let handle = std::thread::spawn(move || {
+                    crate::llm::stream_commit_message(diff, tx);
+                });
+                self.state.start_generation(rx, handle, feed);
+                self.state.set_status("generating\u{2026}", false);
+            }
+            Err(e) => {
+                self.state.set_status(e.to_string(), true);
+            }
+        }
+    }
+}
+
+/// The index and the working tree.
+impl App {
+    fn commit(&mut self) {
+        let msg = self.state.commit_message.clone();
+        spawn_operation(
+            &mut self.state,
+            "committing",
+            OperationKind::Commit,
+            move || {
+                let out = crate::git::commit(&msg)?;
+                Ok(out.lines().next().unwrap_or("committed").to_owned())
+            },
+        );
+    }
+
+    fn amend(&mut self) {
+        let msg = self.state.commit_message.clone();
+        spawn_operation(
+            &mut self.state,
+            "amending",
+            OperationKind::Commit,
+            move || {
+                let out = crate::git::amend_commit(&msg)?;
+                Ok(out.lines().next().unwrap_or("amended").to_owned())
+            },
+        );
+    }
+
+    /// Stage, unstage or discard one hunk. Discarding writes the file, so it
+    /// waits for the working tree like a rollback does; the other two only
+    /// touch the index.
+    fn apply_hunk(&mut self, op: crate::git::hunk::HunkOp, hunk: crate::git::hunk::ShownHunk) {
+        use crate::git::hunk::HunkOp;
+        let (label, kind) = match op {
+            HunkOp::Stage => ("staging hunk", OperationKind::Index),
+            HunkOp::Unstage => ("unstaging hunk", OperationKind::Index),
+            HunkOp::Discard => ("discarding hunk", OperationKind::FileSystem),
+        };
+        spawn_operation(&mut self.state, label, kind, move || {
+            crate::git::hunk::apply_hunk(op, &hunk)
+        });
+    }
+
+    /// Revert or cherry-pick one commit. A conflict opens the conflict modal,
+    /// as a merge's does, with the operation left in progress for `v` to
+    /// continue or `a` to abort.
+    fn replay_commit<F>(&mut self, label: &'static str, work: F)
+    where
+        F: FnOnce() -> Result<String> + Send + 'static,
+    {
+        spawn_operation(&mut self.state, label, OperationKind::WorkingTree, work);
+    }
+
+    fn stash_operation<F>(&mut self, label: &'static str, work: F)
+    where
+        F: FnOnce() -> Result<String> + Send + 'static,
+    {
+        spawn_operation(&mut self.state, label, OperationKind::Stash, work);
+    }
+
+    fn index_operation<F>(&mut self, label: &'static str, work: F)
+    where
+        F: FnOnce() -> Result<String> + Send + 'static,
+    {
+        spawn_operation(&mut self.state, label, OperationKind::Index, work);
+    }
+}
+
+/// Branches, the remote and promotions.
+impl App {
+    fn merge_upstream(&mut self) {
+        spawn_operation(
+            &mut self.state,
+            "merging",
+            OperationKind::MergeUpstream,
+            || {
+                Ok(last_line_or(
+                    &crate::git::merge_upstream()?,
+                    "merged upstream",
+                ))
+            },
+        );
+    }
+
+    fn merge_main_into_all_branches(&mut self) {
+        // Where the sync starts is read from git rather than the state,
+        // because a resumed sync queues itself before the refresh that would
+        // notice the validation checked another branch out.
+        self.state.conflict.followup = Some(crate::state::ConflictFollowup::for_branch_sync(
+            crate::git::head_branch().ok(),
+        ));
+        spawn_operation(
+            &mut self.state,
+            "syncing branches",
+            OperationKind::WorkingTree,
+            crate::git::flow_merge_main_into_all_local_branches,
+        );
+    }
+
+    fn delete_branch(&mut self, name: String, local: bool, remote: bool, force: bool) {
+        self.state.modal = Modal::None;
+        spawn_operation(
+            &mut self.state,
+            "deleting branch",
+            OperationKind::WorkingTree,
+            move || {
+                let mut report = Vec::new();
+                if local {
+                    let line = crate::git::delete_local_branch(&name, force)?;
+                    report.push(format!("local: {line}"));
+                }
+                if remote {
+                    let line = crate::git::delete_remote_branch(&name)?;
+                    report.push(format!("remote: {line}"));
+                }
+                Ok(report.join(" | "))
+            },
+        );
+    }
+}
+
+/// The commit author.
+impl App {
+    /// Report an author change made here and now, and on success record what
+    /// it left in place with `record` and close the author modal.
+    fn change_author(
+        &mut self,
+        result: Result<()>,
+        done: &str,
+        failed: &str,
+        record: impl FnOnce(&mut AppState),
+    ) {
+        self.settle(result, failed, |app, ()| {
+            record(&mut app.state);
+            app.state.modal = Modal::None;
+            app.state.set_status(done, false);
+        });
+    }
+}
+
+/// Settings.
+impl App {
+    /// Read back everything the settings modal shows after it was saved or
+    /// reset.
+    fn reload_settings_state(&mut self) {
+        refresh_llm_settings_state(&mut self.state);
+        super::spawn::load_repo_settings_into_state(&mut self.state);
+        self.state.llm_model_input = self.state.llm_model.clone();
+    }
+}
+
+/// Opening and editing files.
+impl App {
+    fn edit_file(&mut self, path: &str, line: usize) {
+        match self.edit_in_terminal(path, line) {
+            Ok(()) => self.state.set_status(format!("edited {path}"), false),
+            Err(err) => self.state.set_status(format!("edit failed: {err:#}"), true),
+        }
+        // Whatever the editor did is part of the change now.
+        crate::panel::guided::reload(&mut self.state);
+        self.start_refresh(false);
+    }
+}
+
+/// Worktrees.
+impl App {
+    /// Run a worktree command in the background and report the last line it
+    /// printed, or `fallback` when it printed nothing.
+    fn worktree_operation<F>(&mut self, label: &'static str, fallback: &'static str, work: F)
+    where
+        F: FnOnce() -> Result<String> + Send + 'static,
+    {
+        spawn_operation(
+            &mut self.state,
+            label,
+            OperationKind::WorkingTree,
+            move || Ok(last_line_or(&work()?, fallback)),
+        );
+    }
+}
+
+/// Sessions and repositories.
+impl App {
+    fn start_agent(&mut self, path: &str, label: &str, profile: &crate::preferences::Agent) {
+        let cwd = PathBuf::from(path);
+        let sandboxed = profile.sandboxed();
+        let result = (|| {
+            if sandboxed {
+                prepare_sandbox(&cwd)?;
+            }
+            let spec = crate::session::SessionSpec {
+                cwd,
+                label: format!("{label} · {}", profile.name),
+                sandboxed,
+                kind: crate::agents::kind(profile),
+                prompt: None,
+            };
+            self.state
+                .sessions
+                .start_profile(spec, profile, crate::session::default_size())
+        })();
+        match result {
+            Ok(id) => {
+                self.state.show_session(id);
+                self.set_session_capture(true);
+            }
+            Err(e) => self
+                .state
+                .set_status(format!("start agent failed: {e:#}"), true),
+        }
+    }
+
+    fn start_session(
+        &mut self,
+        path: &str,
+        label: String,
+        sandboxed: bool,
+        kind: crate::session::SessionKind,
+        prompt: Option<String>,
+    ) {
+        let cwd = PathBuf::from(path);
+        // A terminal is the user's own shell and is never confined.
+        let sandboxed = sandboxed && kind != crate::session::SessionKind::Terminal;
+        if sandboxed {
+            match prepare_sandbox(&cwd) {
+                Ok(Some(note)) => self.state.set_status(note, false),
+                Ok(None) => {}
+                Err(err) => {
+                    // Running unsandboxed instead would quietly hand the
+                    // session the whole filesystem, which is the opposite of
+                    // what was asked for.
+                    self.state
+                        .set_status(format!("sandbox setup failed: {err:#}"), true);
+                    return;
+                }
+            }
+        }
+        let spec = crate::session::SessionSpec {
+            label,
+            cwd,
+            sandboxed,
+            kind,
+            prompt,
+        };
+        let size = crate::session::default_size();
+        match self.state.sessions.start(spec, size) {
+            Ok(id) => {
+                self.state.show_session(id);
+                self.set_session_capture(true);
+                let label = self
+                    .state
+                    .sessions
+                    .get(id)
+                    .map(|session| session.label.clone())
+                    .unwrap_or_default();
+                self.state
+                    .set_status(format!("{} for {label}", kind.label()), false);
+            }
+            Err(err) => self
+                .state
+                .set_status(format!("start session failed: {err}"), true),
+        }
+    }
+
+    fn init_repository(&mut self, path: &str) {
+        let dir = PathBuf::from(path);
+        let label = dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string());
+        match crate::git::init_repository(&dir) {
+            Ok(message) => {
+                // Point lg at what it just created: the folder is a checkout
+                // now, and every panel was showing it as a directory with no
+                // history a moment ago.
+                self.switch_to_repository(&dir, &label);
+                self.state.set_status(message, false);
+            }
+            Err(err) => self.state.set_status(err.to_string(), true),
+        }
+    }
+
+    fn switch_repository(&mut self, target: &crate::state::RepoTarget) {
+        let root = self
+            .state
+            .workspace_root
+            .clone()
+            .or_else(|| self.state.repo_root.clone())
+            .unwrap_or_default();
+        if root.is_empty() {
+            self.state.set_status("workspace root is unknown", true);
+            return;
+        }
+        let dir = target.resolve(Path::new(&root));
+        if !dir.is_dir() {
+            self.state
+                .set_status(format!("{} is not a directory", dir.display()), true);
+            return;
+        }
+        self.switch_to_repository(&dir, &target.label());
+    }
+}
+
+/// The last line of `out` with anything in it, or `fallback`.
+fn last_line_or(out: &str, fallback: &str) -> String {
+    out.lines()
+        .rfind(|line| !line.trim().is_empty())
+        .unwrap_or(fallback)
+        .to_owned()
 }
 
 impl App {

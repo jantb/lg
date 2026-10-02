@@ -963,7 +963,10 @@ fn command(dir: Option<&Path>, args: &[&str]) -> Command {
         .env("GH_NO_UPDATE_NOTIFIER", "1")
         .env("GH_SPINNER_DISABLED", "1")
         .env("NO_COLOR", "1")
-        .env("GH_PAGER", "cat");
+        .env("GH_PAGER", "cat")
+        // Clone and checkout run git underneath; a credential prompt there
+        // would hang just the same.
+        .env("GIT_TERMINAL_PROMPT", "0");
     if let Some(dir) = dir
         .map(Path::to_path_buf)
         .or_else(crate::git::repo_dir)

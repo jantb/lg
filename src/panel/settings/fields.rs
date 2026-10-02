@@ -39,32 +39,34 @@ pub(super) fn options(hub: &Settings, field: &Field) -> Option<Picker> {
         return Some(Picker::suggested(&hub.models, "model"));
     }
     let group = field.groups.first().map(String::as_str).unwrap_or_default();
-    Some(match (hub.key(), group, field.key.as_str()) {
-        ("writing", _, "language") => Picker::fixed(preferences::LANGUAGES, "language"),
-        ("models", _, "provider") => Picker::fixed(preferences::PROVIDERS, "provider"),
-        ("models", _, "claude_model") => Picker {
+    Some(match (hub.current_category(), group, field.key.as_str()) {
+        (Category::Writing, _, "language") => Picker::fixed(preferences::LANGUAGES, "language"),
+        (Category::Models, _, "provider") => Picker::fixed(preferences::PROVIDERS, "provider"),
+        (Category::Models, _, "claude_model") => Picker {
             fixed: false,
             ..Picker::fixed(crate::llm::CLAUDE_MODEL_CHOICES, "Claude model")
         },
-        ("agents", _, "adapter") => Picker::fixed(preferences::ADAPTERS, "adapter"),
-        ("agents", _, "confinement") => Picker::fixed(preferences::CONFINEMENTS, "confinement"),
-        ("branches", "promotions", "strategy") => {
+        (Category::Agents, _, "adapter") => Picker::fixed(preferences::ADAPTERS, "adapter"),
+        (Category::Agents, _, "confinement") => {
+            Picker::fixed(preferences::CONFINEMENTS, "confinement")
+        }
+        (Category::Branches, "promotions", "strategy") => {
             Picker::fixed(preferences::STRATEGIES, "strategy")
         }
-        ("branches", "promotions", "from") => Picker {
+        (Category::Branches, "promotions", "from") => Picker {
             options: std::iter::once("feature".to_string())
                 .chain(environment_ids(hub))
                 .collect(),
             noun: "source",
             fixed: true,
         },
-        ("branches", "promotions", "to") => Picker {
+        (Category::Branches, "promotions", "to") => Picker {
             options: environment_ids(hub),
             noun: "environment",
             fixed: true,
         },
-        ("tools", _, "editor") => Picker::suggested(&hub.editors, "editor"),
-        ("tools", _, "terminal") => Picker::suggested(&hub.shells, "shell"),
+        (Category::Tools, _, "editor") => Picker::suggested(&hub.editors, "editor"),
+        (Category::Tools, _, "terminal") => Picker::suggested(&hub.shells, "shell"),
         _ => return None,
     })
 }
@@ -79,7 +81,7 @@ pub(super) fn picker(hub: &Settings) -> Option<Picker> {
 /// text is still the field's own value.
 pub(super) fn choices(hub: &Settings) -> Vec<String> {
     let query = if hub.typed {
-        hub.input.to_lowercase()
+        hub.input.text.to_lowercase()
     } else {
         String::new()
     };
@@ -105,13 +107,13 @@ pub(super) fn stepping(hub: &Settings) -> bool {
 pub(super) fn step_number(hub: &mut Settings, delta: i64) {
     let current = hub
         .input
+        .text
         .trim()
         .parse::<i64>()
         .ok()
         .or_else(|| fields(hub).get(hub.selected).and_then(|f| f.value.as_i64()));
     let next = current.unwrap_or_default().saturating_add(delta).max(0);
-    hub.input = next.to_string();
-    hub.cursor = hub.input.chars().count();
+    hub.input.set(next.to_string());
     hub.typed = true;
 }
 pub(super) fn move_choice(hub: &mut Settings, down: bool) {
@@ -139,12 +141,11 @@ pub(super) fn start_edit(hub: &mut Settings) {
         }
         return;
     }
-    hub.input = display(&f.value);
-    hub.cursor = hub.input.chars().count();
+    hub.input.set(display(&f.value));
     hub.choice = None;
     hub.typed = false;
     if let Some(p) = options(hub, &f) {
-        hub.choice = p.options.iter().position(|b| *b == hub.input);
+        hub.choice = p.options.iter().position(|b| *b == hub.input.text);
         // A fixed list always has something highlighted, so Enter always
         // lands on an allowed value.
         if p.fixed && hub.choice.is_none() && !p.options.is_empty() {
@@ -280,130 +281,134 @@ pub(super) fn rows(fields: &[Field]) -> Vec<Row> {
 }
 
 /// What a field means, in a sentence, for the pane under the list.
-pub(super) fn describe(category: &str, field: &Field) -> Option<&'static str> {
+pub(super) fn describe(category: Category, field: &Field) -> Option<&'static str> {
     let group = field.groups.first().map(String::as_str).unwrap_or_default();
     Some(match (category, group, field.key.as_str()) {
-        ("identity", _, "scope") => {
+        (Category::Identity, _, "scope") => {
             "Repository writes the author into this checkout's .git/config. Folder writes a Git includeIf for every repository below the folder."
         }
-        ("identity", _, "folder") => {
+        (Category::Identity, _, "folder") => {
             "Where the Folder scope applies. Every repository under this path gets the author below."
         }
-        ("identity", _, "name") => {
+        (Category::Identity, _, "name") => {
             "Author name for commits made from lg. Signing keys stay in Git's own configuration."
         }
-        ("identity", _, "email") => {
+        (Category::Identity, _, "email") => {
             "Author email for commits made from lg. Matches the quiet author emails list in Interface & Tools, which hides your own commits from activity."
         }
-        ("writing", _, "language") => {
+        (Category::Writing, _, "language") => {
             "Language commit messages and pull request text are written in."
         }
-        ("writing", _, "comment_style") => {
+        (Category::Writing, _, "comment_style") => {
             "The shape of a commit message: Conventional Commits, plain imperative, and so on. Press L to derive it from this checkout's history."
         }
-        ("writing", _, "subject_max") => {
+        (Category::Writing, _, "subject_max") => {
             "Longest subject line the commit writer may produce, in characters."
         }
-        ("writing", _, "body_lines") => "Most lines the commit body may run to.",
-        ("writing", _, "commit_prompt") => {
+        (Category::Writing, _, "body_lines") => "Most lines the commit body may run to.",
+        (Category::Writing, _, "commit_prompt") => {
             "The instructions given to the model before the staged diff. Enter opens the whole text in the editor; v previews the assembled prompt."
         }
-        ("writing", _, "review_style") => "House rules the reviewer checks changes against.",
-        ("models", _, "enabled") => {
+        (Category::Writing, _, "review_style") => {
+            "House rules the reviewer checks changes against."
+        }
+        (Category::Models, _, "enabled") => {
             "Whether lg asks the model at all. Off, commit messages are typed by hand and conflicts and reviews are left alone; use it when no model server is running."
         }
-        ("models", _, "provider") => {
+        (Category::Models, _, "provider") => {
             "Who answers every AI request — commit messages, review assists, the review chat, guided reviews and conflict resolutions. local uses the chat endpoint below; claude runs the claude CLI (tools off, your Claude Code login). Enter chooses from the list."
         }
-        ("models", _, "claude_model") => {
+        (Category::Models, _, "claude_model") => {
             "Model the claude provider asks for: sonnet, opus, haiku or a full model id. Empty uses the Claude agent profile's model, or the CLI default."
         }
-        ("models", _, "model") => {
+        (Category::Models, _, "model") => {
             "Local model used for commit messages, reviews and summaries when the provider is local. Enter picks from the models the endpoint serves; L opens the model modal with connectivity checks."
         }
-        ("models", _, "endpoint") => "Chat completions endpoint the model is reached at.",
-        ("agents", _, "name") => "How the agent is listed in the session picker.",
-        ("agents", _, "adapter") => {
+        (Category::Models, _, "endpoint") => "Chat completions endpoint the model is reached at.",
+        (Category::Agents, _, "name") => "How the agent is listed in the session picker.",
+        (Category::Agents, _, "adapter") => {
             "Which integration drives it: claude, codex, pi, or terminal for a plain shell with no agent protocol. Enter chooses from the list."
         }
-        ("agents", _, "executable") => "Program to launch, found on PATH or given as a full path.",
-        ("agents", _, "args") => {
+        (Category::Agents, _, "executable") => {
+            "Program to launch, found on PATH or given as a full path."
+        }
+        (Category::Agents, _, "args") => {
             "Extra arguments, as a JSON list: [\"--flag\", \"value\"]. Passed directly, without a shell."
         }
-        ("agents", _, "model") => {
+        (Category::Agents, _, "model") => {
             "Model the agent is asked to use. Empty leaves the agent's own default."
         }
-        ("agents", _, "confinement") => {
+        (Category::Agents, _, "confinement") => {
             "terrarium runs it in the sandbox profile, agent trusts the agent's own harness (the default for claude and codex), direct runs it unconfined. A terminal is never sandboxed. Enter chooses from the list."
         }
-        ("agents", _, "default") => {
+        (Category::Agents, _, "default") => {
             "The agent a new session starts with when none is chosen. One agent should be true."
         }
-        ("sandbox", _, "preset") => {
+        (Category::Sandbox, _, "preset") => {
             "Terrarium preset the private sandbox profile is generated from; i creates it, v validates it, e opens it."
         }
-        ("sandbox", _, "profile") => "The Seatbelt profile itself. Ctrl-S writes it back.",
-        ("branches", _, "base") => {
+        (Category::Sandbox, _, "profile") => "The Seatbelt profile itself. Ctrl-S writes it back.",
+        (Category::Branches, _, "base") => {
             "The trunk: feature branches start here and merge back here. The deployment block measures every environment against it."
         }
-        ("branches", _, "protected") => {
+        (Category::Branches, _, "protected") => {
             "Branches lg will not delete or force-push, as a JSON list."
         }
-        ("branches", "environments", "id") => {
+        (Category::Branches, "environments", "id") => {
             "Key the rest of lg refers to the environment by. Release actions and the deployment block are wired for dev and test; other ids are stored but not shown there yet."
         }
-        ("branches", "environments", "name") => {
+        (Category::Branches, "environments", "name") => {
             "Label shown in the deployment block and the branch action menu."
         }
-        ("branches", "environments", "branch") => {
+        (Category::Branches, "environments", "branch") => {
             "The branch that deploys this environment, for example develop or test. Empty means lg cannot tell what is deployed and hides the environment."
         }
-        ("branches", "environments", "remote") => {
+        (Category::Branches, "environments", "remote") => {
             "Remote whose copy of the branch is the deployed one."
         }
-        ("branches", _, "remote") => {
+        (Category::Branches, _, "remote") => {
             "Remote whose copies of the deploy branches count as released, so a stale local checkout does not report a release that never landed."
         }
-        ("branches", "environments", "url") => "Where the environment runs. Informational.",
-        ("branches", "promotions", "from") => {
+        (Category::Branches, "environments", "url") => "Where the environment runs. Informational.",
+        (Category::Branches, "promotions", "from") => {
             "Source of the promotion: an environment id, or the word feature for the branch you are on."
         }
-        ("branches", "promotions", "to") => "Environment id the source is promoted into.",
-        ("branches", "promotions", "strategy") => {
+        (Category::Branches, "promotions", "to") => "Environment id the source is promoted into.",
+        (Category::Branches, "promotions", "strategy") => {
             "How the promotion lands: merge (a merge commit), squash (one commit), or ff-only (refuse unless fast-forward). Enter chooses from the list."
         }
-        ("branches", "promotions", "push") => {
+        (Category::Branches, "promotions", "push") => {
             "Push the environment branch to its remote after promoting."
         }
-        ("tools", _, "decorative_animations") => {
+        (Category::Tools, _, "decorative_animations") => {
             "Pulsing frames and travelling light. false holds every frame still."
         }
-        ("tools", _, "quiet_author_emails") => {
+        (Category::Tools, _, "quiet_author_emails") => {
             "Authors whose commits are not announced in activity, as a JSON list; * matches any prefix: [\"*@client.com\"]."
         }
-        ("tools", _, "editor") => {
+        (Category::Tools, _, "editor") => {
             "Program opened for a file with e. Enter offers the editors found on this machine; any other program may be typed. Empty uses $EDITOR."
         }
-        ("tools", _, "editor_args") => {
+        (Category::Tools, _, "editor_args") => {
             "Arguments for the editor, as a JSON list. The file path is appended."
         }
-        ("tools", _, "terminal") => {
+        (Category::Tools, _, "terminal") => {
             "Shell a terminal session runs. Enter offers the shells found on this machine; any other program may be typed. Empty uses $SHELL."
         }
-        ("tools", _, "terminal_args") => "Arguments for that shell, as a JSON list.",
-        ("sessions", _, "label") => {
+        (Category::Tools, _, "terminal_args") => "Arguments for that shell, as a JSON list.",
+        (Category::Sessions, _, "label") => {
             "Name shown for the session in the workspace tree. Ctrl-S renames it."
         }
-        ("sessions", _, "path") => "Working directory the session runs in.",
-        ("sessions", _, "kind") => "What is running: an agent or a plain terminal.",
-        ("sessions", _, "id") => "Internal identifier.",
+        (Category::Sessions, _, "path") => "Working directory the session runs in.",
+        (Category::Sessions, _, "kind") => "What is running: an agent or a plain terminal.",
+        (Category::Sessions, _, "id") => "Internal identifier.",
         _ => return None,
     })
 }
 
 pub(super) fn commit_edit(hub: &mut Settings) -> Result<()> {
     if hub.editing_folder {
-        hub.folder = hub.input.clone();
+        hub.folder = hub.input.text.clone();
         hub.editing_folder = false;
         hub.editing = false;
         return Ok(());
@@ -428,7 +433,7 @@ pub(super) fn commit_edit(hub: &mut Settings) -> Result<()> {
             picked = p
                 .options
                 .iter()
-                .find(|o| **o == hub.input)
+                .find(|o| **o == hub.input.text)
                 .cloned()
                 .or_else(|| (matching.len() == 1).then(|| matching[0].clone()));
         }
@@ -437,14 +442,15 @@ pub(super) fn commit_edit(hub: &mut Settings) -> Result<()> {
         }
     }
     let value = match field.value {
-        Value::String(_) => Value::String(picked.clone().unwrap_or_else(|| hub.input.clone())),
-        Value::Bool(_) => Value::Bool(hub.input.parse().context("use true or false")?),
+        Value::String(_) => Value::String(picked.clone().unwrap_or_else(|| hub.input.text.clone())),
+        Value::Bool(_) => Value::Bool(hub.input.text.parse().context("use true or false")?),
         Value::Number(_) => Value::from(
             hub.input
+                .text
                 .parse::<u64>()
                 .context("enter a nonnegative integer")?,
         ),
-        _ => serde_json::from_str(&hub.input)
+        _ => serde_json::from_str(&hub.input.text)
             .context("enter a JSON list, for example [\"--flag\", \"value\"]")?,
     };
     *hub.draft
@@ -460,7 +466,7 @@ pub(super) fn commit_edit(hub: &mut Settings) -> Result<()> {
 }
 /// The id of the environment whose branch field this is.
 pub(super) fn environment_id(hub: &Settings, field: &Field) -> Option<String> {
-    if !(hub.key() == "branches"
+    if !(hub.current_category() == Category::Branches
         && field.path.starts_with("/environments/")
         && field.key == "branch")
     {
@@ -494,6 +500,6 @@ pub(super) fn wire_environment(hub: &mut Settings, id: &str, branch: &str) {
         added.push(format!("promotion feature \u{2192} {id}"));
     }
     if !added.is_empty() {
-        hub.notice = format!("Added {}.", added.join(" and "));
+        hub.notify(NoticeKind::Info, format!("Added {}.", added.join(" and ")));
     }
 }

@@ -12,18 +12,34 @@ use super::scroll;
 
 use crate::{
     graph::{self, Pipe, SELECTED_COLOR},
-    state::{AppState, Pane, clamp_index},
+    state::{AppState, Pane, PendingAction, clamp_index},
     ui,
 };
 
+/// The rows on show, where the selection is among them, and how many there
+/// are: every commit, or the ones the `/` filter leaves.
+fn shown_rows(state: &AppState) -> (Option<Vec<usize>>, Option<usize>, usize) {
+    let selected = selected_commit_index(state);
+    match state.filtered_rows(Pane::Commits) {
+        Some(rows) => {
+            let at = selected.and_then(|idx| rows.iter().position(|row| *row == idx));
+            let len = rows.len();
+            (Some(rows), at, len)
+        }
+        None => (None, selected, state.commits.len()),
+    }
+}
+
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let selected_idx = selected_commit_index(state);
-    let count = selected_idx.map(|idx| (idx + 1, state.commits.len()));
+    let (rows, selected_row, len) = shown_rows(state);
+    let count = selected_row.map(|row| (row + 1, len));
     let title = state
         .commits_ref
         .as_deref()
         .map(|branch| format!("Commits: {branch}"))
         .unwrap_or_else(|| "Commits".to_string());
+    let title = format!("{title}{}", state.filter_title(Pane::Commits));
     let block = ui::framed_with_activity(
         4,
         &title,
@@ -33,7 +49,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         state.activity_label().is_some(),
     );
 
-    let pipe_sets = graph::pipe_sets(&state.commits);
+    let pipe_sets = state.commit_pipe_sets();
     let hash_width = visible_hash_width(&state.commits);
     let max_pipe_width = pipe_sets
         .iter()
@@ -48,11 +64,20 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         None
     };
 
-    let items: Vec<ListItem> = state
-        .commits
-        .iter()
-        .enumerate()
-        .map(|(idx, c)| {
+    // Only the rows on screen are turned into items. A filtered list leaves
+    // gaps in the history, so its rows go without the graph lanes, which
+    // would join commits that are not next to each other.
+    let offset = visible_scroll_offset(state, area);
+    let window = scroll::visible_window(len, offset, area.height);
+    let filtered = rows.is_some();
+    let items: Vec<ListItem> = window
+        .clone()
+        .filter_map(|row| {
+            rows.as_ref()
+                .map_or(Some(row), |rows| rows.get(row).copied())
+        })
+        .filter_map(|idx| state.commits.get(idx).map(|c| (c, idx)))
+        .map(|(c, idx)| {
             let is_selected_row = focused && Some(idx) == selected_idx;
             let subject_style = if state.unpushed_shas.contains(&c.sha) {
                 Style::default().fg(Color::Red)
@@ -82,17 +107,19 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
                 .checked_sub(1)
                 .and_then(|i| state.commits.get(i))
                 .map(|c| c.sha.as_str());
-            spans.extend(
-                graph_spans(
-                    &pipe_sets[idx],
-                    selected_sha,
-                    prev_sha,
-                    graph_width,
-                    c.is_first_parent,
-                )
-                .into_iter()
-                .map(|span| selected_span(span, is_selected_row)),
-            );
+            if !filtered {
+                spans.extend(
+                    graph_spans(
+                        &pipe_sets[idx],
+                        selected_sha,
+                        prev_sha,
+                        graph_width,
+                        c.is_first_parent,
+                    )
+                    .into_iter()
+                    .map(|span| selected_span(span, is_selected_row)),
+                );
+            }
             spans.push(Span::styled(
                 c.subject.clone(),
                 selected_style(subject_style, is_selected_row),
@@ -103,53 +130,112 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
 
     let list = List::new(items).block(block);
 
-    let offset = visible_scroll_offset(state, area);
-    let mut list_state = scroll::list_state(focused.then_some(selected_idx).flatten(), offset);
+    let mut list_state =
+        scroll::window_list_state(focused.then_some(selected_row).flatten(), &window);
 
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
 pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
-    let selected_idx = selected_commit_index(state);
-    state.commits_scroll_offset = scroll::selection_scroll_offset(
-        selected_idx,
-        state.commits.len(),
-        scroll::list_viewport_height(area.height),
-        state.commits_scroll_offset,
-    );
+    state.commits_list.scroll = visible_scroll_offset(state, area);
 }
 
 fn visible_scroll_offset(state: &AppState, area: Rect) -> usize {
-    let selected_idx = selected_commit_index(state);
+    let (_, selected_row, len) = shown_rows(state);
     scroll::selection_scroll_offset(
-        selected_idx,
-        state.commits.len(),
+        selected_row,
+        len,
         scroll::list_viewport_height(area.height),
-        state.commits_scroll_offset,
+        state.commits_list.scroll,
     )
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
-    state.commits_idx = selected_commit_index(state).unwrap_or(0);
+    state.commits_list.idx = selected_commit_index(state).unwrap_or(0);
     match key.code {
+        KeyCode::Char('j') | KeyCode::Down if state.step_filtered(Pane::Commits, true, 1) => {}
+        KeyCode::Char('k') | KeyCode::Up if state.step_filtered(Pane::Commits, false, 1) => {}
         KeyCode::Char('j') | KeyCode::Down => {
-            state.commits_idx = next_selectable_commit(state, state.commits_idx)
-                .unwrap_or(state.commits_idx.min(state.commits.len().saturating_sub(1)));
+            state.commits_list.idx = next_selectable_commit(state, state.commits_list.idx)
+                .unwrap_or(
+                    state
+                        .commits_list
+                        .idx
+                        .min(state.commits.len().saturating_sub(1)),
+                );
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            state.commits_idx =
-                prev_selectable_commit(state, state.commits_idx).unwrap_or(state.commits_idx);
+            state.commits_list.idx = prev_selectable_commit(state, state.commits_list.idx)
+                .unwrap_or(state.commits_list.idx);
         }
         KeyCode::Enter => {
             state.focus = Pane::Main;
         }
+        KeyCode::Char('y') => {
+            if let Some(commit) = selected_commit(state) {
+                // The list holds abbreviated names; the clipboard gets the
+                // whole one, which still names the commit once the short form
+                // stops being unique.
+                let sha = crate::git::full_sha(&commit.sha).unwrap_or(commit.sha);
+                copy_sha(state, &sha);
+            }
+        }
+        KeyCode::Char('t') => {
+            if let Some(commit) = selected_commit(state) {
+                confirm_revert(state, &commit);
+            }
+        }
+        KeyCode::Char('A') => state.open_amend_modal(),
         _ => return Ok(false),
     }
     Ok(true)
 }
 
+fn selected_commit(state: &AppState) -> Option<crate::git::Commit> {
+    selected_commit_index(state).and_then(|idx| state.commits.get(idx).cloned())
+}
+
+/// Put a commit's name on the clipboard; the status names it short.
+pub(crate) fn copy_sha(state: &mut AppState, sha: &str) {
+    let short = sha.get(..7).unwrap_or(sha).to_string();
+    state.pending_action = Some(PendingAction::CopyToClipboard {
+        label: short,
+        text: sha.to_string(),
+    });
+}
+
+/// Ask before adding a commit that undoes `commit`. A merge is refused here:
+/// undoing one needs a side chosen, and lg does not guess.
+fn confirm_revert(state: &mut AppState, commit: &crate::git::Commit) {
+    if commit.parent_count() > 1 {
+        state.set_status(
+            format!(
+                "{} is a merge commit; reverting a merge is not offered",
+                commit.sha
+            ),
+            false,
+        );
+        return;
+    }
+    let onto = state.branch.clone().unwrap_or_else(|| "HEAD".to_string());
+    state.confirm_reversible_action(
+        "Revert commit",
+        format!("Revert {} on {onto}?", commit.sha),
+        format!(
+            "{}\nAdds a new commit that undoes it. A conflict opens the conflict editor; a aborts the revert there.",
+            commit.subject
+        ),
+        PendingAction::RevertCommit {
+            sha: commit.sha.clone(),
+        },
+    );
+}
+
 pub(crate) fn selected_commit_index(state: &AppState) -> Option<usize> {
-    let idx = clamp_index(state.commits_idx, state.commits.len())?;
+    if state.selection_hidden(Pane::Commits) {
+        return None;
+    }
+    let idx = clamp_index(state.commits_list.idx, state.commits.len())?;
     if !state.commits[idx].is_graph_row() {
         return Some(idx);
     }

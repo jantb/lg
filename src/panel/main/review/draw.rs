@@ -8,6 +8,7 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 use std::collections::HashSet;
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use crate::{
     panel::markdown,
@@ -55,7 +56,7 @@ pub(in crate::panel::main) fn render(
         ))
         .alignment(Alignment::Right),
     );
-    let Some(_) = &state.review else {
+    let Some(_) = &state.review.assisted else {
         return;
     };
     let lines = render_lines(state, focused, area.width.saturating_sub(2));
@@ -80,7 +81,7 @@ pub(in crate::panel::main) fn render_lines(
     wrap_width: u16,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    let Some(review) = &state.review else {
+    let Some(review) = &state.review.assisted else {
         return lines;
     };
 
@@ -97,25 +98,22 @@ pub(in crate::panel::main) fn render_lines(
         }
     }
 
-    // File-read cache shared across this frame's source-context renders.
-    let mut cache = RenderCache::default();
-    let body_style = Style::default().fg(Color::DarkGray);
-
+    let pass = ReviewPass::new(state, wrap_width);
     for idx in visible_review_node_indices(state) {
         let node = &review.nodes[idx];
-        let selected = focused && state.review_idx == idx;
+        let selected = focused && state.review.idx == idx;
         let node_id = node.id.as_str();
         let has_children = parents_with_child.contains(node_id);
         let has_body = renders_review_body(node_id) && !node.body.is_empty();
         let drillable = parents_with_drill_child.contains(node_id);
-        let expanded = !state.review_collapsed.contains(node_id);
-        let context_open = state.review_context_open.contains(node_id);
-        let assist = review_assist_text(state, node_id);
+        let expanded = !state.review.collapsed.contains(node_id);
         let marker = if has_children || has_body {
             if expanded { "▾" } else { "▸" }
         } else {
             " "
         };
+        // The title is drawn every time: it carries the selection, and a path
+        // being flagged pulses. Everything under it comes from the cache.
         let indent = review_indent(node.depth);
         lines.push(review_title_line(
             &indent,
@@ -126,64 +124,203 @@ pub(in crate::panel::main) fn render_lines(
             drillable,
             state,
         ));
+        lines.extend(node_body_lines(state, idx, pass).iter().cloned());
+    }
+    lines
+}
 
-        if expanded || context_open || assist.is_some() {
-            let syntax_path = review_node_syntax_path(&node.title);
-            // Each section/marker line repeats this prefix — render it once.
-            let body_prefix = format!("{indent}  │ ");
-            if expanded && renders_review_body(node_id) {
-                if let Some(path) = syntax_path {
-                    if side_by_side_diff_enabled(state) {
-                        lines.extend(prefixed_side_by_side_diff_lines(
-                            &node.body,
-                            path,
-                            &body_prefix,
-                            body_style,
-                            wrap_width,
-                        ));
-                    } else {
-                        lines.extend(prefixed_unified_diff_lines(
-                            &node.body,
-                            path,
-                            &body_prefix,
-                            body_style,
-                            wrap_width,
-                        ));
-                    }
-                } else {
-                    lines.extend(markdown::render(
-                        &node.body.join("\n"),
-                        &body_prefix,
-                        wrap_width,
-                    ));
-                }
-            }
-            if context_open {
-                lines.extend(review_source_context_lines(
-                    &mut cache,
-                    state,
-                    review,
-                    node,
-                    syntax_path,
-                    &indent,
+/// One pass over the review's nodes at one width: what their lines are drawn
+/// from, worked out once for the pass rather than once per node.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::panel::main) struct ReviewPass {
+    key: u64,
+    wrap_width: u16,
+}
+
+impl ReviewPass {
+    pub(in crate::panel::main) fn new(state: &AppState, wrap_width: u16) -> Self {
+        let key = state
+            .review
+            .assisted
+            .as_ref()
+            .map_or(0, |review| review_render_key(state, review, wrap_width));
+        Self { key, wrap_width }
+    }
+}
+
+/// How many lines node `idx` takes, title included.
+pub(in crate::panel::main) fn node_line_count(
+    state: &AppState,
+    idx: usize,
+    pass: ReviewPass,
+) -> usize {
+    1 + node_body_lines(state, idx, pass).len()
+}
+
+/// The lines drawn under node `idx`'s title, from the cache when nothing they
+/// are drawn from has changed since they were.
+fn node_body_lines(
+    state: &AppState,
+    idx: usize,
+    pass: ReviewPass,
+) -> std::sync::Arc<Vec<Line<'static>>> {
+    let ReviewPass { key, wrap_width } = pass;
+    let Some(review) = &state.review.assisted else {
+        return Default::default();
+    };
+    let Some(node) = review.nodes.get(idx) else {
+        return Default::default();
+    };
+    let expanded = !state.review.collapsed.contains(&node.id);
+    let context_open = state.review.context_open.contains(&node.id);
+    let assist = review_assist_text(state, &node.id);
+    if !expanded && !context_open && assist.is_none() {
+        return Default::default();
+    }
+
+    let node_key = {
+        let mut hasher = DefaultHasher::new();
+        (expanded, context_open, assist).hash(&mut hasher);
+        hasher.finish()
+    };
+    let mut cache = state.review_render_cache.borrow_mut();
+    if cache.key != Some(key) {
+        cache.key = Some(key);
+        cache.bodies.clear();
+        cache.files.clear();
+    }
+    if let Some((cached, lines)) = cache.bodies.get(&idx)
+        && *cached == node_key
+    {
+        return lines.clone();
+    }
+    let lines = std::sync::Arc::new(build_node_body(
+        state,
+        review,
+        node,
+        NodeShape {
+            expanded,
+            context_open,
+            assist,
+        },
+        &mut RenderCache::new(&mut cache.files),
+        wrap_width,
+    ));
+    cache.bodies.insert(idx, (node_key, lines.clone()));
+    lines
+}
+
+/// Everything the review pane's lines are drawn from, apart from what each
+/// node's own key covers: the review itself, the notes and findings shown in
+/// its source context, the files that context reads, the width and the view.
+fn review_render_key(
+    state: &AppState,
+    review: &crate::git::AssistedReview,
+    wrap_width: u16,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    review.nodes.hash(&mut hasher);
+    wrap_width.hash(&mut hasher);
+    state.diff_viewport_width.hash(&mut hasher);
+    side_by_side_diff_enabled(state).hash(&mut hasher);
+    state.files_generation.hash(&mut hasher);
+    // Assists and findings show up as notes in other nodes' source context,
+    // so they belong to every node, not only to the one they are about.
+    let mut assists: Vec<_> = state.review.assists.iter().collect();
+    assists.sort();
+    assists.hash(&mut hasher);
+    let mut findings: Vec<_> = state.review.style_findings.iter().collect();
+    findings.sort_by(|a, b| a.0.cmp(b.0));
+    findings.hash(&mut hasher);
+    if !state.review.context_open.is_empty()
+        && let Some(job) = &state.review_assist_job
+    {
+        // A streaming answer is only worth a full redraw where a source
+        // context could be showing its first line.
+        (&job.node_id, &job.output).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// What decides a node's lines besides the review as a whole.
+struct NodeShape<'a> {
+    expanded: bool,
+    context_open: bool,
+    assist: Option<&'a str>,
+}
+
+fn build_node_body(
+    state: &AppState,
+    review: &crate::git::AssistedReview,
+    node: &crate::git::ReviewNode,
+    shape: NodeShape<'_>,
+    cache: &mut RenderCache<'_>,
+    wrap_width: u16,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let NodeShape {
+        expanded,
+        context_open,
+        assist,
+    } = shape;
+    let body_style = Style::default().fg(Color::DarkGray);
+    let node_id = node.id.as_str();
+    let has_body = renders_review_body(node_id) && !node.body.is_empty();
+    let indent = review_indent(node.depth);
+    let syntax_path = review_node_syntax_path(&node.title);
+    // Each section/marker line repeats this prefix — render it once.
+    let body_prefix = format!("{indent}  │ ");
+    if expanded && renders_review_body(node_id) {
+        if let Some(path) = syntax_path {
+            if side_by_side_diff_enabled(state) {
+                lines.extend(prefixed_side_by_side_diff_lines(
+                    &node.body,
+                    path,
+                    &body_prefix,
+                    body_style,
+                    wrap_width,
+                ));
+            } else {
+                lines.extend(prefixed_unified_diff_lines(
+                    &node.body,
+                    path,
+                    &body_prefix,
+                    body_style,
+                    wrap_width,
                 ));
             }
-            if let Some(assist) = assist {
-                lines.push(Line::from(Span::styled(
-                    format!("{indent}  │ llm"),
-                    Style::default()
-                        .fg(Color::LightCyan)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                lines.extend(markdown::render(assist, &body_prefix, wrap_width));
-            }
-            if (expanded && has_body) || context_open || assist.is_some() {
-                lines.push(Line::from(Span::styled(
-                    format!("{indent}  └─"),
-                    body_style,
-                )));
-            }
+        } else {
+            lines.extend(markdown::render(
+                &node.body.join("\n"),
+                &body_prefix,
+                wrap_width,
+            ));
         }
+    }
+    if context_open {
+        lines.extend(review_source_context_lines(
+            cache,
+            state,
+            review,
+            node,
+            syntax_path,
+            &indent,
+        ));
+    }
+    if let Some(assist) = assist {
+        lines.push(Line::from(Span::styled(
+            format!("{indent}  │ llm"),
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.extend(markdown::render(assist, &body_prefix, wrap_width));
+    }
+    if (expanded && has_body) || context_open || assist.is_some() {
+        lines.push(Line::from(Span::styled(
+            format!("{indent}  └─"),
+            body_style,
+        )));
     }
     lines
 }
@@ -359,9 +496,9 @@ enum ReviewPathStyle {
 }
 
 fn review_path_style(path: &str, state: &AppState) -> ReviewPathStyle {
-    if let Some(finding) = state.review_style_findings.get(path) {
+    if let Some(finding) = state.review.style_findings.get(path) {
         ReviewPathStyle::Finding(finding.severity)
-    } else if state.review_flag_active_path.as_deref() == Some(path) {
+    } else if state.review.flag_active_path.as_deref() == Some(path) {
         ReviewPathStyle::Active(state.animation_ms)
     } else {
         ReviewPathStyle::Normal

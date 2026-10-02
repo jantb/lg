@@ -156,30 +156,32 @@ pub(super) fn select_mouse_row(
     match pane {
         Pane::Files => {
             let rows = state.tree_rows();
-            if let Some(idx) = list_row_at(rects.files, row, rows.len(), state.files_scroll_offset)
-            {
-                state.files_idx = idx;
+            if let Some(idx) = list_row_at(rects.files, row, rows.len(), state.files_list.scroll) {
+                state.files_list.idx = idx;
             }
         }
+        // A filtered list shows only the rows the filter leaves, so the row
+        // clicked is counted among those.
         Pane::Branches => {
-            if let Some(idx) = list_row_at(
+            let rows = state.filtered_rows(Pane::Branches);
+            let len = rows.as_ref().map_or(state.branch_list_len(), Vec::len);
+            if let Some(at) = list_row_at(
                 rects.branches,
                 row,
-                state.branch_list_len(),
+                len,
                 crate::panel::branches::branch_scroll_offset(state),
             ) {
-                *state.branch_list_idx_mut() = idx;
+                *state.branch_list_idx_mut() = rows.map_or(at, |rows| rows[at]);
             }
         }
         Pane::Commits => {
-            if let Some(idx) = list_row_at(
-                rects.commits,
-                row,
-                state.commits.len(),
-                state.commits_scroll_offset,
-            ) && !state.commits[idx].is_graph_row()
-            {
-                state.commits_idx = idx;
+            let rows = state.filtered_rows(Pane::Commits);
+            let len = rows.as_ref().map_or(state.commits.len(), Vec::len);
+            if let Some(at) = list_row_at(rects.commits, row, len, state.commits_list.scroll) {
+                let idx = rows.map_or(at, |rows| rows[at]);
+                if !state.commits[idx].is_graph_row() {
+                    state.commits_list.idx = idx;
+                }
             }
         }
         Pane::Main => {
@@ -205,10 +207,15 @@ pub(super) fn scroll_list(
     scroll_down: bool,
     amount: usize,
 ) -> bool {
+    if matches!(pane, Pane::Branches | Pane::Commits) && state.filtered_rows(pane).is_some() {
+        let before = selected_index(state, pane);
+        state.step_filtered(pane, scroll_down, amount);
+        return before != selected_index(state, pane);
+    }
     match pane {
         Pane::Files => {
             let len = state.tree_rows().len();
-            scroll_index(&mut state.files_idx, len, scroll_down, amount)
+            scroll_index(&mut state.files_list.idx, len, scroll_down, amount)
         }
         Pane::Branches => {
             let len = state.branch_list_len();
@@ -220,6 +227,17 @@ pub(super) fn scroll_list(
             scroll_index(&mut state.nested_repo_tree_idx, len, scroll_down, amount)
         }
         Pane::Main => false,
+    }
+}
+
+fn selected_index(state: &AppState, pane: Pane) -> usize {
+    match pane {
+        Pane::Branches => match state.branch_view {
+            crate::state::BranchView::Local => state.branches_list.idx,
+            crate::state::BranchView::Remote => state.remote_branches_list.idx,
+        },
+        Pane::Commits => state.commits_list.idx,
+        _ => 0,
     }
 }
 
@@ -240,13 +258,13 @@ fn scroll_index(idx: &mut usize, len: usize, scroll_down: bool, amount: usize) -
 }
 
 fn scroll_commits(state: &mut AppState, scroll_down: bool, amount: usize) -> bool {
-    let old = state.commits_idx;
+    let old = state.commits_list.idx;
     if state.commits.is_empty() {
-        state.commits_idx = 0;
-        return old != state.commits_idx;
+        state.commits_list.idx = 0;
+        return old != state.commits_list.idx;
     }
 
-    let mut idx = state.commits_idx.min(state.commits.len() - 1);
+    let mut idx = state.commits_list.idx.min(state.commits.len() - 1);
     for _ in 0..amount {
         let next = if scroll_down {
             state
@@ -269,8 +287,8 @@ fn scroll_commits(state: &mut AppState, scroll_down: bool, amount: usize) -> boo
         };
         idx = next;
     }
-    state.commits_idx = idx;
-    old != state.commits_idx
+    state.commits_list.idx = idx;
+    old != state.commits_list.idx
 }
 
 #[cfg(test)]
@@ -306,28 +324,28 @@ mod tests {
     fn scroll_list_clamps_branches_to_bounds() {
         let mut state = AppState::new();
         state.branches = vec![branch("one"), branch("two"), branch("three")];
-        state.branches_idx = 1;
+        state.branches_list.idx = 1;
 
         assert!(scroll_list(&mut state, Pane::Branches, true, 99));
-        assert_eq!(state.branches_idx, 2);
+        assert_eq!(state.branches_list.idx, 2);
         assert!(!scroll_list(&mut state, Pane::Branches, true, 99));
-        assert_eq!(state.branches_idx, 2);
+        assert_eq!(state.branches_list.idx, 2);
 
         assert!(scroll_list(&mut state, Pane::Branches, false, 99));
-        assert_eq!(state.branches_idx, 0);
+        assert_eq!(state.branches_list.idx, 0);
         assert!(!scroll_list(&mut state, Pane::Branches, false, 99));
-        assert_eq!(state.branches_idx, 0);
+        assert_eq!(state.branches_list.idx, 0);
     }
 
     #[test]
     fn scroll_list_clamps_empty_lists_to_zero() {
         let mut state = AppState::new();
-        state.commits_idx = 42;
+        state.commits_list.idx = 42;
 
         assert!(scroll_list(&mut state, Pane::Commits, true, 3));
-        assert_eq!(state.commits_idx, 0);
+        assert_eq!(state.commits_list.idx, 0);
         assert!(!scroll_list(&mut state, Pane::Commits, false, 3));
-        assert_eq!(state.commits_idx, 0);
+        assert_eq!(state.commits_list.idx, 0);
     }
 
     #[test]
@@ -353,24 +371,24 @@ mod tests {
         let file_rows = state.tree_rows().len();
 
         assert!(scroll_list(&mut state, Pane::Files, true, 99));
-        assert_eq!(state.files_idx, file_rows - 1);
+        assert_eq!(state.files_list.idx, file_rows - 1);
         assert!(scroll_list(&mut state, Pane::Files, false, 99));
-        assert_eq!(state.files_idx, 0);
+        assert_eq!(state.files_list.idx, 0);
 
         state.commits = vec![commit("a"), commit("b"), commit("c")];
         assert!(scroll_list(&mut state, Pane::Commits, true, 2));
-        assert_eq!(state.commits_idx, 2);
+        assert_eq!(state.commits_list.idx, 2);
         assert!(scroll_list(&mut state, Pane::Commits, false, 1));
-        assert_eq!(state.commits_idx, 1);
+        assert_eq!(state.commits_list.idx, 1);
     }
 
     #[test]
     fn scroll_list_clamps_stale_indices_when_scrolling_up() {
         let mut state = AppState::new();
         state.branches = vec![branch("one"), branch("two"), branch("three")];
-        state.branches_idx = usize::MAX;
+        state.branches_list.idx = usize::MAX;
         assert!(scroll_list(&mut state, Pane::Branches, false, 1));
-        assert_eq!(state.branches_idx, 1);
+        assert_eq!(state.branches_list.idx, 1);
 
         state.files = vec![
             FileEntry {
@@ -384,14 +402,14 @@ mod tests {
                 y: 'M',
             },
         ];
-        state.files_idx = usize::MAX;
+        state.files_list.idx = usize::MAX;
         assert!(scroll_list(&mut state, Pane::Files, false, 1));
-        assert_eq!(state.files_idx, state.tree_rows().len() - 2);
+        assert_eq!(state.files_list.idx, state.tree_rows().len() - 2);
 
         state.commits = vec![commit("a"), commit("b"), commit("c")];
-        state.commits_idx = usize::MAX;
+        state.commits_list.idx = usize::MAX;
         assert!(scroll_list(&mut state, Pane::Commits, false, 1));
-        assert_eq!(state.commits_idx, 1);
+        assert_eq!(state.commits_list.idx, 1);
     }
 
     #[test]
@@ -401,27 +419,27 @@ mod tests {
 
         for _ in 0..20 {
             scroll_list(&mut state, Pane::Branches, true, 3);
-            assert!(state.branches_idx < state.branches.len());
+            assert!(state.branches_list.idx < state.branches.len());
         }
-        assert_eq!(state.branches_idx, state.branches.len() - 1);
+        assert_eq!(state.branches_list.idx, state.branches.len() - 1);
 
         for _ in 0..20 {
             scroll_list(&mut state, Pane::Branches, false, 3);
-            assert!(state.branches_idx < state.branches.len());
+            assert!(state.branches_list.idx < state.branches.len());
         }
-        assert_eq!(state.branches_idx, 0);
+        assert_eq!(state.branches_list.idx, 0);
 
         state.commits = vec![commit("a"), commit("b"), commit("c"), commit("d")];
         for _ in 0..20 {
             scroll_list(&mut state, Pane::Commits, true, 3);
-            assert!(state.commits_idx < state.commits.len());
+            assert!(state.commits_list.idx < state.commits.len());
         }
-        assert_eq!(state.commits_idx, state.commits.len() - 1);
+        assert_eq!(state.commits_list.idx, state.commits.len() - 1);
 
         for _ in 0..20 {
             scroll_list(&mut state, Pane::Commits, false, 3);
-            assert!(state.commits_idx < state.commits.len());
+            assert!(state.commits_list.idx < state.commits.len());
         }
-        assert_eq!(state.commits_idx, 0);
+        assert_eq!(state.commits_list.idx, 0);
     }
 }

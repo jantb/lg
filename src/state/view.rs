@@ -1,6 +1,6 @@
 //! Which panes are on screen, which one has focus, and what the main pane shows.
 
-use super::{AppState, Modal, TreeRow, build_tree_rows};
+use super::{AppState, Modal, TreeRow};
 
 /// Which shape lg is in. Git mode is the full git view; workspace mode trades
 /// the git panes for one tall list of checkouts and their sessions, with the
@@ -57,6 +57,17 @@ pub enum DiffViewMode {
     SideBySide,
 }
 
+/// Which hunk of the diff pane the hunk keys act on: the `index`th hunk of
+/// those on `side`. Held per side rather than as one position, so staging a
+/// hunk — which moves it from the worktree half of the pane to the staged
+/// half — leaves the cursor on the next unstaged hunk instead of wherever the
+/// shift put it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HunkCursor {
+    pub side: crate::git::hunk::HunkSide,
+    pub index: usize,
+}
+
 /// What the diff pane's highlighted rows were built from: the row-count key,
 /// plus the text's length and buffer, which also catch a text replaced without
 /// [`AppState::set_diff_text`].
@@ -65,6 +76,22 @@ pub type DiffRenderKey = (DiffRowCountKey, usize, usize);
 /// The diff pane's highlighted rows and what they were built from.
 pub type DiffRenderCache =
     std::cell::RefCell<Option<(DiffRenderKey, Vec<ratatui::text::Line<'static>>)>>;
+
+/// The file pane's rows and the files and folds they were built from.
+#[derive(Debug)]
+pub struct TreeRowsCache {
+    files: Vec<crate::git::FileEntry>,
+    collapsed: std::collections::HashSet<String>,
+    filter: String,
+    rows: std::sync::Arc<Vec<TreeRow>>,
+}
+
+/// The commit graph's lanes and the commits they were worked out for.
+#[derive(Debug)]
+pub struct PipeSetsCache {
+    commits: Vec<crate::git::Commit>,
+    pipes: std::sync::Arc<Vec<Vec<crate::graph::Pipe>>>,
+}
 
 /// Everything the rendered row count of the diff pane depends on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,10 +102,49 @@ pub struct DiffRowCountKey {
     pub log_view: bool,
 }
 
+/// Where the marker line a capped diff ends with starts.
+pub const DIFF_TRUNCATED_MARKER: &str = "\u{2026} diff truncated";
+
+/// `text` cut to at most `cap` lines, ending with a line that says how many
+/// were left out.
+///
+/// The cut is made where a file or a hunk starts when there is one in the last
+/// half of what is kept, so every hunk shown is whole and can be staged as it
+/// is; the hunks past the cut are not shown and cannot be picked.
+pub fn cap_diff_text(text: String, cap: usize) -> String {
+    let total = text.lines().count();
+    if total <= cap {
+        return text;
+    }
+    let lines: Vec<&str> = text.lines().take(cap + 1).collect();
+    let boundary = |line: &str| {
+        line.starts_with("@@ ") || line.starts_with("diff --git ") || line.starts_with("== ")
+    };
+    let cut = (cap / 2..=cap.min(lines.len().saturating_sub(1)))
+        .rev()
+        .find(|&at| boundary(lines[at]))
+        .unwrap_or(cap);
+    let mut out = lines[..cut].join("\n");
+    out.push('\n');
+    out.push_str(&format!(
+        "{DIFF_TRUNCATED_MARKER} \u{2014} {} more lines not shown (o opens the file in the IDE; git diff outside lg shows all of it)",
+        total - cut
+    ));
+    out.push('\n');
+    out
+}
+
 impl AppState {
     /// Replace the main pane's text and keep the line count in step. Scrolling
     /// is bounded by that count, so the two must not drift apart.
+    ///
+    /// The same text again changes nothing, so a refresh that reloads an
+    /// unchanged diff keeps the highlighted rows already built for it.
     pub fn set_diff_text(&mut self, text: String) {
+        let text = cap_diff_text(text, crate::config::DIFF_LINE_CAP);
+        if text == self.diff_text {
+            return;
+        }
         self.diff_text = text;
         self.diff_text_version = self.diff_text_version.wrapping_add(1);
         self.diff_line_count = self.diff_text.lines().count().min(u16::MAX as usize) as u16;
@@ -96,8 +162,53 @@ impl AppState {
             })
     }
 
-    pub fn tree_rows(&self) -> Vec<TreeRow> {
-        build_tree_rows(&self.files, &self.collapsed_dirs)
+    /// The file pane's rows, built again only when the files, the folded
+    /// folders or the `/` filter differ from what the last rows were built
+    /// from. A filter leaves the files whose path has it in, and the folders
+    /// above them.
+    pub fn tree_rows(&self) -> std::sync::Arc<Vec<TreeRow>> {
+        let filter = if self.files_filter.active() {
+            self.files_filter.text.trim().to_lowercase()
+        } else {
+            String::new()
+        };
+        let mut cache = self.tree_rows_cache.borrow_mut();
+        if let Some(cached) = cache.as_ref()
+            && cached.files == self.files
+            && cached.collapsed == self.collapsed_dirs
+            && cached.filter == filter
+        {
+            return cached.rows.clone();
+        }
+        let rows = std::sync::Arc::new(super::tree::build_tree_rows_where(
+            &self.files,
+            &self.collapsed_dirs,
+            |file| filter.is_empty() || file.path.to_lowercase().contains(&filter),
+        ));
+        *cache = Some(TreeRowsCache {
+            files: self.files.clone(),
+            collapsed: self.collapsed_dirs.clone(),
+            filter,
+            rows: rows.clone(),
+        });
+        rows
+    }
+
+    /// The commit graph's lanes, one set per commit, worked out again only
+    /// when the commits differ from the ones they were last worked out for.
+    pub fn commit_pipe_sets(&self) -> std::sync::Arc<Vec<Vec<crate::graph::Pipe>>> {
+        let mut cache = self.pipe_sets_cache.borrow_mut();
+        if let Some(cached) = cache.as_ref()
+            && cached.commits == self.commits
+        {
+            return cached.pipes.clone();
+        }
+        let pipes = std::sync::Arc::new(crate::graph::pipe_sets(&self.commits));
+        *cache = Some(PipeSetsCache {
+            commits: self.commits.clone(),
+            pipes: pipes.clone(),
+        });
+        pipes
     }
 
     /// The session the main pane is showing, if it is showing one and that
@@ -238,6 +349,13 @@ impl AppState {
     /// needs input. Jobs are not listed here: they already poll at their own
     /// faster rate.
     pub fn wants_animation(&self) -> bool {
+        self.decorative_motion()
+            || (self.decorative_animations && self.sessions.activity_counts().1 > 0)
+    }
+
+    /// The part of [`AppState::wants_animation`] that is smooth motion rather
+    /// than a slow pulse: a modal's orbiting frame and a settling status line.
+    pub fn decorative_motion(&self) -> bool {
         // Every modal carries the orbiting frame, so an open one keeps the
         // screen repainting. The review chat is docked into the main pane
         // rather than drawn as a box, so it has no frame to move.
@@ -245,15 +363,14 @@ impl AppState {
             && (!matches!(self.modal, Modal::None | Modal::ReviewChat)
                 || self.status.as_ref().is_some_and(|status| {
                     crate::ui::palette::status_animating(status.age_ms(), status.is_error)
-                })
-                || self.sessions.activity_counts().1 > 0)
+                }))
     }
 
     /// Which set of keys the main pane is listening for right now.
     pub fn main_keys(&self) -> MainKeys {
         if self.session_view().is_some() {
             MainKeys::Session
-        } else if matches!(self.diff_source, DiffSource::Review) && self.review.is_some() {
+        } else if matches!(self.diff_source, DiffSource::Review) && self.review.assisted.is_some() {
             MainKeys::Review
         } else {
             MainKeys::Diff
@@ -276,5 +393,46 @@ mod tests {
             state.diff_line_count, 1,
             "a shorter text must not keep the old bound"
         );
+    }
+
+    #[test]
+    fn reloading_the_same_diff_keeps_what_was_built_for_it() {
+        let mut state = AppState::new();
+        state.set_diff_text("diff --git a/x b/x\n+one".to_string());
+        let version = state.diff_text_version;
+
+        state.set_diff_text("diff --git a/x b/x\n+one".to_string());
+        assert_eq!(
+            state.diff_text_version, version,
+            "an unchanged diff must not throw away its highlighted rows"
+        );
+
+        state.set_diff_text("diff --git a/x b/x\n+two".to_string());
+        assert_ne!(state.diff_text_version, version, "a changed one must");
+    }
+}
+
+#[cfg(test)]
+mod cap_tests {
+    use super::*;
+
+    #[test]
+    fn a_diff_within_the_cap_is_left_alone() {
+        let text = "a\nb\nc\n".to_string();
+        assert_eq!(cap_diff_text(text.clone(), 3), text);
+    }
+
+    /// The cut falls where a hunk starts, so the hunk before it is whole.
+    #[test]
+    fn a_long_diff_is_cut_where_a_hunk_starts() {
+        let text = "@@ -1,2 +1,2 @@\n-a\n+b\n c\n@@ -9,2 +9,2 @@\n-d\n+e\n f\n".to_string();
+
+        let capped = cap_diff_text(text, 6);
+
+        let kept: Vec<&str> = capped.lines().collect();
+        assert_eq!(kept[..4], ["@@ -1,2 +1,2 @@", "-a", "+b", " c"]);
+        assert!(kept[4].starts_with(DIFF_TRUNCATED_MARKER), "{capped}");
+        assert!(kept[4].contains("4 more lines"), "{capped}");
+        assert_eq!(kept.len(), 5);
     }
 }

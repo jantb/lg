@@ -61,6 +61,25 @@ pub fn flow_reset_branch_from_main_with_progress(
         progress();
         run(&["checkout", target_branch])?;
     }
+    // Where the remote branch is now, read before anything moves: the push
+    // below may only overwrite exactly that, so a commit someone pushed to it
+    // since the fetch is refused rather than thrown away.
+    let upstream = branch_upstream(target_branch)?;
+    let (push_remote, remote_branch) = upstream
+        .as_deref()
+        .and_then(upstream_push_target)
+        .map(|(remote, branch)| (remote.to_string(), branch.to_string()))
+        .unwrap_or_else(|| (configured_remote.to_string(), target_branch.to_string()));
+    // Empty when the remote has no such branch: the lease then holds only
+    // while it still has none.
+    let expected = run(&[
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        &format!("refs/remotes/{push_remote}/{remote_branch}"),
+    ])
+    .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    .unwrap_or_default();
     progress();
     let safety_ref = create_safety_ref(&format!("reset-{target_branch}"))?;
     progress();
@@ -70,7 +89,9 @@ pub fn flow_reset_branch_from_main_with_progress(
         &format!("{configured_remote}/{configured_base}"),
     ])?;
     progress();
-    run(&["push", "--force"])?;
+    let lease = format!("--force-with-lease=refs/heads/{remote_branch}:{expected}");
+    let refspec = format!("refs/heads/{target_branch}:refs/heads/{remote_branch}");
+    run(&["push", &lease, &push_remote, &refspec])?;
     if current_branch != target_branch {
         progress();
         run(&["checkout", current_branch])?;
@@ -277,28 +298,55 @@ pub fn delete_remote_branch(name: &str) -> Result<String> {
     })
 }
 
+/// Delete the local branches that track nothing, as far as git agrees to.
+///
+/// Each goes through `git branch -d`, which keeps a branch holding commits the
+/// checkout does not have: having no upstream is often exactly what a branch
+/// nobody pushed yet looks like, and that is the one whose loss would hurt.
+/// lg's own backups never come up at all. The first line sums up; each line
+/// after it names one branch and what became of it, with git's reason for any
+/// it kept.
 pub fn flow_clean_orphan_branches(current_branch: &str) -> Result<String> {
     run(&["fetch"])?;
-    let branches = orphan_branches()?;
+    let branches = orphan_branches(current_branch)?;
     if branches.is_empty() {
         return Ok("no orphan branches found".to_string());
     }
 
-    let mut deleted = 0usize;
-    let mut skipped = 0usize;
+    let mut deleted = Vec::new();
+    let mut kept = Vec::new();
     for branch in branches {
-        if branch == current_branch {
-            skipped += 1;
-            continue;
-        }
-        match run(&["branch", "-D", &branch]) {
-            Ok(_) => deleted += 1,
-            Err(_) => skipped += 1,
+        match run(&["branch", "-d", &branch.name]) {
+            Ok(_) => deleted.push(format!("deleted {}", branch.name)),
+            Err(err) => kept.push(format!(
+                "kept {}: {}",
+                branch.name,
+                refusal_reason(&err.to_string())
+            )),
         }
     }
-    Ok(format!(
-        "deleted {deleted} orphan branches, skipped {skipped}"
-    ))
+    let mut report = vec![format!(
+        "deleted {} orphan branches, kept {}",
+        deleted.len(),
+        kept.len()
+    )];
+    report.extend(deleted);
+    report.extend(kept);
+    Ok(report.join("\n"))
+}
+
+/// The line of a failed `git branch -d` that says why, without the command
+/// it was run as or git's hints after it.
+fn refusal_reason(message: &str) -> String {
+    let reason = message
+        .split_once(" failed: ")
+        .map_or(message, |(_, reason)| reason);
+    reason
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.strip_prefix("error: ").unwrap_or(line).to_string())
+        .unwrap_or_else(|| "git refused".to_string())
 }
 
 fn diff_against_base(base_ref: &str, branch: &str) -> Result<String> {
@@ -357,20 +405,44 @@ fn checkout_output_with_stash_notice(mut output: String, stashed: bool) -> Strin
     output
 }
 
-fn orphan_branches() -> Result<Vec<String>> {
+/// A local branch that tracks nothing, and what deleting it would lose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrphanBranch {
+    pub name: String,
+    /// Commits on it the checkout does not have. `git branch -d` keeps a
+    /// branch while this is above zero.
+    pub unmerged: u32,
+    /// Commits on it that no remote-tracking branch has: the ones that exist
+    /// only here.
+    pub unpushed: u32,
+}
+
+/// The branches cleaning orphans would try to delete: every local branch with
+/// no upstream, or one whose upstream is gone, other than the protected ones,
+/// the one checked out, and lg's own backups.
+pub fn orphan_branches(current_branch: &str) -> Result<Vec<OrphanBranch>> {
     let out = run(&["branch", "--format=%(refname:short)"])?;
     let text = String::from_utf8_lossy(&out.stdout);
     let mut orphans = Vec::new();
     for branch in text.lines().map(str::trim).filter(|b| !b.is_empty()) {
-        if is_protected_branch_name(branch) {
+        if is_protected_branch_name(branch) || is_safety_ref(branch) || branch == current_branch {
             continue;
         }
         let upstream = git_command(&["rev-parse", "--abbrev-ref", &format!("{branch}@{{u}}")])
             .output()
             .with_context(|| format!("failed to check upstream for {branch}"))?;
-        if !upstream.status.success() {
-            orphans.push(branch.to_string());
+        if upstream.status.success() {
+            continue;
         }
+        let unpushed = run(&["rev-list", "--count", branch, "--not", "--remotes"])?;
+        orphans.push(OrphanBranch {
+            name: branch.to_string(),
+            unmerged: commits_missing_from("HEAD", branch)?,
+            unpushed: String::from_utf8_lossy(&unpushed.stdout)
+                .trim()
+                .parse()
+                .with_context(|| format!("parsing how much of {branch} is unpushed"))?,
+        });
     }
     Ok(orphans)
 }

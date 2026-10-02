@@ -65,7 +65,7 @@ fn flow_merge_main_into_all_local_branches_clean(original_branch: Option<&str>) 
     let mut skipped_push = 0usize;
     let mut failed_pushes = Vec::new();
     for branch in branches {
-        if branch.name == configured_base.as_str() || branch.name.starts_with(SAFETY_REF_PREFIX) {
+        if branch.name == configured_base.as_str() || is_safety_ref(&branch.name) {
             continue;
         }
 
@@ -94,7 +94,7 @@ fn flow_merge_main_into_all_local_branches_clean(original_branch: Option<&str>) 
             let refspec = format!("refs/heads/{}:refs/heads/{remote_branch}", branch.name);
             match run_combined(&["push", remote, &refspec]) {
                 Ok(_) => pushed += 1,
-                Err(_) => failed_pushes.push(format!("{remote}/{remote_branch}")),
+                Err(err) => failed_pushes.push((format!("{remote}/{remote_branch}"), err)),
             }
         } else {
             skipped_push += 1;
@@ -114,11 +114,19 @@ fn flow_merge_main_into_all_local_branches_clean(original_branch: Option<&str>) 
         "merged {base_ref} into {merged} branches, pushed {pushed}, skipped push {skipped_push}"
     );
     if !failed_pushes.is_empty() {
+        let targets: Vec<&str> = failed_pushes
+            .iter()
+            .map(|(target, _)| target.as_str())
+            .collect();
         summary.push_str(&format!(
             ", failed push {} ({})",
             failed_pushes.len(),
-            failed_pushes.join(", ")
+            targets.join(", ")
         ));
+        // Why each one failed, after the line the status bar has room for.
+        for (target, err) in &failed_pushes {
+            summary.push_str(&format!("\n{target}: {err:#}"));
+        }
     }
     Ok(summary)
 }

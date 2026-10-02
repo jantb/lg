@@ -12,6 +12,7 @@ use crate::{
     ui,
 };
 
+mod hunks;
 mod review;
 mod source;
 
@@ -91,7 +92,7 @@ fn render_session(
 }
 
 fn render_main_content(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
-    if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
+    if matches!(state.diff_source, DiffSource::Review) && state.review.assisted.is_some() {
         review::render(state, area, frame, focused);
         return;
     }
@@ -105,9 +106,14 @@ fn render_main_content(state: &AppState, area: Rect, frame: &mut Frame, focused:
     } else {
         "Diff"
     };
+    // Where the hunk keys would act, while they can: the pane has the keyboard.
+    let title = match focused.then(|| hunks::title_note(state)).flatten() {
+        Some(note) => format!("{title} \u{b7} {note}"),
+        None => title.to_string(),
+    };
     let block = ui::framed_with_activity(
         0,
-        title,
+        &title,
         focused,
         None,
         state.animation_ms,
@@ -119,24 +125,47 @@ fn render_main_content(state: &AppState, area: Rect, frame: &mut Frame, focused:
     let offset = state.diff_offset.min(max_offset);
 
     let para = if matches!(state.diff_source, DiffSource::Branch(_)) {
-        let lines: Vec<ratatui::text::Line> = log_render_lines(&state.diff_text)
-            .into_iter()
-            .map(ui::highlight_log_line)
-            .collect();
+        // The log is wrapped by the paragraph, so its rows are whole lines; the
+        // ones above the window still count towards where it starts.
+        let mut lines = with_diff_rows(state, viewport_width, <[_]>::to_vec);
+        if focused
+            && let Some(line) = hunks::cursor_log_line(state)
+            && let Some(row) = lines.get_mut(line)
+        {
+            mark_cursor(row);
+        }
         Paragraph::new(lines).scroll((offset, 0))
     } else {
         // Diff rows come pre-wrapped to the pane, one row per screen line, so
         // the window on screen is a slice of them.
-        Paragraph::new(visible_diff_rows(
+        let mut rows = visible_diff_rows(
             state,
             viewport_width,
             offset as usize,
             area.height.saturating_sub(2) as usize,
-        ))
+        );
+        if focused
+            && hunks::hunks_shown(state)
+            && let Some(row) = hunks::cursor_row(state, viewport_width)
+            && let Some(row) = row
+                .checked_sub(offset as usize)
+                .and_then(|at| rows.get_mut(at))
+        {
+            mark_cursor(row);
+        }
+        Paragraph::new(rows)
     };
     let para = para.block(block).wrap(Wrap { trim: false });
 
     frame.render_widget(para, area);
+}
+
+/// Draw the hunk or commit cursor on its row.
+fn mark_cursor(row: &mut ratatui::text::Line<'static>) {
+    row.style = row
+        .style
+        .patch(crate::ui::palette::selection())
+        .add_modifier(ratatui::style::Modifier::BOLD);
 }
 
 /// Keys for a session that is on screen but not holding the keyboard. The set
@@ -158,13 +187,7 @@ fn session_handle_key(
                 state.set_status("this session has ended", true);
             }
         }
-        KeyCode::Char('x') => {
-            state.sessions.close(id);
-            match state.sessions.focused() {
-                Some(next) => state.show_session(next),
-                None => state.show_diff(),
-            }
-        }
+        KeyCode::Char('x') => crate::panel::environments::request_close_session(state, id, true),
         KeyCode::Backspace => state.show_diff(),
         _ => return Ok(false),
     }
@@ -174,7 +197,8 @@ fn session_handle_key(
 pub fn review_chat_layout(state: &AppState, area: Rect) -> std::rc::Rc<[Rect]> {
     let min_review_height = 6.min(area.height);
     let desired_chat_height = state
-        .review_chat_height
+        .review
+        .chat_height
         .unwrap_or_else(|| (area.height / 3).clamp(8, 18));
     let chat_height = desired_chat_height.min(area.height.saturating_sub(min_review_height));
     Layout::default()
@@ -187,7 +211,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
         return session_handle_key(state, id, key);
     }
 
-    if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
+    if matches!(state.diff_source, DiffSource::Review) && state.review.assisted.is_some() {
         return review::handle_key(state, key);
     }
 
@@ -207,10 +231,21 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
         }
         KeyCode::Char('g') => {
             state.diff_offset = 0;
+            hunks::follow_scroll(state);
         }
         KeyCode::Char('G') => {
             state.diff_offset = max_offset;
+            hunks::follow_scroll(state);
         }
+        KeyCode::Char(']') if hunks::hunks_shown(state) || hunks::log_shown(state) => {
+            hunks::step(state, true);
+        }
+        KeyCode::Char('[') if hunks::hunks_shown(state) || hunks::log_shown(state) => {
+            hunks::step(state, false);
+        }
+        KeyCode::Char(' ') if hunks::hunks_shown(state) => hunks::toggle_stage(state),
+        KeyCode::Char('d') if hunks::hunks_shown(state) => hunks::discard(state),
+        KeyCode::Char('C') if hunks::log_shown(state) => hunks::cherry_pick(state),
         KeyCode::Char('v') if diff_view_toggle_available(state) => {
             state.diff_view_mode = match state.diff_view_mode {
                 DiffViewMode::Unified => DiffViewMode::SideBySide,
@@ -272,53 +307,100 @@ pub fn scroll(state: &mut AppState, scroll_down: bool, amount: u16) {
     } else {
         offset.saturating_sub(amount)
     };
+    if !matches!(state.diff_source, DiffSource::Review) {
+        hunks::follow_scroll(state);
+    }
+}
+
+/// Bring the hunk cursor and the scroll position back together after the
+/// pane's text was read again.
+pub fn settle_cursor(state: &mut AppState) {
+    if hunks::hunks_shown(state) || hunks::log_shown(state) {
+        hunks::settle(state);
+    }
 }
 
 pub fn select_mouse_row(state: &mut AppState, area: Rect, row: u16) {
-    if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
+    if matches!(state.diff_source, DiffSource::Review) && state.review.assisted.is_some() {
         review::select_mouse_row(state, area, row);
     }
 }
 
-/// The highlighted diff rows from `offset` for `height` rows, highlighting the
-/// whole diff only when the text, the width or the view has changed since the
-/// last frame.
+/// The highlighted diff rows from `offset` for `height` rows.
 fn visible_diff_rows(
     state: &AppState,
     width: u16,
     offset: usize,
     height: usize,
 ) -> Vec<ratatui::text::Line<'static>> {
+    with_diff_rows(state, width, |rows| {
+        let start = offset.min(rows.len());
+        let end = start.saturating_add(height).min(rows.len());
+        rows[start..end].to_vec()
+    })
+}
+
+/// Hand `f` the main pane's highlighted rows at `width`: a diff wrapped to the
+/// pane one row per screen line, or the branch log a line per row. The whole
+/// text is highlighted only when it, the width or the view has changed since
+/// it last was — the rows on screen and the count that bounds scrolling both
+/// come from the one highlighting pass.
+fn with_diff_rows<R>(
+    state: &AppState,
+    width: u16,
+    f: impl FnOnce(&[ratatui::text::Line<'static>]) -> R,
+) -> R {
+    let log_view = matches!(state.diff_source, DiffSource::Branch(_));
+    let side_by_side = side_by_side_diff_enabled(state);
     let key = (
         crate::state::DiffRowCountKey {
             text_version: state.diff_text_version,
-            viewport_width: width,
-            view_mode: state.diff_view_mode,
-            log_view: false,
+            // The log is not wrapped here, so its rows do not depend on width.
+            viewport_width: if log_view { 0 } else { width },
+            view_mode: if side_by_side {
+                DiffViewMode::SideBySide
+            } else {
+                DiffViewMode::Unified
+            },
+            log_view,
         },
         state.diff_text.len(),
         state.diff_text.as_ptr() as usize,
     );
     let mut cache = state.diff_render_cache.borrow_mut();
     if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {
-        let rows = if side_by_side_diff_enabled(state) {
+        let rows = if log_view {
+            log_render_lines(&state.diff_text)
+                .into_iter()
+                .map(|line| owned_line(ui::highlight_log_line(line)))
+                .collect()
+        } else if side_by_side {
             ui::highlight_side_by_side_diff_text(&state.diff_text, width)
         } else {
             ui::highlight_diff_text_wrapped(&state.diff_text, width)
         };
         *cache = Some((key, rows));
     }
-    let rows = cache
+    f(cache
         .as_ref()
         .map(|(_, rows)| rows.as_slice())
-        .unwrap_or_default();
-    let start = offset.min(rows.len());
-    let end = start.saturating_add(height).min(rows.len());
-    rows[start..end].to_vec()
+        .unwrap_or_default())
+}
+
+fn owned_line(line: ratatui::text::Line<'_>) -> ratatui::text::Line<'static> {
+    ratatui::text::Line {
+        spans: line
+            .spans
+            .into_iter()
+            .map(|span| ratatui::text::Span::styled(span.content.into_owned(), span.style))
+            .collect(),
+        style: line.style,
+        alignment: line.alignment,
+    }
 }
 
 pub fn max_scroll_offset(state: &AppState) -> u16 {
-    if matches!(state.diff_source, DiffSource::Review) && state.review.is_some() {
+    if matches!(state.diff_source, DiffSource::Review) && state.review.assisted.is_some() {
         return scroll_bound(review::render_line_count(state), state.diff_viewport_height);
     }
     scroll_bound(rendered_line_count(state), state.diff_viewport_height)
@@ -357,10 +439,8 @@ fn count_rendered_lines(state: &AppState) -> usize {
             state.diff_viewport_width,
         );
     }
-    if side_by_side_diff_enabled(state) {
-        return ui::side_by_side_diff_line_count(&state.diff_text, state.diff_viewport_width);
-    }
-    ui::diff_text_line_count(&state.diff_text, state.diff_viewport_width)
+    // The rows the pane draws, counted: highlighting them once serves both.
+    with_diff_rows(state, state.diff_viewport_width, <[_]>::len)
 }
 
 fn side_by_side_diff_enabled(state: &AppState) -> bool {
@@ -416,20 +496,13 @@ fn diff_path_at_offset(diff_text: &str, offset: u16) -> Option<String> {
 }
 
 fn diff_path_from_line(line: &str) -> Option<String> {
-    let path = line
-        .strip_prefix("diff --git a/")
-        .and_then(|rest| rest.split_once(" b/").map(|(_, path)| path))
-        .or_else(|| line.strip_prefix("+++ b/"))
-        .or_else(|| line.strip_prefix("--- a/"))?
-        .trim();
-    (path != "/dev/null" && is_supported_source_path(path)).then(|| path.to_string())
-}
-
-fn is_supported_source_path(path: &str) -> bool {
-    matches!(
-        std::path::Path::new(path)
-            .extension()
-            .and_then(|extension| extension.to_str()),
-        Some("kt" | "kts" | "java" | "md" | "rs" | "cs" | "csx")
-    )
+    let path = match crate::git::patch::diff_git_paths(line) {
+        Some((_, path)) => path,
+        None => line
+            .strip_prefix("+++ b/")
+            .or_else(|| line.strip_prefix("--- a/"))?
+            .to_string(),
+    };
+    let path = path.trim();
+    (path != "/dev/null" && crate::language::is_source_path(path)).then(|| path.to_string())
 }

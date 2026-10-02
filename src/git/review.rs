@@ -48,7 +48,7 @@ pub struct AssistedReview {
     pub nodes: Vec<ReviewNode>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ReviewNode {
     pub id: String,
     pub parent: Option<String>,

@@ -4,12 +4,13 @@
 use crate::state::ConflictResolveMsg;
 
 use super::super::App;
-use super::{drain_messages, join_worker, tick_spinner};
+use super::{drain_messages, join_worker, reap_stopped, tick_spinner};
 
 impl App {
     pub(in crate::app) fn drain_conflict_resolve_job(&mut self) {
         let mut handle = None;
-        for msg in drain_messages(&self.state.conflict_resolve_job) {
+        let drained = drain_messages(&self.state.conflict_resolve_job);
+        for msg in drained.messages {
             match msg {
                 ConflictResolveMsg::Started { path, index, total } => {
                     if let Some(job) = self.state.conflict_resolve_job.as_mut() {
@@ -20,7 +21,7 @@ impl App {
                 }
                 ConflictResolveMsg::Resolved { path, verdicts } => {
                     self.advance_conflict_resolve(&path);
-                    self.state.conflict_resolved.insert(path.clone());
+                    self.state.conflict.resolved.insert(path.clone());
                     self.state.set_status(
                         format!(
                             "local model settled {} conflict(s) in {path}",
@@ -28,7 +29,7 @@ impl App {
                         ),
                         false,
                     );
-                    self.state.conflict_model_notes.insert(path, verdicts);
+                    self.state.conflict.model_notes.insert(path, verdicts);
                 }
                 ConflictResolveMsg::Declined { path, reason } => {
                     self.advance_conflict_resolve(&path);
@@ -44,6 +45,11 @@ impl App {
                     self.finish_conflict_resolve(resolved, declined);
                 }
             }
+        }
+        if let Some((_, stopped)) =
+            reap_stopped(&mut self.state.conflict_resolve_job, drained.disconnected)
+        {
+            self.state.set_status(stopped, true);
         }
         join_worker(handle);
         tick_spinner(&mut self.state.conflict_resolve_job);
@@ -91,7 +97,7 @@ impl App {
             }
             log.push_str(&format!("Prompts and answers are in {}", path.display()));
         }
-        self.state.conflict_log = log;
+        self.state.conflict.log = log;
 
         if declined.is_empty() {
             let count = resolved.len();

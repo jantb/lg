@@ -30,8 +30,18 @@ struct DirNode {
 }
 
 pub fn build_tree_rows(files: &[FileEntry], collapsed: &HashSet<String>) -> Vec<TreeRow> {
+    build_tree_rows_where(files, collapsed, |_| true)
+}
+
+/// [`build_tree_rows`] over the files `keep` passes. A file row still names
+/// its file by where it is in `files`, so what acts on a row acts on that file.
+pub fn build_tree_rows_where(
+    files: &[FileEntry],
+    collapsed: &HashSet<String>,
+    keep: impl Fn(&FileEntry) -> bool,
+) -> Vec<TreeRow> {
     let mut root = DirNode::default();
-    for (idx, file) in files.iter().enumerate() {
+    for (idx, file) in files.iter().enumerate().filter(|(_, file)| keep(file)) {
         let mut node = &mut root;
         let path = file.path.trim_end_matches('/');
         let parts: Vec<&str> = if path.is_empty() {

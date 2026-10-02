@@ -1,12 +1,16 @@
 //! Agent profiles and executable discovery. Commands are never interpreted by a shell.
-use crate::{preferences::Agent, session::SessionKind, term::Spawn};
+use crate::{
+    preferences::{Adapter, Agent, Confinement},
+    session::SessionKind,
+    term::Spawn,
+};
 use std::path::{Path, PathBuf};
 pub fn kind(agent: &Agent) -> SessionKind {
-    match agent.adapter.as_str() {
-        "claude" => SessionKind::Claude,
-        "codex" => SessionKind::Codex,
-        "pi" => SessionKind::Pi,
-        _ => SessionKind::Terminal,
+    match agent.adapter {
+        Adapter::Claude => SessionKind::Claude,
+        Adapter::Codex => SessionKind::Codex,
+        Adapter::Pi => SessionKind::Pi,
+        Adapter::Terminal => SessionKind::Terminal,
     }
 }
 /// The claude profile from Settings, the default one when several are
@@ -16,14 +20,14 @@ pub fn claude_profile() -> Agent {
     let agents = crate::preferences::load().config.agents;
     agents
         .iter()
-        .find(|agent| agent.adapter == "claude" && agent.default)
-        .or_else(|| agents.iter().find(|agent| agent.adapter == "claude"))
+        .find(|agent| agent.adapter == Adapter::Claude && agent.default)
+        .or_else(|| agents.iter().find(|agent| agent.adapter == Adapter::Claude))
         .cloned()
         .unwrap_or_else(|| Agent {
             name: "Claude".into(),
-            adapter: "claude".into(),
+            adapter: Adapter::Claude,
             executable: "claude".into(),
-            confinement: crate::preferences::default_confinement("claude").into(),
+            confinement: crate::preferences::default_confinement(Adapter::Claude),
             ..Default::default()
         })
 }
@@ -42,19 +46,19 @@ pub fn resolve(program: &str) -> Option<PathBuf> {
         .find(|p| executable(p))
 }
 /// The confinement mode in the words the picker and Settings show.
-pub fn confinement_label(confinement: &str) -> &'static str {
+pub fn confinement_label(confinement: Confinement) -> &'static str {
     match confinement {
-        "terrarium" => "Terrarium sandbox",
-        "agent" => "agent's own permission sandbox",
-        _ => "no sandbox",
+        Confinement::Terrarium => "Terrarium sandbox",
+        Confinement::Agent => "agent's own permission sandbox",
+        Confinement::Direct => "no sandbox",
     }
 }
 /// What lg can do with a session of this agent, in plain words.
 pub fn capabilities(agent: &Agent) -> &'static str {
-    match agent.adapter.as_str() {
-        "claude" => "prompt, live activity, resume",
-        "terminal" => "plain terminal, no agent integration",
-        _ => "prompt only; activity and resume not tracked",
+    match agent.adapter {
+        Adapter::Claude => "prompt, live activity, resume",
+        Adapter::Terminal => "plain terminal, no agent integration",
+        Adapter::Codex | Adapter::Pi => "prompt only; activity and resume not tracked",
     }
 }
 pub fn describe(agent: &Agent) -> String {
@@ -64,10 +68,10 @@ pub fn describe(agent: &Agent) -> String {
         resolve(&agent.executable)
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| format!("{} not installed", agent.executable)),
-        if agent.adapter == "terminal" {
-            confinement_label("direct")
+        if agent.adapter == Adapter::Terminal {
+            confinement_label(Confinement::Direct)
         } else {
-            confinement_label(&agent.confinement)
+            confinement_label(agent.confinement)
         },
         capabilities(agent)
     )
@@ -103,15 +107,15 @@ pub fn spawn(
     } else {
         spawn.program = executable.to_string_lossy().into_owned();
     }
-    if agent.confinement == "direct" {
+    if agent.confinement == Confinement::Direct {
         spawn.args.clear();
     }
     spawn.args.extend(agent.args.clone());
-    if !agent.model.is_empty() && agent.adapter != "terminal" {
+    if !agent.model.is_empty() && agent.adapter != Adapter::Terminal {
         spawn.args.extend(["--model".into(), agent.model.clone()]);
     }
     if let Some(prompt) = prompt.filter(|p| !p.trim().is_empty()) {
-        if agent.adapter == "pi" {
+        if agent.adapter == Adapter::Pi {
             spawn.args.push("--".into());
         }
         spawn.args.push(prompt.into());

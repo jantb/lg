@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::config::global::claude_dir;
 use crate::error::{Result, TerrariumError};
 
-use super::claude_settings::{ensure_claude_runtime_settings, write_json_atomically};
+use super::claude_settings::{ensure_claude_runtime_settings, object_entry, write_json_atomically};
 use super::gitignore::ensure_project_gitignore_entries;
 
 /// Registers an HTTP MCP server for `project_root` at the given port.
@@ -18,6 +18,9 @@ use super::gitignore::ensure_project_gitignore_entries;
 pub fn register_mcp_server_http(project_root: &Path, port: u16) -> Result<()> {
     let server_name = project_runtime_server_name(project_root);
     let settings_path = project_mcp_path(project_root);
+    // Read before anything is written, so a file that cannot be edited stops
+    // the run with nothing touched.
+    let mut settings = read_mcp_settings(&settings_path)?;
     ensure_project_gitignore_entries(
         project_root,
         &[
@@ -29,34 +32,24 @@ pub fn register_mcp_server_http(project_root: &Path, port: u16) -> Result<()> {
     )?;
     ensure_claude_runtime_settings(project_root)?;
 
-    let mut settings: serde_json::Value = if settings_path.exists() {
-        let content = std::fs::read_to_string(&settings_path)?;
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
     let entry = serde_json::json!({
         "type": "http",
         "url": server_url(port),
         "timeout": crate::mcp::tools::MCP_TOOL_TIMEOUT_MS
     });
 
-    settings
-        .as_object_mut()
-        .unwrap()
-        .entry("mcpServers")
-        .or_insert_with(|| serde_json::json!({}))
-        .as_object_mut()
-        .unwrap();
-    let servers = settings["mcpServers"].as_object_mut().unwrap();
+    let servers = object_entry(&mut settings, "mcpServers");
     servers.remove(&project_server_name(project_root));
     servers.insert(server_name.clone(), entry);
 
     if let Some(parent) = settings_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    write_json_atomically(&settings_path, "json.tmp", &settings)?;
+    write_json_atomically(
+        &settings_path,
+        "json.tmp",
+        &serde_json::Value::Object(settings),
+    )?;
 
     println!(
         "terrarium: registered MCP server '{server_name}' (HTTP) in {}",
@@ -100,11 +93,18 @@ pub fn unregister_mcp_server_http(project_root: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let content = std::fs::read_to_string(&settings_path)?;
-    let mut value: serde_json::Value =
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}));
+    // A file that cannot be read as JSON cannot be holding an entry this run
+    // wrote, and rewriting it would lose whatever it does hold.
+    let mut root = match read_mcp_settings(&settings_path) {
+        Ok(root) => root,
+        Err(TerrariumError::InvalidJson { .. }) => return Ok(()),
+        Err(err) => return Err(err),
+    };
 
-    let Some(servers) = value["mcpServers"].as_object_mut() else {
+    let Some(servers) = root
+        .get_mut("mcpServers")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
         return Ok(());
     };
 
@@ -116,9 +116,7 @@ pub fn unregister_mcp_server_http(project_root: &Path) -> Result<()> {
     }
 
     // A file that held only terrarium's entry was terrarium's alone.
-    if servers.is_empty()
-        && let Some(root) = value.as_object_mut()
-    {
+    if servers.is_empty() {
         root.remove("mcpServers");
         if root.is_empty() {
             std::fs::remove_file(&settings_path)?;
@@ -126,23 +124,38 @@ pub fn unregister_mcp_server_http(project_root: &Path) -> Result<()> {
         }
     }
 
-    write_json_atomically(&settings_path, "json.tmp", &value)
+    write_json_atomically(&settings_path, "json.tmp", &serde_json::Value::Object(root))
 }
 
 fn registered_mcp_server_http_url(project_root: &Path) -> Result<Option<String>> {
     let settings_path = project_mcp_path(project_root);
-    if !settings_path.exists() {
-        return Ok(None);
-    }
-
-    let content = std::fs::read_to_string(&settings_path)?;
-    let value: serde_json::Value =
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}));
-
-    Ok(value["mcpServers"]
-        .get(project_runtime_server_name(project_root))
-        .and_then(|entry| entry["url"].as_str())
+    Ok(read_mcp_settings(&settings_path)?
+        .get("mcpServers")
+        .and_then(|servers| servers.get(project_runtime_server_name(project_root)))
+        .and_then(|entry| entry.get("url"))
+        .and_then(serde_json::Value::as_str)
         .map(ToOwned::to_owned))
+}
+
+/// Reads `.mcp.json` as the object it has to be, empty when there is none yet.
+///
+/// The file is shared with every other MCP server the user registered, so one
+/// that does not parse, or parses to something other than an object, is an
+/// error rather than a blank slate: writing terrarium's entry over it would
+/// silently drop theirs.
+fn read_mcp_settings(path: &Path) -> Result<serde_json::Map<String, serde_json::Value>> {
+    if !path.exists() {
+        return Ok(serde_json::Map::new());
+    }
+    let content = std::fs::read_to_string(path)?;
+    let invalid = |reason: String| TerrariumError::InvalidJson {
+        path: path.display().to_string(),
+        reason,
+    };
+    match serde_json::from_str(&content).map_err(|err| invalid(err.to_string()))? {
+        serde_json::Value::Object(root) => Ok(root),
+        _ => Err(invalid("the top level is not an object".to_string())),
+    }
 }
 
 fn server_url(port: u16) -> String {
@@ -541,6 +554,63 @@ mod tests {
             s["permissions"]["disableAutoMode"], "enable",
             "only the value terrarium itself wrote may be removed"
         );
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Other servers live in the same file. One that does not parse is the
+    /// user's to fix; writing terrarium's entry over it would drop theirs.
+    #[test]
+    fn register_mcp_server_http_leaves_an_unparseable_mcp_json_untouched() {
+        let (base, dir, _guard) = temp_project();
+        let broken = r#"{"mcpServers": {"theirs": {"command": "x"}},"#;
+        fs::write(dir.join(".mcp.json"), broken).unwrap();
+
+        let result = register_mcp_server_http(&dir, 12345);
+
+        assert!(result.is_err(), "a broken .mcp.json must fail the run");
+        assert_eq!(fs::read_to_string(dir.join(".mcp.json")).unwrap(), broken);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn register_mcp_server_http_rejects_a_non_object_mcp_json_without_panicking() {
+        let (base, dir, _guard) = temp_project();
+        fs::write(dir.join(".mcp.json"), "[1, 2]").unwrap();
+
+        let result = register_mcp_server_http(&dir, 12345);
+
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(dir.join(".mcp.json")).unwrap(), "[1, 2]");
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn register_mcp_server_http_replaces_a_non_object_server_list() {
+        let (base, dir, _guard) = temp_project();
+        fs::write(
+            dir.join(".mcp.json"),
+            r#"{"mcpServers": "nonsense", "otherSetting": true}"#,
+        )
+        .unwrap();
+
+        register_mcp_server_http(&dir, 12345).unwrap();
+
+        let (v, key) = read_mcp_json(&dir);
+        assert_eq!(v["mcpServers"][&key]["url"], "http://127.0.0.1:12345/mcp");
+        assert_eq!(v["otherSetting"], true);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn unregister_mcp_server_http_leaves_an_unreadable_mcp_json_alone() {
+        let (base, dir, _guard) = temp_project();
+        for content in ["[1, 2]", "{not json"] {
+            fs::write(dir.join(".mcp.json"), content).unwrap();
+
+            unregister_mcp_server_http(&dir).unwrap();
+
+            assert_eq!(fs::read_to_string(dir.join(".mcp.json")).unwrap(), content);
+        }
         fs::remove_dir_all(&base).unwrap();
     }
 }

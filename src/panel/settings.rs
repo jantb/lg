@@ -33,34 +33,110 @@ use fields::*;
 use input::*;
 pub use input::{handle_key, handle_mouse, handle_paste, poll};
 
-const CATEGORIES: &[(&str, &str)] = &[
-    ("identity", "Identity"),
-    ("writing", "Writing"),
-    ("models", "Models"),
-    ("agents", "Agents"),
-    ("sandbox", "Sandbox"),
-    ("branches", "Branches & Environments"),
-    ("tools", "Interface & Tools"),
-    ("activity", "Activity & Setup"),
-    ("sessions", "Sessions"),
-];
+/// The key table section the settings screen's keys come from right now.
+pub fn key_section(hub: &Settings) -> &'static str {
+    if hub.editing {
+        "Settings: editing"
+    } else {
+        "Settings"
+    }
+}
+
+/// Whether the field being edited offers a list to pick from.
+pub fn editing_with_picker(hub: &Settings) -> bool {
+    hub.editing && picking(hub)
+}
+
+/// The groups of settings the screen lists down its left side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Category {
+    Identity,
+    Writing,
+    Models,
+    Agents,
+    Sandbox,
+    Branches,
+    Tools,
+    Activity,
+    Sessions,
+}
+impl Category {
+    pub const ALL: [Self; 9] = [
+        Self::Identity,
+        Self::Writing,
+        Self::Models,
+        Self::Agents,
+        Self::Sandbox,
+        Self::Branches,
+        Self::Tools,
+        Self::Activity,
+        Self::Sessions,
+    ];
+    /// The table the category's settings are saved under, and what the
+    /// sources of the loaded configuration are keyed by.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Identity => "identity",
+            Self::Writing => "writing",
+            Self::Models => "models",
+            Self::Agents => "agents",
+            Self::Sandbox => "sandbox",
+            Self::Branches => "branches",
+            Self::Tools => "tools",
+            Self::Activity => "activity",
+            Self::Sessions => "sessions",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Identity => "Identity",
+            Self::Writing => "Writing",
+            Self::Models => "Models",
+            Self::Agents => "Agents",
+            Self::Sandbox => "Sandbox",
+            Self::Branches => "Branches & Environments",
+            Self::Tools => "Interface & Tools",
+            Self::Activity => "Activity & Setup",
+            Self::Sessions => "Sessions",
+        }
+    }
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|category| *category == self)
+            .unwrap_or(0)
+    }
+}
+const CATEGORIES: [Category; 9] = Category::ALL;
+/// What a notice under the fields reports, which is what colours it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoticeKind {
+    Info,
+    Success,
+    /// Something is held back until it is confirmed or dealt with.
+    Warning,
+    Error,
+}
 /// One line on what each category holds, shown above its fields.
-fn describe_category(key: &str) -> &'static str {
-    match key {
-        "identity" => "Who commits made from lg are attributed to, and how widely that applies.",
-        "writing" => "How commit messages, pull request text and reviews are phrased and sized.",
-        "models" => "The language model lg talks to, and where it is reached.",
-        "agents" => {
+fn describe_category(category: Category) -> &'static str {
+    match category {
+        Category::Identity => {
+            "Who commits made from lg are attributed to, and how widely that applies."
+        }
+        Category::Writing => {
+            "How commit messages, pull request text and reviews are phrased and sized."
+        }
+        Category::Models => "The language model lg talks to, and where it is reached.",
+        Category::Agents => {
             "The coding agents and shells a session can run, and how tightly each is confined."
         }
-        "sandbox" => "The macOS Seatbelt profile confined agents run under.",
-        "branches" => {
+        Category::Sandbox => "The macOS Seatbelt profile confined agents run under.",
+        Category::Branches => {
             "The trunk, the protected branches, the environments that deploy, and how a change is promoted between them."
         }
-        "tools" => "The programs lg hands off to, and how the interface behaves.",
-        "activity" => "What lg found on this machine, and the most recent status messages.",
-        "sessions" => "The agent and terminal sessions currently open in this workspace.",
-        _ => "",
+        Category::Tools => "The programs lg hands off to, and how the interface behaves.",
+        Category::Activity => "What lg found on this machine, and the most recent status messages.",
+        Category::Sessions => "The agent and terminal sessions currently open in this workspace.",
     }
 }
 /// Width of the category column, including its marker.
@@ -107,9 +183,11 @@ pub struct Settings {
     pub draft: Value,
     original: Value,
     pub editing: bool,
-    pub input: String,
+    pub input: crate::panel::text_input::TextInput,
     pub notice: String,
-    notice_error: bool,
+    notice_kind: NoticeKind,
+    /// The unsaved-changes warning is showing, so another Esc discards.
+    discard_armed: bool,
     pub source: String,
     pub query: String,
     searching: bool,
@@ -119,7 +197,6 @@ pub struct Settings {
     /// shows it every frame, and locating a checkout means asking git.
     scope_files: Vec<(Scope, String)>,
     editing_folder: bool,
-    cursor: usize,
     /// Local branch names, offered when a field names a branch.
     branches: Vec<String>,
     /// The models the endpoint serves, offered when a field names a model.
@@ -138,6 +215,9 @@ pub struct Settings {
     /// click has to be mapped onto a row.
     scroll: Cell<usize>,
     diagnostics: Option<std::sync::mpsc::Receiver<String>>,
+    /// A session that is still working, and the key (`x` close, `R` restart)
+    /// pressed on it once: pressing it again does it.
+    session_armed: Option<(char, crate::session::SessionId)>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -149,9 +229,10 @@ impl Default for Settings {
             draft: json!({}),
             original: json!({}),
             editing: false,
-            input: String::new(),
+            input: Default::default(),
             notice: String::new(),
-            notice_error: false,
+            notice_kind: NoticeKind::Info,
+            discard_armed: false,
             source: String::new(),
             query: String::new(),
             searching: false,
@@ -160,7 +241,6 @@ impl Default for Settings {
             scope_files: Vec::new(),
             editing_folder: false,
             diagnostics: None,
-            cursor: 0,
             branches: Vec::new(),
             models: Vec::new(),
             editors: Vec::new(),
@@ -168,12 +248,22 @@ impl Default for Settings {
             choice: None,
             typed: false,
             scroll: Cell::new(0),
+            session_armed: None,
         }
     }
 }
 impl Settings {
+    fn current_category(&self) -> Category {
+        CATEGORIES[self.category]
+    }
     fn key(&self) -> &'static str {
-        CATEGORIES[self.category].0
+        self.current_category().key()
+    }
+    /// Show `text` under the fields, coloured by `kind`.
+    fn notify(&mut self, kind: NoticeKind, text: impl Into<String>) {
+        self.notice = text.into();
+        self.notice_kind = kind;
+        self.discard_armed = false;
     }
     fn dirty(&self) -> bool {
         self.draft != self.original || self.editing
@@ -181,7 +271,7 @@ impl Settings {
     fn reload(&mut self) {
         let loaded = preferences::load();
         let value = serde_json::to_value(&loaded.config).unwrap_or_default();
-        self.draft = if self.key() == "identity" {
+        self.draft = if self.current_category() == Category::Identity {
             let author = crate::git::author_config().ok();
             json!({"scope":"Repository", "folder":crate::git::repo_root().unwrap_or_default(), "name":author.as_ref().and_then(|a| a.name.clone()).unwrap_or_default(), "email":author.and_then(|a| a.email).unwrap_or_default()})
         } else {
@@ -189,7 +279,7 @@ impl Settings {
         };
         self.original = self.draft.clone();
         self.source = loaded.sources.get(self.key()).cloned().unwrap_or_else(|| {
-            if self.key() == "branches" {
+            if self.current_category() == Category::Branches {
                 preferences::DETECTED_SOURCE.into()
             } else {
                 "Built-in defaults / inherited Git configuration".into()
@@ -203,8 +293,12 @@ impl Settings {
         {
             self.source.push_str(&format!("; {key}: {source}"));
         }
-        self.notice = loaded.errors.join("\n");
-        self.notice_error = !loaded.errors.is_empty();
+        let kind = if loaded.errors.is_empty() {
+            NoticeKind::Info
+        } else {
+            NoticeKind::Error
+        };
+        self.notify(kind, loaded.errors.join("\n"));
         self.editing = false;
         self.selected = 0;
         self.scroll.set(0);
@@ -215,9 +309,9 @@ impl Settings {
         self.draft.pointer(path) != self.original.pointer(path)
     }
 }
-pub fn open(state: &mut AppState, category: usize) {
+pub fn open(state: &mut AppState, category: Category) {
     state.settings_hub = Settings {
-        category,
+        category: category.index(),
         ..Settings::default()
     };
     state.settings_hub.folder = preferences::default_folder().display().to_string();
@@ -243,7 +337,7 @@ pub fn open(state: &mut AppState, category: usize) {
 }
 /// The sessions category edits the live session list rather than a file.
 fn load_sessions(state: &mut AppState) {
-    if state.settings_hub.category != 8 {
+    if state.settings_hub.current_category() != Category::Sessions {
         return;
     }
     state.settings_hub.draft = Value::Array(state.sessions.iter().map(|s| json!({"id": s.id.to_string(), "label":s.label, "path":s.cwd.display().to_string(), "kind":s.kind.label()})).collect());
@@ -253,7 +347,10 @@ fn load_sessions(state: &mut AppState) {
 fn switch_category(state: &mut AppState, category: usize) {
     let hub = &mut state.settings_hub;
     if hub.dirty() {
-        hub.notice = "Save or discard edits before changing category or scope.".into();
+        hub.notify(
+            NoticeKind::Warning,
+            "Save or discard edits before changing category or scope.",
+        );
         return;
     }
     hub.category = category % CATEGORIES.len();
@@ -263,7 +360,7 @@ fn switch_category(state: &mut AppState, category: usize) {
 }
 fn move_selection(state: &mut AppState, down: bool, steps: usize) {
     let hub = &mut state.settings_hub;
-    let last = if hub.key() == "activity" {
+    let last = if hub.current_category() == Category::Activity {
         state.status_history.len().saturating_sub(1)
     } else {
         fields(hub).len().saturating_sub(1)
@@ -280,13 +377,13 @@ fn local_branches(state: &AppState) -> Vec<String> {
 /// Whether the field names a branch of this repository: the integration
 /// branch or the branch an environment deploys.
 fn names_branch(hub: &Settings, field: &Field) -> bool {
-    hub.key() == "branches"
+    hub.current_category() == Category::Branches
         && (field.path == "/base"
             || (field.path.starts_with("/environments/") && field.key == "branch"))
 }
 /// Whether the field names the model requests are sent to.
 fn names_model(hub: &Settings, field: &Field) -> bool {
-    hub.key() == "models" && field.path == "/model"
+    hub.current_category() == Category::Models && field.path == "/model"
 }
 /// The programs named by `env` variables and found on PATH out of `known`,
 /// in that order, each once. What the editor and terminal fields offer: the
@@ -413,7 +510,7 @@ mod tests {
         assert!(!state.settings_hub.editing);
         handle_mouse(&mut state, area, &click);
         assert!(state.settings_hub.editing);
-        assert_eq!(state.settings_hub.input, "origin");
+        assert_eq!(state.settings_hub.input.text, "origin");
     }
 
     #[test]
@@ -439,6 +536,38 @@ mod tests {
     }
 
     /// A hub over the writing category with the default preferences.
+    /// A check whose worker died must not leave "Checking…" up for good.
+    #[test]
+    fn an_agent_check_that_dies_says_so_instead_of_checking_forever() {
+        let mut state = AppState::default();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        state.settings_hub.diagnostics = Some(rx);
+        drop(tx);
+
+        poll(&mut state);
+
+        assert!(state.settings_hub.diagnostics.is_none());
+        assert_eq!(state.settings_hub.notice_kind, NoticeKind::Error);
+        assert!(
+            state.settings_hub.notice.contains("stopped unexpectedly"),
+            "{}",
+            state.settings_hub.notice
+        );
+    }
+
+    #[test]
+    fn a_finished_agent_check_shows_its_report() {
+        let mut state = AppState::default();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        state.settings_hub.diagnostics = Some(rx);
+        tx.send("claude 1.0".into()).unwrap();
+
+        poll(&mut state);
+
+        assert!(state.settings_hub.diagnostics.is_none());
+        assert_eq!(state.settings_hub.notice, "claude 1.0");
+    }
+
     fn writing_hub() -> AppState {
         let mut state = AppState::default();
         state.decorative_animations = false;
@@ -498,7 +627,7 @@ mod tests {
             "an unsupported language is refused"
         );
         assert!(
-            state.settings_hub.notice_error,
+            state.settings_hub.notice_kind == NoticeKind::Error,
             "{}",
             state.settings_hub.notice
         );

@@ -10,14 +10,16 @@
 use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, TryRecvError};
 
 use crate::github::{
     MergeMethod, NewPullRequest, Owners, PrFilter, PullRequest, RepoInfo, Repository,
 };
+use crate::panel::text_input::{Edit, TextInput};
 use crate::state::{AppState, GitHubAction, Modal, PendingAction};
+use work::{Pending, take_answer};
 
 mod draw;
+mod work;
 
 pub use draw::render;
 
@@ -35,7 +37,7 @@ pub enum Mode {
     #[default]
     Browse,
     /// Writing what goes with a review or a comment.
-    Compose { kind: Compose, text: String },
+    Compose { kind: Compose, text: TextInput },
     /// Choosing how to merge.
     Merge(MergeForm),
     /// Asking before a pull request is closed.
@@ -114,15 +116,12 @@ impl CreateField {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateForm {
     pub branch: String,
-    pub title: String,
-    pub base: String,
-    pub body: String,
+    pub title: TextInput,
+    pub base: TextInput,
+    pub body: TextInput,
     pub draft: bool,
     pub field: CreateField,
 }
-
-/// A list on its way from GitHub.
-type Pending<T> = Receiver<Result<T, String>>;
 
 #[derive(Debug, Default)]
 pub struct GitHub {
@@ -153,7 +152,7 @@ pub struct GitHub {
     pub owners: Option<Owners>,
     pub owners_loading: Option<Pending<Owners>>,
     /// What the repository list is narrowed to, typed straight into the tab.
-    pub query: String,
+    pub query: TextInput,
 
     /// Where a clone in flight is going, so lg can move there once it lands.
     pub clone_target: Option<PathBuf>,
@@ -209,33 +208,14 @@ pub fn load_pull_requests(state: &mut AppState) {
     }
     let filter = state.github.filter;
     let need_info = state.github.repo.is_none();
-    let (tx, rx) = std::sync::mpsc::channel();
-    // Left to finish on its own if replaced: it only reads, and its answer is
-    // dropped along with the channel.
-    drop(crate::git::spawn_pinned(move || {
-        let result = (|| {
-            let info = if need_info {
-                Some(crate::github::repo_info()?)
-            } else {
-                None
-            };
-            Ok::<_, anyhow::Error>((info, crate::github::pull_requests(filter)?))
-        })();
-        let _ = tx.send(result.map_err(|err| format!("{err:#}")));
-    }));
-    state.github.prs_loading = Some(rx);
+    state.github.prs_loading = Some(work::pull_requests(filter, need_info));
     state.github.prs_dir = crate::git::active_repo();
     state.github.prs_error = None;
 }
 
 pub fn load_repositories(state: &mut AppState) {
     let owner = state.github.owner.clone();
-    let (tx, rx) = std::sync::mpsc::channel();
-    drop(crate::git::spawn_pinned(move || {
-        let repos = crate::github::repositories(owner.as_deref());
-        let _ = tx.send(repos.map_err(|err| format!("{err:#}")));
-    }));
-    state.github.repos_loading = Some(rx);
+    state.github.repos_loading = Some(work::repositories(owner));
     state.github.repos_error = None;
     if state.github.owners.is_none() {
         load_owners(state);
@@ -248,11 +228,7 @@ fn load_owners(state: &mut AppState) {
     if state.github.owners_loading.is_some() {
         return;
     }
-    let (tx, rx) = std::sync::mpsc::channel();
-    drop(crate::git::spawn_pinned(move || {
-        let _ = tx.send(crate::github::owners().map_err(|err| format!("{err:#}")));
-    }));
-    state.github.owners_loading = Some(rx);
+    state.github.owners_loading = Some(work::owners());
 }
 
 /// List the repositories of the next owner along — or the previous one.
@@ -328,18 +304,6 @@ pub fn poll(state: &mut AppState) {
     }
     let visible = visible_repos(&state.github).len();
     state.github.repo_idx = state.github.repo_idx.min(visible.saturating_sub(1));
-}
-
-fn take_answer<T>(slot: &mut Option<Pending<T>>) -> Option<Result<T, String>> {
-    let answer = match slot.as_ref()?.try_recv() {
-        Ok(answer) => answer,
-        Err(TryRecvError::Empty) => return None,
-        Err(TryRecvError::Disconnected) => {
-            Err("the request to GitHub ended without an answer".into())
-        }
-    };
-    *slot = None;
-    Some(answer)
 }
 
 // ─── What is selected ────────────────────────────────────────────────────────
@@ -577,7 +541,7 @@ fn worktree_path_for(state: &AppState, pr: &PullRequest) -> Option<String> {
 fn compose(state: &mut AppState, kind: Compose) {
     state.github.mode = Mode::Compose {
         kind,
-        text: String::new(),
+        text: TextInput::default(),
     };
 }
 
@@ -636,7 +600,8 @@ fn start_create(state: &mut AppState) {
         .unwrap_or_default();
     let (title, mut body) = crate::github::fill_from_commits(&branch, &commits);
     if let Some(text) = state
-        .review_assists
+        .review
+        .assists
         .get(crate::git::REVIEW_PR_TEXT_NODE_ID)
         .filter(|text| !text.trim().is_empty())
     {
@@ -644,9 +609,9 @@ fn start_create(state: &mut AppState) {
     }
     state.github.mode = Mode::Create(CreateForm {
         branch,
-        title,
-        base,
-        body,
+        title: title.into(),
+        base: base.into(),
+        body: body.into(),
         draft: false,
         field: CreateField::Title,
     });
@@ -660,11 +625,7 @@ fn compose_key(state: &mut AppState, key: KeyEvent) {
     let kind = *kind;
     match key.code {
         KeyCode::Esc => state.github.mode = Mode::Browse,
-        KeyCode::Backspace => {
-            text.pop();
-        }
         KeyCode::Char('u') if ctrl => text.clear(),
-        KeyCode::Char(c) if !ctrl => text.push(c),
         KeyCode::Enter => {
             let body = text.trim().to_string();
             if kind.needs_text() && body.is_empty() {
@@ -691,7 +652,9 @@ fn compose_key(state: &mut AppState, key: KeyEvent) {
             };
             dispatch(state, action);
         }
-        _ => {}
+        _ => {
+            text.handle_key(key);
+        }
     }
 }
 
@@ -773,7 +736,7 @@ fn create_key(state: &mut AppState, key: KeyEvent) {
         KeyCode::Tab | KeyCode::Down => form.field = form.field.next(true),
         KeyCode::BackTab | KeyCode::Up => form.field = form.field.next(false),
         KeyCode::Enter => match form.field {
-            CreateField::Body => form.body.push('\n'),
+            CreateField::Body => form.body.insert_char('\n'),
             CreateField::Draft => form.draft = !form.draft,
             CreateField::Title | CreateField::Base => form.field = form.field.next(true),
         },
@@ -783,22 +746,16 @@ fn create_key(state: &mut AppState, key: KeyEvent) {
                 text.clear();
             }
         }
-        KeyCode::Char(c) if !ctrl => {
+        _ => {
             if let Some(text) = create_text(form) {
-                text.push(c);
+                text.handle_key(key);
             }
         }
-        KeyCode::Backspace => {
-            if let Some(text) = create_text(form) {
-                text.pop();
-            }
-        }
-        _ => {}
     }
 }
 
 /// The text the focused field of the new pull request form edits.
-fn create_text(form: &mut CreateForm) -> Option<&mut String> {
+fn create_text(form: &mut CreateForm) -> Option<&mut TextInput> {
     match form.field {
         CreateField::Title => Some(&mut form.title),
         CreateField::Base => Some(&mut form.base),
@@ -842,6 +799,13 @@ fn browse_repositories(state: &mut AppState, key: KeyEvent) {
             state.github.repo_idx = (state.github.repo_idx + 1).min(visible.saturating_sub(1))
         }
         KeyCode::Up => state.github.repo_idx = state.github.repo_idx.saturating_sub(1),
+        // With a search typed, the arrows move through it; with none, there
+        // is nothing to move through, and they step between owners.
+        KeyCode::Right | KeyCode::Left | KeyCode::Home | KeyCode::End
+            if !state.github.query.is_empty() =>
+        {
+            state.github.query.handle_key(key);
+        }
         KeyCode::Right => step_owner(state, true),
         KeyCode::Left => step_owner(state, false),
         KeyCode::Char('r') if ctrl => {
@@ -852,13 +816,10 @@ fn browse_repositories(state: &mut AppState, key: KeyEvent) {
             state.github.query.clear();
             state.github.repo_idx = 0;
         }
-        KeyCode::Backspace => {
-            state.github.query.pop();
-            state.github.repo_idx = 0;
-        }
-        KeyCode::Char(c) if !ctrl => {
-            state.github.query.push(c);
-            state.github.repo_idx = 0;
+        KeyCode::Backspace | KeyCode::Delete | KeyCode::Char(_) if !ctrl => {
+            if state.github.query.edit_key(key) == Edit::Changed {
+                state.github.repo_idx = 0;
+            }
         }
         KeyCode::Enter => clone_selected(state),
         _ => {}
@@ -906,15 +867,15 @@ pub fn handle_paste(state: &mut AppState, text: &str) -> bool {
     }
     let one_line = || text.replace(['\r', '\n'], " ");
     match &mut state.github.mode {
-        Mode::Compose { text: typed, .. } => typed.push_str(&one_line()),
+        Mode::Compose { text: typed, .. } => typed.insert_str(&one_line()),
         Mode::Create(form) => match form.field {
-            CreateField::Body => form.body.push_str(&text.replace('\r', "")),
-            CreateField::Title => form.title.push_str(&one_line()),
-            CreateField::Base => form.base.push_str(one_line().trim()),
+            CreateField::Body => form.body.insert_str(&text.replace('\r', "")),
+            CreateField::Title => form.title.insert_str(&one_line()),
+            CreateField::Base => form.base.insert_str(one_line().trim()),
             CreateField::Draft => return false,
         },
         Mode::Browse if state.github.tab == Tab::Repositories => {
-            state.github.query.push_str(one_line().trim());
+            state.github.query.insert_str(one_line().trim());
             state.github.repo_idx = 0;
         }
         _ => return false,
@@ -1229,7 +1190,7 @@ mod tests {
     #[test]
     fn the_review_pr_text_becomes_the_body_of_a_new_pull_request() {
         let mut state = with_prs(Vec::new());
-        state.review_assists.insert(
+        state.review.assists.insert(
             crate::git::REVIEW_PR_TEXT_NODE_ID.to_string(),
             "## Summary\n- adds login".into(),
         );
@@ -1447,6 +1408,19 @@ mod tests {
         assert!(!state.github.loading());
         assert_eq!(selected_pr(&state).map(|pr| pr.number), Some(10));
         assert!(state.github.repo.is_some(), "repository details are kept");
+    }
+
+    #[test]
+    fn a_list_whose_worker_died_says_so_and_stops_loading() {
+        let mut state = with_prs(Vec::new());
+        let (tx, rx) = std::sync::mpsc::channel();
+        state.github.prs_loading = Some(rx);
+        drop(tx);
+
+        poll(&mut state);
+
+        assert!(!state.github.loading());
+        assert!(state.github.prs_error.is_some());
     }
 
     #[test]

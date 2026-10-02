@@ -34,7 +34,7 @@ pub(super) fn review_node_path(title: &str) -> Option<&str> {
 }
 
 fn review_node_syntax_path(title: &str) -> Option<&str> {
-    review_node_path(title).filter(|path| super::is_supported_source_path(path))
+    review_node_path(title).filter(|path| crate::language::is_source_path(path))
 }
 
 fn is_review_file_node(node_id: &str) -> bool {
@@ -63,7 +63,7 @@ fn review_indent(depth: u16) -> String {
 
 fn path_from_review_title(title: &str) -> Option<String> {
     let path = review_node_path(title)?;
-    super::is_supported_source_path(path).then(|| path.to_string())
+    crate::language::is_source_path(path).then(|| path.to_string())
 }
 
 fn is_test_review_node(title: &str) -> bool {

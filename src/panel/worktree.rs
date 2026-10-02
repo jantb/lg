@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::{
+    panel::text_input::{Edit, TextInput},
     state::{AppState, Modal, PendingAction, WorktreeField},
     ui,
 };
@@ -39,15 +40,15 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         Line::from(vec![
             Span::styled("next to  ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                truncate_tail(&state.worktree_repo_dir, value_width),
+                truncate_tail(&state.worktree_form.repo_dir, value_width),
                 Style::default().fg(Color::Gray),
             ),
         ]),
         Line::from(""),
         field_line(
             "Branch",
-            &state.worktree_branch_input,
-            state.worktree_field == WorktreeField::Branch,
+            state.worktree_form.branch.as_str(),
+            state.worktree_form.field == WorktreeField::Branch,
             value_width,
             if reuses_branch {
                 Some("use existing branch")
@@ -57,8 +58,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         ),
         field_line(
             "Base",
-            &state.worktree_base_input,
-            state.worktree_field == WorktreeField::Base,
+            state.worktree_form.base.as_str(),
+            state.worktree_form.field == WorktreeField::Base,
             value_width,
             if reuses_branch {
                 Some("unused \u{2014} branch exists")
@@ -68,10 +69,10 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         ),
         field_line(
             "Path",
-            &state.worktree_path_input,
-            state.worktree_field == WorktreeField::Path,
+            state.worktree_form.path.as_str(),
+            state.worktree_form.field == WorktreeField::Path,
             value_width,
-            Some(if state.worktree_path_edited {
+            Some(if state.worktree_form.path_edited {
                 "worktree directory"
             } else {
                 "directory follows branch name"
@@ -101,7 +102,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 /// Whether the typed branch already exists locally, which decides whether the
 /// base ref is used at all.
 fn branch_exists(state: &AppState) -> bool {
-    let branch = state.worktree_branch_input.trim();
+    let branch = state.worktree_form.branch.as_str().trim();
     !branch.is_empty() && state.branches.iter().any(|known| known.name == branch)
 }
 
@@ -157,14 +158,23 @@ fn active_field_cursor(state: &AppState, modal: Rect) -> Option<(u16, u16)> {
     if modal.width <= 2 || modal.height <= 2 {
         return None;
     }
-    let (offset, value) = match state.worktree_field {
-        WorktreeField::Branch => (0, &state.worktree_branch_input),
-        WorktreeField::Base => (1, &state.worktree_base_input),
-        WorktreeField::Path => (2, &state.worktree_path_input),
+    let (offset, value) = match state.worktree_form.field {
+        WorktreeField::Branch => (0, &state.worktree_form.branch),
+        WorktreeField::Base => (1, &state.worktree_form.base),
+        WorktreeField::Path => (2, &state.worktree_form.path),
     };
     let content_width = modal.width.saturating_sub(2);
     let value_width = content_width.saturating_sub(LABEL_WIDTH + 1) as usize;
-    let cursor_x = LABEL_WIDTH.saturating_add(value.chars().count().min(value_width) as u16);
+    let len = value.char_len();
+    let cursor = value.cursor.min(len);
+    // A value too long for its row shows its tail behind an ellipsis.
+    let column = if len <= value_width {
+        cursor
+    } else {
+        let hidden = len - value_width.saturating_sub(1);
+        (cursor + 1).saturating_sub(hidden)
+    };
+    let cursor_x = LABEL_WIDTH.saturating_add(column as u16);
     Some((modal.x + 1 + cursor_x, modal.y + FIRST_FIELD_ROW + offset))
 }
 
@@ -173,40 +183,36 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Esc => state.modal = Modal::None,
         KeyCode::Tab | KeyCode::Down => {
-            state.worktree_field = state.worktree_field.next(true);
+            state.worktree_form.field = state.worktree_form.field.next(true);
         }
         KeyCode::BackTab | KeyCode::Up => {
-            state.worktree_field = state.worktree_field.next(false);
+            state.worktree_form.field = state.worktree_form.field.next(false);
         }
         KeyCode::Enter => submit(state),
-        KeyCode::Backspace if !ctrl => {
-            match state.worktree_field {
-                WorktreeField::Branch => {
-                    state.worktree_branch_input.pop();
-                    state.sync_worktree_path();
-                }
-                WorktreeField::Base => {
-                    state.worktree_base_input.pop();
-                }
+        KeyCode::Char(c) if !ctrl && state.worktree_form.field == WorktreeField::Branch => {
+            insert_branch_char(&mut state.worktree_form.branch, c);
+            state.sync_worktree_path();
+        }
+        _ if !ctrl => {
+            let form = &mut state.worktree_form;
+            let input = match form.field {
+                WorktreeField::Branch => &mut form.branch,
+                WorktreeField::Base => &mut form.base,
+                WorktreeField::Path => &mut form.path,
+            };
+            if input.edit_key(key) != Edit::Changed {
+                return Ok(());
+            }
+            match form.field {
+                WorktreeField::Branch => state.sync_worktree_path(),
+                WorktreeField::Base => {}
                 WorktreeField::Path => {
-                    state.worktree_path_input.pop();
                     // An emptied path goes back to following the branch.
-                    state.worktree_path_edited = !state.worktree_path_input.is_empty();
+                    form.path_edited = !form.path.is_empty();
                     state.sync_worktree_path();
                 }
             }
         }
-        KeyCode::Char(c) if !ctrl => match state.worktree_field {
-            WorktreeField::Branch => {
-                push_branch_char(&mut state.worktree_branch_input, c);
-                state.sync_worktree_path();
-            }
-            WorktreeField::Base => state.worktree_base_input.push(c),
-            WorktreeField::Path => {
-                state.worktree_path_edited = true;
-                state.worktree_path_input.push(c);
-            }
-        },
         _ => {}
     }
     Ok(())
@@ -215,33 +221,34 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
 /// Git rejects a branch name with a space in it, and the directory the branch
 /// gets is a slug anyway, so a typed space becomes the dash it would have
 /// turned into. Runs of spaces collapse, and a leading one is dropped.
-fn push_branch_char(branch: &mut String, c: char) {
+fn insert_branch_char(branch: &mut TextInput, c: char) {
     if c.is_whitespace() {
-        if !branch.is_empty() && !branch.ends_with('-') {
-            branch.push('-');
+        let before = branch.before_cursor();
+        if !before.is_empty() && !before.ends_with('-') {
+            branch.insert_char('-');
         }
         return;
     }
-    branch.push(c);
+    branch.insert_char(c);
 }
 
 fn submit(state: &mut AppState) {
-    let branch = state.worktree_branch_input.trim().to_string();
+    let branch = state.worktree_form.branch.as_str().trim().to_string();
     if branch.is_empty() {
         state.set_status("a worktree needs a branch name", true);
-        state.worktree_field = WorktreeField::Branch;
+        state.worktree_form.field = WorktreeField::Branch;
         return;
     }
-    let path = state.worktree_path_input.trim().to_string();
+    let path = state.worktree_form.path.as_str().trim().to_string();
     if path.is_empty() {
         state.set_status("a worktree needs a path", true);
-        state.worktree_field = WorktreeField::Path;
+        state.worktree_form.field = WorktreeField::Path;
         return;
     }
-    let base = state.worktree_base_input.trim().to_string();
+    let base = state.worktree_form.base.as_str().trim().to_string();
     if base.is_empty() && !branch_exists(state) {
         state.set_status("a new branch needs a base to start from", true);
-        state.worktree_field = WorktreeField::Base;
+        state.worktree_form.field = WorktreeField::Base;
         return;
     }
 

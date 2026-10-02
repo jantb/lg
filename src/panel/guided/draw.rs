@@ -3,7 +3,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Rect},
+    layout::{Constraint, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{List, ListItem, Paragraph, Wrap},
@@ -11,6 +11,7 @@ use ratatui::{
 
 use super::{Commentary, Guided, Mode, OVERVIEW, Source, Verdict};
 use crate::git::guided::{GuidedHunk, Side};
+use crate::panel::keys;
 use crate::state::{AppState, SPINNER_FRAMES};
 use crate::ui;
 
@@ -64,6 +65,56 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     if state.decorative_animations {
         ui::animate_modal_border(state.animation_ms, modal, &dividers, frame);
     }
+}
+
+/// Where the step list and the pane beside it land, measured the way
+/// [`render`] lays them out; `None` when the terminal is too small to draw
+/// either.
+pub(super) fn pane_areas(guided: &Guided, area: Rect) -> Option<(Rect, Rect)> {
+    let modal = Rect {
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+    let inner = ui::modal_inner(modal);
+    if inner.width < 50 || inner.height < 10 {
+        return None;
+    }
+    let (rows, _) = ui::modal_row_areas(
+        inner,
+        &[
+            Constraint::Length(1),
+            Constraint::Min(5),
+            Constraint::Length(bottom_height(guided)),
+        ],
+    );
+    let list_width = (inner.width / 4).clamp(24, 44);
+    let (panes, _) = ui::modal_column_areas(
+        rows[1],
+        &[Constraint::Length(list_width), Constraint::Min(30)],
+    );
+    Some((panes[0], panes[1]))
+}
+
+/// The step each row of the step list stands for, from its first row: the
+/// overview, then each step under the name of its file, which has a row of
+/// its own and stands for none. With the first row shown, as [`draw_steps`]
+/// scrolls the list to keep the current step in the middle.
+pub(super) fn step_rows(guided: &Guided, height: u16) -> (Vec<Option<usize>>, usize) {
+    let mut rows = vec![Some(OVERVIEW)];
+    let mut selected = 0usize;
+    let mut last_file = None;
+    for (index, step) in guided.steps.iter().enumerate() {
+        if last_file != Some(step.file_index) {
+            last_file = Some(step.file_index);
+            rows.push(None);
+        }
+        if guided.current == index + 1 {
+            selected = rows.len();
+        }
+        rows.push(Some(index + 1));
+    }
+    let offset = selected.saturating_sub(height as usize / 2);
+    (rows, offset)
 }
 
 fn bottom_height(guided: &Guided) -> u16 {
@@ -474,7 +525,13 @@ fn exchange_lines(state: &AppState, guided: &Guided, key: &str, width: u16) -> V
 }
 
 /// Every note, file by file, and for a pull request the review they become.
-fn draw_summary(guided: &Guided, event: usize, body: &str, area: Rect, frame: &mut Frame) {
+fn draw_summary(
+    guided: &Guided,
+    event: usize,
+    body: &crate::panel::text_input::TextInput,
+    area: Rect,
+    frame: &mut Frame,
+) {
     let mut lines = Vec::new();
     let is_pr = matches!(guided.source, Source::PullRequest { .. });
     if is_pr {
@@ -497,15 +554,25 @@ fn draw_summary(guided: &Guided, event: usize, body: &str, area: Rect, frame: &m
             "Summary (the review's body):",
             LABEL,
         )));
-        for text in body.split('\n') {
+        let width = area.width.max(1) as usize;
+        let (cursor_row, cursor_column) = body.line_and_column();
+        // Rows the summary wraps onto above the cursor, so the cursor lands
+        // on the row it is really on.
+        let mut row = lines.len();
+        for (at, text) in body.split('\n').enumerate() {
+            let cells = text.chars().count() + 2;
+            if at < cursor_row {
+                row += cells.div_ceil(width).max(1);
+            }
             lines.push(Line::from(Span::styled(
                 format!("  {text}"),
                 Style::default().fg(Color::White),
             )));
         }
-        if let Some(last) = lines.last_mut() {
-            last.spans
-                .push(Span::styled("\u{2588}", Style::default().fg(Color::Gray)));
+        let at = cursor_column + 2;
+        let (y, x) = (row + at / width, at % width);
+        if y < area.height as usize {
+            frame.set_cursor_position(Position::new(area.x + x as u16, area.y + y as u16));
         }
         lines.push(Line::from(""));
     }
@@ -576,69 +643,54 @@ fn draw_bottom(guided: &Guided, area: Rect, frame: &mut Frame) {
             text,
         ),
         Mode::Summary { .. } => {
-            let hints: &[(&str, &str)] = if guided.source.is_pull_request() {
-                &[
-                    ("Tab", "verdict"),
-                    ("type", "summary"),
-                    ("Enter", "submit"),
-                    ("Ctrl-y", "copy"),
-                    ("Esc", "back"),
-                ]
+            let section = if guided.source.is_pull_request() {
+                "Guided review: submit"
             } else {
-                &[
-                    ("y", "copy notes"),
-                    ("f", "claude fixes all"),
-                    ("j/k", "scroll"),
-                    ("Esc", "back"),
-                ]
+                "Guided review: notes"
             };
-            frame.render_widget(Paragraph::new(ui::key_hints(hints)), area);
+            frame.render_widget(
+                Paragraph::new(ui::key_hints(&keys::footer_pairs(section))),
+                area,
+            );
             return;
         }
         Mode::Browse => {
-            let mut hints = vec![
-                ("\u{2192}/\u{2190}", "step"),
-                ("[/]", "file"),
-                ("j/k", "line"),
-                ("c", "note"),
-                ("a", "ask"),
-            ];
-            if guided.source.editable() {
-                hints.extend([("e", "edit"), ("f", "claude fix")]);
+            let mut hints = keys::footer_pairs("Guided review");
+            // Changing the code needs a checkout of it.
+            if !guided.source.editable() {
+                hints.retain(|(key, _)| !matches!(*key, "e" | "f"));
             }
-            hints.extend([
-                ("m", "mark"),
-                ("u", "unreviewed"),
-                (
-                    "s",
-                    if guided.source.is_pull_request() {
-                        "submit"
-                    } else {
-                        "notes"
-                    },
-                ),
-                ("R", "reload"),
-                ("Esc", "leave"),
-            ]);
             frame.render_widget(Paragraph::new(ui::key_hints(&hints)), area);
             return;
         }
     };
+    let hint = keys::footer_pairs("Guided review: writing")
+        .iter()
+        .map(|(key, label)| format!("{key} {label}"))
+        .collect::<Vec<_>>()
+        .join(" \u{b7} ");
     let mut lines = vec![Line::from(vec![
         Span::styled(format!("{label} \u{203a} "), KEY),
-        Span::styled(
-            "Enter sends \u{b7} Alt-Enter new line \u{b7} Esc cancels",
-            LABEL,
-        ),
+        Span::styled(hint, LABEL),
     ])];
-    for (i, part) in text.split('\n').enumerate() {
-        let mut spans = vec![Span::raw("  "), Span::raw(part.to_string())];
-        if i == text.split('\n').count() - 1 {
-            spans.push(Span::styled("\u{2588}", Style::default().fg(Color::Gray)));
-        }
-        lines.push(Line::from(spans));
+    for part in text.split('\n') {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::raw(part.to_string()),
+        ]));
     }
+    // The cursor goes where the next character will, which is no longer
+    // always the end: the arrows move it.
+    let (row, column) = text.line_and_column();
     let skip = lines.len().saturating_sub(area.height as usize);
+    let cursor_line = 1 + row;
+    if cursor_line >= skip {
+        let y = area.y + (cursor_line - skip) as u16;
+        let x = area.x + 2 + column as u16;
+        if y < area.y + area.height && x < area.x + area.width {
+            frame.set_cursor_position(Position::new(x, y));
+        }
+    }
     frame.render_widget(
         Paragraph::new(lines.into_iter().skip(skip).collect::<Vec<_>>()),
         area,

@@ -47,7 +47,7 @@ pub(super) fn inline_review_notes_by_path(
         }
     }
 
-    for (path, finding) in &state.review_style_findings {
+    for (path, finding) in &state.review.style_findings {
         if !source_sections_contain_path(review, node, path) {
             continue;
         }
@@ -135,7 +135,7 @@ fn line_matching_reason_in_body(body: &[String], fragments: &[String]) -> Option
     let mut new_line = 0usize;
     let mut in_hunk = false;
     for line in body {
-        if let Some((_, new_start)) = parse_hunk_header(line) {
+        if let Some((_, new_start)) = hunk_starts(line) {
             new_line = new_start;
             in_hunk = true;
             continue;
@@ -215,7 +215,7 @@ fn inline_assist_note_text(state: &AppState, node_id: &str) -> Option<String> {
             job.output.trim()
         }
     } else {
-        state.review_assists.get(node_id)?.trim()
+        state.review.assists.get(node_id)?.trim()
     };
     first_note_line(text).map(|line| format!("llm: {line}"))
 }
@@ -283,5 +283,5 @@ pub(super) fn review_node_line(title: &str) -> Option<usize> {
 
 pub(super) fn first_body_hunk_new_line(body: &[String]) -> Option<usize> {
     body.iter()
-        .find_map(|line| parse_hunk_header(line).map(|(_, new_line)| new_line))
+        .find_map(|line| hunk_starts(line).map(|(_, new_line)| new_line))
 }

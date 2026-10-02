@@ -497,7 +497,7 @@ pub(super) fn preview(state: &AppState, run: &FlowRun) -> Option<Preview> {
         }
         FlowAction::CleanOrphans => {
             let mut preview = Preview::new(
-                "local branches with no remote are deleted; tracked branches are left alone",
+                "merged local branches with no remote are deleted; unmerged ones, tracked ones and lg backups stay",
                 steps,
             );
             preview.lane(state, "tracked");
@@ -776,7 +776,7 @@ mod tests {
             behind_main: 1,
             last_commit_unix: None,
         }];
-        state.branches_idx = 0;
+        state.branches_list.idx = 0;
         state.release_branches =
             crate::git::ReleaseBranches::new(Some("develop".to_string()), Some("test".to_string()));
         state

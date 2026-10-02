@@ -123,7 +123,7 @@ pub(super) fn field_lines(
         }
         lines.push(Line::from(spans));
     }
-    if let Some(about) = describe(hub.key(), field) {
+    if let Some(about) = describe(hub.current_category(), field) {
         let lead = format!("{indent}  ");
         let room = width.saturating_sub(lead.chars().count()).max(8);
         for chunk in crate::panel::wrap_words(about, room) {
@@ -141,7 +141,7 @@ pub(super) fn list_lines(
     width: usize,
 ) -> Vec<(Line<'static>, Option<usize>)> {
     let mut lines = Vec::new();
-    let about = describe_category(hub.key());
+    let about = describe_category(hub.current_category());
     if !about.is_empty() {
         for chunk in crate::panel::wrap_words(about, width.max(8)) {
             lines.push((Line::from(muted(chunk)), None));
@@ -217,7 +217,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     render_header(hub, r.header, frame);
     render_categories(hub, r.categories, frame);
     ui::section_title(frame, r.categories, "Categories");
-    if hub.key() == "activity" {
+    if hub.current_category() == Category::Activity {
         render_activity(state, r.fields, frame);
         ui::section_title(frame, r.fields, "Setup & history");
     } else if hub.editing {
@@ -276,13 +276,14 @@ pub(super) fn render_categories(hub: &Settings, area: Rect, frame: &mut Frame) {
     let lines: Vec<Line> = CATEGORIES
         .iter()
         .enumerate()
-        .map(|(i, (_, name))| {
+        .map(|(i, category)| {
+            let name = category.label();
             if i == hub.category && hub.focus == Focus::Categories {
-                Line::from(vec![accent("\u{203a} "), accent(*name)]).style(palette::selection())
+                Line::from(vec![accent("\u{203a} "), accent(name)]).style(palette::selection())
             } else if i == hub.category {
-                Line::from(vec![accent("\u{203a} "), accent(*name)])
+                Line::from(vec![accent("\u{203a} "), accent(name)])
             } else {
-                Line::from(vec![Span::raw("  "), muted(*name)])
+                Line::from(vec![Span::raw("  "), muted(name)])
             }
         })
         .collect();
@@ -365,7 +366,11 @@ pub(super) fn render_editor(hub: &Settings, area: Rect, frame: &mut Frame) {
         render_picker(hub, &p, area, frame);
         return;
     }
-    let (row, col) = cursor_position(&hub.input, hub.cursor, area.width.max(1) as usize);
+    let (row, col) = cursor_position(
+        &hub.input.text,
+        hub.input.cursor,
+        area.width.max(1) as usize,
+    );
     let scroll = row.saturating_sub(area.height.saturating_sub(1) as usize);
     frame.render_widget(
         Paragraph::new(hub.input.as_str())
@@ -390,7 +395,7 @@ pub(super) fn render_picker(hub: &Settings, picker: &Picker, area: Rect, frame: 
         (false, false) => format!("   \u{2191}/\u{2193} pick a {noun}, or type your own"),
     };
     let mut lines = vec![Line::from(vec![
-        Span::raw(hub.input.clone()),
+        Span::raw(hub.input.text.clone()),
         Span::styled("\u{258f}", Style::default().fg(palette::ACCENT)),
         muted(hint),
     ])];
@@ -408,7 +413,7 @@ pub(super) fn render_picker(hub: &Settings, picker: &Picker, area: Rect, frame: 
     }
     frame.render_widget(Paragraph::new(lines), area);
     if area.width > 0 && area.height > 0 {
-        let col = hub.input.chars().count().min(area.width as usize - 1) as u16;
+        let col = hub.input.char_len().min(area.width as usize - 1) as u16;
         frame.set_cursor_position((area.x + col, area.y));
     }
 }
@@ -417,8 +422,8 @@ pub(super) fn render_detail(hub: &Settings, area: Rect, frame: &mut Frame) {
     ui::section_title(frame, area, "About this field");
     let fields = fields(hub);
     let Some(field) = fields.get(hub.selected.min(fields.len().saturating_sub(1))) else {
-        let text = if hub.key() == "activity" {
-            describe_category("activity")
+        let text = if hub.current_category() == Category::Activity {
+            describe_category(Category::Activity)
         } else {
             "Select a field to see what it does."
         };
@@ -446,7 +451,7 @@ pub(super) fn render_detail(hub: &Settings, area: Rect, frame: &mut Frame) {
             Span::raw("")
         },
     ])];
-    match describe(hub.key(), field) {
+    match describe(hub.current_category(), field) {
         Some(text) => lines.push(Line::from(Span::raw(text))),
         None => lines.push(Line::from(muted("Enter edits the value; r removes this scope's override and falls back to the inherited one."))),
     }
@@ -470,7 +475,8 @@ pub(super) fn render_activity(state: &AppState, area: Rect, frame: &mut Frame) {
             muted("Author   "),
             Span::raw(format!(
                 "{} <{}>",
-                state.author_name_input, state.author_email_input
+                state.author.name.as_str(),
+                state.author.email.as_str()
             )),
         ]),
     ];
@@ -518,109 +524,74 @@ pub(super) fn render_activity(state: &AppState, area: Rect, frame: &mut Frame) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
-/// The keys that work in this category, beyond the ones every category has.
-pub(super) fn category_keys(
-    category: &str,
-) -> (&'static [(&'static str, &'static str)], &'static str) {
+/// The key table section for the keys that work in this category beyond the
+/// ones every category has, and a note about the category.
+pub(super) fn category_keys(category: Category) -> (Option<&'static str>, &'static str) {
     match category {
-        "identity" => (
-            &[],
+        Category::Identity => (
+            None,
             "Scope field: Repository or Folder. Folder affects Git repositories below that path. Signing remains inherited from Git.",
         ),
-        "writing" => (
-            &[("v", "preview prompt"), ("L", "derive style from history")],
+        Category::Writing => (
+            Some("Settings: Writing"),
             "L opens the model modal, which reads this checkout's commits to suggest language and message shape.",
         ),
-        "models" => (
-            &[("L", "model picker")],
+        Category::Models => (
+            Some("Settings: Models"),
             "L opens the model modal with the live model list and connectivity check.",
         ),
-        "agents" => (
-            &[
-                ("n", "add agent"),
-                ("D", "delete agent"),
-                ("v", "check versions"),
-            ],
+        Category::Agents => (
+            Some("Settings: Agents"),
             "adapter: claude, codex, pi or terminal \u{b7} confinement: terrarium, agent or direct",
         ),
-        "sandbox" => (
-            &[
-                ("i", "create profile"),
-                ("v", "validate"),
-                ("e", "edit profile"),
-            ],
+        Category::Sandbox => (
+            Some("Settings: Sandbox"),
             "Bundled Terrarium (macOS Seatbelt); the shared Git directory stays writable.",
         ),
-        "branches" => (
-            &[
-                ("n", "add environment"),
-                ("p", "add promotion"),
-                ("D", "remove entry"),
-                ("t", "trunk template"),
-                ("b", "detect from branches"),
-            ],
+        Category::Branches => (
+            Some("Settings: Branches"),
             "Nothing saved means the environments are read off the local branches: develop or dev, test, and main as production. Environments with id dev or test drive the release actions. An environment with an empty branch is hidden.",
         ),
-        "tools" => (&[], "Folder scope applies below the folder chosen with f."),
-        "activity" => (
-            &[("j/k", "scroll history")],
+        Category::Tools => (None, "Folder scope applies below the folder chosen with f."),
+        Category::Activity => (
+            Some("Settings: Activity"),
             "Agent availability does not establish authentication; model connectivity is checked when a request runs.",
         ),
-        "sessions" => (
-            &[("R", "restart session"), ("x", "close session")],
+        Category::Sessions => (
+            Some("Settings: Sessions"),
             "Edit a label and Ctrl-S to rename. Restart reuses the original launch command.",
         ),
-        _ => (&[], ""),
     }
 }
 pub(super) fn render_footer(hub: &Settings, area: Rect, frame: &mut Frame) {
+    use crate::panel::keys;
     let mut lines = Vec::new();
     if hub.editing && picking(hub) {
-        lines.push(ui::key_hints(&[
-            ("\u{2191}/\u{2193}", "pick"),
-            ("Enter", "apply"),
-            ("Ctrl-U", "clear"),
-            ("Ctrl-S", "apply and save"),
-            ("Esc", "cancel"),
-        ]));
+        lines.push(ui::key_hints(&keys::hint_pairs(
+            "Settings: editing",
+            &["\u{2191}/\u{2193}", "Enter", "Ctrl-U", "Ctrl-S", "Esc"],
+        )));
     } else if hub.editing {
-        lines.push(ui::key_hints(&[
-            ("Enter", "apply"),
-            ("Shift-Enter", "newline"),
-            ("Ctrl-U", "clear"),
-            ("Ctrl-S", "apply and save"),
-            ("Esc", "cancel"),
-        ]));
+        lines.push(ui::key_hints(&keys::footer_pairs("Settings: editing")));
     } else {
-        let (extra, note) = category_keys(hub.key());
-        let mut keys = vec![
-            ("\u{2190}/\u{2192}", "pane"),
-            ("j/k", "move"),
-            ("Enter", "edit / toggle"),
-            ("Ctrl-S", "save"),
-            ("s", "scope"),
-            ("f", "folder"),
-            ("/", "filter"),
-            ("r", "reset override"),
-        ];
-        keys.extend_from_slice(extra);
-        lines.push(ui::key_hints(&keys));
+        let (extra, note) = category_keys(hub.current_category());
+        let mut pairs = keys::footer_pairs("Settings");
+        // The category's own keys go before the way out.
+        let esc = pairs.pop();
+        pairs.extend(extra.map(keys::section_pairs).unwrap_or_default());
+        pairs.extend(esc);
+        lines.push(ui::key_hints(&pairs));
         if !note.is_empty() {
             lines.push(Line::from(muted(note)));
         }
     }
     if !hub.notice.is_empty() {
-        let style = if hub.notice_error {
-            Style::default().fg(BAD).add_modifier(Modifier::BOLD)
-        } else if hub.notice.starts_with("Saved") || hub.notice.starts_with("Profile validated") {
-            Style::default().fg(OK)
-        } else if hub.reset_pending
-            || hub.notice.starts_with("Unsaved")
-            || hub.notice.starts_with("Save or")
-        {
-            Style::default().fg(palette::LANE_TEST)
-        } else {
-            Style::default()
+        let style = match hub.notice_kind {
+            NoticeKind::Error => Style::default().fg(BAD).add_modifier(Modifier::BOLD),
+            NoticeKind::Success => Style::default().fg(OK),
+            NoticeKind::Warning => Style::default().fg(palette::LANE_TEST),
+            NoticeKind::Info if hub.reset_pending => Style::default().fg(palette::LANE_TEST),
+            NoticeKind::Info => Style::default(),
         };
         lines.push(Line::from(Span::styled(hub.notice.clone(), style)));
     }

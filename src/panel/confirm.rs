@@ -1,5 +1,5 @@
 use anyhow::Result;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -13,10 +13,10 @@ use crate::{
     ui,
 };
 
-pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
-    let Some(prompt) = &state.confirm else {
-        return;
-    };
+/// The prompt's lines and the box they are drawn in. The buttons are the last
+/// line.
+fn layout(state: &AppState, area: Rect) -> Option<(Rect, Vec<Line<'static>>)> {
+    let prompt = state.confirm.as_ref()?;
 
     let w = area.width.clamp(48, 72).min(area.width);
     let inner = w.saturating_sub(2) as usize;
@@ -29,9 +29,6 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         )));
     }
     text.push(Line::from(""));
-    // The detail is what the action will actually do, and for a multi-step one
-    // the last step is usually the one worth reading. It wraps, and keeps the
-    // line breaks it was written with, rather than being cut off mid-path.
     for paragraph in prompt.detail.lines() {
         for line in super::wrap_words(paragraph, inner) {
             text.push(Line::from(Span::styled(
@@ -48,18 +45,41 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         )));
     }
     text.push(Line::from(""));
-    text.push(Line::from(vec![
-        Span::styled("y", Style::default().fg(Color::Red)),
-        Span::raw(" confirm  "),
-        Span::styled("n/Esc", Style::default().fg(Color::Gray)),
-        Span::raw(" cancel"),
-    ]));
+    text.push(Line::from(
+        BUTTONS
+            .iter()
+            .map(|(label, key)| match key {
+                Some(KeyCode::Char('y')) if label.len() == 1 => {
+                    Span::styled(*label, Style::default().fg(Color::Red))
+                }
+                Some(KeyCode::Char('n')) if label.starts_with('n') => {
+                    Span::styled(*label, Style::default().fg(Color::Gray))
+                }
+                _ => Span::raw(*label),
+            })
+            .collect::<Vec<_>>(),
+    ));
 
-    // Grown to fit the wrapped text, so a long detail is read rather than
-    // guessed at.
     let h = (text.len() as u16 + 2).max(9).min(area.height);
-    let modal = ui::centered(area, w, h);
+    Some((ui::centered(area, w, h), text))
+}
 
+/// The button line, as the segments a click is matched against.
+const BUTTONS: &[(&str, Option<KeyCode>)] = &[
+    ("y", Some(KeyCode::Char('y'))),
+    (" confirm", Some(KeyCode::Char('y'))),
+    ("  ", None),
+    ("n/Esc", Some(KeyCode::Char('n'))),
+    (" cancel", Some(KeyCode::Char('n'))),
+];
+
+pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
+    let Some((modal, text)) = layout(state, area) else {
+        return;
+    };
+    let Some(prompt) = &state.confirm else {
+        return;
+    };
     let inner = ui::modal_frame(frame, modal, &prompt.title);
     frame.render_widget(Paragraph::new(text), inner);
     if state.decorative_animations {
@@ -67,12 +87,38 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     }
 }
 
+/// A click on `y confirm` confirms and one on `n/Esc cancel` cancels, as the
+/// keys do.
+pub fn handle_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) -> Result<()> {
+    if !super::pointer::left_click(m) {
+        return Ok(());
+    }
+    let Some((modal, text)) = layout(state, area) else {
+        return Ok(());
+    };
+    let inner = ui::modal_inner(modal);
+    let buttons_row = inner.y + text.len().saturating_sub(1) as u16;
+    if m.row != buttons_row {
+        return Ok(());
+    }
+    if let Some(code) = super::pointer::button_at(inner.x, BUTTONS, m.column) {
+        handle_key(state, KeyEvent::from(code))?;
+    }
+    Ok(())
+}
+
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             state.modal = Modal::None;
             if let Some(prompt) = state.confirm.take() {
-                state.pending_action = Some(prompt.action);
+                match prompt.action {
+                    // Nothing to wait for: the session is lg's own.
+                    crate::state::PendingAction::CloseSession { id, follow } => {
+                        crate::panel::environments::close_session(state, id, follow)
+                    }
+                    action => state.pending_action = Some(action),
+                }
             }
         }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {

@@ -87,47 +87,91 @@ pub fn parse_porcelain_xy(bytes: &[u8]) -> Vec<FileEntry> {
     entries
 }
 
+/// Every changed file in the checkout. Untracked directories are listed file
+/// by file (`-uall`), in the one call, rather than as the directory: a new
+/// folder of files is staged and reviewed a file at a time like anything else.
 pub fn status_entries() -> Result<Vec<FileEntry>> {
-    let out = run(&["status", "-z", "--porcelain=v1"])?;
-    expand_untracked_directories(parse_porcelain_xy(&out.stdout))
+    // Every untracked file rather than the directory holding them, so each can
+    // be staged on its own — unless the user told git not to list untracked
+    // files at all, which passing `-uall` would quietly overrule.
+    let untracked = if untracked_files_hidden() {
+        "--untracked-files=no"
+    } else {
+        "--untracked-files=all"
+    };
+    let out = run(&["status", "-z", "--porcelain=v1", untracked])?;
+    Ok(parse_porcelain_xy(&out.stdout))
 }
 
-fn expand_untracked_directories(entries: Vec<FileEntry>) -> Result<Vec<FileEntry>> {
-    let mut expanded = Vec::with_capacity(entries.len());
-    for entry in entries {
-        if entry.x == '?' && entry.y == '?' && entry.path.ends_with('/') {
-            let files = untracked_files_under(&entry.path)?;
-            if files.is_empty() {
-                expanded.push(entry);
-            } else {
-                expanded.extend(files.into_iter().map(|path| FileEntry {
-                    path,
-                    x: entry.x,
-                    y: entry.y,
-                }));
-            }
-        } else {
-            expanded.push(entry);
-        }
+/// Whether `status.showUntrackedFiles` says not to list untracked files.
+fn untracked_files_hidden() -> bool {
+    run(&["config", "--get", "status.showUntrackedFiles"])
+        .map(|out| untracked_setting_is_off(&String::from_utf8_lossy(&out.stdout)))
+        .unwrap_or(false)
+}
+
+/// Git spells "off" for this setting as `no`, and as any false boolean.
+fn untracked_setting_is_off(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "no" | "false" | "off" | "0"
+    )
+}
+
+/// Whether git ignores every one of `paths`, given relative to the checkout.
+/// A file it tracks is never ignored, whatever the patterns say. Anything git
+/// cannot answer — a path outside the checkout, a nested repository — counts
+/// as not ignored, so the caller errs towards looking again.
+pub fn all_ignored(paths: &[std::path::PathBuf]) -> bool {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut unique: Vec<String> = paths
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .filter(|path| !path.is_empty())
+        .collect();
+    unique.sort();
+    unique.dedup();
+    if unique.is_empty() {
+        return false;
     }
-    Ok(expanded)
-}
-
-fn untracked_files_under(path: &str) -> Result<Vec<String>> {
-    let out = run(&[
-        "ls-files",
-        "--others",
-        "--exclude-standard",
-        "-z",
-        "--",
-        path,
-    ])?;
-    Ok(out
+    let mut input = Vec::new();
+    for path in &unique {
+        input.extend_from_slice(path.as_bytes());
+        input.push(0);
+    }
+    let Ok(mut child) = super::git_command(&["check-ignore", "-z", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    // Fed from a thread of its own: git answers as it reads, and a long list
+    // would fill the output pipe while this side was still writing.
+    let writer = child.stdin.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(&input);
+        })
+    });
+    let Ok(out) = child.wait_with_output() else {
+        return false;
+    };
+    if let Some(writer) = writer {
+        let _ = writer.join();
+    }
+    // 0: some are ignored; 1: none are; anything else: git could not say.
+    if out.status.code() != Some(0) {
+        return false;
+    }
+    let ignored = out
         .stdout
         .split(|byte| *byte == 0)
         .filter(|entry| !entry.is_empty())
-        .map(|entry| String::from_utf8_lossy(entry).into_owned())
-        .collect())
+        .count();
+    ignored >= unique.len()
 }
 
 #[cfg(test)]

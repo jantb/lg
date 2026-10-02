@@ -8,10 +8,27 @@ pub(super) fn handle_modal_mouse(state: &mut AppState, area: Rect, m: &MouseEven
         Modal::Help => {
             state.column_drag_active = false;
             state.row_drag_active = None;
-            state.review_chat_drag_active = false;
+            state.review.chat_drag_active = false;
             match m.kind {
                 MouseEventKind::ScrollDown => panel::help::scroll(state, area, true, 3),
                 MouseEventKind::ScrollUp => panel::help::scroll(state, area, false, 3),
+                _ => {}
+            }
+            true
+        }
+        Modal::StatusDetails => {
+            state.column_drag_active = false;
+            state.row_drag_active = None;
+            state.review.chat_drag_active = false;
+            match m.kind {
+                MouseEventKind::ScrollDown => panel::details::scroll(state, area, true, 3),
+                MouseEventKind::ScrollUp => panel::details::scroll(state, area, false, 3),
+                // A click outside the popup puts it away.
+                MouseEventKind::Down(MouseButton::Left)
+                    if !rect_contains(panel::details::popup_area(area), m.column, m.row) =>
+                {
+                    state.modal = Modal::None;
+                }
                 _ => {}
             }
             true
@@ -20,35 +37,35 @@ pub(super) fn handle_modal_mouse(state: &mut AppState, area: Rect, m: &MouseEven
         Modal::Conflict => {
             state.column_drag_active = false;
             state.row_drag_active = None;
-            state.review_chat_drag_active = false;
+            state.review.chat_drag_active = false;
             panel::conflict::handle_mouse(state, area, m);
             true
         }
         Modal::Settings => {
             state.column_drag_active = false;
             state.row_drag_active = None;
-            state.review_chat_drag_active = false;
+            state.review.chat_drag_active = false;
             panel::settings::handle_mouse(state, area, m);
             true
         }
         Modal::Environments => {
             state.column_drag_active = false;
             state.row_drag_active = None;
-            state.review_chat_drag_active = false;
+            state.review.chat_drag_active = false;
             panel::deployment::handle_mouse(state, area, m);
             true
         }
         Modal::GitHub => {
             state.column_drag_active = false;
             state.row_drag_active = None;
-            state.review_chat_drag_active = false;
+            state.review.chat_drag_active = false;
             panel::github::handle_mouse(state, m);
             true
         }
         Modal::Commit => {
             state.column_drag_active = false;
             state.row_drag_active = None;
-            state.review_chat_drag_active = false;
+            state.review.chat_drag_active = false;
             let over_files = rect_contains(panel::commit::staged_area(area), m.column, m.row);
             let inside = rect_contains(panel::commit::modal_area(area), m.column, m.row);
             match m.kind {
@@ -73,10 +90,32 @@ pub(super) fn handle_modal_mouse(state: &mut AppState, area: Rect, m: &MouseEven
             }
             true
         }
-        _ => {
+        modal => {
             state.column_drag_active = false;
             state.row_drag_active = None;
-            state.review_chat_drag_active = false;
+            state.review.chat_drag_active = false;
+            // Each of these hit-tests against the layout it draws; a modal
+            // with nothing to click or scroll takes the event and does nothing.
+            let handled = match modal {
+                Modal::GuidedReview => {
+                    panel::guided::handle_mouse(state, area, m);
+                    Ok(())
+                }
+                Modal::Commands => {
+                    panel::commands::handle_mouse(state, area, m);
+                    Ok(())
+                }
+                Modal::Flow => panel::flow::handle_mouse(state, area, m),
+                Modal::Agent => panel::agent::handle_mouse(state, area, m),
+                Modal::DeleteBranch => panel::delete_branch::handle_mouse(state, area, m),
+                Modal::ConfirmDestructive => panel::confirm::handle_mouse(state, area, m),
+                Modal::Push => panel::push::handle_mouse(state, area, m),
+                Modal::Stash => panel::stash::handle_mouse(state, area, m),
+                _ => Ok(()),
+            };
+            if let Err(err) = handled {
+                state.set_status(format!("{err:#}"), true);
+            }
             true
         }
     }
@@ -89,7 +128,7 @@ pub(super) fn review_chat_is_docked(state: &AppState) -> bool {
 pub(super) fn focused_review_panel(state: &AppState) -> bool {
     state.focus == Pane::Main
         && matches!(state.diff_source, crate::state::DiffSource::Review)
-        && state.review.is_some()
+        && state.review.assisted.is_some()
 }
 
 pub(super) fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
@@ -108,7 +147,7 @@ pub(super) fn resize_review_chat(state: &mut AppState, main: Rect, row: u16) {
         .saturating_sub(row)
         .max(min_chat_height)
         .min(max_chat_height);
-    state.review_chat_height = Some(chat_height);
+    state.review.chat_height = Some(chat_height);
 }
 
 pub(super) fn handle_docked_review_chat_mouse(
@@ -132,16 +171,16 @@ pub(super) fn handle_docked_review_chat_mouse(
         {
             state.column_drag_active = false;
             state.row_drag_active = None;
-            state.review_chat_drag_active = true;
+            state.review.chat_drag_active = true;
             resize_review_chat(state, rects.main, m.row);
             true
         }
-        MouseEventKind::Drag(MouseButton::Left) if state.review_chat_drag_active => {
+        MouseEventKind::Drag(MouseButton::Left) if state.review.chat_drag_active => {
             resize_review_chat(state, rects.main, m.row);
             true
         }
-        MouseEventKind::Up(MouseButton::Left) if state.review_chat_drag_active => {
-            state.review_chat_drag_active = false;
+        MouseEventKind::Up(MouseButton::Left) if state.review.chat_drag_active => {
+            state.review.chat_drag_active = false;
             true
         }
         MouseEventKind::ScrollDown if in_chat => {
@@ -157,7 +196,9 @@ pub(super) fn handle_docked_review_chat_mouse(
 }
 
 pub(super) fn handle_review_mouse_scroll(state: &mut AppState, m: &MouseEvent) -> bool {
-    if !matches!(state.diff_source, crate::state::DiffSource::Review) || state.review.is_none() {
+    if !matches!(state.diff_source, crate::state::DiffSource::Review)
+        || state.review.assisted.is_none()
+    {
         return false;
     }
     match m.kind {
@@ -219,7 +260,7 @@ pub(super) fn dispatch_mouse<H: AppHost>(host: &mut H, m: MouseEvent) -> Result<
             let state = host.state_mut();
             state.column_drag_active = false;
             state.row_drag_active = None;
-            state.review_chat_drag_active = false;
+            state.review.chat_drag_active = false;
             state.selection = state.selection.take().and_then(ui::TextSelection::release);
             return Ok(());
         }

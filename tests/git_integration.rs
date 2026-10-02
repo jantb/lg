@@ -97,6 +97,60 @@ fn status_entries_expands_untracked_directories_to_files() {
     );
 }
 
+/// `status.showUntrackedFiles=no` is a choice not to see untracked files;
+/// asking git for all of them overruled it.
+#[test]
+fn status_entries_leave_untracked_files_out_when_git_is_told_to() {
+    let dir = init_repo();
+    git_ok(dir.path(), &["config", "status.showUntrackedFiles", "no"]);
+    fs::write(dir.path().join("tracked.txt"), "one\n").unwrap();
+    stage_in(dir.path(), "tracked.txt");
+    fs::write(dir.path().join("scratch.txt"), "untracked\n").unwrap();
+
+    let _cwd = CwdGuard::new(dir.path());
+    let entries = lg::git::status_entries().unwrap();
+    let paths = entries
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(paths.contains(&"tracked.txt"), "{paths:?}");
+    assert!(!paths.contains(&"scratch.txt"), "{paths:?}");
+}
+
+/// File events for ignored paths are dropped by asking git, in one call for
+/// the lot. A tracked file is never ignored, even under an ignore pattern:
+/// editing it changes the status.
+#[test]
+fn ignored_paths_are_recognised_and_tracked_files_never_are() {
+    let dir = init_repo();
+    fs::write(dir.path().join(".gitignore"), "build/\n*.log\n").unwrap();
+    fs::create_dir_all(dir.path().join("build")).unwrap();
+    fs::write(dir.path().join("build/kept.txt"), "tracked anyway\n").unwrap();
+    git_ok(dir.path(), &["add", "-f", ".gitignore", "build/kept.txt"]);
+    commit_in(dir.path(), "initial");
+
+    let _cwd = CwdGuard::new(dir.path());
+    let paths = |list: &[&str]| {
+        list.iter()
+            .map(std::path::PathBuf::from)
+            .collect::<Vec<_>>()
+    };
+    assert!(lg::git::all_ignored(&paths(&["build/out.o", "debug.log"])));
+    assert!(
+        !lg::git::all_ignored(&paths(&["build/out.o", "src/main.rs"])),
+        "one file that matters is enough to refresh for"
+    );
+    assert!(
+        !lg::git::all_ignored(&paths(&["build/kept.txt"])),
+        "a tracked file is not ignored"
+    );
+    assert!(
+        !lg::git::all_ignored(&[]),
+        "nothing to judge is not all ignored"
+    );
+}
+
 fn stage_in(dir: &std::path::Path, path: &str) {
     git_ok(dir, &["add", "--", path]);
 }
@@ -1806,6 +1860,41 @@ fn list_branches_reports_commits_behind_main() {
     assert_eq!(main.behind_main, 0);
 }
 
+/// Every branch gets its own count, however many there are: the counts come
+/// from one call for all of them now, and must not bleed into each other.
+#[test]
+fn list_branches_counts_each_branch_behind_main_separately() {
+    let dir = init_repo();
+    fs::write(dir.path().join("README.md"), "main\n").unwrap();
+    stage_in(dir.path(), "README.md");
+    commit_in(dir.path(), "initial");
+    git_ok(dir.path(), &["branch", "three-behind"]);
+    for n in 1..=2 {
+        fs::write(dir.path().join(format!("m{n}.txt")), "main\n").unwrap();
+        stage_in(dir.path(), &format!("m{n}.txt"));
+        commit_in(dir.path(), &format!("main {n}"));
+    }
+    git_ok(dir.path(), &["branch", "one-behind"]);
+    fs::write(dir.path().join("m3.txt"), "main\n").unwrap();
+    stage_in(dir.path(), "m3.txt");
+    commit_in(dir.path(), "main 3");
+    git_ok(dir.path(), &["branch", "level"]);
+
+    let _cwd = CwdGuard::new(dir.path());
+    let branches = lg::git::list_branches().unwrap();
+    let behind = |name: &str| {
+        branches
+            .iter()
+            .find(|branch| branch.name == name)
+            .unwrap_or_else(|| panic!("{name} should be listed: {branches:?}"))
+            .behind_main
+    };
+    assert_eq!(behind("three-behind"), 3);
+    assert_eq!(behind("one-behind"), 1);
+    assert_eq!(behind("level"), 0);
+    assert_eq!(behind("main"), 0);
+}
+
 #[test]
 fn checkout_branch_stashes_unstaged_changes_before_switching() {
     let dir = init_repo();
@@ -2921,6 +3010,61 @@ fn reset_flow_cleans_safety_backup_after_success() {
     assert!(
         !branches.contains("lg/backup/reset-develop-develop-"),
         "successful reset should clean safety backup: {branches}"
+    );
+}
+
+/// Resetting an environment branch rewrites the remote one, and only as it
+/// was last seen: a commit pushed there that this checkout has not fetched is
+/// refused rather than thrown away, which `--force` used to do.
+#[test]
+fn reset_flow_refuses_to_overwrite_remote_work_it_has_not_seen() {
+    let dir = init_repo();
+    fs::write(dir.path().join("init.txt"), "init\n").unwrap();
+    stage_in(dir.path(), "init.txt");
+    commit_in(dir.path(), "initial commit");
+
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", "develop"]);
+    fs::write(dir.path().join("develop.txt"), "develop\n").unwrap();
+    stage_in(dir.path(), "develop.txt");
+    commit_in(dir.path(), "develop commit");
+    git_ok(dir.path(), &["push", "-u", "origin", "develop"]);
+    git_ok(dir.path(), &["checkout", "main"]);
+
+    // Someone else pushes to develop, and this checkout's fetch only ever
+    // updates main, so it never sees that.
+    let other = tempfile::tempdir().expect("other clone");
+    git_ok(other.path(), &["clone", bare.path().to_str().unwrap(), "."]);
+    git_ok(other.path(), &["config", "user.email", "test@example.com"]);
+    git_ok(other.path(), &["config", "user.name", "Test User"]);
+    git_ok(other.path(), &["checkout", "develop"]);
+    fs::write(other.path().join("theirs.txt"), "theirs\n").unwrap();
+    stage_in(other.path(), "theirs.txt");
+    commit_in(other.path(), "their develop work");
+    git_ok(other.path(), &["push", "origin", "develop"]);
+    git_ok(
+        dir.path(),
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/main:refs/remotes/origin/main",
+        ],
+    );
+
+    let _cwd = CwdGuard::new(dir.path());
+    let result = lg::git::flow_reset_branch_from_main("main", "develop");
+
+    assert!(result.is_err(), "the lease refuses the push: {result:?}");
+    let remote_log = git(bare.path(), &["log", "--oneline", "develop"]);
+    assert!(
+        String::from_utf8_lossy(&remote_log.stdout).contains("their develop work"),
+        "their commit is still on the remote branch"
     );
 }
 
@@ -4390,4 +4534,631 @@ fn a_minus_diff_file_shows_as_changed_without_its_contents() {
 
     assert!(diff.contains("secrets.env"), "file should show: {diff}");
     assert!(!diff.contains("hunter2"), "contents must not reach: {diff}");
+}
+
+/// A push still goes ahead when the fetch before it fails, but it compared the
+/// branch against the remote as of the last fetch that worked, and says so.
+#[test]
+fn a_push_after_a_failed_fetch_says_its_remote_check_may_be_stale() {
+    let dir = init_repo();
+    fs::write(dir.path().join("README.md"), "main\n").unwrap();
+    stage_in(dir.path(), "README.md");
+    commit_in(dir.path(), "initial");
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    let missing = dir.path().join("no-such-remote");
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", missing.to_str().unwrap()],
+    );
+    git_ok(
+        dir.path(),
+        &[
+            "config",
+            "remote.origin.pushurl",
+            bare.path().to_str().unwrap(),
+        ],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+    fs::write(dir.path().join("README.md"), "main\nmore\n").unwrap();
+    stage_in(dir.path(), "README.md");
+    commit_in(dir.path(), "second");
+
+    let out = lg::git::with_repo(dir.path(), || lg::git::push("origin", "main"))
+        .expect("the push itself still goes through");
+
+    assert!(out.contains("fetch before push failed"), "{out}");
+    let pushed = git(bare.path(), &["log", "--format=%s", "-1", "main"]);
+    assert_eq!(String::from_utf8_lossy(&pushed.stdout).trim(), "second");
+}
+
+/// Having no upstream is also what a branch nobody pushed yet looks like, so
+/// cleaning orphans deletes only what the checkout already has, and never
+/// touches the backups lg takes before a flow.
+#[test]
+fn cleaning_orphans_keeps_unmerged_branches_and_lg_backups() {
+    let dir = init_repo();
+    fs::write(dir.path().join("README.md"), "main\n").unwrap();
+    stage_in(dir.path(), "README.md");
+    commit_in(dir.path(), "initial");
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+    git_ok(dir.path(), &["branch", "merged-orphan"]);
+    git_ok(dir.path(), &["checkout", "-b", "unmerged-orphan"]);
+    fs::write(dir.path().join("work.txt"), "only here\n").unwrap();
+    stage_in(dir.path(), "work.txt");
+    commit_in(dir.path(), "unpushed work");
+    git_ok(
+        dir.path(),
+        &["branch", "lg/backup/merge-main-main-1", "unmerged-orphan"],
+    );
+    git_ok(dir.path(), &["checkout", "main"]);
+
+    let listed = lg::git::with_repo(dir.path(), || lg::git::orphan_branches("main")).unwrap();
+    let unmerged = listed
+        .iter()
+        .find(|branch| branch.name == "unmerged-orphan")
+        .expect("the unmerged branch is listed");
+    assert_eq!((unmerged.unmerged, unmerged.unpushed), (1, 1));
+    assert!(
+        listed
+            .iter()
+            .all(|branch| !branch.name.starts_with("lg/backup/")),
+        "{listed:?}"
+    );
+
+    let report =
+        lg::git::with_repo(dir.path(), || lg::git::flow_clean_orphan_branches("main")).unwrap();
+
+    let exists = |name: &str| {
+        git(
+            dir.path(),
+            &["rev-parse", "--verify", &format!("refs/heads/{name}")],
+        )
+        .status
+        .success()
+    };
+    assert!(!exists("merged-orphan"), "{report}");
+    assert!(exists("unmerged-orphan"), "{report}");
+    assert!(exists("lg/backup/merge-main-main-1"), "{report}");
+    assert!(exists("main"));
+    assert!(report.contains("deleted merged-orphan"), "{report}");
+    assert!(report.contains("kept unmerged-orphan"), "{report}");
+}
+
+// ── Hunks, history, stash and force push ─────────────────────────────────────
+
+/// A committed file of thirty numbered lines, so two edits far apart make two
+/// hunks.
+fn thirty_lines_repo() -> TempDir {
+    let dir = init_repo();
+    let lines: Vec<String> = (1..=30).map(|n| format!("line {n}")).collect();
+    fs::write(dir.path().join("notes.txt"), lines.join("\n") + "\n").unwrap();
+    stage_in(dir.path(), "notes.txt");
+    commit_in(dir.path(), "base");
+    dir
+}
+
+/// Change line 2 and line 28 of `notes.txt`: two hunks.
+fn edit_two_places(dir: &Path) {
+    let mut lines: Vec<String> = (1..=30).map(|n| format!("line {n}")).collect();
+    lines[1] = "line two".into();
+    lines[27] = "line twenty-eight".into();
+    fs::write(dir.join("notes.txt"), lines.join("\n") + "\n").unwrap();
+}
+
+fn stdout_of(dir: &Path, args: &[&str]) -> String {
+    let out = git(dir, args);
+    assert!(
+        out.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The hunks the diff pane shows for `path`, read the way lg reads them.
+fn pane_hunks(dir: &Path, path: &str) -> Vec<lg::git::hunk::ShownHunk> {
+    let text = lg::git::with_repo(dir, || lg::git::file_diff(path)).expect("file diff");
+    lg::git::hunk::shown_hunks(&text, true)
+}
+
+fn side_hunks(
+    hunks: &[lg::git::hunk::ShownHunk],
+    side: lg::git::hunk::HunkSide,
+) -> Vec<lg::git::hunk::ShownHunk> {
+    hunks.iter().filter(|h| h.side == side).cloned().collect()
+}
+
+#[test]
+fn staging_one_of_two_hunks_leaves_the_other_unstaged() {
+    use lg::git::hunk::{HunkOp, HunkSide, apply_hunk};
+    let dir = thirty_lines_repo();
+    edit_two_places(dir.path());
+
+    let worktree = side_hunks(&pane_hunks(dir.path(), "notes.txt"), HunkSide::Worktree);
+    assert_eq!(worktree.len(), 2, "{worktree:?}");
+    lg::git::with_repo(dir.path(), || apply_hunk(HunkOp::Stage, &worktree[1])).unwrap();
+
+    let staged = stdout_of(dir.path(), &["diff", "--cached"]);
+    let unstaged = stdout_of(dir.path(), &["diff"]);
+    assert!(staged.contains("+line twenty-eight"), "{staged}");
+    assert!(!staged.contains("+line two\n"), "{staged}");
+    assert!(unstaged.contains("+line two\n"), "{unstaged}");
+    assert!(!unstaged.contains("+line twenty-eight"), "{unstaged}");
+    // The pane read again shows one hunk on each side.
+    let hunks = pane_hunks(dir.path(), "notes.txt");
+    assert_eq!(side_hunks(&hunks, HunkSide::Staged).len(), 1);
+    assert_eq!(side_hunks(&hunks, HunkSide::Worktree).len(), 1);
+}
+
+#[test]
+fn unstaging_a_staged_hunk_puts_it_back_in_the_worktree_only() {
+    use lg::git::hunk::{HunkOp, HunkSide, apply_hunk};
+    let dir = thirty_lines_repo();
+    edit_two_places(dir.path());
+    stage_in(dir.path(), "notes.txt");
+
+    let staged = side_hunks(&pane_hunks(dir.path(), "notes.txt"), HunkSide::Staged);
+    assert_eq!(staged.len(), 2, "{staged:?}");
+    lg::git::with_repo(dir.path(), || apply_hunk(HunkOp::Unstage, &staged[0])).unwrap();
+
+    let cached = stdout_of(dir.path(), &["diff", "--cached"]);
+    let unstaged = stdout_of(dir.path(), &["diff"]);
+    assert!(!cached.contains("+line two\n"), "{cached}");
+    assert!(cached.contains("+line twenty-eight"), "{cached}");
+    assert!(unstaged.contains("+line two\n"), "{unstaged}");
+    let file = fs::read_to_string(dir.path().join("notes.txt")).unwrap();
+    assert!(
+        file.contains("line two\n"),
+        "unstaging leaves the file alone"
+    );
+}
+
+#[test]
+fn discarding_a_hunk_undoes_only_that_hunk_in_the_file() {
+    use lg::git::hunk::{HunkOp, HunkSide, apply_hunk};
+    let dir = thirty_lines_repo();
+    edit_two_places(dir.path());
+
+    let worktree = side_hunks(&pane_hunks(dir.path(), "notes.txt"), HunkSide::Worktree);
+    lg::git::with_repo(dir.path(), || apply_hunk(HunkOp::Discard, &worktree[0])).unwrap();
+
+    let file = fs::read_to_string(dir.path().join("notes.txt")).unwrap();
+    assert!(file.contains("line 2\n"), "{file}");
+    assert!(!file.contains("line two"), "{file}");
+    assert!(file.contains("line twenty-eight"), "the other hunk stays");
+}
+
+#[test]
+fn a_hunk_is_refused_once_its_file_changed_under_it() {
+    use lg::git::hunk::{HunkOp, HunkSide, apply_hunk};
+    let dir = thirty_lines_repo();
+    edit_two_places(dir.path());
+    let worktree = side_hunks(&pane_hunks(dir.path(), "notes.txt"), HunkSide::Worktree);
+
+    // Edited again after the pane read it: the shown hunk is no longer there.
+    let file = fs::read_to_string(dir.path().join("notes.txt")).unwrap();
+    fs::write(
+        dir.path().join("notes.txt"),
+        file.replace("line two", "line TWO"),
+    )
+    .unwrap();
+
+    let err = lg::git::with_repo(dir.path(), || apply_hunk(HunkOp::Stage, &worktree[0]))
+        .expect_err("a stale hunk must not be applied");
+    assert!(err.to_string().contains("changed since"), "{err}");
+    assert!(
+        stdout_of(dir.path(), &["diff", "--cached"]).is_empty(),
+        "nothing was staged"
+    );
+}
+
+#[test]
+fn staging_the_hunk_of_an_untracked_file_adds_the_file() {
+    use lg::git::hunk::{HunkOp, HunkSide, apply_hunk};
+    let dir = thirty_lines_repo();
+    fs::write(dir.path().join("fresh.txt"), "new\nfile\n").unwrap();
+
+    let worktree = side_hunks(&pane_hunks(dir.path(), "fresh.txt"), HunkSide::Worktree);
+    assert_eq!(worktree.len(), 1, "{worktree:?}");
+    let discard = lg::git::with_repo(dir.path(), || apply_hunk(HunkOp::Discard, &worktree[0]));
+    assert!(
+        discard.is_err(),
+        "an untracked file is deleted, not discarded"
+    );
+    assert!(dir.path().join("fresh.txt").exists());
+
+    lg::git::with_repo(dir.path(), || apply_hunk(HunkOp::Stage, &worktree[0])).unwrap();
+    let staged = stdout_of(dir.path(), &["diff", "--cached", "--name-only"]);
+    assert_eq!(staged.trim(), "fresh.txt");
+}
+
+#[test]
+fn amending_replaces_the_last_commit_with_the_staged_changes() {
+    let dir = thirty_lines_repo();
+    fs::write(dir.path().join("extra.txt"), "more\n").unwrap();
+    commit_all(dir.path(), "second");
+    let parent = stdout_of(dir.path(), &["rev-parse", "HEAD~1"]);
+    fs::write(dir.path().join("late.txt"), "forgotten\n").unwrap();
+    stage_in(dir.path(), "late.txt");
+
+    let message = lg::git::with_repo(dir.path(), lg::git::head_commit_message).unwrap();
+    assert_eq!(message, "second");
+    lg::git::with_repo(dir.path(), || lg::git::amend_commit("second, complete")).unwrap();
+
+    assert_eq!(
+        stdout_of(dir.path(), &["log", "-1", "--format=%s"]).trim(),
+        "second, complete"
+    );
+    assert_eq!(stdout_of(dir.path(), &["rev-parse", "HEAD~1"]), parent);
+    let files = stdout_of(dir.path(), &["show", "--name-only", "--format=", "HEAD"]);
+    assert!(
+        files.contains("late.txt") && files.contains("extra.txt"),
+        "{files}"
+    );
+}
+
+fn commit_all(dir: &Path, msg: &str) {
+    git_ok(dir, &["add", "-A"]);
+    commit_in(dir, msg);
+}
+
+/// A repository with `origin`, its main pushed and tracked.
+fn repo_with_origin() -> (TempDir, TempDir) {
+    let dir = thirty_lines_repo();
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_ok(dir.path(), &["push", "-u", "origin", "main"]);
+    (dir, bare)
+}
+
+#[test]
+fn a_pushed_head_is_reported_as_published_and_an_unpushed_one_is_not() {
+    let (dir, _bare) = repo_with_origin();
+    assert_eq!(
+        lg::git::with_repo(dir.path(), lg::git::head_published_on).as_deref(),
+        Some("origin/main")
+    );
+    fs::write(dir.path().join("local.txt"), "local\n").unwrap();
+    commit_all(dir.path(), "local only");
+    assert_eq!(
+        lg::git::with_repo(dir.path(), lg::git::head_published_on),
+        None
+    );
+}
+
+#[test]
+fn reverting_a_commit_adds_one_that_undoes_it() {
+    let dir = thirty_lines_repo();
+    fs::write(dir.path().join("oops.txt"), "mistake\n").unwrap();
+    commit_all(dir.path(), "add oops");
+    let sha = stdout_of(dir.path(), &["rev-parse", "--short", "HEAD"]);
+
+    lg::git::with_repo(dir.path(), || lg::git::revert_commit(sha.trim())).unwrap();
+
+    assert!(!dir.path().join("oops.txt").exists());
+    let subject = stdout_of(dir.path(), &["log", "-1", "--format=%s"]);
+    assert!(subject.starts_with("Revert \"add oops\""), "{subject}");
+    assert_eq!(
+        stdout_of(dir.path(), &["rev-list", "--count", "HEAD"]).trim(),
+        "3"
+    );
+}
+
+#[test]
+fn a_conflicting_revert_waits_for_the_conflict_and_can_be_continued() {
+    let dir = thirty_lines_repo();
+    fs::write(dir.path().join("notes.txt"), "first rewrite\n").unwrap();
+    commit_all(dir.path(), "rewrite");
+    let rewrite = stdout_of(dir.path(), &["rev-parse", "HEAD"]);
+    fs::write(dir.path().join("notes.txt"), "second rewrite\n").unwrap();
+    commit_all(dir.path(), "rewrite again");
+
+    let err = lg::git::with_repo(dir.path(), || lg::git::revert_commit(rewrite.trim()))
+        .expect_err("undoing the first rewrite conflicts with the second");
+    assert!(err.to_string().contains("CONFLICT"), "{err}");
+    let conflicts = lg::git::with_repo(dir.path(), lg::git::conflicted_files).unwrap();
+    assert_eq!(conflicts, vec!["notes.txt".to_string()]);
+
+    fs::write(dir.path().join("notes.txt"), "settled\n").unwrap();
+    lg::git::with_repo(dir.path(), || {
+        lg::git::validate_conflict_resolution(lg::git::Followup::default())
+    })
+    .unwrap();
+    let subject = stdout_of(dir.path(), &["log", "-1", "--format=%s"]);
+    assert!(subject.starts_with("Revert \"rewrite\""), "{subject}");
+    assert!(
+        !git(dir.path(), &["rev-parse", "--verify", "REVERT_HEAD"])
+            .status
+            .success(),
+        "the revert is finished"
+    );
+}
+
+#[test]
+fn a_conflicting_revert_can_be_aborted() {
+    let dir = thirty_lines_repo();
+    fs::write(dir.path().join("notes.txt"), "first rewrite\n").unwrap();
+    commit_all(dir.path(), "rewrite");
+    let rewrite = stdout_of(dir.path(), &["rev-parse", "HEAD"]);
+    fs::write(dir.path().join("notes.txt"), "second rewrite\n").unwrap();
+    commit_all(dir.path(), "rewrite again");
+    let head = stdout_of(dir.path(), &["rev-parse", "HEAD"]);
+    let _ = lg::git::with_repo(dir.path(), || lg::git::revert_commit(rewrite.trim()));
+
+    lg::git::with_repo(dir.path(), lg::git::abort_in_progress_operation).unwrap();
+
+    assert_eq!(stdout_of(dir.path(), &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("notes.txt")).unwrap(),
+        "second rewrite\n"
+    );
+}
+
+#[test]
+fn cherry_picking_brings_another_branchs_commit_onto_this_one() {
+    let dir = thirty_lines_repo();
+    git_ok(dir.path(), &["checkout", "-q", "-b", "feature/other"]);
+    fs::write(dir.path().join("feature.txt"), "from the feature\n").unwrap();
+    commit_all(dir.path(), "feature work");
+    let sha = stdout_of(dir.path(), &["rev-parse", "--short", "HEAD"]);
+    git_ok(dir.path(), &["checkout", "-q", "main"]);
+
+    lg::git::with_repo(dir.path(), || lg::git::cherry_pick_commit(sha.trim())).unwrap();
+
+    assert_eq!(head_branch(dir.path()), "main");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("feature.txt")).unwrap(),
+        "from the feature\n"
+    );
+    assert_eq!(
+        stdout_of(dir.path(), &["log", "-1", "--format=%s"]).trim(),
+        "feature work"
+    );
+    let again = lg::git::with_repo(dir.path(), || lg::git::cherry_pick_commit("HEAD"));
+    assert!(again.is_err(), "a commit already here is refused");
+    assert!(
+        !git(dir.path(), &["rev-parse", "--verify", "CHERRY_PICK_HEAD"])
+            .status
+            .success(),
+        "nothing is left in progress"
+    );
+}
+
+#[test]
+fn a_conflicting_cherry_pick_waits_for_the_conflict_and_can_be_continued() {
+    let dir = thirty_lines_repo();
+    git_ok(dir.path(), &["checkout", "-q", "-b", "feature/other"]);
+    fs::write(dir.path().join("notes.txt"), "feature version\n").unwrap();
+    commit_all(dir.path(), "feature rewrite");
+    let sha = stdout_of(dir.path(), &["rev-parse", "HEAD"]);
+    git_ok(dir.path(), &["checkout", "-q", "main"]);
+    fs::write(dir.path().join("notes.txt"), "main version\n").unwrap();
+    commit_all(dir.path(), "main rewrite");
+
+    let err = lg::git::with_repo(dir.path(), || lg::git::cherry_pick_commit(sha.trim()))
+        .expect_err("both rewrote the file");
+    assert!(err.to_string().contains("CONFLICT"), "{err}");
+    assert_eq!(
+        lg::git::with_repo(dir.path(), lg::git::conflicted_files).unwrap(),
+        vec!["notes.txt".to_string()]
+    );
+
+    fs::write(dir.path().join("notes.txt"), "both versions\n").unwrap();
+    lg::git::with_repo(dir.path(), || {
+        lg::git::validate_conflict_resolution(lg::git::Followup::default())
+    })
+    .unwrap();
+    assert_eq!(
+        stdout_of(dir.path(), &["log", "-1", "--format=%s"]).trim(),
+        "feature rewrite"
+    );
+}
+
+#[test]
+fn stashing_lists_applies_pops_and_drops_entries() {
+    let dir = thirty_lines_repo();
+    edit_two_places(dir.path());
+    fs::write(dir.path().join("untracked.txt"), "keep me\n").unwrap();
+
+    lg::git::with_repo(dir.path(), || lg::git::stash_push("half done")).unwrap();
+    assert!(
+        stdout_of(dir.path(), &["status", "--porcelain"]).is_empty(),
+        "untracked files go into the stash too"
+    );
+    let entries = lg::git::with_repo(dir.path(), lg::git::stash_list).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].subject.contains("half done"), "{entries:?}");
+    assert!(!entries[0].auto);
+
+    lg::git::with_repo(dir.path(), || lg::git::stash_apply(&entries[0].sha)).unwrap();
+    assert!(dir.path().join("untracked.txt").exists());
+    assert_eq!(
+        lg::git::with_repo(dir.path(), lg::git::stash_list)
+            .unwrap()
+            .len(),
+        1,
+        "apply keeps the entry"
+    );
+
+    git_ok(dir.path(), &["checkout", "--", "notes.txt"]);
+    fs::remove_file(dir.path().join("untracked.txt")).unwrap();
+    lg::git::with_repo(dir.path(), || lg::git::stash_pop(&entries[0].sha)).unwrap();
+    assert!(
+        fs::read_to_string(dir.path().join("notes.txt"))
+            .unwrap()
+            .contains("line two")
+    );
+    assert!(
+        lg::git::with_repo(dir.path(), lg::git::stash_list)
+            .unwrap()
+            .is_empty(),
+        "pop drops the entry"
+    );
+
+    lg::git::with_repo(dir.path(), || lg::git::stash_push("")).unwrap();
+    let entries = lg::git::with_repo(dir.path(), lg::git::stash_list).unwrap();
+    lg::git::with_repo(dir.path(), || lg::git::stash_drop(&entries[0].sha)).unwrap();
+    assert!(stash_list(dir.path()).trim().is_empty());
+}
+
+#[test]
+fn a_stash_lg_left_behind_is_marked_as_lg_s_own() {
+    let dir = thirty_lines_repo();
+    edit_two_places(dir.path());
+    git_ok(
+        dir.path(),
+        &["stash", "push", "-m", "lg: auto-stash before pull"],
+    );
+    edit_two_places(dir.path());
+    git_ok(dir.path(), &["stash", "push", "-m", "mine"]);
+
+    let entries = lg::git::with_repo(dir.path(), lg::git::stash_list).unwrap();
+    let auto: Vec<bool> = entries.iter().map(|entry| entry.auto).collect();
+    assert_eq!(auto, vec![false, true], "{entries:?}");
+}
+
+#[test]
+fn a_stash_that_is_gone_is_not_mistaken_for_another() {
+    let dir = thirty_lines_repo();
+    edit_two_places(dir.path());
+    git_ok(dir.path(), &["stash", "push", "-m", "first"]);
+    let gone = lg::git::with_repo(dir.path(), lg::git::stash_list).unwrap()[0]
+        .sha
+        .clone();
+    git_ok(dir.path(), &["stash", "drop"]);
+    edit_two_places(dir.path());
+    git_ok(dir.path(), &["stash", "push", "-m", "second"]);
+
+    let err = lg::git::with_repo(dir.path(), || lg::git::stash_drop(&gone));
+    assert!(err.is_err());
+    assert!(stash_list(dir.path()).contains("second"), "kept");
+}
+
+/// A feature branch pushed to `origin`, then amended locally so the two have
+/// diverged: one commit each side.
+fn diverged_feature() -> (TempDir, TempDir) {
+    let (dir, bare) = repo_with_origin();
+    git_ok(dir.path(), &["checkout", "-q", "-b", "feature/rewrite"]);
+    fs::write(dir.path().join("feature.txt"), "draft\n").unwrap();
+    commit_all(dir.path(), "feature draft");
+    git_ok(dir.path(), &["push", "-u", "origin", "feature/rewrite"]);
+    fs::write(dir.path().join("feature.txt"), "final\n").unwrap();
+    git_ok(dir.path(), &["add", "-A"]);
+    git_ok(
+        dir.path(),
+        &["commit", "-q", "--amend", "-m", "feature final"],
+    );
+    (dir, bare)
+}
+
+#[test]
+fn force_push_with_lease_replaces_the_diverged_remote_branch() {
+    let (dir, bare) = diverged_feature();
+
+    let plan = lg::git::with_repo(dir.path(), lg::git::force_push_plan).unwrap();
+    assert_eq!(plan.remote_ref(), "origin/feature/rewrite");
+    assert_eq!(plan.overwritten.len(), 1, "{:?}", plan.overwritten);
+    assert!(plan.overwritten[0].contains("feature draft"));
+
+    lg::git::with_repo(dir.path(), || lg::git::push_force_with_lease(&plan)).unwrap();
+    assert_eq!(
+        stdout_of(bare.path(), &["rev-parse", "refs/heads/feature/rewrite"]),
+        stdout_of(dir.path(), &["rev-parse", "HEAD"])
+    );
+}
+
+#[test]
+fn force_push_with_lease_refuses_a_remote_that_moved_since_the_prompt() {
+    let (dir, bare) = diverged_feature();
+    let plan = lg::git::with_repo(dir.path(), lg::git::force_push_plan).unwrap();
+
+    // Someone else pushes to the branch after the prompt was shown.
+    let other = tempfile::tempdir().expect("other clone");
+    git_ok(
+        other.path(),
+        &[
+            "clone",
+            "-q",
+            "-b",
+            "feature/rewrite",
+            bare.path().to_str().unwrap(),
+            ".",
+        ],
+    );
+    git_ok(other.path(), &["config", "user.email", "o@example.com"]);
+    git_ok(other.path(), &["config", "user.name", "Other"]);
+    fs::write(other.path().join("theirs.txt"), "theirs\n").unwrap();
+    commit_all(other.path(), "their work");
+    git_ok(other.path(), &["push", "-q", "origin", "feature/rewrite"]);
+    let theirs = stdout_of(other.path(), &["rev-parse", "HEAD"]);
+    // The local tracking ref catches up, as a background fetch would.
+    git_ok(dir.path(), &["fetch", "-q", "origin"]);
+
+    let result = lg::git::with_repo(dir.path(), || lg::git::push_force_with_lease(&plan));
+    assert!(result.is_err(), "the lease no longer holds");
+    assert_eq!(
+        stdout_of(bare.path(), &["rev-parse", "refs/heads/feature/rewrite"]),
+        theirs,
+        "their commit is still there"
+    );
+}
+
+#[test]
+fn force_push_is_never_planned_for_a_protected_branch() {
+    let (dir, _bare) = repo_with_origin();
+    fs::write(dir.path().join("x.txt"), "x\n").unwrap();
+    git_ok(dir.path(), &["add", "-A"]);
+    git_ok(
+        dir.path(),
+        &["commit", "-q", "--amend", "-m", "rewritten base"],
+    );
+
+    let err =
+        lg::git::with_repo(dir.path(), lg::git::force_push_plan).expect_err("main is protected");
+    assert!(err.to_string().contains("protected"), "{err}");
+}
+
+/// A hook that refuses a commit says why on stdout as often as on stderr, and
+/// the error used to start with the whole commit message. It now names the
+/// command and keeps what the hook printed.
+#[test]
+fn a_refused_commit_says_what_the_hook_printed_and_not_the_message() {
+    let dir = init_repo();
+    fs::write(dir.path().join("a.txt"), "a\n").unwrap();
+    stage_in(dir.path(), "a.txt");
+    let hook = dir.path().join(".git/hooks/pre-commit");
+    fs::write(
+        &hook,
+        "#!/bin/sh\necho 'lint: a.txt has trailing junk'\nexit 1\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let _cwd = CwdGuard::new(dir.path());
+    let err = lg::git::commit("feat: a message long enough to bury anything after it")
+        .expect_err("the hook refuses the commit");
+    let message = format!("{err:#}");
+
+    assert!(message.starts_with("git commit failed"), "{message}");
+    assert!(
+        message.contains("lint: a.txt has trailing junk"),
+        "{message}"
+    );
+    assert!(!message.contains("bury anything"), "{message}");
 }

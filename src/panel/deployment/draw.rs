@@ -522,7 +522,7 @@ fn detail_lines(
     lines.push(label("Assign a branch"));
     let highlighted = state
         .branches
-        .get(state.branches_idx)
+        .get(state.branches_list.idx)
         .map(|b| b.name.clone())
         .or_else(|| state.branch.clone())
         .unwrap_or_else(|| "the highlighted branch".into());
@@ -667,17 +667,13 @@ pub fn render_with(state: &AppState, config: &Branches, area: Rect, frame: &mut 
     };
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), r.detail);
 
-    let mut footer = vec![if previewing {
-        ui::key_hints(&[("Enter", "promote"), ("Esc", "back to the pipeline")])
-    } else {
-        ui::key_hints(&[
-            ("j/k", "select"),
-            ("Enter", "preview promotion"),
-            ("a", "assign branch"),
-            (",", "configure"),
-            ("Esc", "close"),
-        ])
-    }];
+    let mut footer = vec![ui::key_hints(&crate::panel::keys::footer_pairs(
+        if previewing {
+            "Environments: preview"
+        } else {
+            "Environments"
+        },
+    ))];
     if !view.notice.is_empty() {
         let style = if view.notice_error {
             Style::default()

@@ -1,27 +1,85 @@
 use anyhow::{Context, Result};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 use std::sync::mpsc::Receiver;
 
 use crate::config::COMMIT_LIST_LIMIT;
-use crate::state::{AppState, RefreshSnapshot};
+use crate::state::{AppState, RefreshScope, RefreshSnapshot};
 
-pub(super) fn build_refresh_snapshot(workspace_root: Option<String>) -> RefreshSnapshot {
-    let configured_remote = crate::preferences::remote();
-    let mut errors = Vec::new();
-    let current_root = crate::git::repo_root().ok();
-    let workspace_root = workspace_root.or_else(|| current_root.clone());
-    if current_root.is_none() {
-        return no_repo_snapshot(workspace_root);
+use super::watch::WatchRoots;
+
+/// Read what `scope` covers. `changed` are the worktree files whose events
+/// asked for a [`RefreshScope::Files`] refresh: when git ignores every one of
+/// them, there is nothing to read again and nothing is.
+pub(super) fn refresh_snapshot(
+    workspace_root: Option<String>,
+    scope: RefreshScope,
+    changed: &[PathBuf],
+) -> RefreshSnapshot {
+    if scope == RefreshScope::Files && crate::git::repo_root().is_ok() {
+        if !changed.is_empty() && crate::git::all_ignored(changed) {
+            return files_snapshot(None, Vec::new());
+        }
+        let mut errors = Vec::new();
+        let files = status_files(&mut errors);
+        return files_snapshot(files, errors);
     }
-    let files = match crate::git::status_entries() {
+    // A folder that is no checkout has no cheap tier: what changed in it may
+    // be a repository arriving.
+    let scope = scope.max(RefreshScope::Repository);
+    build_refresh_snapshot(workspace_root, scope)
+}
+
+fn status_files(errors: &mut Vec<String>) -> Option<Vec<crate::git::FileEntry>> {
+    match crate::git::status_entries() {
         Ok(files) => Some(files),
         Err(e) => {
             errors.push(format!("git status failed: {e}"));
             None
         }
-    };
+    }
+}
+
+/// A [`RefreshScope::Files`] snapshot: the file list, or `None` when there
+/// was nothing to read again.
+fn files_snapshot(
+    files: Option<Vec<crate::git::FileEntry>>,
+    errors: Vec<String>,
+) -> RefreshSnapshot {
+    RefreshSnapshot {
+        scope: RefreshScope::Files,
+        repo_root: None,
+        workspace_root: None,
+        files,
+        branches: None,
+        remote_branches: None,
+        nested_repositories: None,
+        worktrees: None,
+        release_branches: Default::default(),
+        commits: None,
+        unpushed_shas: None,
+        branch: None,
+        remote_url: None,
+        ahead_behind: None,
+        commit_author: None,
+        decorative_animations: true,
+        errors,
+    }
+}
+
+pub(super) fn build_refresh_snapshot(
+    workspace_root: Option<String>,
+    scope: RefreshScope,
+) -> RefreshSnapshot {
+    let scope = scope.max(RefreshScope::Repository);
+    let configured_remote = crate::preferences::remote();
+    let mut errors = Vec::new();
+    let current_root = crate::git::repo_root().ok();
+    let workspace_root = workspace_root.or_else(|| current_root.clone());
+    if current_root.is_none() {
+        return no_repo_snapshot(workspace_root, scope);
+    }
+    let files = status_files(&mut errors);
     let branches = match crate::git::list_branches() {
         Ok(branches) => Some(branches),
         Err(e) => {
@@ -36,8 +94,15 @@ pub(super) fn build_refresh_snapshot(workspace_root: Option<String>) -> RefreshS
             None
         }
     };
-    let nested_repositories = scan_nested_repositories(workspace_root.as_deref(), &mut errors);
-    let worktrees = match crate::git::worktrees() {
+    let nested_repositories = (scope == RefreshScope::Workspace)
+        .then(|| scan_nested_repositories(workspace_root.as_deref(), &mut errors))
+        .flatten();
+    // The status just read already says whether this checkout has changes.
+    let current = current_root
+        .as_deref()
+        .zip(files.as_ref())
+        .map(|(root, files)| (Path::new(root), !files.is_empty()));
+    let worktrees = match crate::git::worktrees_knowing(current) {
         Ok(worktrees) => Some(worktrees),
         Err(e) => {
             errors.push(format!("worktree list failed: {e}"));
@@ -68,6 +133,7 @@ pub(super) fn build_refresh_snapshot(workspace_root: Option<String>) -> RefreshS
     };
     let (commit_author, decorative_animations) = author_and_animations();
     RefreshSnapshot {
+        scope,
         repo_root: current_root,
         workspace_root,
         files,
@@ -128,19 +194,22 @@ fn scan_nested_repositories(
 /// diff beside it work as they would in a fresh checkout. And the scan for
 /// repositories inside the folder runs, which is what makes a clone landing in
 /// it appear in the workspace pane.
-fn no_repo_snapshot(workspace_root: Option<String>) -> RefreshSnapshot {
+fn no_repo_snapshot(workspace_root: Option<String>, scope: RefreshScope) -> RefreshSnapshot {
     let mut errors = Vec::new();
     // Without a folder there is nothing to look in; the scan would fall back
     // to asking git where it is, which is the question that just failed.
     let (files, nested_repositories) = match workspace_root.as_deref() {
         Some(root) => (
             crate::git::new_file_entries(Path::new(root)),
-            scan_nested_repositories(Some(root), &mut errors),
+            (scope == RefreshScope::Workspace)
+                .then(|| scan_nested_repositories(Some(root), &mut errors))
+                .flatten(),
         ),
         None => (Vec::new(), Some(Vec::new())),
     };
     let (commit_author, decorative_animations) = author_and_animations();
     RefreshSnapshot {
+        scope,
         repo_root: None,
         workspace_root,
         files: Some(files),
@@ -160,29 +229,17 @@ fn no_repo_snapshot(workspace_root: Option<String>) -> RefreshSnapshot {
     }
 }
 
-pub(super) fn prime_branches(state: &mut AppState) {
+/// What the first frame needs before the first refresh lands: which checkout
+/// this is and the branch it is on. Two quick git calls; the lists — branches,
+/// files, commits — come with the refresh started straight after, rather than
+/// being read here and then all over again by it.
+pub(super) fn prime_roots(state: &mut AppState) {
     state.repo_root = crate::git::repo_root().ok();
     if state.workspace_root.is_none() {
         state.workspace_root = state.repo_root.clone();
     }
-    if let Ok(branches) = crate::git::list_branches() {
-        state.branch = branches
-            .iter()
-            .find(|branch| branch.is_current)
-            .map(|branch| branch.name.clone());
-        state.branches = branches;
-        state.clamp();
-    }
-    if let Ok(branches) = crate::git::list_remote_branches() {
-        state.remote_branches = branches;
-        state.clamp();
-    }
-}
-
-pub(super) fn prime_files(state: &mut AppState) {
-    if let Ok(files) = crate::git::status_entries() {
-        state.files = files;
-        state.clamp();
+    if state.repo_root.is_some() {
+        state.branch = crate::git::head_branch().ok();
     }
 }
 
@@ -209,7 +266,7 @@ fn path_should_refresh(path: &Path) -> bool {
     !in_git_dir || git_metadata_path_should_refresh(&git_relative)
 }
 
-fn git_metadata_path_should_refresh(path: &[&str]) -> bool {
+pub(super) fn git_metadata_path_should_refresh(path: &[&str]) -> bool {
     let Some(first) = path.first().copied() else {
         return true;
     };
@@ -257,7 +314,11 @@ pub(super) fn should_refresh_for_fs_event(event: &notify::Event) -> bool {
 /// worktrees get the same ref and index notifications as a plain checkout.
 pub(super) fn watch_repo(
     dir: &Path,
-) -> Result<(RecommendedWatcher, Receiver<notify::Result<notify::Event>>)> {
+) -> Result<(
+    RecommendedWatcher,
+    Receiver<notify::Result<notify::Event>>,
+    WatchRoots,
+)> {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |event| {
         let _ = tx.send(event);
@@ -269,17 +330,18 @@ pub(super) fn watch_repo(
         .with_context(|| format!("watch {}", dir.display()))?;
 
     let dir_canonical = canonical_path(dir);
-    for git_dir in git_metadata_dirs(dir) {
-        let git_dir_canonical = canonical_path(&git_dir);
+    let git_dirs = git_metadata_dirs(dir);
+    for git_dir in &git_dirs {
+        let git_dir_canonical = canonical_path(git_dir);
         if git_dir_canonical.starts_with(&dir_canonical) {
             continue;
         }
         watcher
-            .watch(&git_dir, RecursiveMode::Recursive)
+            .watch(git_dir, RecursiveMode::Recursive)
             .with_context(|| format!("watch {}", git_dir.display()))?;
     }
 
-    Ok((watcher, rx))
+    Ok((watcher, rx, WatchRoots::new(dir, git_dirs)))
 }
 
 /// Where lg starts: the directory to run git in, and the workspace it sits in
@@ -325,37 +387,34 @@ pub(super) struct StartupRoots {
     pub start_dir: PathBuf,
 }
 
+/// The git directory `cwd` uses and the one its repository shares, resolved,
+/// from one `rev-parse`. They are the same directory except in a linked
+/// worktree.
 fn git_metadata_dirs(cwd: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    for arg in ["--git-dir", "--git-common-dir"] {
-        let Some(path) = git_rev_parse_path(cwd, arg) else {
+    let Ok(out) =
+        crate::git::git_command_in_dir(cwd, &["rev-parse", "--git-dir", "--git-common-dir"])
+            .output()
+    else {
+        return dirs;
+    };
+    if !out.status.success() {
+        return dirs;
+    }
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let path = line.trim();
+        if path.is_empty() {
             continue;
+        }
+        let path = PathBuf::from(path);
+        let path = if path.is_absolute() {
+            path
+        } else {
+            cwd.join(path)
         };
         push_unique_path(&mut dirs, canonical_path(&path));
     }
     dirs
-}
-
-fn git_rev_parse_path(cwd: &Path, arg: &str) -> Option<PathBuf> {
-    let out = Command::new("git")
-        .args(["rev-parse", arg])
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let path = text.trim();
-    if path.is_empty() {
-        return None;
-    }
-    let path = PathBuf::from(path);
-    Some(if path.is_absolute() {
-        path
-    } else {
-        cwd.join(path)
-    })
 }
 
 fn canonical_path(path: &Path) -> PathBuf {
@@ -371,6 +430,7 @@ fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::{build_refresh_snapshot, roots_for_dir, should_refresh_for_fs_event};
+    use crate::state::RefreshScope;
     use notify::{
         Event, EventKind,
         event::{AccessKind, AccessMode, ModifyKind},
@@ -423,7 +483,7 @@ mod tests {
         let workspace = tmp.path().to_string_lossy().into_owned();
 
         let snapshot = crate::git::with_repo(tmp.path(), || {
-            build_refresh_snapshot(Some(workspace.clone()))
+            build_refresh_snapshot(Some(workspace.clone()), RefreshScope::Workspace)
         });
 
         assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors);
@@ -445,8 +505,9 @@ mod tests {
         init_repo_at(&tmp.path().join("cloned"));
         let workspace = tmp.path().to_string_lossy().into_owned();
 
-        let snapshot =
-            crate::git::with_repo(tmp.path(), || build_refresh_snapshot(Some(workspace)));
+        let snapshot = crate::git::with_repo(tmp.path(), || {
+            build_refresh_snapshot(Some(workspace), RefreshScope::Workspace)
+        });
 
         assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors);
         assert!(

@@ -8,6 +8,8 @@ mod common;
 mod confirm_and_help;
 #[path = "tui_flow/focus_branches_flow.rs"]
 mod focus_branches_flow;
+#[path = "tui_flow/hunks_stash_history.rs"]
+mod hunks_stash_history;
 #[path = "tui_flow/navigation.rs"]
 mod navigation;
 #[path = "tui_flow/rendering_status_tree_push_layout.rs"]
@@ -18,3 +20,5 @@ mod review_agent;
 mod review_diff_author;
 #[path = "tui_flow/sessions.rs"]
 mod sessions;
+#[path = "tui_flow/usability.rs"]
+mod usability;

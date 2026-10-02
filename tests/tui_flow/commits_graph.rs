@@ -49,7 +49,7 @@ fn commits_panel_shows_author_names_with_distinct_colors() {
 fn commits_panel_render_clamps_stale_selection() {
     let mut state = AppState::new();
     state.focus = Pane::Commits;
-    state.commits_idx = usize::MAX;
+    state.commits_list.idx = usize::MAX;
     state.commits = vec![Commit {
         sha: "abc1234".into(),
         author: "Alice Example".into(),
@@ -84,7 +84,7 @@ fn commits_panel_render_clamps_stale_selection() {
 fn commits_panel_keeps_context_below_selected_row_while_scrolling() {
     let mut state = AppState::new();
     state.focus = Pane::Commits;
-    state.commits_idx = 8;
+    state.commits_list.idx = 8;
     state.commits = (0..14)
         .map(|idx| Commit {
             sha: format!("sha{idx:02}"),
@@ -400,7 +400,7 @@ fn commits_panel_keeps_selected_hash_visible_and_graph_columns_stable() {
         },
     ];
     state.focus = Pane::Commits;
-    state.commits_idx = 2;
+    state.commits_list.idx = 2;
 
     let backend = TestBackend::new(100, 8);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -465,7 +465,7 @@ fn commits_panel_highlights_selected_merge_connector() {
         subject: "merge branch".into(),
     }];
     state.focus = Pane::Commits;
-    state.commits_idx = 0;
+    state.commits_list.idx = 0;
 
     let backend = TestBackend::new(80, 5);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -512,7 +512,7 @@ fn commits_panel_highlights_selected_side_commit() {
         },
     ];
     state.focus = Pane::Commits;
-    state.commits_idx = 1;
+    state.commits_list.idx = 1;
 
     let backend = TestBackend::new(80, 5);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -596,7 +596,7 @@ fn commits_panel_highlights_selected_row_without_shifting_columns() {
         },
     ];
     state.focus = Pane::Commits;
-    state.commits_idx = 1;
+    state.commits_list.idx = 1;
 
     let backend = TestBackend::new(80, 5);
     let mut terminal = Terminal::new(backend).unwrap();

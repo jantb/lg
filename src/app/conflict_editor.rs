@@ -10,17 +10,18 @@ pub(crate) fn prepare_conflict_editor(state: &mut AppState) {
         return;
     }
     if state.conflict_resolve_job.is_some() {
-        state.conflict_preview = None;
+        state.conflict.preview = None;
         return;
     }
-    let Some(path) = state.conflicts.get(state.conflict_idx) else {
+    let Some(path) = state.conflict.files.get(state.conflict.idx) else {
         return;
     };
     let Some(root) = &state.repo_root else {
         return;
     };
     if state
-        .conflict_preview
+        .conflict
+        .preview
         .as_ref()
         .is_some_and(|p| p.path == *path && p.root == *root)
     {
@@ -33,9 +34,9 @@ pub(crate) fn prepare_conflict_editor(state: &mut AppState) {
         .as_ref()
         .is_ok_and(|editor| crate::git::holds_conflict_marker(&editor.snapshot.original))
     {
-        state.conflict_resolved.remove(path);
+        state.conflict.resolved.remove(path);
     }
-    state.conflict_preview = Some(ConflictPreview {
+    state.conflict.preview = Some(ConflictPreview {
         root: root.clone(),
         path: path.clone(),
         editor,
@@ -49,14 +50,15 @@ pub(crate) fn prepare_conflict_editor(state: &mut AppState) {
 /// when git has none to give. `false` when there is nothing to resolve.
 pub(crate) fn reopen_conflicts(state: &mut AppState, select: Option<&str>) -> bool {
     let conflicts = crate::git::conflicted_files().unwrap_or_default();
-    if !conflicts.is_empty() && state.conflicts != conflicts {
+    if !conflicts.is_empty() && state.conflict.files != conflicts {
         state.set_conflicts(conflicts);
     }
-    if state.conflicts.is_empty() {
+    if state.conflict.files.is_empty() {
         return false;
     }
-    if let Some(index) = select.and_then(|path| state.conflicts.iter().position(|c| c == path)) {
-        state.conflict_idx = index;
+    if let Some(index) = select.and_then(|path| state.conflict.files.iter().position(|c| c == path))
+    {
+        state.conflict.idx = index;
     }
     if state.repo_root.is_none() {
         state.repo_root = crate::git::repo_root().ok();
@@ -69,20 +71,20 @@ pub(crate) fn save_conflict_editor(state: &mut AppState) {
     if state.conflict_resolve_job.is_some() {
         return;
     }
-    let Some(Ok(editor)) = state.conflict_preview.as_mut().map(|p| &mut p.editor) else {
+    let Some(Ok(editor)) = state.conflict.preview.as_mut().map(|p| &mut p.editor) else {
         return;
     };
     match editor.save() {
         Ok(()) => {
             let path = editor.snapshot.path.clone();
-            state.conflict_resolved.insert(path.clone());
-            state.conflict_log = format!(
+            state.conflict.resolved.insert(path.clone());
+            state.conflict.log = format!(
                 "Saved {path}. Review the other files, then v stages resolutions and continues."
             );
             state.set_status("merged file saved; v validates and continues", false);
         }
         Err(err) => {
-            state.conflict_log = err.to_string();
+            state.conflict.log = err.to_string();
             state.set_status(err.to_string(), true);
         }
     }

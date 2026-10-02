@@ -4,6 +4,11 @@
 //! and each checkout gets its own directory keyed by its repository root path.
 //! That keeps the commit prompt and PR language tuned per project instead of
 //! globally, which is what a monorepo and a side project need at the same time.
+//!
+//! The `settings` file in that directory is the legacy store: it is read as the
+//! bottom layer of the preferences' `writing` category, and saving goes through
+//! the preferences instead. The prompt and style-guide files are still edited
+//! here.
 
 use anyhow::{Context, Result};
 use std::fs;
@@ -64,6 +69,33 @@ impl Default for RepoSettings {
     }
 }
 
+/// The same settings as the preferences' `writing` category spells them.
+impl From<crate::preferences::Writing> for RepoSettings {
+    fn from(w: crate::preferences::Writing) -> Self {
+        Self {
+            pr_language: w.language,
+            comment_style: w.comment_style,
+            commit_subject_max_chars: w.subject_max,
+            commit_body_max_lines: w.body_lines,
+            commit_prompt: w.commit_prompt,
+            review_style: w.review_style,
+        }
+    }
+}
+
+impl From<RepoSettings> for crate::preferences::Writing {
+    fn from(s: RepoSettings) -> Self {
+        Self {
+            language: s.pr_language,
+            comment_style: s.comment_style,
+            subject_max: s.commit_subject_max_chars,
+            body_lines: s.commit_body_max_lines,
+            commit_prompt: s.commit_prompt,
+            review_style: s.review_style,
+        }
+    }
+}
+
 impl RepoSettings {
     pub fn commit_prompt_is_custom(&self) -> bool {
         self.commit_prompt != COMMIT_PROMPT_PREFIX
@@ -84,13 +116,14 @@ pub(crate) fn load_legacy(root: &str) -> RepoSettings {
     }
 }
 
-/// Whether this checkout has settings of its own yet. A fresh checkout gets
-/// values derived from its own history instead of the bare defaults.
+/// Whether this checkout has writing settings yet, saved in its preferences
+/// or in the legacy file. A fresh checkout gets values derived from its own
+/// history instead of the bare defaults.
 pub fn is_configured() -> bool {
-    checkout_root().is_ok_and(|root| is_configured_at(&root))
+    crate::preferences::configured_category(WRITING)
 }
 
-/// [`is_configured`] for the checkout whose top level is `root`.
+/// Whether the checkout whose top level is `root` has a legacy settings file.
 pub(crate) fn is_configured_at(root: &str) -> bool {
     checkout_settings_dir(root).is_ok_and(|dir| dir.join(SETTINGS_FILE).exists())
 }
@@ -103,17 +136,37 @@ pub(crate) fn legacy_files(root: &str) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+/// The preferences category these settings are kept in.
+const WRITING: &str = "writing";
+
+/// The `writing` fields the settings modal edits, and so the ones its save
+/// writes. The commit prompt and review style are edited as files of their own.
+const MODAL_FIELDS: [&str; 4] = ["language", "comment_style", "subject_max", "body_lines"];
+
+/// Save what the settings modal edits for this checkout.
+///
+/// It goes into the preferences, at the worktree scope the legacy per-checkout
+/// file stood for — or in a file more specific still that already decides
+/// these settings, so the value saved is the value read back. The legacy file
+/// is only ever read now, as the layer under every preference.
 pub fn save(settings: &RepoSettings) -> Result<()> {
-    let dir = repo_settings_dir()?;
-    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    let path = dir.join(SETTINGS_FILE);
-    fs::write(&path, render_settings(settings))
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(())
+    let settings = RepoSettings {
+        pr_language: normalize_language(&settings.pr_language),
+        comment_style: one_line(&settings.comment_style),
+        ..settings.clone()
+    };
+    let serde_json::Value::Object(mut writing) =
+        serde_json::to_value(crate::preferences::Writing::from(settings))?
+    else {
+        anyhow::bail!("writing settings did not serialize to a table");
+    };
+    writing.retain(|key, _| MODAL_FIELDS.contains(&key.as_str()));
+    crate::preferences::save_fields(crate::preferences::Scope::Worktree, WRITING, writing)
 }
 
 /// Removes this checkout's saved settings, returning it to the defaults.
 pub fn clear() -> Result<()> {
+    crate::preferences::clear_fields(crate::preferences::Scope::Worktree, WRITING, &MODAL_FIELDS)?;
     let dir = repo_settings_dir()?;
     for file in SETTINGS_FILES {
         let path = dir.join(file);
@@ -346,6 +399,9 @@ fn parse_settings(
     settings
 }
 
+/// The legacy file as older releases wrote it. Only read now; kept to build
+/// such files in tests.
+#[cfg(test)]
 fn render_settings(settings: &RepoSettings) -> String {
     format!(
         "# lg settings for this checkout\n\
@@ -442,15 +498,7 @@ fn path_hash(value: &str) -> u64 {
 
 /// Resolve shared repository preferences while retaining checkout-specific legacy files.
 pub fn load() -> RepoSettings {
-    let w = crate::preferences::load().config.writing;
-    RepoSettings {
-        pr_language: w.language,
-        comment_style: w.comment_style,
-        commit_subject_max_chars: w.subject_max,
-        commit_body_max_lines: w.body_lines,
-        commit_prompt: w.commit_prompt,
-        review_style: w.review_style,
-    }
+    crate::preferences::load().config.writing.into()
 }
 
 #[cfg(test)]

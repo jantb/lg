@@ -26,9 +26,8 @@ use std::{
 
 use crate::{
     config::{
-        ANIMATION_FRAME_MS, BACKGROUND_FETCH_INTERVAL_SECS, ERROR_MSG_LIFETIME_SECS,
-        FRAME_BUFFER_BYTES, MAX_EVENTS_PER_FRAME, SESSION_TICK_MS, STATUS_MSG_LIFETIME_SECS,
-        TICK_MS,
+        BACKGROUND_FETCH_INTERVAL_SECS, ERROR_MSG_LIFETIME_SECS, FRAME_BUFFER_BYTES,
+        MAX_EVENTS_PER_FRAME, STATUS_MSG_LIFETIME_SECS,
     },
     state::AppState,
 };
@@ -37,6 +36,7 @@ mod actions;
 mod conflict_assist;
 mod conflict_editor;
 mod footer;
+mod frame;
 mod github;
 mod header;
 mod input;
@@ -48,6 +48,7 @@ mod review_agent;
 mod review_assist;
 mod session;
 mod spawn;
+mod watch;
 mod workflow;
 
 pub(crate) use conflict_assist::spawn_conflict_resolve;
@@ -61,10 +62,7 @@ pub(crate) use workflow::{
     validate_conflict_resolution, workflow_steps,
 };
 
-use refresh::{
-    build_refresh_snapshot, prime_branches, prime_files, should_refresh_for_fs_event,
-    startup_roots, watch_repo,
-};
+use refresh::{prime_roots, refresh_snapshot, startup_roots, watch_repo};
 use review_assist::{
     spawn_assisted_review, spawn_review_assist, spawn_review_chat, spawn_review_pr_text,
     spawn_review_style_flags,
@@ -72,7 +70,7 @@ use review_assist::{
 pub(crate) use spawn::open_model_modal;
 use spawn::{
     git_job_running, load_diff_text, open_author_modal, selected_commit_ref, selected_diff_source,
-    spawn_operation, spawn_operation_with_progress, spawn_pull, spawn_push,
+    spawn_force_push, spawn_operation, spawn_operation_with_progress, spawn_pull, spawn_push,
 };
 
 pub struct App {
@@ -81,6 +79,10 @@ pub struct App {
     file_events: Receiver<notify::Result<notify::Event>>,
     /// Held so the watcher keeps running; replaced when lg switches checkout.
     file_watcher: RecommendedWatcher,
+    /// What the watcher is watching, to tell which events matter.
+    watch_roots: watch::WatchRoots,
+    /// File events waiting for the burst they came in to settle.
+    file_batch: watch::FileBatch,
     last_fetch_started: Instant,
     /// Whether the terminal is currently set up for a session to hold the
     /// keyboard: pastes reported as pastes, and keys spelled out rather than
@@ -243,7 +245,7 @@ impl App {
         let start_dir = roots.start_dir;
         crate::git::set_active_repo(&start_dir);
 
-        let (file_watcher, file_events) = watch_repo(&start_dir)?;
+        let (file_watcher, file_events, watch_roots) = watch_repo(&start_dir)?;
 
         // Off the startup path on purpose: asking the model server what it
         // serves is a round trip, and nothing here waits on the answer.
@@ -274,6 +276,8 @@ impl App {
             terminal,
             file_events,
             file_watcher,
+            watch_roots,
+            file_batch: watch::FileBatch::default(),
             last_fetch_started: Instant::now()
                 - Duration::from_secs(BACKGROUND_FETCH_INTERVAL_SECS),
             session_keyboard: false,
@@ -282,25 +286,30 @@ impl App {
         app.state.workspace_root = roots
             .workspace
             .map(|workspace| workspace.to_string_lossy().into_owned());
-        prime_branches(&mut app.state);
+        prime_roots(&mut app.state);
         app.state.enable_history();
-        app.state.decorative_animations = crate::preferences::animations_enabled();
-        prime_files(&mut app.state);
+        // Whether this author has them turned off takes four git calls to
+        // find out; the refresh below finds out, and until it lands the
+        // setting stands on its own.
+        app.state.decorative_animations = crate::preferences::load()
+            .config
+            .tools
+            .decorative_animations;
         app.start_refresh(true);
         app.start_fetch();
         Ok(app)
     }
 
     pub fn run(&mut self) -> Result<()> {
+        let mut clock = frame::FrameClock::default();
         loop {
             if self.state.should_quit {
                 break;
             }
 
-            let frame_started = Instant::now();
-            self.sync_session_keyboard();
-            self.render()?;
-
+            let delivered = crate::state::deliveries();
+            let activity = self.state.sessions.activity_signature();
+            let status = self.status_mark();
             self.drain_generation();
             self.drain_review_assist();
             self.drain_review_pr_text();
@@ -319,31 +328,34 @@ impl App {
             self.drain_diff_job();
             self.drain_review_job();
             self.drain_workflow_job()?;
-            self.drain_sessions();
+            render::poll_panels(&mut self.state);
+            let sessions = self.drain_sessions();
             self.state.reap_deferred_threads();
-            self.drain_file_events()?;
+            let refreshing = self.drain_file_events()?;
             self.maybe_start_periodic_fetch();
 
-            let poll_ms = if self.state.session_view().is_some() {
-                SESSION_TICK_MS
-            } else if self.state.any_job_running() || self.state.wants_animation() {
-                // A running job pulses its frame and the branch-action preview
-                // moves a marker; at the idle rate either would be redrawn far
-                // less often than it changes — a picture that jumps rather than
-                // moves. A job's result also lands sooner this way.
-                ANIMATION_FRAME_MS
-            } else {
-                TICK_MS
-            };
-            let poll_duration = if self.state.modal == crate::state::Modal::Worktree
-                || self.state.sessions.activity_counts().1 > 0
+            let now = Instant::now();
+            if refreshing
+                || crate::state::deliveries() != delivered
+                || self.state.sessions.activity_signature() != activity
+                || self.status_mark() != status
+                || sessions.ended_any
             {
-                // Include rendering and job draining in the 120 Hz budget.
-                Duration::from_nanos(1_000_000_000 / 120).saturating_sub(frame_started.elapsed())
-            } else {
-                Duration::from_millis(poll_ms)
-            };
-            if event::poll(poll_duration)? {
+                clock.changed();
+            }
+            if sessions.shown_changed {
+                clock.changed();
+                clock.shown_live(now);
+            }
+            let pace = frame::pace(&self.state, clock.is_shown_live(now), sessions.more);
+            self.sync_session_keyboard();
+            if clock.due(now, pace) {
+                self.render()?;
+                clock.drawn(Instant::now());
+            }
+
+            let timeout = clock.timeout(Instant::now(), pace, self.next_deadline());
+            if event::poll(timeout)? {
                 // Take everything already queued rather than one event per
                 // frame. Each frame is a redraw and a pass over every job, so
                 // spreading a wheel burst across frames made scrolling crawl
@@ -370,11 +382,17 @@ impl App {
                         break;
                     }
                 }
+                clock.input();
+                if self.state.session_input_active() {
+                    // What was typed echoes back in a moment.
+                    clock.shown_live(Instant::now());
+                }
             }
 
             // Dispatch pending IO action.
             if let Some(action) = self.state.pending_action.take() {
                 self.dispatch_pending(action);
+                clock.input();
             }
 
             // Expire stale status messages.
@@ -386,10 +404,26 @@ impl App {
                 };
                 if (Utc::now() - s.at).num_seconds() >= lifetime {
                     self.state.status = None;
+                    clock.changed();
                 }
             }
         }
         Ok(())
+    }
+
+    /// Which status message is up, to notice one put up by anything the loop
+    /// did between frames.
+    fn status_mark(&self) -> Option<(chrono::DateTime<Utc>, bool)> {
+        self.state
+            .status
+            .as_ref()
+            .map(|status| (status.at, status.is_error))
+    }
+
+    /// The next moment the loop has to be awake for, besides input and frames:
+    /// a batch of file events whose quiet period ends.
+    fn next_deadline(&self) -> Option<Instant> {
+        self.file_batch.deadline()
     }
 }
 

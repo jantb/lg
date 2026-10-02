@@ -27,7 +27,7 @@ fn modal_section(modal: Modal) -> Option<&'static str> {
         Modal::Environments => "Environments",
         Modal::Commands => "Actions",
         Modal::Settings => "Settings",
-        Modal::Model => "Settings",
+        Modal::Model => "Model settings",
         Modal::Help => "Help overlay",
         Modal::Flow => "Branch actions",
         Modal::Agent => "Agent picker",
@@ -39,6 +39,8 @@ fn modal_section(modal: Modal) -> Option<&'static str> {
         Modal::ConfirmDestructive => "Confirm prompts",
         Modal::GitHub => "GitHub",
         Modal::GuidedReview => "Guided review",
+        Modal::Stash => "Stash",
+        Modal::StatusDetails => "Error details",
     })
 }
 
@@ -55,8 +57,44 @@ fn tone_color(tone: Tone) -> Color {
 /// The branch-action list is the one modal whose keys depend on the repository:
 /// with no branches to act on there is nothing to select or run, so only the
 /// way out is offered.
+/// The help section a modal's keys come from right now. Most modals have one
+/// set of keys; the ones with modes of their own — a form open over a list, a
+/// field being edited — have a set per mode, and the footer follows the mode
+/// so it never offers a key the modal is not listening for. On the GitHub
+/// repositories tab, say, letters are typed into the search.
+fn modal_footer_title(state: &AppState, modal: Modal) -> Option<&'static str> {
+    use crate::panel::github::{Mode as GitHubMode, Tab};
+    use crate::panel::guided::Mode as GuidedMode;
+    Some(match modal {
+        Modal::GitHub => match (&state.github.mode, state.github.tab) {
+            (GitHubMode::Compose { .. }, _) => "GitHub review text",
+            (GitHubMode::Merge(_), _) => "GitHub merge",
+            (GitHubMode::Create(_), _) => "GitHub new pull request",
+            (GitHubMode::ConfirmClose, _) => "GitHub close",
+            (GitHubMode::Browse, Tab::Repositories) => "GitHub repositories",
+            (GitHubMode::Browse, Tab::PullRequests) => "GitHub",
+        },
+        Modal::GuidedReview => match state.guided.as_deref() {
+            Some(guided) => match &guided.mode {
+                GuidedMode::Browse => "Guided review",
+                GuidedMode::Note { .. } | GuidedMode::Question { .. } | GuidedMode::Fix { .. } => {
+                    "Guided review: writing"
+                }
+                GuidedMode::Summary { .. } if guided.source.is_pull_request() => {
+                    "Guided review: submit"
+                }
+                GuidedMode::Summary { .. } => "Guided review: notes",
+            },
+            None => "Guided review",
+        },
+        Modal::Settings => crate::panel::settings::key_section(&state.settings_hub),
+        Modal::Environments if state.environment_view.preview.is_some() => "Environments: preview",
+        modal => return modal_section(modal),
+    })
+}
+
 fn modal_footer_spans(state: &AppState, modal: Modal) -> Option<Vec<Span<'static>>> {
-    let title = modal_section(modal)?;
+    let title = modal_footer_title(state, modal)?;
     let section = keys::section(title)?;
     let footer = keys::modal_footer(title)?;
     let keys_shown: Vec<&'static str> = if modal == Modal::Flow && !state.branch_actions_available()
@@ -77,14 +115,20 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
         Modal::None if state.session_view().is_some() && state.focus == Pane::Main => {
             session_spans(state)
         }
+        // Keys go into the filter while it is typed, so its keys are the
+        // only ones worth offering.
+        Modal::None if state.filter_typing() => {
+            let pairs = keys::footer_pairs("List filter");
+            modal_spans("Filter ", &pairs, palette::ACCENT)
+        }
         Modal::None => default_spans(state),
         modal => modal_footer_spans(state, modal).unwrap_or_default(),
     };
 
     let (right_text, right_style) = status_text(state);
-    // Never let a long status swallow the whole bar; the shortcut hints must stay readable.
-    let status_budget = (area.width as usize).div_ceil(2).max(1);
-    let right_width = right_text.chars().count().min(status_budget) as u16;
+    let hints_width: usize = left_spans.iter().map(Span::width).sum();
+    let right_text = fit_status(state, &right_text, area.width as usize, hints_width);
+    let right_width = right_text.chars().count() as u16;
     let chunks =
         Layout::horizontal([Constraint::Min(0), Constraint::Length(right_width)]).split(area);
 
@@ -97,6 +141,74 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
         Paragraph::new(Span::styled(right_text, right_style)).alignment(Alignment::Right),
         chunks[1],
     );
+}
+
+/// What the status bar adds when the status has more to say than it shows.
+const DETAILS_HINT: &str = " \u{b7} ! details";
+
+/// The share of the bar, in fifths, a status may always take when it and the
+/// key hints do not both fit. The hints keep the rest, so a long error cannot
+/// leave a pane without a word about its keys.
+const STATUS_MIN_FIFTHS: usize = 2;
+
+/// Room the status gets: all it wants when it fits beside the hints, and
+/// otherwise what the hints leave, but never less than its share.
+fn status_budget(width: usize, hints: usize, wanted: usize) -> usize {
+    if hints + 1 + wanted <= width {
+        return wanted;
+    }
+    let floor = width * STATUS_MIN_FIFTHS / 5;
+    width
+        .saturating_sub(hints + 1)
+        .max(floor)
+        .min(wanted)
+        .min(width)
+}
+
+/// Git's output across several lines, on the one line the bar has.
+fn flatten(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+/// `text` cut to `max` characters, the cut marked with an ellipsis.
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out: String = text.chars().take(max - 1).collect();
+    out.push('\u{2026}');
+    out
+}
+
+/// The status line as it fits beside `hints` columns of key hints in a bar
+/// `width` wide. An error the bar cannot show whole says that `!` shows the
+/// rest — the popup is the only place left that has it once the error has
+/// expired, short of Settings → Activity.
+fn fit_status(state: &AppState, text: &str, width: usize, hints: usize) -> String {
+    let flat = flatten(text);
+    let len = flat.chars().count();
+    let multi_line = text.trim().contains('\n');
+    let has_details = state.modal == Modal::None
+        && state
+            .status
+            .as_ref()
+            .is_some_and(|status| status.is_error || multi_line);
+    let hint_len = DETAILS_HINT.chars().count();
+    let fits = len <= status_budget(width, hints, len);
+    if has_details && (multi_line || !fits) {
+        let budget = status_budget(width, hints, len + hint_len);
+        if budget > hint_len + 1 {
+            return truncate(&flat, budget - hint_len) + DETAILS_HINT;
+        }
+    }
+    truncate(&flat, status_budget(width, hints, len))
 }
 
 /// Footer for the session pane. Which way the keyboard is pointing is the one
@@ -177,6 +289,10 @@ fn shortcut_visible(state: &AppState, key: &str, label: &str) -> bool {
         ("v", _) => diff_view_toggle_available(state),
         // Only a session row has a session to close.
         ("x", "close session") => crate::panel::environments::selected_session(state).is_some(),
+        // Only a linked worktree can be removed; the main one cannot.
+        ("D", "remove worktree") => {
+            crate::panel::environments::selected_linked_worktree(state).is_some()
+        }
         // Distinguished from the Status pane's Esc, which means "back".
         ("Esc", "cancel") => state.llm_job_running(),
         _ => true,
@@ -197,10 +313,10 @@ fn review_drill_available(state: &AppState) -> bool {
     if !matches!(state.focus, Pane::Main) || !matches!(state.diff_source, DiffSource::Review) {
         return false;
     }
-    let Some(review) = &state.review else {
+    let Some(review) = &state.review.assisted else {
         return false;
     };
-    let Some(node) = review.nodes.get(state.review_idx) else {
+    let Some(node) = review.nodes.get(state.review.idx) else {
         return false;
     };
     review.nodes.iter().any(|candidate| {
@@ -212,7 +328,7 @@ fn review_drill_available(state: &AppState) -> bool {
 fn diff_view_toggle_available(state: &AppState) -> bool {
     matches!(state.focus, Pane::Main)
         && !matches!(state.diff_source, DiffSource::Branch(_))
-        && (!matches!(state.diff_source, DiffSource::Review) || state.review.is_some())
+        && (!matches!(state.diff_source, DiffSource::Review) || state.review.assisted.is_some())
 }
 
 fn modal_spans(
@@ -367,6 +483,7 @@ mod tests {
             Modal::ReviewChat,
             Modal::ConfirmDestructive,
             Modal::GitHub,
+            Modal::Stash,
         ];
         let state = AppState::new();
         for modal in modals {
@@ -391,6 +508,96 @@ mod tests {
             modal_section(Modal::None).is_none(),
             "no modal is open, so there is no modal footer"
         );
+    }
+
+    /// A long error used to take half the bar whatever the hints needed, and
+    /// cut off without saying there was more. Now the hints keep most of the
+    /// bar, the error is cut with an ellipsis, and it says `!` has the rest.
+    #[test]
+    fn a_long_error_leaves_the_hints_room_and_points_at_the_details() {
+        let mut state = AppState::new();
+        state.set_status(
+            "git push origin failed: To github.com:me/repo.git\n ! [rejected] main -> main (fetch first)\nerror: failed to push some refs",
+            true,
+        );
+        let width = 100;
+        let hints = 80;
+
+        let (text, _) = status_text(&state);
+        let shown = fit_status(&state, &text, width, hints);
+        assert!(shown.ends_with("! details"), "{shown}");
+        assert!(shown.contains('\u{2026}'), "the cut is marked: {shown}");
+        assert!(
+            shown.chars().count() <= width * 2 / 5,
+            "the hints keep three fifths of the bar: {shown}"
+        );
+        assert!(!shown.contains('\n'), "one line: {shown:?}");
+    }
+
+    /// A short error fits and has nothing more to show, so it is left alone.
+    #[test]
+    fn a_short_error_is_shown_whole() {
+        let mut state = AppState::new();
+        state.set_status("nothing to push", true);
+        let (text, _) = status_text(&state);
+
+        let shown = fit_status(&state, &text, 120, 40);
+
+        assert!(shown.ends_with("nothing to push"), "{shown}");
+        assert!(!shown.contains("details"), "{shown}");
+    }
+
+    fn footer_text(state: &AppState) -> String {
+        modal_footer_spans(state, state.modal)
+            .unwrap_or_default()
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    /// The repositories tab types letters into its search, so the footer
+    /// offers the search and its keys rather than the pull request letters,
+    /// which would only be typed.
+    #[test]
+    fn the_github_footer_follows_the_tab_and_the_form() {
+        let mut state = AppState::new();
+        state.modal = Modal::GitHub;
+
+        let prs = footer_text(&state);
+        for hint in ["D draft", "X close", "o browser", "v guided review"] {
+            assert!(prs.contains(hint), "{hint}: {prs}");
+        }
+
+        state.github.tab = crate::panel::github::Tab::Repositories;
+        let repos = footer_text(&state);
+        assert!(repos.contains("type search"), "{repos}");
+        assert!(!repos.contains("approve"), "{repos}");
+
+        state.github.tab = crate::panel::github::Tab::PullRequests;
+        state.github.mode = crate::panel::github::Mode::ConfirmClose;
+        let close = footer_text(&state);
+        assert!(close.contains("y close"), "{close}");
+        assert!(!close.contains("approve"), "{close}");
+    }
+
+    /// While a list filter is typed, letters go into it, and the footer says
+    /// what its keys are instead of the pane's.
+    #[test]
+    fn a_filter_being_typed_has_its_own_footer() {
+        let mut state = AppState::new();
+        state.focus = Pane::Branches;
+        state.branches_filter.typing = true;
+        let area = Rect::new(0, 0, 120, 1);
+        let backend = ratatui::backend::TestBackend::new(120, 1);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, area, &state)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let text: String = (0..120)
+            .map(|col| buf[(col, 0)].symbol().to_string())
+            .collect();
+
+        assert!(text.contains("Enter keep"), "{text}");
+        assert!(!text.contains("checkout"), "{text}");
     }
 
     fn stats(served: &str, prefill: f64, decode: f64) -> crate::llm::GenStats {

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
@@ -63,6 +63,39 @@ fn modal_area(area: Rect) -> Rect {
     ui::centered(area, w, h)
 }
 
+/// The wheel moves through the actions and a click selects one; a click on
+/// the one already selected goes on with it, as Enter does — to its prompt or
+/// its confirmation, never straight to running it.
+pub fn handle_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) -> Result<()> {
+    if state.workflow_job.is_some()
+        || state.flow_confirm.is_some()
+        || state.flow_input.is_some()
+        || !state.branch_actions_available()
+    {
+        return Ok(());
+    }
+    if let Some(down) = super::pointer::wheel(m) {
+        return handle_key(
+            state,
+            KeyEvent::from(if down { KeyCode::Down } else { KeyCode::Up }),
+        );
+    }
+    if !super::pointer::left_click(m) {
+        return Ok(());
+    }
+    let inner = ui::modal_inner(modal_area(area));
+    let (chunks, _) = ui::modal_row_areas(inner, &[Constraint::Length(1), Constraint::Min(0)]);
+    let (list, _) = menu_areas(chunks[1]);
+    let len = available_actions(state).len();
+    if let Some(at) = super::pointer::list_row(list, state.flow_list.scroll, len, m.column, m.row) {
+        if Some(at) == clamp_index(state.flow_list.idx, len) {
+            return handle_key(state, KeyEvent::from(KeyCode::Enter));
+        }
+        state.flow_list.idx = at;
+    }
+    Ok(())
+}
+
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let modal = modal_area(area);
     let dividers = render_body(state, modal, frame);
@@ -111,11 +144,11 @@ fn render_body(state: &AppState, modal: Rect, frame: &mut Frame) -> Vec<Rect> {
             ]));
             text.push(Line::from(""));
         }
+        let input_row = text.len() as u16;
         text.extend([
             Line::from(vec![
                 Span::styled("new branch: ", Style::default().fg(Color::Yellow)),
                 Span::raw(state.flow_text.as_str()),
-                Span::styled("\u{2588}", Style::default().fg(Color::Cyan)),
             ]),
             Line::from(""),
             Line::from(vec![
@@ -129,11 +162,16 @@ fn render_body(state: &AppState, modal: Rect, frame: &mut Frame) -> Vec<Rect> {
         text.extend(branch_name_mascot());
         let inner = ui::modal_frame(frame, modal, "Branch Actions");
         frame.render_widget(Paragraph::new(text), inner);
+        let column =
+            ("new branch: ".len() + state.flow_text.before_cursor().chars().count()) as u16;
+        if input_row < inner.height && column < inner.width {
+            frame.set_cursor_position((inner.x + column, inner.y + input_row));
+        }
         return Vec::new();
     }
 
     if let Some(action) = state.flow_confirm {
-        let text = vec![
+        let mut text = vec![
             Line::from(Span::styled(
                 state.flow_action_label(action),
                 Style::default()
@@ -143,15 +181,24 @@ fn render_body(state: &AppState, modal: Rect, frame: &mut Frame) -> Vec<Rect> {
             Line::from(""),
             warning_for(state, action),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("y", Style::default().fg(Color::Green)),
-                Span::raw(" run  "),
-                Span::styled("n/Esc", Style::default().fg(Color::Gray)),
-                Span::raw(" cancel"),
-            ]),
         ];
+        if !state.flow_confirm_detail.is_empty() {
+            text.extend(
+                state
+                    .flow_confirm_detail
+                    .iter()
+                    .map(|line| Line::from(line.clone())),
+            );
+            text.push(Line::from(""));
+        }
+        text.push(Line::from(vec![
+            Span::styled("y", Style::default().fg(Color::Green)),
+            Span::raw(" run  "),
+            Span::styled("n/Esc", Style::default().fg(Color::Gray)),
+            Span::raw(" cancel"),
+        ]));
         let inner = ui::modal_frame(frame, modal, "Confirm Branch Action");
-        frame.render_widget(Paragraph::new(text), inner);
+        frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
         return Vec::new();
     }
 
@@ -165,7 +212,7 @@ fn render_body(state: &AppState, modal: Rect, frame: &mut Frame) -> Vec<Rect> {
     );
 
     let actions = available_actions(state);
-    let selected_idx = clamp_index(state.flow_idx, actions.len());
+    let selected_idx = clamp_index(state.flow_list.idx, actions.len());
     let ((list_area, preview_area), gaps) = split_menu(frame, chunks[1]);
     dividers.extend(gaps);
 
@@ -180,7 +227,7 @@ fn render_body(state: &AppState, modal: Rect, frame: &mut Frame) -> Vec<Rect> {
         selected_idx,
         actions.len(),
         list_area.height as usize,
-        state.flow_scroll_offset,
+        state.flow_list.scroll,
     );
     let mut list_state = scroll::list_state(selected_idx, offset);
     frame.render_stateful_widget(list, list_area, &mut list_state);
@@ -425,16 +472,16 @@ pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
         || state.workflow_job.is_some()
         || !state.branch_actions_available()
     {
-        state.flow_scroll_offset = 0;
+        state.flow_list.scroll = 0;
         return;
     }
 
     let actions_len = available_actions(state).len();
-    state.flow_scroll_offset = scroll::selection_scroll_offset(
-        clamp_index(state.flow_idx, actions_len),
+    state.flow_list.scroll = scroll::selection_scroll_offset(
+        clamp_index(state.flow_list.idx, actions_len),
         actions_len,
         actions_area(area).height as usize,
-        state.flow_scroll_offset,
+        state.flow_list.scroll,
     );
 }
 
@@ -500,13 +547,12 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                     app::run_flow_action(state, action, Some(name));
                 }
             }
-            KeyCode::Backspace => {
-                state.flow_text.pop();
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.flow_text.insert_char(branch_name_char(c));
             }
-            KeyCode::Char(c) => {
-                state.flow_text.push(branch_name_char(c));
+            _ => {
+                state.flow_text.handle_key(key);
             }
-            _ => {}
         }
         return Ok(());
     }
@@ -531,21 +577,22 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('j') | KeyCode::Down => {
             let actions = available_actions(state);
-            state.flow_idx = clamp_index(state.flow_idx, actions.len()).unwrap_or(0);
-            state.flow_idx = state
-                .flow_idx
+            state.flow_list.idx = clamp_index(state.flow_list.idx, actions.len()).unwrap_or(0);
+            state.flow_list.idx = state
+                .flow_list
+                .idx
                 .saturating_add(1)
                 .min(actions.len().saturating_sub(1));
         }
         KeyCode::Char('k') | KeyCode::Up => {
             let actions = available_actions(state);
-            state.flow_idx = clamp_index(state.flow_idx, actions.len()).unwrap_or(0);
-            state.flow_idx = state.flow_idx.saturating_sub(1);
+            state.flow_list.idx = clamp_index(state.flow_list.idx, actions.len()).unwrap_or(0);
+            state.flow_list.idx = state.flow_list.idx.saturating_sub(1);
         }
         KeyCode::Enter => {
             let actions = available_actions(state);
             let Some(action) = actions
-                .get(state.flow_idx.min(actions.len().saturating_sub(1)))
+                .get(state.flow_list.idx.min(actions.len().saturating_sub(1)))
                 .copied()
             else {
                 return Ok(());
@@ -554,6 +601,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.flow_input = Some(action);
                 state.flow_text.clear();
             } else if action.needs_confirmation() {
+                state.flow_confirm_detail = confirm_detail(state, action);
                 state.flow_confirm = Some(action);
             } else {
                 app::run_flow_action(state, action, None);
@@ -562,6 +610,62 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// Most branches a confirmation lists in one group before it says how many
+/// more there are.
+const CONFIRM_LIST_MAX: usize = 12;
+
+/// What the confirmation names beyond the warning: for cleaning orphans, every
+/// branch it would try to delete, split by whether git will let it go. Asked
+/// of git once, when the prompt opens, rather than on every frame.
+fn confirm_detail(state: &AppState, action: FlowAction) -> Vec<String> {
+    if action != FlowAction::CleanOrphans {
+        return Vec::new();
+    }
+    let current = state.branch.clone().unwrap_or_default();
+    let orphans = match crate::git::orphan_branches(&current) {
+        Ok(orphans) => orphans,
+        Err(err) => return vec![format!("could not list the branches: {err}")],
+    };
+    if orphans.is_empty() {
+        return vec!["No local branch is without an upstream; nothing would be deleted.".into()];
+    }
+    let (deleted, kept): (Vec<_>, Vec<_>) =
+        orphans.into_iter().partition(|branch| branch.unmerged == 0);
+    let mut lines = Vec::new();
+    if !deleted.is_empty() {
+        lines.push(format!("Deleted ({}):", deleted.len()));
+        push_capped(
+            &mut lines,
+            deleted.iter().map(|branch| match branch.unpushed {
+                0 => format!("  {}", branch.name),
+                n => format!("  {} \u{2014} {n} commit(s) on no remote", branch.name),
+            }),
+        );
+    }
+    if !kept.is_empty() {
+        let target = if current.is_empty() { "HEAD" } else { &current };
+        lines.push(format!("Kept, not merged into {target} ({}):", kept.len()));
+        push_capped(
+            &mut lines,
+            kept.iter().map(|branch| {
+                format!(
+                    "  {} \u{2014} {} unmerged, {} on no remote",
+                    branch.name, branch.unmerged, branch.unpushed
+                )
+            }),
+        );
+    }
+    lines
+}
+
+fn push_capped(lines: &mut Vec<String>, items: impl ExactSizeIterator<Item = String>) {
+    let total = items.len();
+    lines.extend(items.take(CONFIRM_LIST_MAX));
+    if total > CONFIRM_LIST_MAX {
+        lines.push(format!("  \u{2026} and {} more", total - CONFIRM_LIST_MAX));
+    }
 }
 
 fn warning_for(state: &AppState, action: FlowAction) -> Line<'static> {
@@ -573,7 +677,9 @@ fn warning_for(state: &AppState, action: FlowAction) -> Line<'static> {
         .to_string();
     match action {
         FlowAction::ResetDev | FlowAction::ResetTest => Line::from(Span::styled(
-            "Hard reset and force push. Unique target history will be lost.",
+            format!(
+                "Hard resets {target} and force-pushes it (with lease), rewriting the remote {target} branch. Unique {target} history will be lost."
+            ),
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )),
         FlowAction::DiscardCheckout => Line::from(Span::styled(
@@ -581,7 +687,7 @@ fn warning_for(state: &AppState, action: FlowAction) -> Line<'static> {
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )),
         FlowAction::CleanOrphans => Line::from(Span::styled(
-            "Deletes local branches without upstream tracking.",
+            "Deletes merged local branches without upstream tracking. Unmerged ones and lg backups are kept.",
             Style::default().fg(Color::Red),
         )),
         FlowAction::ReleaseDev | FlowAction::ReleaseTest => Line::from(format!(
@@ -670,7 +776,7 @@ mod tests {
             behind_main: 2,
             last_commit_unix: None,
         }];
-        state.branches_idx = 0;
+        state.branches_list.idx = 0;
         state.release_branches = ReleaseBranches::new(Some("develop".into()), Some("test".into()));
         state
     }

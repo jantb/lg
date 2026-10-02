@@ -61,13 +61,41 @@ impl Worktree {
 /// dirty state filled in. Worktrees whose directory is gone are reported as
 /// clean rather than as an error.
 pub fn worktrees() -> Result<Vec<Worktree>> {
+    worktrees_knowing(None)
+}
+
+/// Every worktree, with whether it has changes and how far its branch has run
+/// ahead of `main`. `current` is a checkout whose answer the caller already
+/// has — the refresh has just run `git status` there — so it is not asked
+/// twice.
+pub fn worktrees_knowing(current: Option<(&Path, bool)>) -> Result<Vec<Worktree>> {
     let configured_base = crate::preferences::base_branch();
     let out = run(&["worktree", "list", "--porcelain"])?;
     let mut worktrees = parse_worktree_list(&String::from_utf8_lossy(&out.stdout));
-    let has_main = ref_exists(&format!("refs/heads/{configured_base}"));
+    let base_ref = format!("refs/heads/{configured_base}");
+    let has_main = ref_exists(&base_ref);
+    // One call for every branch at once, where git can answer that way.
+    let counts = has_main
+        .then(|| super::branches::ahead_behind_all(&base_ref))
+        .flatten();
     for worktree in &mut worktrees {
-        worktree.has_changes = worktree_has_changes(Path::new(&worktree.path)).unwrap_or(false);
-        worktree.unmerged = has_main.then(|| unmerged_commits(worktree)).flatten();
+        let path = Path::new(&worktree.path);
+        worktree.has_changes = match current {
+            Some((dir, changes)) if same_dir(dir, path) => changes,
+            _ => worktree_has_changes(path).unwrap_or(false),
+        };
+        worktree.unmerged = if !has_main {
+            None
+        } else if let Some(counts) = &counts {
+            worktree
+                .branch
+                .as_deref()
+                .filter(|branch| *branch != configured_base.as_str())
+                .and_then(|branch| counts.get(branch))
+                .map(|(ahead, _)| *ahead)
+        } else {
+            unmerged_commits(worktree)
+        };
     }
     Ok(worktrees)
 }
@@ -480,14 +508,55 @@ pub fn preferred_base_ref() -> String {
 
 /// Compare two directories, allowing for one side being reached through a
 /// symlink — a workspace of symlinked repositories is the normal case.
+///
+/// Each directory is resolved once and remembered: the workspace tree compares
+/// every checkout with every session and worktree several times a frame, and a
+/// `canonicalize` per comparison was a stack of system calls each time. What
+/// is remembered is forgotten by [`forget_resolved_dirs`] whenever the
+/// checkouts are listed again.
 pub fn same_dir(a: &Path, b: &Path) -> bool {
     if a == b {
         return true;
     }
-    match (a.canonicalize(), b.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
+    match (resolved_dir(a), resolved_dir(b)) {
+        (Some(a), Some(b)) => a == b,
         _ => false,
     }
+}
+
+/// Directories resolved so far, by how they were spelled.
+static RESOLVED_DIRS: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, PathBuf>>> =
+    std::sync::Mutex::new(None);
+
+/// More than this many spellings remembered, and the memory starts over.
+const MAX_RESOLVED_DIRS: usize = 1024;
+
+/// `path` with its symlinks resolved, from memory when it has been resolved
+/// before. A path that does not resolve is not remembered: it may exist by the
+/// next time it is asked about.
+fn resolved_dir(path: &Path) -> Option<PathBuf> {
+    let mut memory = RESOLVED_DIRS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let known = memory.get_or_insert_with(Default::default);
+    if let Some(resolved) = known.get(path) {
+        return Some(resolved.clone());
+    }
+    let resolved = path.canonicalize().ok()?;
+    if known.len() >= MAX_RESOLVED_DIRS {
+        known.clear();
+    }
+    known.insert(path.to_path_buf(), resolved.clone());
+    Some(resolved)
+}
+
+/// Forget every directory [`same_dir`] has resolved, for when checkouts may
+/// have come, gone or moved: after a refresh lists them again.
+pub fn forget_resolved_dirs() {
+    let mut memory = RESOLVED_DIRS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *memory = None;
 }
 
 fn ref_exists_in(dir: &Path, name: &str) -> bool {

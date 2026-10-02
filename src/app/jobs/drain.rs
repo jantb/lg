@@ -4,24 +4,26 @@ use anyhow::Result;
 
 use crate::state::{
     CheckoutMsg, CommitLogMsg, DiffMsg, FetchMsg, GenMsg, Modal, OperationKind, OperationMsg,
-    PushMsg, RefreshMsg, ReleaseStatusMsg, SettingsSuggestMsg, WorkflowMsg,
+    PushMsg, RefreshMsg, RefreshScope, ReleaseStatusMsg, SettingsSuggestMsg, WorkflowMsg,
 };
 
-use super::super::{App, selected_commit_ref, should_refresh_for_fs_event, spawn_push};
+use super::super::{App, selected_commit_ref, spawn_push};
 use super::{
     drain_job, drain_messages, first_status_line, join_worker, open_conflict_modal_if_needed,
-    take_finished, tick_spinner,
+    stopped_status, take_finished, tick_spinner,
 };
 
 impl App {
-    pub(in crate::app) fn drain_file_events(&mut self) -> Result<()> {
-        let mut should_refresh = false;
+    /// Gather what the watcher reported, and start the refresh it asks for
+    /// once the burst it came in has settled. Returns whether one started.
+    pub(in crate::app) fn drain_file_events(&mut self) -> Result<bool> {
+        let now = std::time::Instant::now();
+        let mut nested = None;
         while let Ok(event) = self.file_events.try_recv() {
             match event {
                 Ok(event) => {
-                    if should_refresh_for_fs_event(&event) {
-                        should_refresh = true;
-                    }
+                    let nested = nested.get_or_insert_with(|| self.nested_in_checkout());
+                    self.file_batch.add(&event, &self.watch_roots, nested, now);
                 }
                 Err(err) => {
                     self.state
@@ -29,10 +31,66 @@ impl App {
                 }
             }
         }
-        if should_refresh {
-            self.start_refresh(true);
+        let Some(due) = self.file_batch.take_due(now) else {
+            return Ok(false);
+        };
+        // A refresh the watcher started is no news worth a status line; the
+        // footer already shows one is running.
+        self.start_scoped_refresh(due.scope, due.changed, true, false);
+        Ok(true)
+    }
+
+    /// The repositories nested in the checkout being watched, relative to it.
+    fn nested_in_checkout(&self) -> Vec<std::path::PathBuf> {
+        let Some(workspace) = self.state.workspace_root.as_deref() else {
+            return Vec::new();
+        };
+        let workspace = std::path::Path::new(workspace);
+        self.state
+            .nested_repositories
+            .iter()
+            .filter_map(|repo| {
+                workspace
+                    .join(&repo.path)
+                    .strip_prefix(&self.watch_roots.root)
+                    .ok()
+                    .filter(|rel| !rel.as_os_str().is_empty())
+                    .map(std::path::Path::to_path_buf)
+            })
+            .collect()
+    }
+
+    /// What a [`RefreshScope::Files`] refresh read: the file list, and the
+    /// diff beside it. A refresh that found every changed file ignored read
+    /// nothing, and leaves everything as it was.
+    fn apply_files_snapshot(
+        &mut self,
+        snapshot: crate::state::RefreshSnapshot,
+        refresh_diff: bool,
+    ) {
+        if let Some(error) = snapshot.errors.into_iter().next() {
+            self.state.set_status(error, true);
         }
-        Ok(())
+        let Some(files) = snapshot.files else {
+            return;
+        };
+        // The worktree list's "has changes" for this checkout comes from the
+        // same status, so it is kept in step without asking git again.
+        let has_changes = !files.is_empty();
+        if let Some(root) = self.state.repo_root.as_deref() {
+            let root = std::path::Path::new(root);
+            for worktree in &mut self.state.worktrees {
+                if crate::git::same_dir(std::path::Path::new(&worktree.path), root) {
+                    worktree.has_changes = has_changes;
+                }
+            }
+        }
+        self.state.files = files;
+        self.state.files_generation = self.state.files_generation.wrapping_add(1);
+        self.state.clamp();
+        if refresh_diff {
+            self.start_diff_job(true);
+        }
     }
 
     fn apply_refresh_snapshot(
@@ -40,6 +98,12 @@ impl App {
         snapshot: crate::state::RefreshSnapshot,
         refresh_diff: bool,
     ) {
+        if snapshot.scope == RefreshScope::Files {
+            self.apply_files_snapshot(snapshot, refresh_diff);
+            return;
+        }
+        // The checkouts were listed again; resolve their directories afresh.
+        crate::git::forget_resolved_dirs();
         self.state.decorative_animations = snapshot.decorative_animations;
         if let Some(author) = snapshot.commit_author {
             self.state.commit_author = author;
@@ -58,6 +122,7 @@ impl App {
         self.state.workspace_root = snapshot.workspace_root;
         if let Some(files) = snapshot.files {
             self.state.files = files;
+            self.state.files_generation = self.state.files_generation.wrapping_add(1);
         }
         if let Some(branches) = snapshot.branches {
             self.state.branches = branches;
@@ -103,31 +168,39 @@ impl App {
     }
 
     pub(in crate::app) fn drain_refresh_job(&mut self) {
-        let Some((mut job, RefreshMsg::Done(snapshot))) =
-            take_finished(&mut self.state.refresh_job)
-        else {
+        let Some((mut job, msg)) = take_finished(&mut self.state.refresh_job) else {
             return;
         };
-        let pending_refresh = self.state.refresh_pending;
+        let pending_refresh = self.state.refresh_pending.take();
         let pending_diff = self.state.refresh_pending_diff;
         join_worker(job.handle.take());
-        self.state.refresh_pending = false;
         self.state.refresh_pending_diff = false;
-        self.apply_refresh_snapshot(*snapshot, job.refresh_diff);
-        if pending_refresh {
-            self.start_refresh(pending_diff);
+        match msg {
+            Ok(RefreshMsg::Done(snapshot)) => {
+                self.apply_refresh_snapshot(*snapshot, job.refresh_diff);
+            }
+            Err(stopped) => self.state.set_status(stopped, true),
+        }
+        if let Some(scope) = pending_refresh {
+            self.start_scoped_refresh(scope, Vec::new(), pending_diff, scope > RefreshScope::Files);
         }
     }
 
     pub(in crate::app) fn drain_diff_job(&mut self) {
-        let Some((mut job, DiffMsg::Done { source, text })) =
-            take_finished(&mut self.state.diff_job)
-        else {
+        let Some((mut job, msg)) = take_finished(&mut self.state.diff_job) else {
             return;
         };
         join_worker(job.handle.take());
+        let DiffMsg::Done { source, text } = match msg {
+            Ok(msg) => msg,
+            Err(stopped) => {
+                self.state.set_status(stopped, true);
+                return;
+            }
+        };
         if source == self.state.diff_source {
             self.state.set_diff_text(text);
+            crate::panel::main::settle_cursor(&mut self.state);
         } else {
             // Worker finished a stale selection. Kick off the right one.
             self.start_diff_job(true);
@@ -141,13 +214,14 @@ impl App {
         join_worker(job.handle.take());
         {
             match msg {
-                ReleaseStatusMsg::Done { branch, status } => {
+                Err(stopped) => self.state.set_status(stopped, true),
+                Ok(ReleaseStatusMsg::Done { branch, status }) => {
                     if self.state.branch.as_deref() == Some(branch.as_str()) {
                         self.state.current_branch_releases = status;
                         self.state.current_branch_releases_ref = Some(branch);
                     }
                 }
-                ReleaseStatusMsg::Error { branch, message } => {
+                Ok(ReleaseStatusMsg::Error { branch, message }) => {
                     if self.state.branch.as_deref() == Some(branch.as_str()) {
                         self.state.current_branch_releases = Default::default();
                         self.state.current_branch_releases_ref = None;
@@ -168,7 +242,8 @@ impl App {
         };
         join_worker(job.handle.take());
         match msg {
-            SettingsSuggestMsg::Done { language, shapes } => {
+            Err(stopped) => self.state.set_status(stopped, true),
+            Ok(SettingsSuggestMsg::Done { language, shapes }) => {
                 if self.state.modal != Modal::Model || crate::settings::is_configured() {
                     return;
                 }
@@ -205,7 +280,7 @@ impl App {
                     );
                 }
             }
-            SettingsSuggestMsg::Error(message) => {
+            Ok(SettingsSuggestMsg::Error(message)) => {
                 self.state
                     .set_status(format!("convention scan failed: {message}"), false);
             }
@@ -219,17 +294,18 @@ impl App {
         join_worker(job.handle.take());
         {
             match msg {
-                CommitLogMsg::Done { branch, commits } => {
+                Err(stopped) => self.state.set_status(stopped, true),
+                Ok(CommitLogMsg::Done { branch, commits }) => {
                     if self.state.commits_ref.as_deref() == Some(branch.as_str()) {
                         self.state.commits = commits;
-                        self.state.commits_idx = 0;
+                        self.state.commits_list.idx = 0;
                         self.state.clamp();
                     }
                 }
-                CommitLogMsg::Error { branch, message } => {
+                Ok(CommitLogMsg::Error { branch, message }) => {
                     if self.state.commits_ref.as_deref() == Some(branch.as_str()) {
                         self.state.commits.clear();
-                        self.state.commits_idx = 0;
+                        self.state.commits_list.idx = 0;
                     }
                     self.state
                         .set_status(format!("git log {branch} failed: {message}"), true);
@@ -245,11 +321,13 @@ impl App {
         join_worker(job.handle.take());
         self.state.current_branch_releases_ref = None;
         match msg {
-            FetchMsg::Done(s) if s != "no remotes configured" => self.state.set_status(s, false),
-            FetchMsg::Done(_) => {}
-            FetchMsg::Error(e) => self.state.set_status(first_status_line(&e), true),
+            Ok(FetchMsg::Done(s)) => self.state.set_status(s, false),
+            Ok(FetchMsg::NoRemotes) => {}
+            Ok(FetchMsg::Error(e)) => self.state.set_status(first_status_line(&e), true),
+            Err(stopped) => self.state.set_status(stopped, true),
         }
         self.start_refresh_with_status(false, false);
+        super::super::spawn::release_queued_after_fetch(&mut self.state);
     }
 
     pub(in crate::app) fn drain_push_job(&mut self) -> Result<()> {
@@ -264,8 +342,8 @@ impl App {
         }
         self.state.current_branch_releases_ref = None;
         match msg {
-            PushMsg::Done(s) => self.state.set_status(s, false),
-            PushMsg::Error(e) => self.state.set_status(e, true),
+            Ok(PushMsg::Done(s)) => self.state.set_status(s, false),
+            Ok(PushMsg::Error(e)) | Err(e) => self.state.set_status(e, true),
         }
         crate::panel::environments::reload_nested_repo_detail(&mut self.state);
         self.start_refresh(true);
@@ -279,8 +357,8 @@ impl App {
         join_worker(job.handle.take());
         self.state.current_branch_releases_ref = None;
         match msg {
-            CheckoutMsg::Done(s) => self.state.set_status(s, false),
-            CheckoutMsg::Error(e) => {
+            Ok(CheckoutMsg::Done(s)) => self.state.set_status(s, false),
+            Ok(CheckoutMsg::Error(e)) | Err(e) => {
                 if !open_conflict_modal_if_needed(&mut self.state, e.clone()) {
                     self.state.set_status(e, true);
                 }
@@ -294,7 +372,8 @@ impl App {
         // Progress reports arrive before the one message that ends the job, so
         // this drains rather than taking whichever arrived last.
         let mut finished = None;
-        for msg in drain_messages(&self.state.operation_job) {
+        let drained = drain_messages(&self.state.operation_job);
+        for msg in drained.messages {
             match msg {
                 OperationMsg::Progress(step) => {
                     if let Some(job) = self.state.operation_job.as_mut() {
@@ -303,6 +382,17 @@ impl App {
                 }
                 ended => finished = Some(ended),
             }
+        }
+        // A worker gone without the message that ends the job failed it: one
+        // left running would hold the git job slot for good.
+        if finished.is_none()
+            && drained.disconnected
+            && let Some(job) = self.state.operation_job.as_mut()
+        {
+            finished = Some(OperationMsg::Error(stopped_status(
+                job.label,
+                job.handle.take(),
+            )));
         }
         let Some(msg) = finished else {
             tick_spinner(&mut self.state.operation_job);
@@ -318,14 +408,18 @@ impl App {
         match msg {
             OperationMsg::Done(s) => {
                 if !matches!(self.state.modal, Modal::Conflict) {
-                    self.state.conflict_followup = None;
+                    self.state.conflict.followup = None;
                 }
                 self.state.set_status(s, false);
                 if kind == OperationKind::Commit {
+                    let dir = self.state.commit_dir();
+                    self.state.forget_set_aside_message(&dir);
                     self.state.modal = Modal::None;
                     self.state.cancel_generation();
                     self.state.commit_message.clear();
                     self.state.commit_cursor = 0;
+                    self.state.commit_amend = false;
+                    self.state.commit_amend_draft = None;
                     if self.state.push_after_commit {
                         self.state.push_after_commit = false;
                         spawn_push(&mut self.state);
@@ -344,7 +438,7 @@ impl App {
                     self.state.push_after_commit = false;
                 }
                 if !open_conflict_modal_if_needed(&mut self.state, e.clone()) {
-                    self.state.conflict_followup = None;
+                    self.state.conflict.followup = None;
                     self.state.set_status(e, true);
                 }
             }
@@ -352,6 +446,9 @@ impl App {
             OperationMsg::Progress(_) => {}
         }
         self.after_github_operation(kind, succeeded);
+        if kind == OperationKind::Stash && self.state.modal == Modal::Stash {
+            self.state.stash.reload();
+        }
         self.start_refresh(true);
         Ok(())
     }
@@ -360,7 +457,8 @@ impl App {
         // Progress reports arrive before the one message that ends the job, so
         // this drains rather than taking the last message.
         let mut finished = None;
-        for msg in drain_messages(&self.state.workflow_job) {
+        let drained = drain_messages(&self.state.workflow_job);
+        for msg in drained.messages {
             match msg {
                 WorkflowMsg::Progress(step) => {
                     if let Some(job) = self.state.workflow_job.as_mut() {
@@ -369,6 +467,15 @@ impl App {
                 }
                 done_or_error => finished = Some(done_or_error),
             }
+        }
+        if finished.is_none()
+            && drained.disconnected
+            && let Some(job) = self.state.workflow_job.as_mut()
+        {
+            finished = Some(WorkflowMsg::Error(stopped_status(
+                &job.label,
+                job.handle.take(),
+            )));
         }
         let Some(res) = finished else {
             tick_spinner(&mut self.state.workflow_job);
@@ -379,6 +486,12 @@ impl App {
             .workflow_job
             .as_ref()
             .map(|job| job.label.clone());
+        let finished_action = self
+            .state
+            .workflow_job
+            .as_ref()
+            .and_then(|job| job.flow.as_ref())
+            .map(|flow| flow.action);
         if let Some(mut job) = self.state.workflow_job.take() {
             join_worker(job.handle.take());
         }
@@ -397,31 +510,38 @@ impl App {
                             finished_label.as_deref() == Some("validate conflict resolution"),
                         );
                     } else if !matches!(self.state.modal, Modal::Conflict) {
-                        self.state.conflict_followup = None;
+                        self.state.conflict.followup = None;
                     }
                     if matches!(self.state.modal, Modal::Conflict) {
-                        self.state.conflict_log = s.clone();
+                        self.state.conflict.log = s.clone();
                     } else {
                         self.state.modal = Modal::None;
+                    }
+                    if finished_action == Some(crate::state::FlowAction::CleanOrphans) {
+                        // One line per branch, so the history says which were
+                        // deleted and why any were kept; the bar shows the sum.
+                        for line in s.lines().skip(1).filter(|line| !line.trim().is_empty()) {
+                            self.state.set_status(line, false);
+                        }
                     }
                     self.state.set_status(first_status_line(&s), false);
                 }
                 WorkflowMsg::Error(e) => {
                     let conflicts = crate::git::conflicted_files().unwrap_or_default();
                     self.state.set_conflicts(conflicts);
-                    if !self.state.conflicts.is_empty() {
-                        self.state.conflict_log = e.clone();
+                    if !self.state.conflict.files.is_empty() {
+                        self.state.conflict.log = e.clone();
                         self.state.modal = Modal::Conflict;
                         self.state.set_status("merge conflicts detected", true);
                         self.start_refresh(true);
                         return Ok(());
                     }
                     if matches!(self.state.modal, Modal::Conflict) {
-                        self.state.conflict_log = e.clone();
+                        self.state.conflict.log = e.clone();
                         self.state.modal = Modal::None;
                     }
                     if !matches!(self.state.modal, Modal::Conflict) {
-                        self.state.conflict_followup = None;
+                        self.state.conflict.followup = None;
                     }
                     self.state.set_status(first_status_line(&e), true);
                 }
@@ -457,7 +577,8 @@ impl App {
         };
         let mut handle = None;
         let mut kept = true;
-        for msg in drain_job(generation) {
+        let drained = drain_job(generation);
+        for msg in drained.messages {
             match msg {
                 GenMsg::Thinking(_) => {}
                 GenMsg::Output(o) => {
@@ -489,6 +610,7 @@ impl App {
                     stats,
                 } => {
                     let truncated = stats.truncated;
+                    self.state.model_server_unreachable = false;
                     if let Some(g) = self.state.commit_drafts[i].generation.as_mut() {
                         handle = g.handle.take();
                     }
@@ -519,12 +641,23 @@ impl App {
                     }
                     self.state.drop_draft(i);
                     kept = false;
-                    self.state.set_status(e, true);
+                    self.state.report_generation_error(e);
                 }
             }
             if !kept {
                 break;
             }
+        }
+        // The draft is dropped as for an error, rather than left generating
+        // with nothing left to generate it.
+        if kept
+            && drained.disconnected
+            && let Some(mut generation) = self.state.commit_drafts[i].generation.take()
+        {
+            let stopped = super::stopped(&mut generation);
+            self.state.drop_draft(i);
+            kept = false;
+            self.state.set_status(stopped, true);
         }
         join_worker(handle);
         kept

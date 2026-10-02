@@ -1,5 +1,7 @@
 use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::panel::text_input::TextInput;
 use ratatui::{
     Frame,
     layout::{Constraint, Position, Rect},
@@ -81,7 +83,11 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         None => (
             state.commit_message.clone(),
             state.commit_cursor,
-            "Commit message".to_owned(),
+            if state.commit_amend {
+                "Amend last commit".to_owned()
+            } else {
+                "Commit message".to_owned()
+            },
             true,
         ),
     };
@@ -180,11 +186,18 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             Span::styled(progress, Style::default().fg(Color::DarkGray)),
         ]))
     } else {
+        let (commit, toggle) = if state.commit_amend {
+            (" amend  ", " new commit  ")
+        } else {
+            (" commit  ", " amend  ")
+        };
         Paragraph::new(Line::from(vec![
             Span::styled("Ctrl+S", Style::default().fg(Color::Green)),
-            Span::raw(" commit  "),
+            Span::raw(commit),
             Span::styled("Ctrl+P", Style::default().fg(Color::Green)),
             Span::raw(" commit&push  "),
+            Span::styled("Ctrl+T", Style::default().fg(Color::Yellow)),
+            Span::raw(toggle),
             Span::styled("Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" newline  "),
             Span::styled("Ctrl+R", Style::default().fg(Color::Yellow)),
@@ -513,42 +526,17 @@ fn char_len(s: &str) -> usize {
     s.chars().count()
 }
 
-fn byte_index_for_char(s: &str, char_idx: usize) -> usize {
-    if char_idx == 0 {
-        return 0;
-    }
-    s.char_indices()
-        .nth(char_idx)
-        .map(|(idx, _)| idx)
-        .unwrap_or(s.len())
-}
-
-fn insert_at_cursor(state: &mut AppState, c: char) {
-    state.commit_cursor = state.commit_cursor.min(char_len(&state.commit_message));
-    let idx = byte_index_for_char(&state.commit_message, state.commit_cursor);
-    state.commit_message.insert(idx, c);
-    state.commit_cursor += 1;
-}
-
-fn remove_before_cursor(state: &mut AppState) {
-    state.commit_cursor = state.commit_cursor.min(char_len(&state.commit_message));
-    if state.commit_cursor == 0 {
-        return;
-    }
-    let start = byte_index_for_char(&state.commit_message, state.commit_cursor - 1);
-    let end = byte_index_for_char(&state.commit_message, state.commit_cursor);
-    state.commit_message.replace_range(start..end, "");
-    state.commit_cursor -= 1;
-}
-
-fn remove_at_cursor(state: &mut AppState) {
-    state.commit_cursor = state.commit_cursor.min(char_len(&state.commit_message));
-    if state.commit_cursor >= char_len(&state.commit_message) {
-        return;
-    }
-    let start = byte_index_for_char(&state.commit_message, state.commit_cursor);
-    let end = byte_index_for_char(&state.commit_message, state.commit_cursor + 1);
-    state.commit_message.replace_range(start..end, "");
+/// Edit the message as a [`TextInput`]; the text is moved out and back, not
+/// copied.
+fn edit_message<R>(state: &mut AppState, edit: impl FnOnce(&mut TextInput) -> R) -> R {
+    let mut input = TextInput {
+        text: std::mem::take(&mut state.commit_message),
+        cursor: state.commit_cursor,
+    };
+    let result = edit(&mut input);
+    state.commit_message = input.text;
+    state.commit_cursor = input.cursor;
+    result
 }
 
 fn logical_lines(message: &str) -> Vec<(usize, usize)> {
@@ -619,6 +607,49 @@ pub(crate) const BACKGROUND_NOTICE: &str =
 pub(crate) const AI_OFF_NOTICE: &str =
     "AI assist is off \u{b7} turn it on under Settings \u{203a} Models";
 
+/// Ask before replacing the last commit, and say so outright when it has
+/// already been pushed: the branch and its remote then diverge, and only a
+/// force push puts the amended commit there.
+fn confirm_amend(state: &mut AppState, push: bool) {
+    let published = crate::git::head_published_on();
+    if push && let Some(remote) = &published {
+        state.set_status(
+            format!(
+                "the last commit is already on {remote}: amend with Ctrl+S, then P offers a force push with lease"
+            ),
+            true,
+        );
+        return;
+    }
+    state.push_after_commit = push;
+    let staged = state
+        .files
+        .iter()
+        .filter(|entry| entry.x != ' ' && entry.x != '?')
+        .count();
+    let staged = match staged {
+        0 => "Nothing is staged, so only the message changes.".to_string(),
+        1 => "The 1 staged file goes into it.".to_string(),
+        n => format!("The {n} staged files go into it."),
+    };
+    match published {
+        Some(remote) => state.confirm_action(
+            "Amend pushed commit",
+            format!("Amend the last commit? {remote} already has it."),
+            format!(
+                "{staged}\nAfter amending, this branch and {remote} have diverged: pushing it needs a force push (P offers --force-with-lease), which rewrites {remote} for everyone who has pulled it."
+            ),
+            PendingAction::AmendCommit,
+        ),
+        None => state.confirm_reversible_action(
+            "Amend commit",
+            "Replace the last commit with this message and the staged changes?",
+            format!("{staged}\nIt has not been pushed anywhere yet."),
+            PendingAction::AmendCommit,
+        ),
+    }
+}
+
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let generating = state.generating();
@@ -634,14 +665,29 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('s') if ctrl => {
             if !generating && !state.commit_message.trim().is_empty() {
-                state.push_after_commit = false;
-                state.pending_action = Some(PendingAction::Commit);
+                if state.commit_amend {
+                    confirm_amend(state, false);
+                } else {
+                    state.push_after_commit = false;
+                    state.pending_action = Some(PendingAction::Commit);
+                }
             }
         }
         KeyCode::Char('p') if ctrl => {
             if !generating && !state.commit_message.trim().is_empty() {
-                state.push_after_commit = true;
-                state.pending_action = Some(PendingAction::Commit);
+                if state.commit_amend {
+                    confirm_amend(state, true);
+                } else {
+                    state.push_after_commit = true;
+                    state.pending_action = Some(PendingAction::Commit);
+                }
+            }
+        }
+        KeyCode::Char('t') if ctrl => {
+            if state.commit_amend {
+                state.leave_amend();
+            } else {
+                state.open_amend_modal();
             }
         }
         // Regenerating mid-generation starts over rather than doing nothing:
@@ -677,30 +723,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Enter => {
             if !generating {
-                insert_at_cursor(state, '\n');
-            }
-        }
-        KeyCode::Backspace => {
-            if !generating {
-                remove_before_cursor(state);
-            }
-        }
-        KeyCode::Delete => {
-            if !generating {
-                remove_at_cursor(state);
-            }
-        }
-        KeyCode::Left => {
-            if !generating {
-                state.commit_cursor = state.commit_cursor.saturating_sub(1);
-            }
-        }
-        KeyCode::Right => {
-            if !generating {
-                state.commit_cursor = state
-                    .commit_cursor
-                    .saturating_add(1)
-                    .min(char_len(&state.commit_message));
+                edit_message(state, |input| input.insert_char('\n'));
             }
         }
         KeyCode::Up => {
@@ -722,18 +745,8 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::PageUp => {
             state.commit_files_scroll = state.commit_files_scroll.saturating_sub(10);
         }
-        KeyCode::Home => {
-            if !generating {
-                state.commit_cursor = 0;
-            }
-        }
-        KeyCode::End => {
-            if !generating {
-                state.commit_cursor = char_len(&state.commit_message);
-            }
-        }
-        KeyCode::Char(c) if !ctrl && !generating => {
-            insert_at_cursor(state, c);
+        _ if !generating => {
+            edit_message(state, |input| input.handle_key(key));
         }
         _ => {}
     }

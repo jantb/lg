@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use crate::{
-    state::{AppState, Modal, PendingAction, TreeKind, clamp_index},
+    state::{AppState, PendingAction, TreeKind, clamp_index},
     ui,
 };
 
@@ -33,19 +33,23 @@ pub(crate) fn code_span(c: char) -> Span<'static> {
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let rows = state.tree_rows();
     let total = rows.len();
-    let selected_idx = clamp_index(state.files_idx, total);
+    let selected_idx = clamp_index(state.files_list.idx, total);
     let count = selected_idx.map(|idx| (idx + 1, total));
+    let title = format!("Files{}", state.filter_title(crate::state::Pane::Files));
     let block = ui::framed_with_activity(
         2,
-        "Files",
+        &title,
         focused,
         count,
         state.animation_ms,
         state.activity_label().is_some(),
     );
 
-    let mut items: Vec<ListItem> = Vec::with_capacity(total);
-    for row in &rows {
+    // Only the rows on screen are turned into items.
+    let offset = visible_scroll_offset(state, area);
+    let window = scroll::visible_window(total, offset, area.height);
+    let mut items: Vec<ListItem> = Vec::with_capacity(window.len());
+    for row in &rows[window.clone()] {
         let indent = "  ".repeat(row.depth as usize);
         let line = match &row.kind {
             TreeKind::AllChanges => Line::from(Span::styled(
@@ -113,31 +117,31 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         .highlight_style(crate::ui::palette::selection())
         .highlight_symbol("\u{203a} ");
 
-    let offset = visible_scroll_offset(state, area);
-    let mut list_state = scroll::list_state(focused.then_some(selected_idx).flatten(), offset);
+    let mut list_state =
+        scroll::window_list_state(focused.then_some(selected_idx).flatten(), &window);
 
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
 pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
     let rows = state.tree_rows();
-    let selected_idx = clamp_index(state.files_idx, rows.len());
-    state.files_scroll_offset = scroll::selection_scroll_offset(
+    let selected_idx = clamp_index(state.files_list.idx, rows.len());
+    state.files_list.scroll = scroll::selection_scroll_offset(
         selected_idx,
         rows.len(),
         scroll::list_viewport_height(area.height),
-        state.files_scroll_offset,
+        state.files_list.scroll,
     );
 }
 
 fn visible_scroll_offset(state: &AppState, area: Rect) -> usize {
     let rows = state.tree_rows();
-    let selected_idx = clamp_index(state.files_idx, rows.len());
+    let selected_idx = clamp_index(state.files_list.idx, rows.len());
     scroll::selection_scroll_offset(
         selected_idx,
         rows.len(),
         scroll::list_viewport_height(area.height),
-        state.files_scroll_offset,
+        state.files_list.scroll,
     )
 }
 
@@ -164,19 +168,20 @@ fn confirm_delete(state: &mut AppState, path: String, is_dir: bool) {
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     let rows = state.tree_rows();
     let total = rows.len();
-    state.files_idx = clamp_index(state.files_idx, total).unwrap_or(0);
+    state.files_list.idx = clamp_index(state.files_list.idx, total).unwrap_or(0);
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            state.files_idx = state
-                .files_idx
+            state.files_list.idx = state
+                .files_list
+                .idx
                 .saturating_add(1)
                 .min(total.saturating_sub(1));
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            state.files_idx = state.files_idx.saturating_sub(1);
+            state.files_list.idx = state.files_list.idx.saturating_sub(1);
         }
         KeyCode::Char(' ') | KeyCode::Char('y') => {
-            if let Some(row) = rows.get(state.files_idx) {
+            if let Some(row) = rows.get(state.files_list.idx) {
                 match &row.kind {
                     TreeKind::AllChanges => {
                         state.pending_action = Some(PendingAction::StageAll);
@@ -193,7 +198,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
             }
         }
         KeyCode::Char('u') => {
-            if let Some(row) = rows.get(state.files_idx) {
+            if let Some(row) = rows.get(state.files_list.idx) {
                 match &row.kind {
                     TreeKind::AllChanges => {
                         state.pending_action = Some(PendingAction::UnstageAll);
@@ -212,11 +217,13 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
         KeyCode::Char('A') => {
             state.pending_action = Some(PendingAction::StageAll);
         }
+        KeyCode::Char('s') => super::stash::open_new(state),
+        KeyCode::Char('S') => super::stash::open(state),
         KeyCode::Char('U') => {
             state.pending_action = Some(PendingAction::UnstageAll);
         }
         KeyCode::Char('r') => {
-            if let Some(row) = rows.get(state.files_idx) {
+            if let Some(row) = rows.get(state.files_list.idx) {
                 match &row.kind {
                     TreeKind::Folder { .. } => {
                         let path = row.path.clone();
@@ -233,7 +240,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
             }
         }
         KeyCode::Char('i') => {
-            if let Some(row) = rows.get(state.files_idx) {
+            if let Some(row) = rows.get(state.files_list.idx) {
                 match &row.kind {
                     TreeKind::Folder { .. } => {
                         state.pending_action = Some(PendingAction::IgnorePath {
@@ -254,7 +261,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
             }
         }
         KeyCode::Char('d') => {
-            if let Some(row) = rows.get(state.files_idx) {
+            if let Some(row) = rows.get(state.files_list.idx) {
                 match &row.kind {
                     TreeKind::Folder { .. } => {
                         let path = row.path.clone();
@@ -271,7 +278,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
             }
         }
         KeyCode::Char('o') => {
-            if let Some(row) = rows.get(state.files_idx) {
+            if let Some(row) = rows.get(state.files_list.idx) {
                 match row.kind {
                     TreeKind::AllChanges | TreeKind::Folder { .. } => {
                         state.pending_action = Some(PendingAction::OpenProject);
@@ -284,7 +291,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
             }
         }
         KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
-            if let Some(row) = rows.get(state.files_idx) {
+            if let Some(row) = rows.get(state.files_list.idx) {
                 match row.kind {
                     TreeKind::Folder { expanded, .. } => {
                         if expanded {
@@ -306,24 +313,14 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
             }
         }
         KeyCode::Char('h') | KeyCode::Left => {
-            if let Some(row) = rows.get(state.files_idx)
+            if let Some(row) = rows.get(state.files_list.idx)
                 && let TreeKind::Folder { expanded: true, .. } = row.kind
             {
                 state.collapsed_dirs.insert(row.path.clone());
             }
         }
-        KeyCode::Char('c') => {
-            if state.modal == Modal::None {
-                state.open_commit_or_stage_all_prompt();
-            }
-        }
-        KeyCode::Char('p') => {
-            if state.pull_available() {
-                state.pending_action = Some(PendingAction::Pull);
-            } else {
-                state.set_status("nothing to pull", false);
-            }
-        }
+        // `c` and `p` are global: the dispatcher answers them before any
+        // pane is asked, so the Files pane has no handler of its own for them.
         _ => return Ok(false),
     }
     Ok(true)

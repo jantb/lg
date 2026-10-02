@@ -39,6 +39,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("Esc", "back")),
             },
             Binding {
+                key: "!",
+                help: "The last error in full (scroll, copy)",
+                footer: Some(("!", "details")),
+            },
+            Binding {
                 key: "Ctrl-C / q",
                 help: "Quit",
                 footer: Some(("q", "quit")),
@@ -162,13 +167,28 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("d", "delete")),
             },
             Binding {
+                key: "s / S",
+                help: "Stash changes (named) / the stash list",
+                footer: Some(("s/S", "stash")),
+            },
+            Binding {
                 key: "o",
                 help: "Open file or project in IntelliJ/RustRover",
                 footer: Some(("o", "open IDE")),
             },
             Binding {
-                key: "Enter",
-                help: "Refresh diff",
+                key: "/",
+                help: "Filter the files by path (Esc clears)",
+                footer: Some(("/", "filter")),
+            },
+            Binding {
+                key: "Enter / l / \u{2192}",
+                help: "Fold or unfold a folder; open a conflict",
+                footer: None,
+            },
+            Binding {
+                key: "h / \u{2190}",
+                help: "Fold the selected folder",
                 footer: None,
             },
             Binding {
@@ -195,6 +215,7 @@ pub const SECTIONS: &[Section] = &[
             "r",
             "i",
             "d",
+            "s / S",
             "o",
             "c",
             "a",
@@ -242,13 +263,13 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "x",
-                help: "Stop the selected session and forget it",
+                help: "Close session, asking if busy; park a draft",
                 footer: Some(("x", "close session")),
             },
             Binding {
                 key: "D",
                 help: "Remove the selected worktree (confirms)",
-                footer: None,
+                footer: Some(("D", "remove worktree")),
             },
             Binding {
                 key: "o",
@@ -290,6 +311,7 @@ pub const SECTIONS: &[Section] = &[
             "t",
             "n",
             "x",
+            "D",
             "o",
             "w",
             "V",
@@ -322,6 +344,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("u", "set upstream")),
             },
             Binding {
+                key: "y",
+                help: "Copy the branch's commit SHA",
+                footer: Some(("y", "copy sha")),
+            },
+            Binding {
                 key: "r",
                 help: "Toggle local and remote branch views",
                 footer: Some(("r", "remotes")),
@@ -352,6 +379,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("F", "actions")),
             },
             Binding {
+                key: "/",
+                help: "Filter the branches by name (Esc clears)",
+                footer: Some(("/", "filter")),
+            },
+            Binding {
                 key: "g / G",
                 help: "First / last row",
                 footer: None,
@@ -369,7 +401,7 @@ pub const SECTIONS: &[Section] = &[
         ],
         footer_meta: Some((3, "Branches")),
         footer_order: &[
-            "Enter", "r", "m", "M", "d", "D", "o", "u", "p", "a", "L", "f", "F", "V", "?",
+            "Enter", "r", "m", "M", "d", "D", "o", "u", "y", "p", "a", "L", "f", "F", "V", "?",
         ],
     },
     Section {
@@ -385,6 +417,26 @@ pub const SECTIONS: &[Section] = &[
                 key: "Enter",
                 help: "Focus diff pane",
                 footer: Some(("Enter", "focus diff")),
+            },
+            Binding {
+                key: "y",
+                help: "Copy the commit's full SHA",
+                footer: Some(("y", "copy sha")),
+            },
+            Binding {
+                key: "t",
+                help: "Revert the commit (confirms)",
+                footer: Some(("t", "revert")),
+            },
+            Binding {
+                key: "A",
+                help: "Amend the last commit (staged + message)",
+                footer: Some(("A", "amend")),
+            },
+            Binding {
+                key: "/",
+                help: "Filter by subject, sha or author",
+                footer: Some(("/", "filter")),
             },
             Binding {
                 key: "g / G",
@@ -403,7 +455,35 @@ pub const SECTIONS: &[Section] = &[
             },
         ],
         footer_meta: Some((4, "Commits")),
-        footer_order: &["j/k", "Enter", "p", "a", "L", "f", "V", "?"],
+        footer_order: &["j/k", "Enter", "y", "t", "A", "p", "a", "L", "f", "V", "?"],
+    },
+    Section {
+        title: "List filter",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "type",
+                help: "Narrow the list as you type",
+                footer: Some(("type", "filter")),
+            },
+            Binding {
+                key: "\u{2191}/\u{2193}",
+                help: "Move among the rows left",
+                footer: Some(("\u{2191}/\u{2193}", "move")),
+            },
+            Binding {
+                key: "Enter",
+                help: "Keep the filter, back to the list's keys",
+                footer: Some(("Enter", "keep")),
+            },
+            Binding {
+                key: "Esc",
+                help: "Drop the filter",
+                footer: Some(("Esc", "clear")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
     },
     Section {
         title: "Session",
@@ -421,7 +501,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "x",
-                help: "Close the session \u{2014} Ctrl-] first",
+                help: "Close (asks if it is working) \u{2014} Ctrl-] first",
                 footer: None,
             },
             Binding {
@@ -493,11 +573,6 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("A", "agent")),
             },
             Binding {
-                key: "g / G",
-                help: "Top / bottom",
-                footer: None,
-            },
-            Binding {
                 key: "v",
                 help: "Toggle unified or side-by-side diff",
                 footer: Some(("v", "view")),
@@ -555,11 +630,6 @@ pub const SECTIONS: &[Section] = &[
                 footer: None,
             },
             Binding {
-                key: "g / G",
-                help: "Top / bottom",
-                footer: None,
-            },
-            Binding {
                 key: "R",
                 help: "Enter review mode against main",
                 footer: Some(("R", "review mode")),
@@ -573,6 +643,31 @@ pub const SECTIONS: &[Section] = &[
                 key: "o",
                 help: "Open current source file in IDE",
                 footer: Some(("o", "open IDE")),
+            },
+            Binding {
+                key: "] / [",
+                help: "Next / previous hunk, or commit in a log",
+                footer: Some(("]/[", "hunk")),
+            },
+            Binding {
+                key: "space",
+                help: "Stage unstaged hunk / unstage staged one",
+                footer: Some(("space", "stage hunk")),
+            },
+            Binding {
+                key: "d",
+                help: "Discard an unstaged hunk (confirms)",
+                footer: Some(("d", "discard")),
+            },
+            Binding {
+                key: "combined view",
+                help: "Staged hunks above, unstaged below",
+                footer: None,
+            },
+            Binding {
+                key: "C",
+                help: "Log: cherry-pick commit here (confirms)",
+                footer: Some(("C", "cherry-pick")),
             },
             Binding {
                 key: "wheel",
@@ -596,7 +691,9 @@ pub const SECTIONS: &[Section] = &[
             },
         ],
         footer_meta: Some((0, "Diff")),
-        footer_order: &["R", "v", "o", "j/k", "g/G", "p", "a", "L", "f", "V", "?"],
+        footer_order: &[
+            "R", "space", "d", "] / [", "v", "o", "j/k", "C", "g/G", "p", "a", "L", "f", "V", "?",
+        ],
     },
     Section {
         title: "Review chat",
@@ -639,6 +736,11 @@ pub const SECTIONS: &[Section] = &[
                 key: "Ctrl+P",
                 help: "Commit and push",
                 footer: None,
+            },
+            Binding {
+                key: "Ctrl+T",
+                help: "Toggle amend: edit the last commit instead",
+                footer: Some(("Ctrl+T", "amend")),
             },
             Binding {
                 key: "Enter",
@@ -749,6 +851,11 @@ pub const SECTIONS: &[Section] = &[
                 help: "Back",
                 footer: Some(("Esc", "back")),
             },
+            Binding {
+                key: "wheel / click",
+                help: "Select; click it again to go on",
+                footer: None,
+            },
         ],
         footer_meta: None,
         footer_order: &[],
@@ -791,6 +898,11 @@ pub const SECTIONS: &[Section] = &[
                 key: "Esc",
                 help: "Cancel",
                 footer: Some(("Esc", "cancel")),
+            },
+            Binding {
+                key: "wheel / click",
+                help: "Select; click it again to start it",
+                footer: None,
             },
         ],
         footer_meta: None,
@@ -931,6 +1043,11 @@ pub const SECTIONS: &[Section] = &[
                 help: "Cancel",
                 footer: Some(("Esc", "cancel")),
             },
+            Binding {
+                key: "click",
+                help: "Toggle an option, or a key on the line",
+                footer: None,
+            },
         ],
         footer_meta: None,
         footer_order: &[],
@@ -953,6 +1070,11 @@ pub const SECTIONS: &[Section] = &[
                 key: "g / G",
                 help: "Top / bottom",
                 footer: Some(("g/G", "top/bot")),
+            },
+            Binding {
+                key: "/",
+                help: "Filter the rows; Enter keeps it, Esc clears",
+                footer: Some(("/", "filter")),
             },
             Binding {
                 key: "q / Esc",
@@ -1002,7 +1124,7 @@ pub const SECTIONS: &[Section] = &[
         footer_order: &[],
     },
     Section {
-        title: "Settings",
+        title: "Model settings",
         pane: None,
         bindings: &[
             Binding {
@@ -1050,6 +1172,239 @@ pub const SECTIONS: &[Section] = &[
         footer_order: &[],
     },
     Section {
+        title: "Settings",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "\u{2190} / \u{2192}",
+                help: "Categories or fields",
+                footer: Some(("\u{2190}/\u{2192}", "pane")),
+            },
+            Binding {
+                key: "j/k",
+                help: "Move; among categories, switch to one",
+                footer: Some(("j/k", "move")),
+            },
+            Binding {
+                key: "Tab / Shift-Tab",
+                help: "Next / previous category",
+                footer: None,
+            },
+            Binding {
+                key: "Enter",
+                help: "Edit the field, or toggle it",
+                footer: Some(("Enter", "edit / toggle")),
+            },
+            Binding {
+                key: "Ctrl-S",
+                help: "Save this category",
+                footer: Some(("Ctrl-S", "save")),
+            },
+            Binding {
+                key: "s",
+                help: "Scope: user, folder, repository, worktree",
+                footer: Some(("s", "scope")),
+            },
+            Binding {
+                key: "f",
+                help: "Folder scope: choose the folder",
+                footer: Some(("f", "folder")),
+            },
+            Binding {
+                key: "/",
+                help: "Filter the fields",
+                footer: Some(("/", "filter")),
+            },
+            Binding {
+                key: "r",
+                help: "Reset the override at this scope (asks)",
+                footer: Some(("r", "reset override")),
+            },
+            Binding {
+                key: "Esc",
+                help: "Close; asks first about unsaved edits",
+                footer: Some(("Esc", "close")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Settings: editing",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "Enter",
+                help: "Keep the value",
+                footer: Some(("Enter", "apply")),
+            },
+            Binding {
+                key: "Shift-Enter",
+                help: "New line, in a field that takes several",
+                footer: Some(("Shift-Enter", "newline")),
+            },
+            Binding {
+                key: "\u{2191}/\u{2193}",
+                help: "Pick from the list, or step a number",
+                footer: Some(("\u{2191}/\u{2193}", "pick")),
+            },
+            Binding {
+                key: "Ctrl-U",
+                help: "Clear the value",
+                footer: Some(("Ctrl-U", "clear")),
+            },
+            Binding {
+                key: "Ctrl-S",
+                help: "Keep the value and save",
+                footer: Some(("Ctrl-S", "apply and save")),
+            },
+            Binding {
+                key: "Esc",
+                help: "Leave the field as it was",
+                footer: Some(("Esc", "cancel")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Settings: Writing",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "v",
+                help: "Preview the prompt the model is given",
+                footer: Some(("v", "preview prompt")),
+            },
+            Binding {
+                key: "L",
+                help: "Model modal; derives style from history",
+                footer: Some(("L", "derive style from history")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Settings: Models",
+        pane: None,
+        bindings: &[Binding {
+            key: "L",
+            help: "Model modal: live model list, connectivity",
+            footer: Some(("L", "model picker")),
+        }],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Settings: Agents",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "n",
+                help: "Add an agent",
+                footer: Some(("n", "add agent")),
+            },
+            Binding {
+                key: "D",
+                help: "Delete the agent (gone once saved)",
+                footer: Some(("D", "delete agent")),
+            },
+            Binding {
+                key: "v",
+                help: "Check the agents' versions",
+                footer: Some(("v", "check versions")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Settings: Sandbox",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "i",
+                help: "Create the sandbox profile",
+                footer: Some(("i", "create profile")),
+            },
+            Binding {
+                key: "v",
+                help: "Validate the profile",
+                footer: Some(("v", "validate")),
+            },
+            Binding {
+                key: "e",
+                help: "Edit the profile",
+                footer: Some(("e", "edit profile")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Settings: Branches",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "n",
+                help: "Add an environment",
+                footer: Some(("n", "add environment")),
+            },
+            Binding {
+                key: "p",
+                help: "Add a promotion",
+                footer: Some(("p", "add promotion")),
+            },
+            Binding {
+                key: "D",
+                help: "Remove the entry (gone once saved)",
+                footer: Some(("D", "remove entry")),
+            },
+            Binding {
+                key: "t",
+                help: "Start from the trunk template",
+                footer: Some(("t", "trunk template")),
+            },
+            Binding {
+                key: "b",
+                help: "Detect environments from the branches",
+                footer: Some(("b", "detect from branches")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Settings: Activity",
+        pane: None,
+        bindings: &[Binding {
+            key: "j/k",
+            help: "Scroll the history",
+            footer: Some(("j/k", "scroll history")),
+        }],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Settings: Sessions",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "R",
+                help: "Restart the session (twice if it is busy)",
+                footer: Some(("R", "restart session")),
+            },
+            Binding {
+                key: "x",
+                help: "Close the session (twice if it is busy)",
+                footer: Some(("x", "close session")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
         title: "Confirm prompts",
         pane: None,
         bindings: &[
@@ -1062,6 +1417,11 @@ pub const SECTIONS: &[Section] = &[
                 key: "n / Esc",
                 help: "Cancel",
                 footer: Some(("n/Esc", "cancel")),
+            },
+            Binding {
+                key: "click",
+                help: "The y or n/Esc button, as its key",
+                footer: None,
             },
         ],
         footer_meta: None,
@@ -1079,12 +1439,12 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "] / [",
                 help: "First hunk of the next / previous file",
-                footer: None,
+                footer: Some(("[/]", "file")),
             },
             Binding {
                 key: "j/k",
                 help: "Move the line cursor in the hunk",
-                footer: None,
+                footer: Some(("j/k", "line")),
             },
             Binding {
                 key: "c / Enter",
@@ -1093,7 +1453,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "x",
-                help: "Delete the note on the cursor line",
+                help: "Delete the note on the line (press twice)",
                 footer: None,
             },
             Binding {
@@ -1114,12 +1474,17 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "f / F",
                 help: "Have Claude make a change / fix all notes",
-                footer: Some(("f", "fix")),
+                footer: Some(("f", "claude fix")),
             },
             Binding {
-                key: "m / u",
-                help: "Toggle reviewed / jump to next unreviewed",
-                footer: None,
+                key: "m",
+                help: "Toggle the step reviewed",
+                footer: Some(("m", "mark")),
+            },
+            Binding {
+                key: "u",
+                help: "Jump to the next unreviewed step",
+                footer: Some(("u", "unreviewed")),
             },
             Binding {
                 key: "J/K",
@@ -1139,7 +1504,7 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "R",
                 help: "Read the change again",
-                footer: None,
+                footer: Some(("R", "reload")),
             },
             Binding {
                 key: "g / G",
@@ -1155,6 +1520,115 @@ pub const SECTIONS: &[Section] = &[
                 key: "Esc / q",
                 help: "Leave; progress and notes are kept",
                 footer: Some(("Esc", "leave")),
+            },
+            Binding {
+                key: "wheel / click",
+                help: "Move steps, scroll commentary; pick a step",
+                footer: None,
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Guided review: writing",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "Enter",
+                help: "Send the note, question or request",
+                footer: Some(("Enter", "send")),
+            },
+            Binding {
+                key: "Alt-Enter",
+                help: "New line (Ctrl-J too)",
+                footer: Some(("Alt-Enter", "new line")),
+            },
+            Binding {
+                key: "\u{2190}/\u{2192} Home/End",
+                help: "Move the cursor",
+                footer: None,
+            },
+            Binding {
+                key: "Ctrl-U / Ctrl-W",
+                help: "Clear it / delete the last word",
+                footer: None,
+            },
+            Binding {
+                key: "Esc",
+                help: "Drop it",
+                footer: Some(("Esc", "cancel")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Guided review: notes",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "y",
+                help: "Copy every note as Markdown",
+                footer: Some(("y", "copy notes")),
+            },
+            Binding {
+                key: "f",
+                help: "Have Claude address every note",
+                footer: Some(("f", "claude fixes all")),
+            },
+            Binding {
+                key: "j/k",
+                help: "Scroll the notes",
+                footer: Some(("j/k", "scroll")),
+            },
+            Binding {
+                key: "Esc / q",
+                help: "Back to the walk",
+                footer: Some(("Esc", "back")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Guided review: submit",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "Tab",
+                help: "Comment, approve or request changes",
+                footer: Some(("Tab", "verdict")),
+            },
+            Binding {
+                key: "type",
+                help: "The review's summary",
+                footer: Some(("type", "summary")),
+            },
+            Binding {
+                key: "Enter / Ctrl-S",
+                help: "Submit the notes as one review",
+                footer: Some(("Enter", "submit")),
+            },
+            Binding {
+                key: "Alt-Enter",
+                help: "New line in the summary",
+                footer: None,
+            },
+            Binding {
+                key: "Ctrl-Y",
+                help: "Copy every note as Markdown",
+                footer: Some(("Ctrl-Y", "copy")),
+            },
+            Binding {
+                key: "Ctrl-F",
+                help: "Have Claude address every note",
+                footer: None,
+            },
+            Binding {
+                key: "Esc",
+                help: "Back to the walk",
+                footer: Some(("Esc", "back")),
             },
         ],
         footer_meta: None,
@@ -1207,12 +1681,12 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "D",
                 help: "Mark ready for review, or back to draft",
-                footer: None,
+                footer: Some(("D", "draft")),
             },
             Binding {
                 key: "X",
-                help: "Close without merging, or reopen",
-                footer: None,
+                help: "Close without merging (asks), or reopen",
+                footer: Some(("X", "close")),
             },
             Binding {
                 key: "n",
@@ -1222,7 +1696,7 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "o",
                 help: "Open the pull request in the browser",
-                footer: None,
+                footer: Some(("o", "browser")),
             },
             Binding {
                 key: "s",
@@ -1245,24 +1719,268 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("Tab", "repos")),
             },
             Binding {
-                key: "type, Enter",
-                help: "Repositories: search, then clone and open",
+                key: "Esc",
+                help: "Close",
+                footer: Some(("Esc", "close")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "GitHub repositories",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "type",
+                help: "Search, or type owner/name to clone it",
+                footer: Some(("type", "search")),
+            },
+            Binding {
+                key: "\u{2191}/\u{2193}",
+                help: "Move between repositories",
+                footer: Some(("\u{2191}\u{2193}", "select")),
+            },
+            Binding {
+                key: "\u{2190}/\u{2192}",
+                help: "Owner (yours, an org's); in a search, cursor",
+                footer: Some(("\u{2190}\u{2192}", "owner")),
+            },
+            Binding {
+                key: "Home / End",
+                help: "Start / end of the search",
                 footer: None,
             },
             Binding {
-                key: "←/→",
-                help: "Repositories: yours, or an organization's",
+                key: "Enter",
+                help: "Clone it and switch to it, or open it",
+                footer: Some(("Enter", "clone")),
+            },
+            Binding {
+                key: "Ctrl-U",
+                help: "Clear the search",
                 footer: None,
             },
             Binding {
-                key: "Ctrl-S",
-                help: "New pull request: push and open it",
+                key: "Ctrl-R",
+                help: "Read the lists again",
+                footer: Some(("Ctrl-R", "reload")),
+            },
+            Binding {
+                key: "Tab",
+                help: "Back to the pull requests",
+                footer: Some(("Tab", "pull requests")),
+            },
+            Binding {
+                key: "Esc",
+                help: "Close",
+                footer: Some(("Esc", "close")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "GitHub review text",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "Enter",
+                help: "Send the review or comment",
+                footer: Some(("Enter", "send")),
+            },
+            Binding {
+                key: "\u{2190}/\u{2192} Home/End",
+                help: "Move the cursor",
+                footer: None,
+            },
+            Binding {
+                key: "Ctrl-U",
+                help: "Clear the text",
                 footer: None,
             },
             Binding {
                 key: "Esc",
-                help: "Back out of a form, then close",
+                help: "Cancel",
+                footer: Some(("Esc", "cancel")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "GitHub merge",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "j/k",
+                help: "Move between the merge options",
+                footer: Some(("j/k", "row")),
+            },
+            Binding {
+                key: "Space / \u{2190}\u{2192}",
+                help: "Change the option",
+                footer: Some(("Space/\u{2190}\u{2192}", "change")),
+            },
+            Binding {
+                key: "Enter",
+                help: "Merge with these options",
+                footer: Some(("Enter", "merge")),
+            },
+            Binding {
+                key: "Esc",
+                help: "Back",
+                footer: Some(("Esc", "back")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "GitHub new pull request",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "Ctrl-S",
+                help: "Push and open the pull request",
+                footer: Some(("Ctrl-S", "open pull request")),
+            },
+            Binding {
+                key: "Tab / \u{2191}\u{2193}",
+                help: "Next / previous field",
+                footer: Some(("Tab", "field")),
+            },
+            Binding {
+                key: "Enter",
+                help: "Next field; a new line in the body",
+                footer: Some(("Enter", "next / newline in body")),
+            },
+            Binding {
+                key: "\u{2190}/\u{2192} Home/End",
+                help: "Move the cursor",
+                footer: None,
+            },
+            Binding {
+                key: "Ctrl-U",
+                help: "Clear the field",
+                footer: None,
+            },
+            Binding {
+                key: "Esc",
+                help: "Cancel",
+                footer: Some(("Esc", "cancel")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "GitHub close",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "y",
+                help: "Close the pull request without merging",
+                footer: Some(("y", "close")),
+            },
+            Binding {
+                key: "n / Esc",
+                help: "Keep it open",
+                footer: Some(("n/Esc", "keep it")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Environments",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "j/k",
+                help: "Move between environments",
+                footer: Some(("j/k", "select")),
+            },
+            Binding {
+                key: "g / G",
+                help: "First / last environment",
+                footer: None,
+            },
+            Binding {
+                key: "Enter",
+                help: "Preview promoting into it, then promote",
+                footer: Some(("Enter", "preview promotion")),
+            },
+            Binding {
+                key: "a",
+                help: "Assign the selected branch to it",
+                footer: Some(("a", "assign branch")),
+            },
+            Binding {
+                key: ",",
+                help: "Configure environments in Settings",
+                footer: Some((",", "configure")),
+            },
+            Binding {
+                key: "Esc",
+                help: "Back from a preview, then close",
                 footer: Some(("Esc", "close")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Environments: preview",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "Enter",
+                help: "Promote: move the branch as previewed",
+                footer: Some(("Enter", "promote")),
+            },
+            Binding {
+                key: "Esc",
+                help: "Back to the pipeline",
+                footer: Some(("Esc", "back to the pipeline")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Actions",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "type",
+                help: "Search every action by what it does",
+                footer: Some(("type", "search")),
+            },
+            Binding {
+                key: "\u{2191}/\u{2193}",
+                help: "Move between actions",
+                footer: Some(("\u{2191}/\u{2193}", "select")),
+            },
+            Binding {
+                key: "\u{2190}/\u{2192} Home/End",
+                help: "Move the cursor in the search",
+                footer: None,
+            },
+            Binding {
+                key: "Enter",
+                help: "Run it, where it can run from here",
+                footer: Some(("Enter", "run")),
+            },
+            Binding {
+                key: "Esc",
+                help: "Close",
+                footer: Some(("Esc", "close")),
+            },
+            Binding {
+                key: "wheel / click",
+                help: "Select an entry; Enter runs it",
+                footer: None,
             },
         ],
         footer_meta: None,
@@ -1278,9 +1996,90 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("Enter", "push")),
             },
             Binding {
+                key: "f",
+                help: "Diverged: force-push with lease (confirms)",
+                footer: Some(("f", "force (lease)")),
+            },
+            Binding {
                 key: "Esc",
                 help: "Cancel",
                 footer: Some(("Esc", "cancel")),
+            },
+            Binding {
+                key: "click",
+                help: "An option shown, as its key",
+                footer: None,
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Error details",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "j/k",
+                help: "Scroll",
+                footer: Some(("j/k", "scroll")),
+            },
+            Binding {
+                key: "y",
+                help: "Copy the whole text",
+                footer: Some(("y", "copy")),
+            },
+            Binding {
+                key: "q / Esc",
+                help: "Close",
+                footer: Some(("q/Esc", "close")),
+            },
+            Binding {
+                key: "wheel",
+                help: "Scroll; a click outside closes it",
+                footer: None,
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "Stash",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "j/k",
+                help: "Move between stash entries",
+                footer: Some(("j/k", "select")),
+            },
+            Binding {
+                key: "space / Enter",
+                help: "Apply the entry, keep it in the stash",
+                footer: Some(("space", "apply")),
+            },
+            Binding {
+                key: "g",
+                help: "Pop: apply the entry, then drop it",
+                footer: Some(("g", "pop")),
+            },
+            Binding {
+                key: "d",
+                help: "Drop the entry (confirms)",
+                footer: Some(("d", "drop")),
+            },
+            Binding {
+                key: "n",
+                help: "Stash the working changes, named",
+                footer: Some(("n", "new")),
+            },
+            Binding {
+                key: "Esc",
+                help: "Stop naming, then close",
+                footer: Some(("Esc", "close")),
+            },
+            Binding {
+                key: "wheel / click",
+                help: "Select an entry",
+                footer: None,
             },
         ],
         footer_meta: None,
@@ -1294,7 +2093,7 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         section: "Commit modal",
         prefix: "Commit modal ",
         tone: Tone::Normal,
-        order: &["Ctrl+S", "Enter", "Ctrl+R", "Ctrl+U", "Esc"],
+        order: &["Ctrl+S", "Enter", "Ctrl+T", "Ctrl+R", "Ctrl+U", "Esc"],
     },
     ModalFooter {
         section: "Stage all",
@@ -1318,7 +2117,7 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         section: "Push modal",
         prefix: "Push modal ",
         tone: Tone::Normal,
-        order: &["Enter", "Esc"],
+        order: &["Enter", "f", "Esc"],
     },
     ModalFooter {
         section: "New worktree",
@@ -1333,16 +2132,38 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         order: &["Tab / arrows", "Enter", "Ctrl+L", "Ctrl+U", "Ctrl+X", "Esc"],
     },
     ModalFooter {
+        section: "Model settings",
+        prefix: "Model ",
+        tone: Tone::Normal,
+        order: &["Up / Down", "Enter", "Ctrl+S", "Ctrl+U", "Esc"],
+    },
+    ModalFooter {
         section: "Settings",
         prefix: "Settings ",
         tone: Tone::Normal,
-        order: &["Up / Down", "Enter", "Ctrl+S", "Ctrl+U", "Esc"],
+        order: &[
+            "\u{2190} / \u{2192}",
+            "j/k",
+            "Enter",
+            "Ctrl-S",
+            "s",
+            "f",
+            "/",
+            "r",
+            "Esc",
+        ],
+    },
+    ModalFooter {
+        section: "Settings: editing",
+        prefix: "Editing ",
+        tone: Tone::Normal,
+        order: &["Enter", "Shift-Enter", "Ctrl-U", "Ctrl-S", "Esc"],
     },
     ModalFooter {
         section: "Help overlay",
         prefix: "Help ",
         tone: Tone::Normal,
-        order: &["j/k", "g / G", "q / Esc"],
+        order: &["j/k", "g / G", "/", "q / Esc"],
     },
     ModalFooter {
         section: "Branch actions",
@@ -1373,7 +2194,7 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         prefix: "GitHub ",
         tone: Tone::Normal,
         order: &[
-            "j/k", "Enter", "w", "v", "a", "x", "c", "m", "n", "Tab", "Esc",
+            "j/k", "Enter", "w", "v", "a", "x", "c", "m", "D", "X", "n", "o", "Tab", "Esc",
         ],
     },
     ModalFooter {
@@ -1382,14 +2203,111 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         tone: Tone::Normal,
         order: &[
             "\u{2192} / \u{2190}",
+            "] / [",
+            "j/k",
             "c / Enter",
             "a",
             "e / o",
             "f / F",
+            "m",
+            "u",
             "s",
+            "R",
             "?",
             "Esc / q",
         ],
+    },
+    ModalFooter {
+        section: "Guided review: writing",
+        prefix: "Writing ",
+        tone: Tone::Normal,
+        order: &["Enter", "Alt-Enter", "Esc"],
+    },
+    ModalFooter {
+        section: "Guided review: notes",
+        prefix: "Notes ",
+        tone: Tone::Normal,
+        order: &["y", "f", "j/k", "Esc / q"],
+    },
+    ModalFooter {
+        section: "Guided review: submit",
+        prefix: "Submit review ",
+        tone: Tone::Normal,
+        order: &["Tab", "type", "Enter / Ctrl-S", "Ctrl-Y", "Esc"],
+    },
+    ModalFooter {
+        section: "GitHub repositories",
+        prefix: "Repositories ",
+        tone: Tone::Normal,
+        order: &[
+            "type",
+            "\u{2191}/\u{2193}",
+            "\u{2190}/\u{2192}",
+            "Enter",
+            "Ctrl-R",
+            "Tab",
+            "Esc",
+        ],
+    },
+    ModalFooter {
+        section: "GitHub review text",
+        prefix: "Review ",
+        tone: Tone::Normal,
+        order: &["Enter", "Esc"],
+    },
+    ModalFooter {
+        section: "GitHub merge",
+        prefix: "Merge ",
+        tone: Tone::Caution,
+        order: &["j/k", "Space / \u{2190}\u{2192}", "Enter", "Esc"],
+    },
+    ModalFooter {
+        section: "GitHub new pull request",
+        prefix: "New pull request ",
+        tone: Tone::Normal,
+        order: &["Ctrl-S", "Tab / \u{2191}\u{2193}", "Enter", "Esc"],
+    },
+    ModalFooter {
+        section: "GitHub close",
+        prefix: "Close pull request ",
+        tone: Tone::Danger,
+        order: &["y", "n / Esc"],
+    },
+    ModalFooter {
+        section: "Environments",
+        prefix: "Environments ",
+        tone: Tone::Normal,
+        order: &["j/k", "Enter", "a", ",", "Esc"],
+    },
+    ModalFooter {
+        section: "Environments: preview",
+        prefix: "Promote ",
+        tone: Tone::Caution,
+        order: &["Enter", "Esc"],
+    },
+    ModalFooter {
+        section: "List filter",
+        prefix: "Filter ",
+        tone: Tone::Normal,
+        order: &["type", "\u{2191}/\u{2193}", "Enter", "Esc"],
+    },
+    ModalFooter {
+        section: "Actions",
+        prefix: "Actions ",
+        tone: Tone::Normal,
+        order: &["type", "\u{2191}/\u{2193}", "Enter", "Esc"],
+    },
+    ModalFooter {
+        section: "Error details",
+        prefix: "Error details ",
+        tone: Tone::Normal,
+        order: &["j/k", "y", "q / Esc"],
+    },
+    ModalFooter {
+        section: "Stash",
+        prefix: "Stash ",
+        tone: Tone::Normal,
+        order: &["j/k", "space / Enter", "g", "d", "n", "Esc"],
     },
     ModalFooter {
         section: "Review chat",

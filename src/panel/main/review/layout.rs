@@ -1,12 +1,12 @@
 //! How many lines the review pane draws, and keeping the selection in view.
 
-use crate::{panel::markdown, state::AppState, ui};
+use crate::state::AppState;
 
-use super::super::source::{inline_diff_overlay, source_sections};
+use super::super::source::source_sections;
 use super::*;
 
 pub(in crate::panel::main) fn visible_review_node_indices(state: &AppState) -> Vec<usize> {
-    let Some(review) = &state.review else {
+    let Some(review) = &state.review.assisted else {
         return Vec::new();
     };
     // One pass, parents before children: a node shows when its parent shows
@@ -24,7 +24,7 @@ pub(in crate::panel::main) fn visible_review_node_indices(state: &AppState) -> V
             },
         };
         open.entry(node.id.as_str())
-            .or_insert(shown && !state.review_collapsed.contains(&node.id));
+            .or_insert(shown && !state.review.collapsed.contains(&node.id));
         if shown {
             visible.push(idx);
         }
@@ -33,110 +33,52 @@ pub(in crate::panel::main) fn visible_review_node_indices(state: &AppState) -> V
 }
 
 pub(in crate::panel::main) fn render_line_count(state: &AppState) -> usize {
+    let pass = review_pass(state);
     visible_review_node_indices(state)
         .into_iter()
-        .map(|idx| review_node_line_count(state, idx))
+        .map(|idx| review_node_line_count(state, pass, idx))
         .sum()
 }
 
 pub(in crate::panel::main) fn review_selected_line(state: &AppState) -> Option<usize> {
+    let pass = review_pass(state);
     let mut line = 0usize;
     for idx in visible_review_node_indices(state) {
-        if idx == state.review_idx {
+        if idx == state.review.idx {
             return Some(line);
         }
-        line += review_node_line_count(state, idx);
+        line += review_node_line_count(state, pass, idx);
     }
     None
 }
 
-pub(in crate::panel::main) fn review_node_line_count(state: &AppState, idx: usize) -> usize {
-    let Some(review) = &state.review else {
+/// The lines node `idx` takes on screen, its title included: counted off the
+/// lines the pane draws for it, so the scroll bound, the mouse and the jumps
+/// all agree with what is drawn.
+pub(in crate::panel::main) fn review_node_line_count(
+    state: &AppState,
+    pass: ReviewPass,
+    idx: usize,
+) -> usize {
+    if state
+        .review
+        .assisted
+        .as_ref()
+        .is_none_or(|review| idx >= review.nodes.len())
+    {
         return 0;
-    };
-    let Some(node) = review.nodes.get(idx) else {
-        return 0;
-    };
-    let expanded = !state.review_collapsed.contains(&node.id);
-    let mut count = 1usize;
-    let context_open = state.review_context_open.contains(&node.id);
-    let assist = review_assist_text(state, &node.id);
-    if !expanded && !context_open && assist.is_none() {
-        return count;
     }
-
-    let has_body = renders_review_body(&node.id) && !node.body.is_empty();
-    if expanded && renders_review_body(&node.id) {
-        count += review_body_line_count(state, node);
-    }
-    if context_open {
-        count += review_source_context_line_count(state, node);
-    }
-    if let Some(text) = assist {
-        count += 1 + text.lines().count();
-    }
-    if (expanded && has_body) || context_open || assist.is_some() {
-        count += 1;
-    }
-    count
+    node_line_count(state, idx, pass)
 }
 
-pub(in crate::panel::main) fn review_body_line_count(
-    state: &AppState,
-    node: &crate::git::ReviewNode,
-) -> usize {
-    let indent = review_indent(node.depth);
-    let prefix = format!("{indent}  │ ");
-    let Some(path) = review_node_syntax_path(&node.title) else {
-        return markdown::render(
-            &node.body.join("\n"),
-            &prefix,
-            state.diff_viewport_width.saturating_sub(2),
-        )
-        .len();
-    };
-    // Count the wrapped rows the body actually draws, not its source lines.
-    let diff_width = diff_body_width(state.diff_viewport_width, &prefix);
-    if side_by_side_diff_enabled(state) {
-        ui::side_by_side_diff_line_count(&node.body.join("\n"), diff_width)
-    } else {
-        node.body
-            .iter()
-            .map(|line| ui::highlight_diff_line_wrapped_for_path(line, path, diff_width).len())
-            .sum()
-    }
+/// A pass over the nodes at the width the pane wraps to.
+pub(in crate::panel::main) fn review_pass(state: &AppState) -> ReviewPass {
+    ReviewPass::new(state, review_wrap_width(state))
 }
 
-pub(in crate::panel::main) fn review_source_context_line_count(
-    state: &AppState,
-    node: &crate::git::ReviewNode,
-) -> usize {
-    if let Some(review) = &state.review {
-        let sections = source_sections(state, review, node);
-        if !sections.is_empty() {
-            return 1 + sections
-                .iter()
-                .map(|section| {
-                    let note_count = section.notes.values().map(Vec::len).sum::<usize>();
-                    if let Ok(text) = std::fs::read_to_string(&section.path) {
-                        let removed_count = inline_diff_overlay(&section.body)
-                            .removed_before
-                            .values()
-                            .map(Vec::len)
-                            .sum::<usize>();
-                        1 + text.lines().count() + removed_count + note_count
-                    } else {
-                        usize::from(!section.body.is_empty()) * (1 + section.body.len())
-                            + usize::from(!section.context.is_empty()) * (1 + section.context.len())
-                            + usize::from(note_count > 0) * (1 + note_count)
-                    }
-                })
-                .sum::<usize>();
-        }
-    }
-
-    1 + usize::from(!node.body.is_empty()) * (1 + node.body.len())
-        + usize::from(!node.context.is_empty()) * (1 + node.context.len())
+/// The width the review pane wraps its lines to: the inside of the main pane.
+pub(in crate::panel::main) fn review_wrap_width(state: &AppState) -> u16 {
+    state.diff_viewport_width
 }
 
 pub(in crate::panel::main) fn review_source_available(
@@ -173,7 +115,7 @@ pub(in crate::panel::main) fn ensure_review_selection_visible(state: &mut AppSta
 }
 
 pub(in crate::panel::main) fn ancestors_expanded(state: &AppState, node_id: &str) -> bool {
-    let Some(review) = &state.review else {
+    let Some(review) = &state.review.assisted else {
         return false;
     };
     let mut parent = review
@@ -182,7 +124,7 @@ pub(in crate::panel::main) fn ancestors_expanded(state: &AppState, node_id: &str
         .find(|node| node.id == node_id)
         .and_then(|node| node.parent.as_deref());
     while let Some(parent_id) = parent {
-        if state.review_collapsed.contains(parent_id) {
+        if state.review.collapsed.contains(parent_id) {
             return false;
         }
         parent = review
@@ -196,14 +138,14 @@ pub(in crate::panel::main) fn ancestors_expanded(state: &AppState, node_id: &str
 
 pub(in crate::panel::main) fn clamp_review_selection(state: &mut AppState) {
     let visible = visible_review_node_indices(state);
-    if visible.contains(&state.review_idx) {
+    if visible.contains(&state.review.idx) {
         state.diff_offset = state
             .diff_offset
             .min(crate::panel::main::max_scroll_offset(state));
         return;
     }
     if let Some(first) = visible.first() {
-        state.review_idx = *first;
+        state.review.idx = *first;
     }
     state.diff_offset = state
         .diff_offset

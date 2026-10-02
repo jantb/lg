@@ -166,8 +166,7 @@ fn diff_paths(diff: &str) -> Vec<String> {
 }
 
 fn parse_diff_path(line: &str) -> Option<String> {
-    let rest = line.strip_prefix("diff --git ")?;
-    let (_, path) = rest.split_once(" b/")?;
+    let (_, path) = super::patch::diff_git_paths(line)?;
     let path = path.trim();
     (!path.is_empty() && path != "/dev/null").then(|| path.to_owned())
 }

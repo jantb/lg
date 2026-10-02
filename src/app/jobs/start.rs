@@ -6,12 +6,12 @@ use crate::{
     config::{BACKGROUND_FETCH_INTERVAL_SECS, COMMIT_LIST_LIMIT, is_protected_branch_name},
     state::{
         CommitLogJob, CommitLogMsg, DiffJob, DiffMsg, DiffSource, FetchJob, FetchMsg, Pane,
-        RefreshJob, RefreshMsg, ReleaseStatusJob, ReleaseStatusMsg,
+        RefreshJob, RefreshMsg, RefreshScope, ReleaseStatusJob, ReleaseStatusMsg,
     },
 };
 
 use super::super::{
-    App, build_refresh_snapshot, git_job_running, load_diff_text, selected_commit_ref,
+    App, git_job_running, load_diff_text, refresh_snapshot, selected_commit_ref,
     selected_diff_source,
 };
 
@@ -25,9 +25,12 @@ impl App {
         // A failed watcher only costs automatic refreshes, so the switch still
         // goes through — but say so, because staleness is otherwise silent.
         let watch_error = match crate::app::refresh::watch_repo(dir) {
-            Ok((watcher, events)) => {
+            Ok((watcher, events, roots)) => {
                 self.file_watcher = watcher;
                 self.file_events = events;
+                self.watch_roots = roots;
+                // Whatever was waiting was about the checkout being left.
+                self.file_batch = Default::default();
                 None
             }
             Err(err) => Some(err.to_string()),
@@ -60,17 +63,37 @@ impl App {
         refresh_diff: bool,
         show_status: bool,
     ) {
+        self.start_scoped_refresh(
+            RefreshScope::Workspace,
+            Vec::new(),
+            refresh_diff,
+            show_status,
+        );
+    }
+
+    /// Start a refresh that reads what `scope` covers. One already running
+    /// gets another queued behind it, as wide as the widest asked for since.
+    /// `changed` are the files a [`RefreshScope::Files`] refresh is for.
+    pub(in crate::app) fn start_scoped_refresh(
+        &mut self,
+        scope: RefreshScope,
+        changed: Vec<std::path::PathBuf>,
+        refresh_diff: bool,
+        show_status: bool,
+    ) {
         if let Some(job) = self.state.refresh_job.as_mut() {
             job.refresh_diff |= refresh_diff;
-            self.state.refresh_pending = true;
+            self.state.refresh_pending = self.state.refresh_pending.max(Some(scope));
             self.state.refresh_pending_diff |= refresh_diff;
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let workspace_root = self.state.workspace_root.clone();
         let handle = crate::git::spawn_pinned(move || {
-            let _ = tx.send(RefreshMsg::Done(Box::new(build_refresh_snapshot(
+            let _ = tx.send(RefreshMsg::Done(Box::new(refresh_snapshot(
                 workspace_root,
+                scope,
+                &changed,
             ))));
         });
         self.state.refresh_job = Some(RefreshJob {
@@ -78,6 +101,7 @@ impl App {
             handle: Some(handle),
             spinner: 0,
             refresh_diff,
+            scope,
         });
         if show_status {
             self.state.set_status("refreshing\u{2026}", false);
@@ -95,13 +119,12 @@ impl App {
         }
         self.last_fetch_started = Instant::now();
         let (tx, rx) = std::sync::mpsc::channel();
-        let handle = crate::git::spawn_pinned(move || match crate::git::fetch_updates() {
-            Ok(s) => {
-                let _ = tx.send(FetchMsg::Done(s));
-            }
-            Err(e) => {
-                let _ = tx.send(FetchMsg::Error(e.to_string()));
-            }
+        let handle = crate::git::spawn_pinned(move || {
+            let _ = tx.send(match crate::git::fetch_updates() {
+                Ok(crate::git::FetchOutcome::Fetched(s)) => FetchMsg::Done(s),
+                Ok(crate::git::FetchOutcome::NoRemotes) => FetchMsg::NoRemotes,
+                Err(e) => FetchMsg::Error(e.to_string()),
+            });
         });
         self.state.fetch_job = Some(FetchJob {
             rx,
@@ -154,6 +177,8 @@ impl App {
         // worktree produces those all day.
         if !same_source {
             self.state.diff_offset = 0;
+            self.state.diff_hunk = crate::state::HunkCursor::default();
+            self.state.log_commit = 0;
             self.state
                 .set_diff_text(if matches!(source, DiffSource::None) {
                     String::new()
@@ -244,7 +269,7 @@ impl App {
 
         self.state.commits_ref = Some(branch.clone());
         self.state.commits.clear();
-        self.state.commits_idx = 0;
+        self.state.commits_list.idx = 0;
         self.state.commit_log_job = Some(CommitLogJob {
             rx,
             handle: Some(handle),

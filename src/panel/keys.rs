@@ -123,9 +123,74 @@ pub fn footer_entry(from: &Section, key: &str) -> Option<(&'static str, &'static
     named(from).or_else(|| section("Global").and_then(named))
 }
 
+/// What a modal footer prints, as key and label pairs: the footer of the
+/// section titled `footer`, each key resolved as [`footer_entry`] does.
+///
+/// Modals that draw their own line of hints draw it from this, so the line in
+/// the modal and the footer under it read the same, and both read as the help.
+pub fn footer_pairs(footer: &str) -> Vec<(&'static str, &'static str)> {
+    let (Some(section), Some(modal)) = (section(footer), modal_footer(footer)) else {
+        return Vec::new();
+    };
+    modal
+        .order
+        .iter()
+        .filter_map(|key| footer_entry(section, key))
+        .collect()
+}
+
+/// The footer labels of `keys`, looked up in the section titled `title`, for
+/// a modal whose hints depend on what it shows and so pick their own keys.
+pub fn hint_pairs(title: &str, keys: &[&str]) -> Vec<(&'static str, &'static str)> {
+    let Some(section) = section(title) else {
+        return Vec::new();
+    };
+    keys.iter()
+        .filter_map(|key| footer_entry(section, key))
+        .collect()
+}
+
+/// Every binding of the section titled `title` that has a footer label, in
+/// the order the help lists them.
+pub fn section_pairs(title: &str) -> Vec<(&'static str, &'static str)> {
+    section(title)
+        .map(|section| {
+            section
+                .bindings
+                .iter()
+                .filter_map(|binding| binding.footer)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Modals draw their own hint lines from these footers, so a footer key
+    /// the table does not document would vanish from the modal without a
+    /// word. Every one has to resolve.
+    #[test]
+    fn every_modal_footer_resolves_every_key_it_prints() {
+        for footer in MODAL_FOOTERS {
+            let section = section(footer.section)
+                .unwrap_or_else(|| panic!("{} is not in the key table", footer.section));
+            for key in footer.order {
+                assert!(
+                    footer_entry(section, key).is_some(),
+                    "{} prints {key:?}, which it does not document",
+                    footer.section
+                );
+            }
+            assert_eq!(
+                footer_pairs(footer.section).len(),
+                footer.order.len(),
+                "{}",
+                footer.section
+            );
+        }
+    }
 
     /// The main pane is three panes wearing one name, and each has its own keys.
     #[test]
@@ -162,6 +227,7 @@ mod tests {
                     ("t", "terminal"),
                     ("n", "new worktree"),
                     ("x", "close session"),
+                    ("D", "remove worktree"),
                     ("o", "open IDE"),
                     ("w", "workspace"),
                     ("V", "guided review"),
@@ -180,6 +246,7 @@ mod tests {
                     ("r", "rollback"),
                     ("i", "ignore"),
                     ("d", "delete"),
+                    ("s/S", "stash"),
                     ("o", "open IDE"),
                     ("c", "commit"),
                     ("a", "author"),
@@ -204,6 +271,7 @@ mod tests {
                     ("D", "delete"),
                     ("o", "open IDE"),
                     ("u", "set upstream"),
+                    ("y", "copy sha"),
                     ("p", "pull"),
                     ("a", "author"),
                     ("L", "model"),
@@ -220,6 +288,9 @@ mod tests {
                 &[
                     ("j/k", "navigate"),
                     ("Enter", "focus diff"),
+                    ("y", "copy sha"),
+                    ("t", "revert"),
+                    ("A", "amend"),
                     ("p", "pull"),
                     ("a", "author"),
                     ("L", "model"),
@@ -259,9 +330,13 @@ mod tests {
                 "Diff",
                 &[
                     ("R", "review mode"),
+                    ("space", "stage hunk"),
+                    ("d", "discard"),
+                    ("]/[", "hunk"),
                     ("v", "view"),
                     ("o", "open IDE"),
                     ("j/k", "scroll"),
+                    ("C", "cherry-pick"),
                     ("g/G", "top/bot"),
                     ("p", "pull"),
                     ("a", "author"),

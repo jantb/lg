@@ -9,7 +9,7 @@ use ratatui::style::Color;
 
 use crate::{
     git::BranchReleaseStatus,
-    preferences::{Branches, Environment, Promotion},
+    preferences::{Branches, Environment, Promotion, Strategy},
     ui::palette,
 };
 
@@ -235,10 +235,12 @@ pub fn rule_label(rule: &Promotion) -> String {
 
 /// The method spelled out for the explanation pane.
 pub fn strategy_sentence(rule: &Promotion, target: &str) -> String {
-    match rule.strategy.as_str() {
-        "squash" => "squashed into a single commit".to_string(),
-        "ff-only" => format!("fast-forward only, refused if {target} has commits of its own"),
-        _ => "with a merge commit that keeps the branch history".to_string(),
+    match rule.strategy {
+        Strategy::Squash => "squashed into a single commit".to_string(),
+        Strategy::FfOnly => {
+            format!("fast-forward only, refused if {target} has commits of its own")
+        }
+        Strategy::Merge => "with a merge commit that keeps the branch history".to_string(),
     }
 }
 

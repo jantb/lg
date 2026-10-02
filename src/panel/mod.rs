@@ -7,6 +7,7 @@ pub mod commits;
 pub mod confirm;
 pub mod conflict;
 pub mod delete_branch;
+pub mod details;
 pub mod environments;
 pub mod files;
 pub mod flow;
@@ -17,13 +18,16 @@ pub mod keys;
 pub mod main;
 pub(crate) mod markdown;
 pub mod model;
+pub(crate) mod pointer;
 pub mod push;
 pub mod review_chat;
 pub(crate) mod scroll;
 pub mod settings;
 pub mod solid;
 pub mod stage_all;
+pub mod stash;
 pub mod status;
+pub mod text_input;
 pub mod worktree;
 
 /// Splits `text` into chunks no wider than `width`, breaking on spaces so a

@@ -29,11 +29,11 @@ pub fn handle_paste(state: &mut AppState, pasted: &str) -> bool {
     };
     match &mut guided.mode {
         Mode::Note { text, .. } | Mode::Question { text } | Mode::Fix { text, .. } => {
-            text.push_str(pasted);
+            text.insert_str(pasted);
             true
         }
         Mode::Summary { body, .. } => {
-            body.push_str(pasted);
+            body.insert_str(pasted);
             true
         }
         Mode::Browse => false,
@@ -42,6 +42,12 @@ pub fn handle_paste(state: &mut AppState, pasted: &str) -> bool {
 
 fn browse(state: &mut AppState, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    // Only the very next key can confirm deleting a note.
+    if key.code != KeyCode::Char('x')
+        && let Some(guided) = state.guided.as_mut()
+    {
+        guided.delete_armed = None;
+    }
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => super::leave(state),
         KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') | KeyCode::Tab => {
@@ -68,7 +74,7 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('a') => set_mode(
             state,
             Mode::Question {
-                text: String::new(),
+                text: Default::default(),
             },
         ),
         KeyCode::Char('r') => super::regenerate(state),
@@ -96,7 +102,7 @@ fn set_mode(state: &mut AppState, mode: Mode) {
     }
 }
 
-fn scroll_side(state: &mut AppState, by: i32) {
+pub(super) fn scroll_side(state: &mut AppState, by: i32) {
     if let Some(guided) = state.guided.as_mut() {
         guided.side_scroll = guided.side_scroll.min(guided.side_max.get());
         guided.side_scroll = if by >= 0 {
@@ -121,7 +127,10 @@ fn start_note(state: &mut AppState) {
         .and_then(|index| guided.progress.notes.get(index))
         .map(|note| note.body.clone())
         .unwrap_or_default();
-    guided.mode = Mode::Note { text, editing };
+    guided.mode = Mode::Note {
+        text: text.into(),
+        editing,
+    };
 }
 
 /// Ask Claude for a change: what the note on the cursor line says, or what is
@@ -154,7 +163,10 @@ fn start_fix(state: &mut AppState, all_notes: bool) {
             .map(|note| note.body.clone())
             .unwrap_or_default()
     };
-    guided.mode = Mode::Fix { text, all_notes };
+    guided.mode = Mode::Fix {
+        text: text.into(),
+        all_notes,
+    };
 }
 
 fn copy_notes(state: &mut AppState) {
@@ -187,21 +199,12 @@ fn text_key(state: &mut AppState, key: KeyEvent) {
     };
     match key.code {
         KeyCode::Esc => guided.mode = Mode::Browse,
-        KeyCode::Enter if alt || key.modifiers.contains(KeyModifiers::SHIFT) => text.push('\n'),
-        KeyCode::Char('j') if ctrl => text.push('\n'),
+        KeyCode::Enter if alt || key.modifiers.contains(KeyModifiers::SHIFT) => {
+            text.insert_char('\n')
+        }
+        KeyCode::Char('j') if ctrl => text.insert_char('\n'),
         KeyCode::Char('u') if ctrl => text.clear(),
-        KeyCode::Char('w') if ctrl => {
-            let trimmed = text.trim_end().len();
-            let cut = text[..trimmed]
-                .rfind(char::is_whitespace)
-                .map(|i| i + 1)
-                .unwrap_or(0);
-            text.truncate(cut);
-        }
-        KeyCode::Backspace => {
-            text.pop();
-        }
-        KeyCode::Char(c) if !ctrl => text.push(c),
+        KeyCode::Char('w') if ctrl => text.delete_word_before(),
         KeyCode::Enter => {
             let send: fn(&mut AppState) = match guided.mode {
                 Mode::Note { .. } => super::commit_note,
@@ -210,7 +213,9 @@ fn text_key(state: &mut AppState, key: KeyEvent) {
             };
             send(state);
         }
-        _ => {}
+        _ => {
+            text.handle_key(key);
+        }
     }
 }
 
@@ -235,13 +240,13 @@ fn summary_key(state: &mut AppState, key: KeyEvent) {
         KeyCode::Enter if is_pr && !key.modifiers.contains(KeyModifiers::ALT) => {
             super::submit(state)
         }
-        KeyCode::Enter => body.push('\n'),
+        KeyCode::Enter => body.insert_char('\n'),
         KeyCode::Char('y') if ctrl || !is_pr => copy_notes(state),
         KeyCode::Char('f') if ctrl || !is_pr => {
             guided.mode = Mode::Browse;
             start_fix(state, true);
         }
-        KeyCode::Char('j') if ctrl => body.push('\n'),
+        KeyCode::Char('j') if ctrl => body.insert_char('\n'),
         KeyCode::Down if !is_pr => scroll_side(state, 1),
         KeyCode::Up if !is_pr => scroll_side(state, -1),
         KeyCode::Char('j') if !is_pr => scroll_side(state, 1),
@@ -251,11 +256,10 @@ fn summary_key(state: &mut AppState, key: KeyEvent) {
                 guided.mode = Mode::Browse;
             }
         }
-        KeyCode::Backspace if is_pr => {
-            body.pop();
-        }
         KeyCode::Char('u') if ctrl && is_pr => body.clear(),
-        KeyCode::Char(c) if is_pr && !ctrl => body.push(c),
+        _ if is_pr => {
+            body.handle_key(key);
+        }
         _ => {}
     }
 }

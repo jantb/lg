@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command;
 
 use super::attrs::suppress_generated_diff;
-use super::{git_command, git_command_in_dir, run, run_combined};
+use super::{git_command, git_command_in_dir, run};
 
 pub fn staged_diff() -> Result<String> {
     let out = run(&["diff", "--cached"])?;
@@ -25,22 +25,6 @@ pub fn repo_root_at(dir: &Path) -> Option<String> {
     let out = super::run_in_dir(dir, &["rev-parse", "--show-toplevel"]).ok()?;
     let root = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (!root.is_empty()).then_some(root)
-}
-
-pub fn fetch_updates() -> Result<String> {
-    let remotes = run(&["remote"])?;
-    if String::from_utf8_lossy(&remotes.stdout).trim().is_empty() {
-        return Ok("no remotes configured".to_string());
-    }
-
-    let text = run_combined(&["fetch", "--all", "--prune"])?;
-    let status = text
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| line.trim().to_owned())
-        .unwrap_or_else(|| "fetched branch updates".to_string());
-    Ok(status)
 }
 
 pub fn all_diffs() -> Result<String> {

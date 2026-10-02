@@ -17,11 +17,12 @@ mod safety;
 mod stash;
 
 pub use branch::{
-    checkout_branch, checkout_remote_branch, delete_local_branch, delete_remote_branch,
-    flow_clean_orphan_branches, flow_create_feature_branch, flow_discard_checkout_from_remote,
-    flow_discard_checkout_from_remote_with_progress, flow_reset_branch_from_main,
-    flow_reset_branch_from_main_with_progress, flow_transfer_diff_to_feature_branch,
-    flow_transfer_diff_to_feature_branch_with_progress,
+    OrphanBranch, checkout_branch, checkout_remote_branch, delete_local_branch,
+    delete_remote_branch, flow_clean_orphan_branches, flow_create_feature_branch,
+    flow_discard_checkout_from_remote, flow_discard_checkout_from_remote_with_progress,
+    flow_reset_branch_from_main, flow_reset_branch_from_main_with_progress,
+    flow_transfer_diff_to_feature_branch, flow_transfer_diff_to_feature_branch_with_progress,
+    orphan_branches,
 };
 pub use conflict::{
     ConflictHunk, ConflictSideCommit, ConflictSides, ConflictedFile, FilePart, Followup,
@@ -35,6 +36,7 @@ pub use merge_main::{
 };
 pub(super) use release::update_release_branch_from_main_before_commit;
 pub use release::{flow_release_current, flow_release_current_with_progress};
+pub use safety::is_safety_ref;
 
 use branch::restore_stash_after_failed_checkout;
 use conflict::merge_or_rebase_in_progress;
@@ -83,7 +85,7 @@ fn is_protected_branch(name: &str) -> bool {
 /// already finished, `v` skipped the commit that completes it, and `a` had
 /// nothing to abort. The release then pushed a branch that had never moved, and
 /// the same conflict came back on the next run.
-fn git_path_exists(name: &str) -> Result<bool> {
+pub(super) fn git_path_exists(name: &str) -> Result<bool> {
     let out = run(&["rev-parse", "--path-format=absolute", "--git-path", name])?;
     let path = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     Ok(!path.is_empty() && Path::new(&path).exists())
@@ -97,7 +99,7 @@ fn git_path_exists(name: &str) -> Result<bool> {
 /// how a release ends up looking like it cannot be done at all. The way out is
 /// to finish the conflict or abort it, and the message says which keys do that,
 /// because a flow refusing to run is exactly when they are hardest to find.
-fn ensure_no_conflict_in_progress() -> Result<()> {
+pub(super) fn ensure_no_conflict_in_progress() -> Result<()> {
     if !merge_or_rebase_in_progress() {
         return Ok(());
     }

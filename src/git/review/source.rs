@@ -5,7 +5,7 @@ use super::language::Language;
 use super::language::{csharp_item_label, kotlin_item_label, markdown_item_label, rust_item_label};
 
 pub(super) fn infer_entry_symbol(path: &str, line: usize, hunk: &str) -> String {
-    if let Some(language) = Language::of_path(path)
+    if let Some(language) = Language::from_path(path)
         && let Some(symbol) = infer_source_symbol(path, line, language)
     {
         return symbol;
@@ -48,7 +48,7 @@ pub(super) fn source_context(path: &str, line: usize) -> Vec<String> {
     if lines.is_empty() {
         return Vec::new();
     }
-    let language = Language::of_path(path);
+    let language = Language::from_path(path);
     let target = line.saturating_sub(1).min(lines.len().saturating_sub(1));
     let start =
         find_source_item_start(language, &lines, target).unwrap_or(target.saturating_sub(8));

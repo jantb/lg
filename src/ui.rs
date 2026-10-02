@@ -1,5 +1,6 @@
 mod chrome;
 mod diff;
+pub(crate) mod highlight;
 mod layout;
 mod log;
 pub mod palette;

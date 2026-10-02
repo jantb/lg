@@ -7,7 +7,7 @@ use lg::panel::environments::menu::{self, RepoAction};
 fn deleting_a_file_asks_before_touching_disk() {
     let mut state = make_state_with_files();
     state.focus = Pane::Files;
-    state.files_idx = 1; // skip the "All changes" root row
+    state.files_list.idx = 1; // skip the "All changes" root row
 
     panel::files::handle_key(&mut state, key(KeyCode::Char('d'))).unwrap();
 
@@ -24,7 +24,7 @@ fn deleting_a_file_asks_before_touching_disk() {
 fn confirming_a_delete_dispatches_the_original_action() {
     let mut state = make_state_with_files();
     state.focus = Pane::Files;
-    state.files_idx = 1;
+    state.files_list.idx = 1;
     panel::files::handle_key(&mut state, key(KeyCode::Char('d'))).unwrap();
     let expected = state.confirm.clone().unwrap().action;
 
@@ -39,7 +39,7 @@ fn confirming_a_delete_dispatches_the_original_action() {
 fn cancelling_a_delete_dispatches_nothing() {
     let mut state = make_state_with_files();
     state.focus = Pane::Files;
-    state.files_idx = 1;
+    state.files_list.idx = 1;
     panel::files::handle_key(&mut state, key(KeyCode::Char('d'))).unwrap();
 
     panel::confirm::handle_key(&mut state, key(KeyCode::Esc)).unwrap();
@@ -53,7 +53,7 @@ fn cancelling_a_delete_dispatches_nothing() {
 fn rollback_also_asks_before_discarding_changes() {
     let mut state = make_state_with_files();
     state.focus = Pane::Files;
-    state.files_idx = 1;
+    state.files_list.idx = 1;
 
     panel::files::handle_key(&mut state, key(KeyCode::Char('r'))).unwrap();
 
@@ -69,7 +69,7 @@ fn rollback_also_asks_before_discarding_changes() {
 fn unrelated_keys_leave_the_confirm_prompt_open() {
     let mut state = make_state_with_files();
     state.focus = Pane::Files;
-    state.files_idx = 1;
+    state.files_list.idx = 1;
     panel::files::handle_key(&mut state, key(KeyCode::Char('d'))).unwrap();
 
     panel::confirm::handle_key(&mut state, key(KeyCode::Char('x'))).unwrap();

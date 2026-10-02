@@ -13,7 +13,6 @@ mod notes;
 mod overlay;
 
 pub(super) use line::owned_spans;
-pub(super) use overlay::inline_diff_overlay;
 
 use line::*;
 use notes::*;
@@ -26,14 +25,17 @@ pub(super) struct SourceSection {
     pub notes: BTreeMap<usize, Vec<String>>,
 }
 
-/// Per-frame cache so file reads aren't repeated across the
-/// scroll-bound and rendering passes of the review panel.
-#[derive(Default)]
-pub(super) struct RenderCache {
-    files: HashMap<String, Option<String>>,
+/// Files read for the review's source context, kept with the review pane's
+/// drawn lines so a file is read once rather than once per pass per frame.
+pub(super) struct RenderCache<'a> {
+    files: &'a mut HashMap<String, Option<String>>,
 }
 
-impl RenderCache {
+impl<'a> RenderCache<'a> {
+    pub(super) fn new(files: &'a mut HashMap<String, Option<String>>) -> Self {
+        Self { files }
+    }
+
     fn read(&mut self, path: &str) -> Option<&str> {
         if !self.files.contains_key(path) {
             self.files
@@ -44,7 +46,7 @@ impl RenderCache {
 }
 
 pub(super) fn review_source_context_lines(
-    cache: &mut RenderCache,
+    cache: &mut RenderCache<'_>,
     state: &AppState,
     review: &crate::git::AssistedReview,
     node: &crate::git::ReviewNode,

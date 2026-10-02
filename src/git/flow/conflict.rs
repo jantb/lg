@@ -209,6 +209,8 @@ pub fn validate_conflict_resolution(followup: Followup<'_>) -> Result<String> {
         out = run_combined(&["rebase", "--continue"])?;
     } else if git_path_exists("CHERRY_PICK_HEAD")? {
         out = run_combined(&["cherry-pick", "--continue"])?;
+    } else if git_path_exists("REVERT_HEAD")? {
+        out = run_combined(&["revert", "--continue"])?;
     } else if git_path_exists("MERGE_HEAD")? {
         run(&["add", "-A"])?;
         out = run_combined(&["commit", "--no-edit"])?;
@@ -219,7 +221,7 @@ pub fn validate_conflict_resolution(followup: Followup<'_>) -> Result<String> {
             ));
         }
     } else {
-        out = "no merge, rebase, or cherry-pick operation is in progress; assuming the conflict was completed manually".to_string();
+        out = "no merge, rebase, cherry-pick or revert operation is in progress; assuming the conflict was completed manually".to_string();
     }
 
     if let Some(note) = merge_outstanding_branch(followup.merge_branch, followup.push_branch)? {
@@ -361,6 +363,8 @@ pub fn abort_in_progress_operation_with_cleanup(
         out = run_combined(&["rebase", "--abort"])?;
     } else if git_path_exists("CHERRY_PICK_HEAD")? {
         out = run_combined(&["cherry-pick", "--abort"])?;
+    } else if git_path_exists("REVERT_HEAD")? {
+        out = run_combined(&["revert", "--abort"])?;
     } else if git_path_exists("MERGE_HEAD")? {
         out = run_combined(&["merge", "--abort"])?;
     } else {

@@ -24,7 +24,7 @@ pub(in crate::panel::main) fn handle_key(state: &mut AppState, key: KeyEvent) ->
         .min(crate::panel::main::max_scroll_offset(state));
     let current_pos = visible
         .iter()
-        .position(|idx| *idx == state.review_idx)
+        .position(|idx| *idx == state.review.idx)
         .unwrap_or(0);
     match key.code {
         KeyCode::Char('j') => {
@@ -54,12 +54,12 @@ pub(in crate::panel::main) fn handle_key(state: &mut AppState, key: KeyEvent) ->
             toggle_review_tree_node(state);
         }
         KeyCode::Char('d') => {
-            if let Some(review) = &state.review
-                && let Some(node) = review.nodes.get(state.review_idx)
+            if let Some(review) = &state.review.assisted
+                && let Some(node) = review.nodes.get(state.review.idx)
             {
-                state.review_collapsed.remove(&node.id);
+                state.review.collapsed.remove(&node.id);
                 if let Some((child_idx, _)) = first_drill_child(review, &node.id) {
-                    state.review_idx = child_idx;
+                    state.review.idx = child_idx;
                 }
                 ensure_review_selection_visible(state);
             }
@@ -84,8 +84,8 @@ pub(in crate::panel::main) fn handle_key(state: &mut AppState, key: KeyEvent) ->
             state.set_status(format!("showing {label}"), false);
         }
         KeyCode::Char('l') => {
-            if let Some(review) = &state.review
-                && let Some(node) = review.nodes.get(state.review_idx)
+            if let Some(review) = &state.review.assisted
+                && let Some(node) = review.nodes.get(state.review.idx)
             {
                 state.pending_action = Some(if node.id == crate::git::REVIEW_PR_TEXT_NODE_ID {
                     PendingAction::ReviewPrText
@@ -115,7 +115,7 @@ pub(in crate::panel::main) fn handle_key(state: &mut AppState, key: KeyEvent) ->
         }
         KeyCode::Char('C') => {
             state.modal = crate::state::Modal::ReviewChat;
-            state.review_chat_cursor = state.review_chat_input.chars().count();
+            state.review.chat_input.end();
         }
         KeyCode::Char('o') => {
             if let Some(path) = selected_open_path(state) {
@@ -126,13 +126,13 @@ pub(in crate::panel::main) fn handle_key(state: &mut AppState, key: KeyEvent) ->
         }
         KeyCode::Char('g') => {
             if let Some(first) = visible.first() {
-                state.review_idx = *first;
+                state.review.idx = *first;
             }
             state.diff_offset = 0;
         }
         KeyCode::Char('G') => {
             if let Some(last) = visible.last() {
-                state.review_idx = *last;
+                state.review.idx = *last;
             }
             state.diff_offset = crate::panel::main::max_scroll_offset(state);
         }
@@ -142,8 +142,8 @@ pub(in crate::panel::main) fn handle_key(state: &mut AppState, key: KeyEvent) ->
 }
 
 pub(in crate::panel::main) fn toggle_review_tree_node(state: &mut AppState) {
-    if let Some(review) = &state.review
-        && let Some(node) = review.nodes.get(state.review_idx)
+    if let Some(review) = &state.review.assisted
+        && let Some(node) = review.nodes.get(state.review.idx)
     {
         let node_id = node.id.clone();
         let descendant_ids = review_descendant_ids(review, &node_id);
@@ -155,17 +155,18 @@ pub(in crate::panel::main) fn toggle_review_tree_node(state: &mut AppState) {
         if !has_child && !has_body {
             return;
         }
-        if state.review_collapsed.contains(&node_id) {
-            state.review_collapsed.remove(&node_id);
+        if state.review.collapsed.contains(&node_id) {
+            state.review.collapsed.remove(&node_id);
         } else {
-            state.review_collapsed.insert(node_id.clone());
-            state.review_context_open.remove(&node_id);
-            state.review_context_restore_collapsed.remove(&node_id);
+            state.review.collapsed.insert(node_id.clone());
+            state.review.context_open.remove(&node_id);
+            state.review.context_restore_collapsed.remove(&node_id);
             for descendant_id in descendant_ids {
-                state.review_collapsed.insert(descendant_id.clone());
-                state.review_context_open.remove(&descendant_id);
+                state.review.collapsed.insert(descendant_id.clone());
+                state.review.context_open.remove(&descendant_id);
                 state
-                    .review_context_restore_collapsed
+                    .review
+                    .context_restore_collapsed
                     .remove(&descendant_id);
             }
         }
@@ -197,10 +198,10 @@ fn collect_review_descendant_ids(
 }
 
 fn toggle_review_source(state: &mut AppState) -> bool {
-    let Some(review) = &state.review else {
+    let Some(review) = &state.review.assisted else {
         return false;
     };
-    let Some(node) = review.nodes.get(state.review_idx) else {
+    let Some(node) = review.nodes.get(state.review.idx) else {
         return false;
     };
     if !review_source_available(state, review, node) {
@@ -208,42 +209,42 @@ fn toggle_review_source(state: &mut AppState) -> bool {
     }
 
     let node_id = node.id.clone();
-    if state.review_context_open.contains(&node_id) {
-        state.review_context_open.remove(&node_id);
-        state.review_context_restore_collapsed.remove(&node_id);
+    if state.review.context_open.contains(&node_id) {
+        state.review.context_open.remove(&node_id);
+        state.review.context_restore_collapsed.remove(&node_id);
     } else {
-        state.review_context_restore_collapsed.remove(&node_id);
-        state.review_context_open.insert(node_id);
+        state.review.context_restore_collapsed.remove(&node_id);
+        state.review.context_open.insert(node_id);
     }
     true
 }
 
 fn move_to_next_review_node(state: &mut AppState, visible: &[usize], current_pos: usize) {
     if let Some(next) = visible.get(current_pos + 1) {
-        state.review_idx = *next;
+        state.review.idx = *next;
         ensure_review_selection_visible(state);
     }
 }
 
 fn move_to_previous_review_node(state: &mut AppState, visible: &[usize], current_pos: usize) {
     if current_pos > 0 {
-        state.review_idx = visible[current_pos - 1];
+        state.review.idx = visible[current_pos - 1];
         ensure_review_selection_visible(state);
     }
 }
 
 fn jump_to_source_change(state: &mut AppState, previous: bool) -> bool {
-    let Some(review) = &state.review else {
+    let Some(review) = &state.review.assisted else {
         return false;
     };
-    let Some(node) = review.nodes.get(state.review_idx) else {
+    let Some(node) = review.nodes.get(state.review.idx) else {
         return false;
     };
-    if !state.review_context_open.contains(&node.id) {
+    if !state.review.context_open.contains(&node.id) {
         return false;
     }
 
-    let lines = render_lines(state, false, state.diff_viewport_width.saturating_sub(2));
+    let lines = render_lines(state, false, review_wrap_width(state));
     let change_lines = source_change_group_lines(&lines);
     if change_lines.is_empty() {
         state.set_status("no source changes", false);
@@ -297,7 +298,7 @@ fn source_change_group_lines(lines: &[Line<'_>]) -> Vec<u16> {
 }
 
 fn jump_to_review_note(state: &mut AppState, previous: bool) {
-    let lines = render_lines(state, false, state.diff_viewport_width.saturating_sub(2));
+    let lines = render_lines(state, false, review_wrap_width(state));
     let note_lines: Vec<u16> = lines
         .iter()
         .enumerate()
@@ -343,11 +344,12 @@ pub(in crate::panel::main) fn select_mouse_row(state: &mut AppState, area: Rect,
         .saturating_sub(area.y)
         .saturating_sub(1)
         .saturating_add(state.diff_offset) as usize;
+    let pass = review_pass(state);
     let mut line = 0usize;
     for idx in visible_review_node_indices(state) {
-        let count = review_node_line_count(state, idx);
+        let count = review_node_line_count(state, pass, idx);
         if visual_line < line.saturating_add(count) {
-            state.review_idx = idx;
+            state.review.idx = idx;
             return;
         }
         line = line.saturating_add(count);
@@ -355,8 +357,8 @@ pub(in crate::panel::main) fn select_mouse_row(state: &mut AppState, area: Rect,
 }
 
 pub(in crate::panel::main) fn selected_open_path(state: &AppState) -> Option<String> {
-    let review = state.review.as_ref()?;
-    let node = review.nodes.get(state.review_idx)?;
+    let review = state.review.assisted.as_ref()?;
+    let node = review.nodes.get(state.review.idx)?;
     path_from_review_title(&node.title)
         .or_else(|| source_context_open_path(state, review, node))
         .or_else(|| {
@@ -373,7 +375,8 @@ pub(in crate::panel::main) fn source_context_open_path(
     node: &crate::git::ReviewNode,
 ) -> Option<String> {
     state
-        .review_context_open
+        .review
+        .context_open
         .contains(&node.id)
         .then(|| source_sections(state, review, node).into_iter().next())?
         .map(|section| section.path)
@@ -441,7 +444,8 @@ pub(in crate::panel::main) fn copyable_review_assist_text<'a>(
         }
     }
     state
-        .review_assists
+        .review
+        .assists
         .get(node_id)
         .map(|text| text.trim())
         .filter(|text| !text.is_empty())
@@ -450,8 +454,8 @@ pub(in crate::panel::main) fn copyable_review_assist_text<'a>(
 pub(in crate::panel::main) fn selected_review_copy_text(
     state: &AppState,
 ) -> Option<(String, String)> {
-    let review = state.review.as_ref()?;
-    let node = review.nodes.get(state.review_idx)?;
+    let review = state.review.assisted.as_ref()?;
+    let node = review.nodes.get(state.review.idx)?;
     let label = if node.id == crate::git::REVIEW_PR_TEXT_NODE_ID {
         "PR text"
     } else if node.id == crate::git::REVIEW_AGENT_NODE_ID {

@@ -136,7 +136,7 @@ fn review_footer_shows_flag_shortcut_in_review_mode() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 20)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![ReviewNode {
             id: "branch".into(),
@@ -159,10 +159,10 @@ fn review_footer_shows_flag_shortcut_in_review_mode() {
 fn author_modal_saves_repository_identity_by_default() {
     let mut state = AppState::new();
     state.modal = Modal::Author;
-    state.author_path_input = "/tmp/example-work".into();
-    state.author_name_input = "Example User".into();
-    state.author_email_input = "example@example.com".into();
-    state.author_field = AuthorField::Email;
+    state.author.path = "/tmp/example-work".into();
+    state.author.name = "Example User".into();
+    state.author.email = "example@example.com".into();
+    state.author.field = AuthorField::Email;
 
     panel::author::handle_key(&mut state, key(KeyCode::Enter)).unwrap();
 
@@ -179,8 +179,8 @@ fn author_modal_saves_repository_identity_by_default() {
 fn author_modal_can_save_repo_local_author() {
     let mut state = AppState::new();
     state.modal = Modal::Author;
-    state.author_name_input = "Example User".into();
-    state.author_email_input = "example@example.com".into();
+    state.author.name = "Example User".into();
+    state.author.email = "example@example.com".into();
 
     panel::author::handle_key(
         &mut state,
@@ -201,10 +201,10 @@ fn author_modal_can_save_repo_local_author() {
 fn author_modal_uses_terminal_cursor_for_active_field() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
     app.state.modal = Modal::Author;
-    app.state.author_path_input = "/tmp/example".into();
-    app.state.author_name_input = "Example User".into();
-    app.state.author_email_input = "a@b".into();
-    app.state.author_field = AuthorField::Email;
+    app.state.author.path = "/tmp/example".into();
+    app.state.author.name = "Example User".into();
+    app.state.author.email = "a@b".into();
+    app.state.author.field = AuthorField::Email;
 
     app.render().unwrap();
 
@@ -215,7 +215,7 @@ fn author_modal_uses_terminal_cursor_for_active_field() {
 fn author_modal_shows_error_when_terminal_is_too_small() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(20, 6)).unwrap();
     app.state.modal = Modal::Author;
-    app.state.author_field = AuthorField::Email;
+    app.state.author.field = AuthorField::Email;
 
     app.render().unwrap();
 
@@ -272,10 +272,39 @@ fn model_modal_picks_and_saves_model() {
             provider: lg::llm::LlmProvider::Mtplx,
             pr_language: "Norwegian".into(),
             comment_style: "terse, imperative".into(),
-            commit_subject_max_chars: "50".into(),
-            commit_body_max_lines: "3".into(),
+            commit_subject_max_chars: Some(50),
+            commit_body_max_lines: Some(3),
         })
     );
+}
+
+/// What the pane drew for a node is kept between frames, but a review built
+/// again — with the same shape and different text — must be drawn anew.
+#[test]
+fn a_rebuilt_review_is_drawn_with_its_new_text() {
+    let review = |summary: &str| AssistedReview {
+        report: "report".into(),
+        nodes: vec![ReviewNode {
+            id: "summary".into(),
+            parent: None,
+            depth: 0,
+            title: "Summary".into(),
+            body: vec![summary.into()],
+            context: Vec::new(),
+        }],
+    };
+    let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 24)).unwrap();
+    app.state.focus = Pane::Main;
+    app.state.diff_source = lg::state::DiffSource::Review;
+    app.state.review.assisted = Some(review("first version of the summary"));
+    app.render().unwrap();
+    assert!(buffer_text(&app).contains("first version"));
+
+    app.state.review.assisted = Some(review("second version of the summary"));
+    app.render().unwrap();
+    let text = buffer_text(&app);
+    assert!(text.contains("second version"), "{text}");
+    assert!(!text.contains("first version"), "{text}");
 }
 
 #[test]
@@ -292,7 +321,7 @@ fn review_panel_opens_entry_source_with_inline_entry_point_note() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -382,7 +411,7 @@ fn review_panel_sources_entry_subtree_across_files_and_drills_to_child_file() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(260, 40)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -437,8 +466,8 @@ fn review_panel_sources_entry_subtree_across_files_and_drills_to_child_file() {
             },
         ],
     });
-    app.state.review_idx = 2;
-    app.state.review_collapsed.insert("branch:entry:0".into());
+    app.state.review.idx = 2;
+    app.state.review.collapsed.insert("branch:entry:0".into());
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
     app.render().unwrap();
@@ -479,7 +508,7 @@ fn review_panel_sources_entry_subtree_across_files_and_drills_to_child_file() {
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Char('d'))).unwrap();
     assert_eq!(
-        app.state.review_idx, 3,
+        app.state.review.idx, 3,
         "drill should move to the nested file"
     );
 }
@@ -501,7 +530,7 @@ fn review_source_inlines_style_and_llm_notes_and_jumps_between_them() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(240, 24)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -530,8 +559,8 @@ fn review_source_inlines_style_and_llm_notes_and_jumps_between_them() {
             },
         ],
     });
-    app.state.review_idx = 1;
-    app.state.review_style_findings.insert(
+    app.state.review.idx = 1;
+    app.state.review.style_findings.insert(
         source_path.clone(),
         ReviewStyleFinding {
             severity: ReviewStyleSeverity::Warn,
@@ -541,7 +570,7 @@ fn review_source_inlines_style_and_llm_notes_and_jumps_between_them() {
                     .into(),
         },
     );
-    app.state.review_assists.insert(
+    app.state.review.assists.insert(
         "branch:file:0".into(),
         "- This changes both greeting branches.".into(),
     );
@@ -596,7 +625,7 @@ fn review_source_arrow_keys_jump_between_changed_blocks() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(140, 16)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -629,7 +658,7 @@ fn review_source_arrow_keys_jump_between_changed_blocks() {
             },
         ],
     });
-    app.state.review_idx = 1;
+    app.state.review.idx = 1;
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
     app.render().unwrap();
@@ -677,7 +706,7 @@ fn review_panel_sources_full_diff_subtree_across_files() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(160, 40)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -718,14 +747,14 @@ fn review_panel_sources_full_diff_subtree_across_files() {
             },
         ],
     });
-    app.state.review_idx = 0;
+    app.state.review.idx = 0;
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
     app.render().unwrap();
     let rendered = buffer_text(&app);
 
     assert!(
-        app.state.review_context_open.contains("branch"),
+        app.state.review.context_open.contains("branch"),
         "full diff root should open source context"
     );
     assert!(
@@ -757,7 +786,7 @@ fn review_panel_sources_full_diff_from_report() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(160, 32)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: format!(
             "Assisted review against main\n\nFull diff against main\n\
              diff --git a/{source_path} b/{source_path}\n\
@@ -778,13 +807,13 @@ fn review_panel_sources_full_diff_from_report() {
             context: Vec::new(),
         }],
     });
-    app.state.review_idx = 0;
+    app.state.review.idx = 0;
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
     app.render().unwrap();
     let rendered = buffer_text(&app);
 
-    assert!(app.state.review_context_open.contains("branch"));
+    assert!(app.state.review.context_open.contains("branch"));
     assert!(rendered.contains("source"), "{rendered}");
     assert!(rendered.contains("hello review"), "{rendered}");
 }
@@ -799,7 +828,7 @@ fn review_source_shows_removed_only_hunks_inline() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(220, 28)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -826,7 +855,7 @@ fn review_source_shows_removed_only_hunks_inline() {
             },
         ],
     });
-    app.state.review_idx = 1;
+    app.state.review.idx = 1;
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
     app.render().unwrap();
@@ -847,7 +876,7 @@ fn review_source_falls_back_to_deleted_file_diff() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(220, 28)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -872,7 +901,7 @@ fn review_source_falls_back_to_deleted_file_diff() {
             },
         ],
     });
-    app.state.review_idx = 1;
+    app.state.review.idx = 1;
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
     app.render().unwrap();
@@ -898,7 +927,7 @@ fn review_source_reads_renamed_file_at_new_path() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(160, 28)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -929,7 +958,7 @@ fn review_source_reads_renamed_file_at_new_path() {
             },
         ],
     });
-    app.state.review_idx = 1;
+    app.state.review.idx = 1;
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Char('s'))).unwrap();
     app.render().unwrap();
@@ -958,7 +987,7 @@ fn review_panel_enter_on_file_toggles_source_without_expanding_file() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(140, 32)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -993,14 +1022,14 @@ fn review_panel_enter_on_file_toggles_source_without_expanding_file() {
             },
         ],
     });
-    app.state.review_idx = 1;
-    app.state.review_collapsed.insert("branch:file:0".into());
+    app.state.review.idx = 1;
+    app.state.review.collapsed.insert("branch:file:0".into());
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
 
-    assert!(app.state.review_context_open.contains("branch:file:0"));
+    assert!(app.state.review.context_open.contains("branch:file:0"));
     assert!(
-        app.state.review_collapsed.contains("branch:file:0"),
+        app.state.review.collapsed.contains("branch:file:0"),
         "opening source should keep the review tree flat"
     );
     app.render().unwrap();
@@ -1013,9 +1042,9 @@ fn review_panel_enter_on_file_toggles_source_without_expanding_file() {
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
 
-    assert!(!app.state.review_context_open.contains("branch:file:0"));
+    assert!(!app.state.review.context_open.contains("branch:file:0"));
     assert!(
-        app.state.review_collapsed.contains("branch:file:0"),
+        app.state.review.collapsed.contains("branch:file:0"),
         "closing source should keep the file collapsed"
     );
 }
@@ -1026,7 +1055,7 @@ fn review_navigation_keeps_selection_visible_without_early_scroll() {
     state.focus = Pane::Main;
     state.diff_source = lg::state::DiffSource::Review;
     state.diff_viewport_height = 5;
-    state.review = Some(AssistedReview {
+    state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: (0..12)
             .map(|idx| ReviewNode {
@@ -1041,13 +1070,13 @@ fn review_navigation_keeps_selection_visible_without_early_scroll() {
     });
 
     panel::main::handle_key(&mut state, key(KeyCode::Down)).unwrap();
-    assert_eq!(state.review_idx, 1);
+    assert_eq!(state.review.idx, 1);
     assert_eq!(state.diff_offset, 0, "first down should not scroll");
 
     for _ in 0..4 {
         panel::main::handle_key(&mut state, key(KeyCode::Down)).unwrap();
     }
-    assert_eq!(state.review_idx, 5);
+    assert_eq!(state.review.idx, 5);
     assert_eq!(
         state.diff_offset, 3,
         "offset should keep the selection away from the viewport edge when possible"
@@ -1070,7 +1099,7 @@ fn review_source_down_at_last_change_moves_to_next_review_node() {
     state.diff_source = lg::state::DiffSource::Review;
     state.diff_viewport_width = 120;
     state.diff_viewport_height = 6;
-    state.review = Some(AssistedReview {
+    state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -1105,14 +1134,14 @@ fn review_source_down_at_last_change_moves_to_next_review_node() {
             },
         ],
     });
-    state.review_idx = 1;
-    state.review_context_open.insert("branch:file:0".into());
+    state.review.idx = 1;
+    state.review.context_open.insert("branch:file:0".into());
     state.diff_offset = panel::main::max_scroll_offset(&state);
 
     panel::main::handle_key(&mut state, key(KeyCode::Down)).unwrap();
 
     assert_eq!(
-        state.review_idx, 2,
+        state.review.idx, 2,
         "down at the last source-change group should move to the next review node"
     );
 }
@@ -1121,7 +1150,7 @@ fn review_source_down_at_last_change_moves_to_next_review_node() {
 fn review_panel_mouse_click_selects_visible_item() {
     let mut state = AppState::new();
     state.diff_source = lg::state::DiffSource::Review;
-    state.review = Some(AssistedReview {
+    state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -1152,14 +1181,14 @@ fn review_panel_mouse_click_selects_visible_item() {
     });
 
     panel::main::select_mouse_row(&mut state, Rect::new(40, 1, 80, 12), 3);
-    assert_eq!(state.review_idx, 1);
+    assert_eq!(state.review.idx, 1);
 
     state.diff_offset = 1;
     panel::main::select_mouse_row(&mut state, Rect::new(40, 1, 80, 12), 2);
-    assert_eq!(state.review_idx, 1);
+    assert_eq!(state.review.idx, 1);
 
     panel::main::select_mouse_row(&mut state, Rect::new(40, 1, 80, 12), 4);
-    assert_eq!(state.review_idx, 2);
+    assert_eq!(state.review.idx, 2);
 }
 
 #[test]
@@ -1167,7 +1196,7 @@ fn review_mouse_wheel_stays_in_review_mode_even_over_left_panes() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 30)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![ReviewNode {
             id: "summary".into(),
@@ -1200,7 +1229,7 @@ fn review_panel_styles_tree_titles_and_change_counts() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 12)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -1223,8 +1252,8 @@ fn review_panel_styles_tree_titles_and_change_counts() {
             },
         ],
     });
-    app.state.review_idx = 1;
-    app.state.review_style_findings.insert(
+    app.state.review.idx = 1;
+    app.state.review.style_findings.insert(
         "src/main/kotlin/BalanceService.kt".into(),
         ReviewStyleFinding {
             severity: ReviewStyleSeverity::Warn,
@@ -1272,7 +1301,7 @@ fn review_panel_unanalyzed_paths_have_no_style_background() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 12)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -1310,7 +1339,7 @@ fn review_panel_colors_style_severity_scale() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 12)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -1339,7 +1368,7 @@ fn review_panel_colors_style_severity_scale() {
             },
         ],
     });
-    app.state.review_style_findings.insert(
+    app.state.review.style_findings.insert(
         "src/main/kotlin/Good.kt".into(),
         ReviewStyleFinding {
             severity: ReviewStyleSeverity::Ok,
@@ -1347,7 +1376,7 @@ fn review_panel_colors_style_severity_scale() {
             reason: "No style issue found.".into(),
         },
     );
-    app.state.review_style_findings.insert(
+    app.state.review.style_findings.insert(
         "src/main/kotlin/Bad.kt".into(),
         ReviewStyleFinding {
             severity: ReviewStyleSeverity::Fail,
@@ -1382,7 +1411,7 @@ fn review_panel_marks_active_style_analysis_separately() {
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
     app.state.animation_tick = 0;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -1404,7 +1433,7 @@ fn review_panel_marks_active_style_analysis_separately() {
             },
         ],
     });
-    app.state.review_flag_active_path = Some("src/main/kotlin/BalanceService.kt".into());
+    app.state.review.flag_active_path = Some("src/main/kotlin/BalanceService.kt".into());
 
     app.render().unwrap();
     let buf = app.terminal.backend().buffer().clone();
@@ -1442,7 +1471,7 @@ fn review_panel_renders_summary_body_as_markdown_without_cutoff() {
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
     app.state.diff_viewport_width = 68;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![ReviewNode {
             id: "summary".into(),
@@ -1696,7 +1725,7 @@ fn diff_pane_o_opens_markdown_file_from_diff() {
 fn review_pane_o_opens_selected_source_file() {
     let mut state = AppState::new();
     state.diff_source = lg::state::DiffSource::Review;
-    state.review = Some(AssistedReview {
+    state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![ReviewNode {
             id: "branch:file:0".into(),
@@ -1720,7 +1749,7 @@ fn review_pane_o_opens_selected_source_file() {
 fn review_pane_o_opens_selected_file_summary_row() {
     let mut state = AppState::new();
     state.diff_source = lg::state::DiffSource::Review;
-    state.review = Some(AssistedReview {
+    state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![ReviewNode {
             id: "branch:file:0".into(),
@@ -1744,7 +1773,7 @@ fn review_pane_o_opens_selected_file_summary_row() {
 fn review_pane_o_opens_source_context_file_from_full_diff() {
     let mut state = AppState::new();
     state.diff_source = lg::state::DiffSource::Review;
-    state.review = Some(AssistedReview {
+    state.review.assisted = Some(AssistedReview {
         report: [
             "Assisted review against main",
             "Full diff against main",
@@ -1765,7 +1794,7 @@ fn review_pane_o_opens_source_context_file_from_full_diff() {
             context: Vec::new(),
         }],
     });
-    state.review_context_open.insert("branch".into());
+    state.review.context_open.insert("branch".into());
 
     panel::main::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
 
@@ -1780,7 +1809,7 @@ fn review_panel_explains_selected_subtree_with_llm() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -1801,8 +1830,8 @@ fn review_panel_explains_selected_subtree_with_llm() {
             },
         ],
     });
-    app.state.review_idx = 1;
-    app.state.review_collapsed.insert("branch:entry:0".into());
+    app.state.review.idx = 1;
+    app.state.review.collapsed.insert("branch:entry:0".into());
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Char('l'))).unwrap();
 
@@ -1811,11 +1840,11 @@ fn review_panel_explains_selected_subtree_with_llm() {
         Some(PendingAction::ReviewAssist("branch:entry:0".into()))
     );
     assert!(
-        app.state.review_collapsed.contains("branch:entry:0"),
+        app.state.review.collapsed.contains("branch:entry:0"),
         "explaining should not expand the selected review node"
     );
 
-    app.state.review_assists.insert(
+    app.state.review.assists.insert(
         "branch:entry:0".into(),
         "Explains the greeting change.".into(),
     );
@@ -1832,7 +1861,7 @@ fn review_panel_explains_selected_subtree_with_llm() {
 fn review_panel_copies_selected_llm_assessment() {
     let mut state = AppState::new();
     state.diff_source = lg::state::DiffSource::Review;
-    state.review = Some(AssistedReview {
+    state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![ReviewNode {
             id: "branch".into(),
@@ -1843,7 +1872,7 @@ fn review_panel_copies_selected_llm_assessment() {
             context: Vec::new(),
         }],
     });
-    state.review_assists.insert(
+    state.review.assists.insert(
         "branch".into(),
         "  Regression risk is covered by tests.\n".into(),
     );
@@ -1869,7 +1898,7 @@ fn review_mode_f_starts_style_flagging_instead_of_fetching() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 20)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![ReviewNode {
             id: "branch".into(),
@@ -1898,7 +1927,7 @@ fn review_panel_renders_and_copies_generated_pr_text() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 20)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -1919,11 +1948,11 @@ fn review_panel_renders_and_copies_generated_pr_text() {
             },
         ],
     });
-    app.state.review_assists.insert(
+    app.state.review.assists.insert(
         lg::git::REVIEW_PR_TEXT_NODE_ID.into(),
         "## Summary\n- Ready".into(),
     );
-    app.state.review_idx = 1;
+    app.state.review.idx = 1;
 
     app.render().unwrap();
     let rendered = buffer_text(&app);
@@ -1954,7 +1983,7 @@ fn review_panel_explains_full_diff_with_llm() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -1981,8 +2010,8 @@ fn review_panel_explains_full_diff_with_llm() {
             },
         ],
     });
-    app.state.review_idx = 0;
-    app.state.review_collapsed.insert("branch".into());
+    app.state.review.idx = 0;
+    app.state.review.collapsed.insert("branch".into());
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Char('l'))).unwrap();
 
@@ -1991,12 +2020,13 @@ fn review_panel_explains_full_diff_with_llm() {
         Some(PendingAction::ReviewAssist("branch".into()))
     );
     assert!(
-        app.state.review_collapsed.contains("branch"),
+        app.state.review.collapsed.contains("branch"),
         "explaining should keep the review tree flat"
     );
 
     app.state
-        .review_assists
+        .review
+        .assists
         .insert("branch".into(), "Explains the whole diff.".into());
     app.render().unwrap();
     let rendered = buffer_text(&app);
@@ -2009,7 +2039,7 @@ fn review_panel_opens_chat_about_full_review() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "Assisted review against main\nFull diff against main\nsrc/lib.rs:2".into(),
         nodes: vec![ReviewNode {
             id: "branch".into(),
@@ -2035,10 +2065,10 @@ fn review_panel_opens_chat_about_full_review() {
         app.state.pending_action,
         Some(PendingAction::ReviewChat("weak".into()))
     );
-    assert_eq!(app.state.review_chat_messages.len(), 1);
-    assert_eq!(app.state.review_chat_messages[0].role, ReviewChatRole::User);
-    assert_eq!(app.state.review_chat_messages[0].content, "weak");
-    assert!(app.state.review_chat_input.is_empty());
+    assert_eq!(app.state.review.chat_messages.len(), 1);
+    assert_eq!(app.state.review.chat_messages[0].role, ReviewChatRole::User);
+    assert_eq!(app.state.review.chat_messages[0].content, "weak");
+    assert!(app.state.review.chat_input.is_empty());
 }
 
 #[test]
@@ -2046,15 +2076,17 @@ fn review_chat_docked_renders_markdown_conversation() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.modal = Modal::ReviewChat;
     app.state.diff_text = "diff --git a/src/lib.rs b/src/lib.rs".into();
-    app.state.review_chat_height = Some(18);
+    app.state.review.chat_height = Some(18);
     app.state
-        .review_chat_messages
+        .review
+        .chat_messages
         .push(lg::state::ReviewChatMessage::new(
             ReviewChatRole::User,
             "find weaknesses",
         ));
     app.state
-        .review_chat_messages
+        .review
+        .chat_messages
         .push(lg::state::ReviewChatMessage::new(
             ReviewChatRole::Assistant,
             "- **Risk** in `src/lib.rs:2` needs test coverage.",
@@ -2086,7 +2118,7 @@ fn review_chat_docks_under_review_context() {
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
     app.state.modal = Modal::ReviewChat;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "Assisted review against main".into(),
         nodes: (0..10)
             .map(|idx| ReviewNode {
@@ -2104,7 +2136,8 @@ fn review_chat_docks_under_review_context() {
             .collect(),
     });
     app.state
-        .review_chat_messages
+        .review
+        .chat_messages
         .push(lg::state::ReviewChatMessage::new(
             ReviewChatRole::User,
             "why this change?",
@@ -2127,7 +2160,7 @@ fn review_chat_mouse_scrolls_and_resizes_when_docked() {
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
     app.state.modal = Modal::ReviewChat;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "Assisted review against main".into(),
         nodes: vec![ReviewNode {
             id: "branch".into(),
@@ -2140,7 +2173,8 @@ fn review_chat_mouse_scrolls_and_resizes_when_docked() {
     });
     for idx in 0..12 {
         app.state
-            .review_chat_messages
+            .review
+            .chat_messages
             .push(lg::state::ReviewChatMessage::new(
                 ReviewChatRole::Assistant,
                 format!("chat line {idx}"),
@@ -2166,7 +2200,7 @@ fn review_chat_mouse_scrolls_and_resizes_when_docked() {
         modifiers: KeyModifiers::NONE,
     })
     .unwrap();
-    assert_eq!(app.state.review_chat_scroll, 3);
+    assert_eq!(app.state.review.chat_scroll, 3);
 
     app.send_mouse(left_click(chat.x.saturating_add(2), chat.y))
         .unwrap();
@@ -2177,7 +2211,7 @@ fn review_chat_mouse_scrolls_and_resizes_when_docked() {
     .unwrap();
 
     assert!(
-        app.state.review_chat_height.unwrap_or_default() > initial_height,
+        app.state.review.chat_height.unwrap_or_default() > initial_height,
         "dragging the splitter upward should increase docked chat height"
     );
 }
@@ -2187,7 +2221,7 @@ fn review_panel_renders_llm_markdown() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(140, 32)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![ReviewNode {
             id: "branch".into(),
@@ -2198,7 +2232,7 @@ fn review_panel_renders_llm_markdown() {
             context: Vec::new(),
         }],
     });
-    app.state.review_assists.insert(
+    app.state.review.assists.insert(
         "branch".into(),
         "# Summary\n- **BoldThing** calls `InlineCode`\n```kotlin\nfun runThing(value: String) = value\n```".into(),
     );
@@ -2239,7 +2273,7 @@ fn review_panel_starts_fully_collapsed_at_entry_roots() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -2260,8 +2294,8 @@ fn review_panel_starts_fully_collapsed_at_entry_roots() {
             },
         ],
     });
-    app.state.review_idx = 0;
-    app.state.review_collapsed.insert("branch".into());
+    app.state.review.idx = 0;
+    app.state.review.collapsed.insert("branch".into());
 
     app.render().unwrap();
     let collapsed = buffer_text(&app);
@@ -2277,7 +2311,7 @@ fn review_panel_collapsing_category_recursively_closes_descendants() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 32)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(AssistedReview {
+    app.state.review.assisted = Some(AssistedReview {
         report: "flat report".into(),
         nodes: vec![
             ReviewNode {
@@ -2322,20 +2356,21 @@ fn review_panel_collapsing_category_recursively_closes_descendants() {
             },
         ],
     });
-    app.state.review_idx = 1;
-    app.state.review_context_open.insert("branch:file:0".into());
+    app.state.review.idx = 1;
+    app.state.review.context_open.insert("branch:file:0".into());
 
     panel::main::handle_key(&mut app.state, key(KeyCode::Char(' '))).unwrap();
 
     assert!(
         app.state
-            .review_collapsed
+            .review
+            .collapsed
             .contains("branch:category:production")
     );
-    assert!(app.state.review_collapsed.contains("branch:file:0"));
-    assert!(app.state.review_collapsed.contains("branch:entry:0"));
-    assert!(app.state.review_collapsed.contains("branch:file:1"));
-    assert!(!app.state.review_context_open.contains("branch:file:0"));
+    assert!(app.state.review.collapsed.contains("branch:file:0"));
+    assert!(app.state.review.collapsed.contains("branch:entry:0"));
+    assert!(app.state.review.collapsed.contains("branch:file:1"));
+    assert!(!app.state.review.context_open.contains("branch:file:0"));
 
     app.render().unwrap();
     let collapsed = buffer_text(&app);

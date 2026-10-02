@@ -64,6 +64,7 @@ impl<B: Backend> HeadlessApp<B> {
 fn start_review_agent(state: &mut AppState) -> Result<crate::session::SessionId> {
     let review = state
         .review
+        .assisted
         .as_ref()
         .context("build the review first (R)")?;
     let cwd = PathBuf::from(
@@ -103,7 +104,7 @@ fn start_review_agent(state: &mut AppState) -> Result<crate::session::SessionId>
         .get(id)
         .map(|session| session.label.clone())
         .unwrap_or_default();
-    state.review_assists.insert(
+    state.review.assists.insert(
         REVIEW_AGENT_NODE_ID.to_string(),
         format!(
             "Claude Code is reviewing the branch in the session \"{label}\".\n\
@@ -130,7 +131,8 @@ pub(crate) fn poll_review_agent(state: &mut AppState) -> Option<(String, bool)> 
         let first_time = job.seen.is_empty();
         job.seen = text.clone();
         state
-            .review_assists
+            .review
+            .assists
             .insert(REVIEW_AGENT_NODE_ID.to_string(), text);
         if first_time {
             notice = Some(("agent review findings ready (y copy)".to_string(), false));
@@ -142,7 +144,7 @@ pub(crate) fn poll_review_agent(state: &mut AppState) -> Option<(String, bool)> 
     }
     let job = state.review_agent_job.take()?;
     if job.seen.is_empty() {
-        state.review_assists.insert(
+        state.review.assists.insert(
             REVIEW_AGENT_NODE_ID.to_string(),
             format!(
                 "The review session ended without writing its findings to\n{}",

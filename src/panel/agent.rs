@@ -8,7 +8,7 @@
 //! to.
 
 use anyhow::Result;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
@@ -18,7 +18,7 @@ use ratatui::{
 };
 
 use crate::{
-    preferences::Agent,
+    preferences::{Adapter, Agent, Confinement},
     session::SessionKind,
     state::{AppState, Modal},
     ui,
@@ -32,11 +32,46 @@ const MODAL_WIDTH: u16 = 92;
 const NAME_WIDTH: usize = 8;
 const CONFINEMENT_WIDTH: usize = 34;
 
-pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
+fn modal_area(state: &AppState, area: Rect) -> Rect {
     let rows = state.agent_profiles.len().max(SessionKind::AGENTS.len()) as u16;
     // Rows, the frame, the divider, and the details underneath.
     let height = rows + 3 + DETAILS_HEIGHT;
-    let modal = ui::centered(area, MODAL_WIDTH.min(area.width), height.min(area.height));
+    ui::centered(area, MODAL_WIDTH.min(area.width), height.min(area.height))
+}
+
+/// A click on an agent selects it, and a click on the one already selected
+/// starts it, as Enter does. The wheel moves through them.
+pub fn handle_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) -> Result<()> {
+    if let Some(down) = super::pointer::wheel(m) {
+        return handle_key(
+            state,
+            KeyEvent::from(if down { KeyCode::Down } else { KeyCode::Up }),
+        );
+    }
+    if !super::pointer::left_click(m) {
+        return Ok(());
+    }
+    let inner = ui::modal_inner(modal_area(state, area));
+    let (chunks, _) = ui::modal_row_areas(
+        inner,
+        &[Constraint::Min(3), Constraint::Length(DETAILS_HEIGHT)],
+    );
+    let len = if state.agent_profiles.is_empty() {
+        SessionKind::AGENTS.len()
+    } else {
+        state.agent_profiles.len()
+    };
+    if let Some(at) = super::pointer::list_row(chunks[0], 0, len, m.column, m.row) {
+        if at == state.agent_pick_idx {
+            return handle_key(state, KeyEvent::from(KeyCode::Enter));
+        }
+        state.agent_pick_idx = at;
+    }
+    Ok(())
+}
+
+pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
+    let modal = modal_area(state, area);
     let inner = ui::modal_frame(frame, modal, &title(state));
     let (chunks, dividers) = ui::modal_rows(
         frame,
@@ -99,7 +134,7 @@ fn profile_line(profile: &Agent) -> Line<'static> {
         ),
         Span::raw(format!(
             "{:<CONFINEMENT_WIDTH$}",
-            crate::agents::confinement_label(&profile.confinement)
+            crate::agents::confinement_label(profile.confinement)
         )),
     ];
     if crate::agents::resolve(&profile.executable).is_some() {
@@ -229,7 +264,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Enter => start(state, state.picked_agent()),
-        KeyCode::Char(',') => super::settings::open(state, 3),
+        KeyCode::Char(',') => super::settings::open(state, super::settings::Category::Agents),
         KeyCode::Char('n') => super::environments::open_new_worktree_form(state),
         KeyCode::Char(' ') => toggle_sandbox(state),
         KeyCode::Esc => state.modal = Modal::None,
@@ -254,10 +289,10 @@ fn toggle_sandbox(state: &mut AppState) {
     state.agent_pick_sandboxed = !state.agent_pick_sandboxed;
     let sandboxed = state.agent_pick_sandboxed;
     for profile in &mut state.agent_profiles {
-        profile.confinement = if sandboxed && profile.adapter != "terminal" {
-            "terrarium".into()
+        profile.confinement = if sandboxed && profile.adapter != Adapter::Terminal {
+            Confinement::Terrarium
         } else {
-            crate::preferences::default_confinement(&profile.adapter).into()
+            crate::preferences::default_confinement(profile.adapter)
         };
     }
 }
@@ -412,7 +447,7 @@ mod tests {
     fn a_missing_executable_is_named_on_its_row() {
         let profile = Agent {
             name: "codex".into(),
-            adapter: "codex".into(),
+            adapter: Adapter::Codex,
             executable: "/nowhere/codex-not-here".into(),
             ..Agent::default()
         };

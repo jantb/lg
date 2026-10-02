@@ -25,16 +25,10 @@ pub struct Writing {
     pub commit_prompt: String,
     pub review_style: String,
 }
+/// The defaults are the per-checkout settings' own, so the two cannot drift.
 impl Default for Writing {
     fn default() -> Self {
-        Self {
-            language: "English".into(),
-            comment_style: String::new(),
-            subject_max: 72,
-            body_lines: 8,
-            commit_prompt: crate::config::COMMIT_PROMPT_PREFIX.into(),
-            review_style: crate::config::REVIEW_STYLE_GUIDE.into(),
-        }
+        crate::settings::RepoSettings::default().into()
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -47,7 +41,7 @@ pub struct Models {
     /// Who answers: `local` for the chat endpoint below, or `claude` for the
     /// `claude` CLI, which then writes every commit message, review assist,
     /// chat reply and conflict resolution.
-    pub provider: String,
+    pub provider: crate::llm::LlmProvider,
     pub model: String,
     pub endpoint: String,
     /// The model the `claude` provider asks for (`sonnet`, `opus`, `haiku` or
@@ -59,7 +53,7 @@ impl Default for Models {
     fn default() -> Self {
         Self {
             enabled: true,
-            provider: "local".into(),
+            provider: crate::llm::LlmProvider::Mtplx,
             model: crate::config::LLM_MODEL.into(),
             endpoint: crate::config::MTPLX_CHAT_ENDPOINT.into(),
             claude_model: String::new(),
@@ -67,27 +61,112 @@ impl Default for Models {
     }
 }
 /// The providers `models.provider` may name.
-pub const PROVIDERS: &[&str] = &["local", "claude"];
+pub const PROVIDERS: &[&str] = &crate::llm::LlmProvider::CONFIG_VALUES;
+/// A setting stored as one word out of a fixed few. The file holds the word;
+/// anything else is refused with `$refusal` when the file is read, which keeps
+/// that file out of the effective configuration as any invalid file is.
+macro_rules! word_setting {
+    (
+        $(#[$meta:meta])*
+        $name:ident, $refusal:expr, { $($(#[$vmeta:meta])* $variant:ident = $word:literal),+ $(,)? }
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[serde(try_from = "String", into = "&'static str")]
+        pub enum $name {
+            $($(#[$vmeta])* $variant),+
+        }
+        impl $name {
+            /// Every word, in the order the settings picker offers them.
+            pub const NAMES: &'static [&'static str] = &[$($word),+];
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $word),+
+                }
+            }
+        }
+        impl TryFrom<String> for $name {
+            type Error = String;
+            fn try_from(word: String) -> std::result::Result<Self, String> {
+                match word.as_str() {
+                    $($word => Ok(Self::$variant),)+
+                    _ => Err(($refusal)(word.as_str())),
+                }
+            }
+        }
+        impl From<$name> for &'static str {
+            fn from(value: $name) -> Self {
+                value.as_str()
+            }
+        }
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+    };
+}
+word_setting!(
+    /// The integration an agent is driven through.
+    Adapter,
+    |word: &str| format!("unknown agent adapter {word}"),
+    {
+        Claude = "claude",
+        Codex = "codex",
+        Pi = "pi",
+        Terminal = "terminal",
+    }
+);
+word_setting!(
+    /// How tightly an agent is confined.
+    Confinement,
+    |_: &str| "confinement must be terrarium, agent or direct".to_string(),
+    {
+        /// The terrarium sandbox.
+        Terrarium = "terrarium",
+        /// The agent's own permission harness.
+        Agent = "agent",
+        /// Nothing.
+        Direct = "direct",
+    }
+);
+word_setting!(
+    /// How a promotion lands on an environment branch.
+    Strategy,
+    |_: &str| "promotion strategy must be merge, squash or ff-only".to_string(),
+    {
+        Merge = "merge",
+        Squash = "squash",
+        FfOnly = "ff-only",
+    }
+);
+impl Adapter {
+    /// Whether the agent brings a permission harness of its own that lg can
+    /// run it under.
+    pub fn has_own_permissions(self) -> bool {
+        matches!(self, Self::Claude | Self::Codex)
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Agent {
     pub name: String,
-    pub adapter: String,
+    pub adapter: Adapter,
     pub executable: String,
     pub args: Vec<String>,
     pub model: String,
-    pub confinement: String,
+    pub confinement: Confinement,
     pub default: bool,
 }
 impl Default for Agent {
     fn default() -> Self {
         Self {
             name: "Custom agent".into(),
-            adapter: "terminal".into(),
+            adapter: Adapter::Terminal,
             executable: String::new(),
             args: vec![],
             model: String::new(),
-            confinement: default_confinement("terminal").into(),
+            confinement: default_confinement(Adapter::Terminal),
             default: false,
         }
     }
@@ -97,26 +176,26 @@ impl Agent {
     /// never wrapped: it is the user's own shell, and confining it only gets
     /// in the way of the work done there by hand.
     pub fn sandboxed(&self) -> bool {
-        self.confinement == "terrarium" && self.adapter != "terminal"
+        self.confinement == Confinement::Terrarium && self.adapter != Adapter::Terminal
     }
 }
 /// The integrations an agent may be driven through. The settings picker offers
 /// exactly these, so a typo cannot reach the file.
-pub const ADAPTERS: &[&str] = &["claude", "codex", "pi", "terminal"];
+pub const ADAPTERS: &[&str] = Adapter::NAMES;
 /// The languages generated prose may be written in.
 pub const LANGUAGES: &[&str] = &["English", "Norwegian"];
 /// How tightly an agent is confined: the terrarium sandbox, the agent's own
 /// permission harness, or nothing.
-pub const CONFINEMENTS: &[&str] = &["terrarium", "agent", "direct"];
+pub const CONFINEMENTS: &[&str] = Confinement::NAMES;
 /// The ways a promotion may land on an environment branch.
-pub const STRATEGIES: &[&str] = &["merge", "squash", "ff-only"];
+pub const STRATEGIES: &[&str] = Strategy::NAMES;
 /// The confinement an adapter starts out with: coding agents bring their own
 /// permission harness and run under it, anything else runs unconfined.
-pub fn default_confinement(adapter: &str) -> &'static str {
-    if ["claude", "codex"].contains(&adapter) {
-        "agent"
+pub fn default_confinement(adapter: Adapter) -> Confinement {
+    if adapter.has_own_permissions() {
+        Confinement::Agent
     } else {
-        "direct"
+        Confinement::Direct
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -165,7 +244,7 @@ impl Default for Environment {
 pub struct Promotion {
     pub from: String,
     pub to: String,
-    pub strategy: String,
+    pub strategy: Strategy,
     pub push: bool,
 }
 impl Default for Promotion {
@@ -173,7 +252,7 @@ impl Default for Promotion {
         Self {
             from: "feature".into(),
             to: "dev".into(),
-            strategy: "merge".into(),
+            strategy: Strategy::Merge,
             push: true,
         }
     }
@@ -264,14 +343,14 @@ impl Default for Preferences {
             version: 1,
             writing: Writing::default(),
             models: Models::default(),
-            agents: ["claude", "codex", "pi"]
+            agents: [Adapter::Claude, Adapter::Codex, Adapter::Pi]
                 .into_iter()
-                .map(|name| Agent {
-                    name: name.into(),
-                    adapter: name.into(),
-                    executable: name.into(),
-                    default: name == "claude",
-                    confinement: default_confinement(name).into(),
+                .map(|adapter| Agent {
+                    name: adapter.as_str().into(),
+                    adapter,
+                    executable: adapter.as_str().into(),
+                    default: adapter == Adapter::Claude,
+                    confinement: default_confinement(adapter),
                     ..Agent::default()
                 })
                 .collect(),
@@ -408,6 +487,29 @@ pub(crate) fn merge(base: &mut serde_json::Value, patch: serde_json::Value) {
         *base = patch;
     }
 }
+/// The files a checkout's preferences are read from, least specific first: the
+/// user's, each folder holding the checkout from the outermost in, then the
+/// repository's and the worktree's. A later one wins wherever both say.
+fn layers(checkout: Option<&Checkout>) -> Vec<(Scope, PathBuf)> {
+    let mut paths = vec![(Scope::User, base_dir().join("preferences.toml"))];
+    let root = checkout.map(|c| PathBuf::from(&c.root));
+    let mut folders: Vec<(PathBuf, PathBuf)> = folder_files()
+        .into_iter()
+        .filter_map(|path| {
+            let patch = read_patch(&path).ok()?;
+            let folder = PathBuf::from(patch.get("folder")?.as_str()?);
+            root.as_ref().filter(|root| root.starts_with(&folder))?;
+            Some((folder, path))
+        })
+        .collect();
+    folders.sort_by_key(|(folder, _)| folder.components().count());
+    paths.extend(folders.into_iter().map(|(_, p)| (Scope::Folder, p)));
+    if let Some(c) = checkout {
+        paths.push((Scope::Repository, c.repository_file()));
+        paths.push((Scope::Worktree, c.worktree_file()));
+    }
+    paths
+}
 /// Missing configuration is fine. Invalid files remain visible and are never overwritten on load.
 fn load_uncached(checkout: Option<&Checkout>) -> Loaded {
     let mut sources = BTreeMap::new();
@@ -431,14 +533,7 @@ fn load_uncached(checkout: Option<&Checkout>) -> Loaded {
     config["writing"] = serialized(
         &mut errors,
         "legacy writing settings",
-        serde_json::to_value(Writing {
-            language: legacy.pr_language,
-            comment_style: legacy.comment_style,
-            subject_max: legacy.commit_subject_max_chars,
-            body_lines: legacy.commit_body_max_lines,
-            commit_prompt: legacy.commit_prompt,
-            review_style: legacy.review_style,
-        }),
+        serde_json::to_value(Writing::from(legacy)),
     );
     if checkout.is_some_and(|c| crate::settings::is_configured_at(&c.root)) {
         sources.insert(
@@ -446,28 +541,7 @@ fn load_uncached(checkout: Option<&Checkout>) -> Loaded {
             "Legacy checkout settings (preserved)".into(),
         );
     }
-    let mut paths = Vec::new();
-    match scope_path(Scope::User) {
-        Ok(path) => paths.push((Scope::User, path)),
-        Err(e) => errors.push(format!("user preferences: {e}")),
-    }
-    let root = checkout.map(|c| PathBuf::from(&c.root));
-    let mut folders: Vec<(PathBuf, PathBuf)> = folder_files()
-        .into_iter()
-        .filter_map(|path| {
-            let patch = read_patch(&path).ok()?;
-            let folder = PathBuf::from(patch.get("folder")?.as_str()?);
-            root.as_ref().filter(|root| root.starts_with(&folder))?;
-            Some((folder, path))
-        })
-        .collect();
-    folders.sort_by_key(|(folder, _)| folder.components().count());
-    paths.extend(folders.into_iter().map(|(_, p)| (Scope::Folder, p)));
-    if let Some(c) = checkout {
-        paths.push((Scope::Repository, c.repository_file()));
-        paths.push((Scope::Worktree, c.worktree_file()));
-    }
-    for (scope, path) in paths {
+    for (scope, path) in layers(checkout) {
         if !path.exists() {
             continue;
         }
@@ -610,6 +684,74 @@ fn save_at(
     invalidate();
     atomic_write(&path, toml::to_string_pretty(&patch)?.as_bytes())
 }
+/// Set some fields of `category` where the change will actually show: in the
+/// most specific file that already sets the category, or at `fallback` when
+/// that is more specific still. The rest of what that file says is kept.
+///
+/// For the screens that edit a handful of fields and know nothing of scopes.
+/// Saving at a fixed scope from one of those reads back as nothing having
+/// happened whenever a more specific file has a say in the same category.
+pub fn save_fields(
+    fallback: Scope,
+    category: &str,
+    fields: serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    let path = deciding_file(fallback, category)?;
+    let mut value = existing_category(&path, category)?;
+    for (key, field) in fields {
+        value[key] = field;
+    }
+    save_at(path, None, category, value)
+}
+/// Take `keys` of `category` out of the file [`save_fields`] would write them
+/// to, so whatever a broader file or the default says shows through again.
+pub fn clear_fields(fallback: Scope, category: &str, keys: &[&str]) -> Result<()> {
+    let path = deciding_file(fallback, category)?;
+    let mut value = existing_category(&path, category)?;
+    let Some(object) = value.as_object_mut() else {
+        return Ok(());
+    };
+    if !keys.iter().any(|key| object.contains_key(*key)) {
+        return Ok(());
+    }
+    for key in keys {
+        object.remove(*key);
+    }
+    if object.is_empty() {
+        reset_at(path, category)
+    } else {
+        save_at(path, None, category, value)
+    }
+}
+/// What `path` says about `category`, as a table to add to; empty when it
+/// says nothing.
+fn existing_category(path: &Path, category: &str) -> Result<serde_json::Value> {
+    if !path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+    Ok(read_patch(path)?
+        .get(category)
+        .filter(|value| value.is_object())
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({})))
+}
+/// The file whose say on `category` wins: the most specific one that sets it,
+/// unless `fallback` is more specific than that.
+fn deciding_file(fallback: Scope, category: &str) -> Result<PathBuf> {
+    let fallback_path = scope_path(fallback)?;
+    let layers = layers(checkout().ok().as_ref());
+    let fallback_rank = layers
+        .iter()
+        .position(|(_, path)| *path == fallback_path)
+        .unwrap_or(0);
+    let deciding = layers.into_iter().enumerate().rev().find(|(_, (_, path))| {
+        path.exists() && read_patch(path).is_ok_and(|patch| patch.get(category).is_some())
+    });
+    Ok(match deciding {
+        Some((rank, (_, path))) if rank > fallback_rank => path,
+        _ => fallback_path,
+    })
+}
 pub fn reset_category(scope: Scope, category: &str) -> Result<()> {
     reset_at(scope_path(scope)?, category)
 }
@@ -633,9 +775,6 @@ impl Preferences {
         }
         if self.writing.language.trim().is_empty() {
             bail!("writing.language must not be empty");
-        }
-        if !PROVIDERS.contains(&self.models.provider.as_str()) {
-            bail!("models.provider must be one of {}", PROVIDERS.join(", "));
         }
         if !self.models.endpoint.starts_with("http://")
             && !self.models.endpoint.starts_with("https://")
@@ -667,9 +806,6 @@ impl Preferences {
             {
                 bail!("promotion references an unknown environment");
             }
-            if !STRATEGIES.contains(&p.strategy.as_str()) {
-                bail!("promotion strategy must be merge, squash or ff-only");
-            }
             let mut seen = HashSet::new();
             if cycle(
                 &p.from,
@@ -691,13 +827,7 @@ impl Preferences {
             if a.executable.is_empty() || a.executable.contains('\0') {
                 bail!("agent executable must not be empty");
             }
-            if !ADAPTERS.contains(&a.adapter.as_str()) {
-                bail!("unknown agent adapter {}", a.adapter);
-            }
-            if !CONFINEMENTS.contains(&a.confinement.as_str()) {
-                bail!("confinement must be terrarium, agent or direct");
-            }
-            if a.confinement == "agent" && !["claude", "codex"].contains(&a.adapter.as_str()) {
+            if a.confinement == Confinement::Agent && !a.adapter.has_own_permissions() {
                 bail!(
                     "{} does not provide an agent-managed permission adapter",
                     a.name
@@ -1000,5 +1130,69 @@ mod detect_tests {
         let b = detect_branches(&names(&["master", "test"]));
         assert_eq!(b.base, "master");
         assert_eq!(branch_of(&b, "prod"), Some("master"));
+    }
+}
+
+#[cfg(test)]
+mod word_setting_tests {
+    use super::*;
+
+    fn parse(toml_text: &str) -> std::result::Result<Preferences, String> {
+        let value: toml::Value = toml::from_str(toml_text).expect("valid TOML");
+        let json = serde_json::to_value(value).expect("TOML is JSON");
+        serde_json::from_value::<Preferences>(json).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn the_words_a_file_already_holds_still_read_and_write_back_unchanged() {
+        let text = r#"
+version = 1
+[models]
+provider = "claude"
+[[agents]]
+name = "c"
+adapter = "codex"
+executable = "codex"
+confinement = "terrarium"
+[branches]
+environments = [{ id = "dev", branch = "dev" }]
+promotions = [{ from = "feature", to = "dev", strategy = "ff-only" }]
+"#;
+        let prefs = parse(text).expect("parses");
+        assert_eq!(prefs.models.provider, crate::llm::LlmProvider::Claude);
+        assert_eq!(prefs.agents[0].adapter, Adapter::Codex);
+        assert_eq!(prefs.agents[0].confinement, Confinement::Terrarium);
+        assert_eq!(prefs.branches.promotions[0].strategy, Strategy::FfOnly);
+        prefs.validate().expect("valid");
+
+        let written = serde_json::to_value(&prefs).unwrap();
+        assert_eq!(written["models"]["provider"], "claude");
+        assert_eq!(written["agents"][0]["adapter"], "codex");
+        assert_eq!(written["agents"][0]["confinement"], "terrarium");
+        assert_eq!(written["branches"]["promotions"][0]["strategy"], "ff-only");
+        assert_eq!(
+            serde_json::to_value(Preferences::default()).unwrap()["models"]["provider"],
+            "local"
+        );
+    }
+
+    #[test]
+    fn a_word_outside_the_list_is_refused_saying_what_is_allowed() {
+        let agent = |field: &str, word: &str| {
+            format!(
+                "version = 1\n[[agents]]\nname = \"a\"\nexecutable = \"a\"\n{field} = \"{word}\"\n"
+            )
+        };
+        let err = parse(&agent("adapter", "bogus")).unwrap_err();
+        assert!(err.contains("unknown agent adapter bogus"), "{err}");
+        let err = parse(&agent("confinement", "jail")).unwrap_err();
+        assert!(err.contains("terrarium, agent or direct"), "{err}");
+        let err = parse("version = 1\n[models]\nprovider = \"gpt\"\n").unwrap_err();
+        assert!(err.contains("local, claude"), "{err}");
+        let err = parse(
+            "version = 1\n[branches]\npromotions = [{ from = \"feature\", to = \"dev\", strategy = \"rebase\" }]\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("merge, squash or ff-only"), "{err}");
     }
 }

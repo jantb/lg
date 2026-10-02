@@ -551,9 +551,19 @@ fn save(state: &mut AppState) {
         provider: state.llm_provider,
         pr_language: state.settings_pr_language_input.clone(),
         comment_style: state.settings_comment_style_input.clone(),
-        commit_subject_max_chars: state.settings_subject_max_input.clone(),
-        commit_body_max_lines: state.settings_body_lines_input.clone(),
+        commit_subject_max_chars: parse_limit(&state.settings_subject_max_input),
+        commit_body_max_lines: parse_limit(&state.settings_body_lines_input),
     });
+}
+
+/// A typed limit: empty means unlimited, and anything unparsable is `None`,
+/// which keeps the value already stored rather than silently resetting it.
+fn parse_limit(value: &str) -> Option<usize> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Some(0);
+    }
+    value.parse::<usize>().ok()
 }
 
 /// Up/Down inside a row walks its choice list, or nudges a numeric limit. A text

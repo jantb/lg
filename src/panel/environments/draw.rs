@@ -180,7 +180,7 @@ pub(super) fn render_nested_repositories(
             ),
         })
         .collect::<Vec<_>>();
-    let offset = nested_repo_scroll_offset(state, tree_area);
+    let offset = scroll_offset_for(state, len, tree_area);
     let mut list_state = scroll::list_state(focused.then_some(selected_idx).flatten(), offset);
     let list = List::new(items)
         .block(block)
@@ -195,21 +195,25 @@ pub(super) fn render_nested_repositories(
 pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
     let len = nested_repo_tree_rows(state).len();
     let selected_idx = clamp_index(state.nested_repo_tree_idx, len);
-    state.nested_repositories_scroll_offset = scroll::selection_scroll_offset(
+    state.nested_repositories_list.scroll = scroll::selection_scroll_offset(
         selected_idx,
         len,
         scroll::list_viewport_height(area.height),
-        state.nested_repositories_scroll_offset,
+        state.nested_repositories_list.scroll,
     );
 }
 
 pub(crate) fn nested_repo_scroll_offset(state: &AppState, area: Rect) -> usize {
-    let len = nested_repo_tree_rows(state).len();
+    scroll_offset_for(state, nested_repo_tree_rows(state).len(), area)
+}
+
+/// The tree's scroll offset for `len` rows, for a caller that has them already.
+fn scroll_offset_for(state: &AppState, len: usize, area: Rect) -> usize {
     scroll::selection_scroll_offset(
         clamp_index(state.nested_repo_tree_idx, len),
         len,
         scroll::list_viewport_height(area.height),
-        state.nested_repositories_scroll_offset,
+        state.nested_repositories_list.scroll,
     )
 }
 

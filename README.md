@@ -10,10 +10,32 @@ agents safely.
 - **Staging and committing.** Browse the working tree, stage and unstage files
   or hunks, and commit with a message suggested by a local model. Message
   language, subject length and prompt are configurable.
+- **Hunks.** A file's diff shows what is staged above what is not. In the diff
+  pane `]`/`[` move between hunks (the current one is highlighted and named in
+  the title), `space` stages an unstaged hunk or unstages a staged one, and `d`
+  discards an unstaged hunk from the working tree after asking. A hunk whose
+  file changed since it was shown is refused rather than applied.
+- **Amend.** `Ctrl+T` in the commit modal, or `A` in Commits, puts the last
+  commit's message in the editor; `Ctrl+S` then replaces that commit with the
+  message and whatever is staged. It always asks first, and says so when the
+  commit is already pushed and a force push will be needed.
+- **Stash.** `s` in Files stashes every change, untracked files included, under
+  an optional message; `S` lists the stash to apply (`space`), pop (`g`) or
+  drop (`d`, after asking). Stashes lg took itself before a pull or a flow that
+  did not finish are marked, so leftover work is easy to find.
 - **Branches, commits and worktrees.** List, switch, create, rename, merge and
-  delete branches; browse history; work in several checkouts at once.
+  delete branches; browse history; work in several checkouts at once. In
+  Commits, `y` copies a commit's SHA (`y` in Branches copies the branch's) and
+  `t` reverts a commit. A branch's log in the diff pane (select it in Branches,
+  then `0`) has a commit cursor too, and `C` cherry-picks that commit onto the
+  checked-out branch. Both ask first, and a conflict opens the conflict editor
+  as a merge does.
 - **Push and release flow.** Push with remote tracking, and run a guarded
-  release flow that refuses to act on protected branches.
+  release flow that refuses to act on protected branches. When a branch has
+  diverged from its remote, the push modal offers to merge upstream, or `f` to
+  force-push with `--force-with-lease` after naming the remote branch and the
+  commits it would overwrite. lg never offers a plain `--force`, nor any force
+  push of a protected or deploy branch.
 - **Environments as a pipeline.** Map branches to deploy environments and see
   how far each one is behind, with explicit promotions drawn as the route a
   change travels.
@@ -63,8 +85,15 @@ lg --version    Show the version
 ```
 
 Press `?` inside the TUI for the full key reference. `1`–`4` switch panes,
-`c` commits, `p`/`P` push, `E` opens the environments pipeline, `H` opens
-GitHub, `V` starts a guided review, `w` opens worktrees and `,` opens settings.
+`0` focuses the diff, `c` commits, `p`/`P` pull and push, `E` opens the
+environments pipeline, `H` opens GitHub, `V` starts a guided review, `w` opens
+worktrees and `,` opens settings. In the diff pane `]`/`[`, `space` and `d`
+work on hunks; in Files `s`/`S` stash; in Commits `y`, `t` and `A` copy,
+revert and amend. `/` filters Files, Branches and Commits as you type (`Esc`
+clears it). `:` searches every documented action by what it does and runs it
+where it can, and `/` inside `?` filters the key reference. When the status
+bar cuts an error short it says `! details`: `!` shows the whole of the last
+error, scrollable and copyable with `y`.
 
 ## LLM setup
 
@@ -72,6 +101,9 @@ Commit messages and reviews are requested from an OpenAI-compatible chat
 endpoint. The default is a local server at `http://localhost:8000/v1/chat/completions`.
 Change the model and endpoint under `[models]` in the settings screen or with
 `lg config`. Nothing is sent anywhere unless you point it at a remote endpoint.
+If nothing answers there, lg says so once, names the endpoint, and stops
+asking on its own for the rest of the session; `Ctrl+R` in the commit modal
+still asks.
 
 To have Claude answer everything instead, set `models.provider` to `claude`
 (Settings → models, or `LG_LLM_PROVIDER=claude` for one run). Every request then

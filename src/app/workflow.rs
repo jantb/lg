@@ -81,7 +81,7 @@ pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: O
         target: release_target.clone(),
         input: input.clone().filter(|name| !name.is_empty()),
     };
-    state.conflict_followup =
+    state.conflict.followup =
         conflict_followup_for_flow(action, &action_branch, release_target.as_deref());
     let target = release_target.unwrap_or_default();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -280,7 +280,7 @@ fn reset_steps(current: &str, target: &str) -> Vec<String> {
     steps.extend([
         "create safety backup".into(),
         format!("reset {target} to origin/{}", configured_base.as_str()),
-        format!("force push {target}"),
+        format!("force push {target} with lease (rewrites the remote branch)"),
         "remove safety backup".into(),
     ]);
     if current != target {
@@ -293,7 +293,7 @@ pub(crate) fn validate_conflict_resolution(state: &mut AppState) {
     if state.workflow_job.is_some() {
         return;
     }
-    let followup = state.conflict_followup.clone();
+    let followup = state.conflict.followup.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = crate::git::spawn_pinned(move || {
         let followup = crate::git::Followup {
@@ -375,7 +375,7 @@ pub(crate) fn start_conflict_session(state: &mut AppState, sandboxed: bool) {
 
     let prompt = conflict_prompt(
         &state.unresolved_conflicts(),
-        &sorted(&state.conflict_resolved),
+        &sorted(&state.conflict.resolved),
     );
     state.pending_action = Some(crate::state::PendingAction::StartSession {
         path,
@@ -441,11 +441,13 @@ pub(crate) fn abort_conflict_operation(state: &mut AppState) {
         return;
     }
     let return_branch = state
-        .conflict_followup
+        .conflict
+        .followup
         .as_ref()
         .and_then(|f| f.return_branch.clone());
     let safety_cleanup = state
-        .conflict_followup
+        .conflict
+        .followup
         .as_ref()
         .and_then(|f| f.safety_ref_cleanup.clone());
     let (tx, rx) = std::sync::mpsc::channel();

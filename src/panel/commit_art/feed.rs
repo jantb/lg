@@ -63,7 +63,7 @@ impl Feed {
         let mut code = Vec::new();
         for line in diff.lines() {
             if let Some(next) = crate::ui::diff_header_path(line) {
-                path = next.to_owned();
+                path = next.into_owned();
             }
             if [
                 "diff --git",

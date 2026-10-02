@@ -33,7 +33,7 @@ pub(super) struct SideDiffCell {
 
 pub(super) struct SideBySideDiffRenderer {
     pub(super) width: usize,
-    pub(super) syntax: Option<Syntax>,
+    pub(super) syntax: Option<Language>,
     pub(super) numbers: Option<DiffLineNumbers>,
     pub(super) in_hunk: bool,
     pub(super) lines: Vec<Line<'static>>,
@@ -159,15 +159,11 @@ impl SideBySideDiffRenderer {
 }
 
 pub(super) fn parse_hunk_line_numbers(line: &str) -> Option<(u32, u32)> {
-    let rest = line.strip_prefix("@@ ")?;
-    let mut parts = rest.split_whitespace();
-    let old = parts.next()?.strip_prefix('-')?;
-    let new = parts.next()?.strip_prefix('+')?;
-    Some((parse_hunk_start(old)?, parse_hunk_start(new)?))
-}
-
-pub(super) fn parse_hunk_start(part: &str) -> Option<u32> {
-    part.split(',').next()?.parse().ok()
+    let hunk = crate::git::patch::parse_hunk_header(line)?;
+    Some((
+        u32::try_from(hunk.old_start).ok()?,
+        u32::try_from(hunk.new_start).ok()?,
+    ))
 }
 
 pub(super) fn diff_content_kind(line: &str) -> Option<DiffContentKind> {
@@ -243,7 +239,7 @@ pub(super) fn add_diff_line_numbers<'a>(
 pub(super) fn render_full_side_by_side_lines(
     line: &str,
     width: usize,
-    syntax: Option<Syntax>,
+    syntax: Option<Language>,
 ) -> Vec<Line<'static>> {
     wrap_line(highlight_diff_line_for_syntax(line, syntax), width, 0)
 }
@@ -255,7 +251,7 @@ pub(super) fn render_side_by_side_rows(
     old: Option<&SideDiffCell>,
     new: Option<&SideDiffCell>,
     width: usize,
-    syntax: Option<Syntax>,
+    syntax: Option<Language>,
 ) -> Vec<Line<'static>> {
     if width == 0 {
         return vec![Line::from("")];
@@ -300,7 +296,7 @@ pub(super) fn render_side_by_side_rows(
 pub(super) fn render_side_cell_rows(
     cell: Option<&SideDiffCell>,
     width: usize,
-    syntax: Option<Syntax>,
+    syntax: Option<Language>,
 ) -> Vec<Vec<Span<'static>>> {
     if width == 0 {
         return vec![Vec::new()];
@@ -317,7 +313,7 @@ pub(super) fn render_side_cell_rows(
     }
 
     let content_width = width - SIDE_GUTTER_WIDTH;
-    let content = highlight_code(&cell.text, syntax, base_style);
+    let content = highlight_line(&cell.text, syntax, base_style);
     wrap_spans(content, content_width)
         .into_iter()
         .enumerate()

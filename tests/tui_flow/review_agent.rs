@@ -75,7 +75,7 @@ fn findings_the_session_writes_appear_under_the_agent_review_row() {
     let dir = tempfile::tempdir().unwrap();
     let findings = dir.path().join("review-findings.md");
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 30)).unwrap();
-    app.state.review = Some(review_with_agent_node());
+    app.state.review.assisted = Some(review_with_agent_node());
     let session = review_session(
         &mut app,
         &format!(
@@ -91,7 +91,8 @@ fn findings_the_session_writes_appear_under_the_agent_review_row() {
 
     poll_until(&mut app, |app| {
         app.state
-            .review_assists
+            .review
+            .assists
             .get(lg::git::REVIEW_AGENT_NODE_ID)
             .is_some_and(|text| text.contains("src/lib.rs:3 fine"))
     });
@@ -101,7 +102,7 @@ fn findings_the_session_writes_appear_under_the_agent_review_row() {
     );
 
     poll_until(&mut app, |app| app.state.review_agent_job.is_none());
-    let text = &app.state.review_assists[lg::git::REVIEW_AGENT_NODE_ID];
+    let text = &app.state.review.assists[lg::git::REVIEW_AGENT_NODE_ID];
     assert!(text.contains("## Verdict"), "{text}");
     assert!(
         app.state
@@ -118,7 +119,7 @@ fn a_session_that_leaves_without_writing_says_so() {
     let dir = tempfile::tempdir().unwrap();
     let findings = dir.path().join("review-findings.md");
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 30)).unwrap();
-    app.state.review = Some(review_with_agent_node());
+    app.state.review.assisted = Some(review_with_agent_node());
     let session = review_session(&mut app, "exit 0");
     app.state.review_agent_job = Some(ReviewAgentJob {
         session,
@@ -128,7 +129,7 @@ fn a_session_that_leaves_without_writing_says_so() {
 
     poll_until(&mut app, |app| app.state.review_agent_job.is_none());
 
-    let text = &app.state.review_assists[lg::git::REVIEW_AGENT_NODE_ID];
+    let text = &app.state.review.assists[lg::git::REVIEW_AGENT_NODE_ID];
     assert!(text.contains("without writing"), "{text}");
     assert!(text.contains(&findings.display().to_string()), "{text}");
 }
@@ -139,7 +140,7 @@ fn a_in_review_mode_asks_for_an_agent_review() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(240, 30)).unwrap();
     app.state.focus = Pane::Main;
     app.state.diff_source = lg::state::DiffSource::Review;
-    app.state.review = Some(review_with_agent_node());
+    app.state.review.assisted = Some(review_with_agent_node());
 
     app.render().unwrap();
     let footer = buffer_text(&app);

@@ -9,6 +9,12 @@ pub(super) const SAFETY_REF_PREFIX: &str = "lg/backup/";
 
 pub(super) const SAFETY_REF_KEEP: usize = 20;
 
+/// Whether `branch` is one of the backups lg takes before a flow. They are
+/// branches only so git keeps them; no flow treats one as work of its own.
+pub fn is_safety_ref(branch: &str) -> bool {
+    branch.starts_with(SAFETY_REF_PREFIX)
+}
+
 pub(super) fn create_safety_ref(label: &str) -> Result<String> {
     let branch = head_branch().unwrap_or_else(|_| "detached".to_string());
     let clean_label: String = label

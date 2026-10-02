@@ -5,6 +5,8 @@ use ratatui::{
 
 mod side_by_side;
 mod syntax;
+use super::highlight::highlight_line;
+use crate::language::Language;
 use side_by_side::*;
 use syntax::*;
 pub use syntax::{Token, diff_header_path, diff_line_tokens};
@@ -15,13 +17,13 @@ pub fn highlight_diff_line(line: &str) -> Line<'_> {
 }
 
 pub fn highlight_diff_line_for_path<'a>(line: &'a str, path: &str) -> Line<'a> {
-    highlight_diff_line_for_syntax(line, path_syntax(path))
+    highlight_diff_line_for_syntax(line, Language::from_path(path))
 }
 
 pub fn highlight_source_line_for_path<'a>(line: &'a str, path: &str) -> Line<'a> {
-    Line::from(highlight_code(
+    Line::from(highlight_line(
         line,
-        path_syntax(path),
+        Language::from_path(path),
         Style::default().fg(Color::Gray),
     ))
 }
@@ -105,7 +107,7 @@ pub fn highlight_side_by_side_diff_text_for_path(
     path: &str,
 ) -> Vec<Line<'static>> {
     let mut renderer = SideBySideDiffRenderer::new(width as usize);
-    renderer.syntax = path_syntax(path);
+    renderer.syntax = Language::from_path(path);
     for line in text.lines() {
         renderer.push_line(line);
     }
@@ -116,15 +118,7 @@ pub fn side_by_side_diff_line_count(text: &str, width: u16) -> usize {
     highlight_side_by_side_diff_text(text, width).len()
 }
 
-#[derive(Clone, Copy)]
-enum Syntax {
-    CSharp,
-    Kotlin,
-    Markdown,
-    Rust,
-}
-
-fn highlight_diff_line_for_syntax(line: &str, syntax: Option<Syntax>) -> Line<'_> {
+fn highlight_diff_line_for_syntax(line: &str, syntax: Option<Language>) -> Line<'_> {
     if matches!(line, "Message:" | "Files changed:" | "Patch:") {
         return Line::from(Span::styled(
             line,
@@ -161,7 +155,7 @@ fn highlight_diff_line_for_syntax(line: &str, syntax: Option<Syntax>) -> Line<'_
                 .bg(DIFF_ADDED_BG)
                 .add_modifier(Modifier::BOLD),
         )];
-        spans.extend(highlight_code(rest, syntax, base_style));
+        spans.extend(highlight_line(rest, syntax, base_style));
         return Line::from(spans);
     }
     if let Some(rest) = line.strip_prefix('-') {
@@ -173,7 +167,7 @@ fn highlight_diff_line_for_syntax(line: &str, syntax: Option<Syntax>) -> Line<'_
                 .bg(DIFF_REMOVED_BG)
                 .add_modifier(Modifier::BOLD),
         )];
-        spans.extend(highlight_code(rest, syntax, base_style));
+        spans.extend(highlight_line(rest, syntax, base_style));
         return Line::from(spans);
     }
     if line.starts_with("@@") {
@@ -187,7 +181,7 @@ fn highlight_diff_line_for_syntax(line: &str, syntax: Option<Syntax>) -> Line<'_
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    Line::from(highlight_code(line, syntax, Style::default()))
+    Line::from(highlight_line(line, syntax, Style::default()))
 }
 
 #[cfg(test)]
@@ -223,6 +217,19 @@ mod tests {
         let plain = diff_line_tokens("-let name = 1;", "notes.txt");
         assert_eq!(plain[0], Token::Marker);
         assert!(plain[1..].iter().all(|t| *t == Token::Plain), "{plain:?}");
+    }
+
+    #[test]
+    fn a_header_naming_a_path_with_spaces_gives_the_whole_path() {
+        assert_eq!(
+            diff_header_path("diff --git a/my dir/x.rs b/my dir/x.rs").as_deref(),
+            Some("my dir/x.rs")
+        );
+        assert_eq!(
+            diff_header_path("+++ b/my dir/x.rs\t").as_deref(),
+            Some("my dir/x.rs")
+        );
+        assert_eq!(diff_header_path(" context line"), None);
     }
 
     #[test]

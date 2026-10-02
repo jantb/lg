@@ -24,40 +24,23 @@ impl AppState {
 
     pub fn branch_list_idx_mut(&mut self) -> &mut usize {
         match self.branch_view {
-            BranchView::Local => &mut self.branches_idx,
-            BranchView::Remote => &mut self.remote_branches_idx,
+            BranchView::Local => &mut self.branches_list.idx,
+            BranchView::Remote => &mut self.remote_branches_list.idx,
         }
     }
 
     pub fn selected_branch_ref(&self) -> Option<&str> {
+        if self.selection_hidden(super::Pane::Branches) {
+            return None;
+        }
         match self.branch_view {
             BranchView::Local => self
                 .branches
-                .get(self.branches_idx)
+                .get(self.branches_list.idx)
                 .map(|branch| branch.name.as_str()),
             BranchView::Remote => self
                 .visible_remote_branches()
-                .nth(self.remote_branches_idx)
-                .map(|branch| branch.name.as_str()),
-        }
-    }
-
-    pub fn nested_repo_branch_list_idx_mut(&mut self) -> &mut usize {
-        match self.nested_repo_branch_view {
-            BranchView::Local => &mut self.nested_repo_branches_idx,
-            BranchView::Remote => &mut self.nested_repo_remote_branches_idx,
-        }
-    }
-
-    pub fn selected_nested_repo_branch_ref(&self) -> Option<&str> {
-        match self.nested_repo_branch_view {
-            BranchView::Local => self
-                .nested_repo_branches
-                .get(self.nested_repo_branches_idx)
-                .map(|branch| branch.name.as_str()),
-            BranchView::Remote => self
-                .visible_nested_repo_remote_branches()
-                .nth(self.nested_repo_remote_branches_idx)
+                .nth(self.remote_branches_list.idx)
                 .map(|branch| branch.name.as_str()),
         }
     }

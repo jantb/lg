@@ -159,7 +159,7 @@ fn read_json_object(path: &Path) -> Result<serde_json::Value> {
 }
 
 /// Returns `root[key]` as an object, replacing a non-object value.
-fn object_entry<'a>(
+pub(super) fn object_entry<'a>(
     root: &'a mut serde_json::Map<String, serde_json::Value>,
     key: &str,
 ) -> &'a mut serde_json::Map<String, serde_json::Value> {

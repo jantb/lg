@@ -44,10 +44,6 @@ fn profile_path_in(home: &Path, project: &Path) -> PathBuf {
         .join("profile.toml")
 }
 
-pub fn has_profile(project: &Path) -> bool {
-    profile_path(project).is_some_and(|path| path.is_file())
-}
-
 /// Make sure `worktree` can be run sandboxed, deriving its profile from
 /// `main_worktree`'s when it has none yet. Returns what was done, or `None` when
 /// the profile was already in place.

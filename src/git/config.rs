@@ -241,20 +241,10 @@ fn first_changed_line(path: &str) -> Option<usize> {
 }
 
 pub(super) fn diff_hunk_start_line(line: &str) -> Option<usize> {
-    if !line.starts_with("@@ ") {
-        return None;
-    }
-    parse_hunk_side(line, '+').or_else(|| parse_hunk_side(line, '-'))
-}
-
-fn parse_hunk_side(line: &str, marker: char) -> Option<usize> {
-    let start = line.find(marker)? + marker.len_utf8();
-    let digits: String = line[start..]
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect();
-    let parsed = digits.parse::<usize>().ok()?;
-    (parsed > 0).then_some(parsed)
+    let hunk = super::patch::parse_hunk_header(line)?;
+    [hunk.new_start, hunk.old_start]
+        .into_iter()
+        .find(|start| *start > 0)
 }
 
 pub fn set_local_author(name: &str, email: &str) -> Result<()> {

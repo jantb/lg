@@ -12,26 +12,40 @@ use crate::{
     app,
     config::is_protected_branch_name,
     git::{Branch, RemoteBranch},
-    state::{AppState, BranchView, FlowAction, PendingAction, SPINNER_FRAMES, clamp_index},
+    state::{AppState, BranchView, FlowAction, Pane, PendingAction, SPINNER_FRAMES, clamp_index},
     ui,
 };
 
 use super::scroll;
 
-pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
+/// The rows on show and where the selection is among them: every branch of
+/// the view, or the ones the `/` filter leaves.
+fn shown_rows(state: &AppState) -> (Option<Vec<usize>>, Option<usize>, usize) {
     let len = state.branch_list_len();
-    let selected_idx = match state.branch_view {
-        BranchView::Local => clamp_index(state.branches_idx, len),
-        BranchView::Remote => clamp_index(state.remote_branches_idx, len),
+    let idx = match state.branch_view {
+        BranchView::Local => state.branches_list.idx,
+        BranchView::Remote => state.remote_branches_list.idx,
     };
+    match state.filtered_rows(Pane::Branches) {
+        Some(rows) => {
+            let (selected, len) = crate::state::visible_position(Some(&rows), idx, len);
+            (Some(rows), selected, len)
+        }
+        None => (None, clamp_index(idx, len), len),
+    }
+}
+
+pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
+    let (rows, selected_idx, len) = shown_rows(state);
     let count = selected_idx.map(|idx| (idx + 1, len));
     let title = match state.branch_view {
         BranchView::Local => "Branches",
         BranchView::Remote => "Remote Branches",
     };
+    let title = format!("{title}{}", state.filter_title(Pane::Branches));
     let block = ui::framed_with_activity(
         3,
-        title,
+        &title,
         focused,
         count,
         state.animation_ms,
@@ -39,16 +53,36 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     );
 
     let row_width = area.width.saturating_sub(4) as usize;
+    // Only the rows on screen are turned into items, and the deploy
+    // environments they are tagged with are read once for all of them.
+    let offset = visible_scroll_offset(state, area);
+    let window = scroll::visible_window(len, offset, area.height);
+    // Which entry of the view each row on screen shows.
+    let entry_at = |row: usize| {
+        rows.as_ref()
+            .map_or(Some(row), |rows| rows.get(row).copied())
+    };
     let items: Vec<ListItem> = match state.branch_view {
-        BranchView::Local => state
-            .branches
-            .iter()
-            .map(|branch| ListItem::new(local_branch_line(state, branch, row_width)))
-            .collect(),
-        BranchView::Remote => state
-            .visible_remote_branches()
-            .map(|branch| ListItem::new(remote_branch_line(state, branch, row_width)))
-            .collect(),
+        BranchView::Local => {
+            let environments = crate::preferences::load().config.branches.environments;
+            window
+                .clone()
+                .filter_map(entry_at)
+                .filter_map(|at| state.branches.get(at))
+                .map(|branch| {
+                    ListItem::new(local_branch_line(state, branch, &environments, row_width))
+                })
+                .collect()
+        }
+        BranchView::Remote => {
+            let remotes: Vec<&RemoteBranch> = state.visible_remote_branches().collect();
+            window
+                .clone()
+                .filter_map(entry_at)
+                .filter_map(|at| remotes.get(at).copied())
+                .map(|branch| ListItem::new(remote_branch_line(state, branch, row_width)))
+                .collect()
+        }
     };
 
     let list = List::new(items)
@@ -56,33 +90,19 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         .highlight_style(crate::ui::palette::selection())
         .highlight_symbol("\u{203a} ");
 
-    let offset = visible_scroll_offset(state, area);
-    let mut list_state = scroll::list_state(focused.then_some(selected_idx).flatten(), offset);
+    let mut list_state =
+        scroll::window_list_state(focused.then_some(selected_idx).flatten(), &window);
 
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
 pub(crate) fn sync_scroll_offset(state: &mut AppState, area: Rect) {
-    let len = state.branch_list_len();
-    let selected_idx = match state.branch_view {
-        BranchView::Local => clamp_index(state.branches_idx, len),
-        BranchView::Remote => clamp_index(state.remote_branches_idx, len),
-    };
-    let offset = scroll::selection_scroll_offset(
-        selected_idx,
-        len,
-        scroll::list_viewport_height(area.height),
-        branch_scroll_offset(state),
-    );
+    let offset = visible_scroll_offset(state, area);
     *branch_scroll_offset_mut(state) = offset;
 }
 
 fn visible_scroll_offset(state: &AppState, area: Rect) -> usize {
-    let len = state.branch_list_len();
-    let selected_idx = match state.branch_view {
-        BranchView::Local => clamp_index(state.branches_idx, len),
-        BranchView::Remote => clamp_index(state.remote_branches_idx, len),
-    };
+    let (_, selected_idx, len) = shown_rows(state);
     scroll::selection_scroll_offset(
         selected_idx,
         len,
@@ -93,15 +113,15 @@ fn visible_scroll_offset(state: &AppState, area: Rect) -> usize {
 
 pub(crate) fn branch_scroll_offset(state: &AppState) -> usize {
     match state.branch_view {
-        BranchView::Local => state.branches_scroll_offset,
-        BranchView::Remote => state.remote_branches_scroll_offset,
+        BranchView::Local => state.branches_list.scroll,
+        BranchView::Remote => state.remote_branches_list.scroll,
     }
 }
 
 fn branch_scroll_offset_mut(state: &mut AppState) -> &mut usize {
     match state.branch_view {
-        BranchView::Local => &mut state.branches_scroll_offset,
-        BranchView::Remote => &mut state.remote_branches_scroll_offset,
+        BranchView::Local => &mut state.branches_list.scroll,
+        BranchView::Remote => &mut state.remote_branches_list.scroll,
     }
 }
 
@@ -110,7 +130,26 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     state.clamp();
     let shifted_m = shifted_char(key, 'm', 'M');
     let shifted_d = shifted_char(key, 'd', 'D');
+    // With nothing the filter leaves, there is no branch to act on; moving
+    // and switching views still work.
+    if state.selection_hidden(Pane::Branches)
+        && !matches!(
+            key.code,
+            KeyCode::Char('j' | 'k' | 'r') | KeyCode::Up | KeyCode::Down
+        )
+    {
+        state.set_status(
+            format!(
+                "no branch matches /{} \u{2014} Esc clears the filter",
+                state.branches_filter.text.trim()
+            ),
+            false,
+        );
+        return Ok(true);
+    }
     match key.code {
+        KeyCode::Char('j') | KeyCode::Down if state.step_filtered(Pane::Branches, true, 1) => {}
+        KeyCode::Char('k') | KeyCode::Up if state.step_filtered(Pane::Branches, false, 1) => {}
         KeyCode::Char('j') | KeyCode::Down => {
             let len = state.branch_list_len();
             let idx = state.branch_list_idx_mut();
@@ -126,7 +165,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
             if state.checkout_job.is_none() {
                 match state.branch_view {
                     BranchView::Local => {
-                        if let Some(b) = state.branches.get(state.branches_idx)
+                        if let Some(b) = state.branches.get(state.branches_list.idx)
                             && !b.is_current
                         {
                             app::checkout_branch_async(state, b.name.clone());
@@ -135,7 +174,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
                     BranchView::Remote => {
                         let name = state
                             .visible_remote_branches()
-                            .nth(state.remote_branches_idx)
+                            .nth(state.remote_branches_list.idx)
                             .map(|branch| branch.name.clone());
                         if let Some(name) = name {
                             app::checkout_remote_branch_async(state, name);
@@ -149,7 +188,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
                 state.set_status("delete remote branches from local branch view", false);
                 return Ok(true);
             }
-            if let Some(b) = state.branches.get(state.branches_idx) {
+            if let Some(b) = state.branches.get(state.branches_list.idx) {
                 if protected_branch(&b.name) {
                     state.set_status(format!("cannot delete protected branch {}", b.name), true);
                 } else {
@@ -163,7 +202,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
                 state.set_status("delete remote branches from local branch view", false);
                 return Ok(true);
             }
-            let Some(branch) = state.branches.get(state.branches_idx) else {
+            let Some(branch) = state.branches.get(state.branches_list.idx) else {
                 return Ok(true);
             };
             if protected_branch(&branch.name) {
@@ -176,6 +215,14 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
             } else {
                 let snapshot = branch.clone();
                 state.open_delete_branch_modal(&snapshot);
+            }
+        }
+        KeyCode::Char('y') => {
+            if let Some(name) = state.selected_branch_ref().map(str::to_owned) {
+                match crate::git::full_sha(&name) {
+                    Ok(sha) => super::commits::copy_sha(state, &sha),
+                    Err(err) => state.set_status(format!("copy failed: {err}"), true),
+                }
             }
         }
         KeyCode::Char('r') => {
@@ -209,19 +256,77 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
                 };
                 state.set_status(status, true);
             } else {
-                state.pending_action = Some(PendingAction::Flow(FlowAction::MergeMain));
+                confirm_merge_main(state, &configured_base);
             }
         }
         _ if shifted_m => {
             if state.branch_view == BranchView::Remote {
                 state.set_status("sync local branches from local branch view", false);
             } else {
-                state.pending_action = Some(PendingAction::MergeMainAllBranches);
+                confirm_merge_main_all_branches(state, &configured_base);
             }
         }
         _ => return Ok(false),
     }
     Ok(true)
+}
+
+/// Merging main in ends in a push, so a single key does not get to start it:
+/// it asks first, the way the same action does from the flow menu.
+fn confirm_merge_main(state: &mut AppState, configured_base: &str) {
+    let remote = crate::preferences::remote();
+    let current = state.branch.clone().unwrap_or_default();
+    state.confirm_action(
+        "Merge Main",
+        format!("Merge {remote}/{configured_base} into {current} and push it?"),
+        format!(
+            "Stashes local changes, updates {configured_base} from {remote}, merges \
+             {remote}/{configured_base} into {current}, pushes {current}, then restores \
+             the stash."
+        ),
+        PendingAction::Flow(FlowAction::MergeMain),
+    );
+}
+
+/// Syncing every branch merges into and pushes branches that are not even
+/// checked out, so the prompt names each one and what will happen to it.
+fn confirm_merge_main_all_branches(state: &mut AppState, configured_base: &str) {
+    let remote = crate::preferences::remote();
+    let mut pushed = Vec::new();
+    let mut local_only = Vec::new();
+    for branch in &state.branches {
+        if branch.name == configured_base || crate::git::is_safety_ref(&branch.name) {
+            continue;
+        }
+        match branch.upstream.as_deref() {
+            Some(upstream) if !branch.upstream_gone => {
+                pushed.push(format!("  {} \u{2192} {upstream}", branch.name));
+            }
+            _ => local_only.push(format!("  {}", branch.name)),
+        }
+    }
+    let count = pushed.len() + local_only.len();
+    let mut detail = Vec::new();
+    if count == 0 {
+        detail.push(format!(
+            "No other local branches; only {configured_base} is updated from {remote}."
+        ));
+    }
+    if !pushed.is_empty() {
+        detail.push("Merged, then pushed:".to_string());
+        detail.extend(pushed);
+    }
+    if !local_only.is_empty() {
+        detail.push("Merged locally only (no upstream):".to_string());
+        detail.extend(local_only);
+    }
+    let plural = if count == 1 { "branch" } else { "branches" };
+    state.confirm_action(
+        "Sync All Branches",
+        format!("Merge {remote}/{configured_base} into {count} local {plural} and push them?"),
+        detail.join("\n"),
+        PendingAction::MergeMainAllBranches,
+    );
 }
 
 fn queue_set_upstream(state: &mut AppState) {
@@ -230,7 +335,7 @@ fn queue_set_upstream(state: &mut AppState) {
         state.set_status("set upstream from local branch view", false);
         return;
     }
-    let Some(branch) = state.branches.get(state.branches_idx) else {
+    let Some(branch) = state.branches.get(state.branches_list.idx) else {
         return;
     };
     if branch.upstream.is_some() && !branch.upstream_gone {
@@ -271,7 +376,12 @@ fn protected_branch(name: &str) -> bool {
     is_protected_branch_name(name)
 }
 
-fn local_branch_line(state: &AppState, branch: &Branch, row_width: usize) -> Line<'static> {
+fn local_branch_line(
+    state: &AppState,
+    branch: &Branch,
+    environments: &[crate::preferences::Environment],
+    row_width: usize,
+) -> Line<'static> {
     if state
         .checkout_job
         .as_ref()
@@ -292,13 +402,7 @@ fn local_branch_line(state: &AppState, branch: &Branch, row_width: usize) -> Lin
                     .add_modifier(Modifier::BOLD),
             ),
         ];
-        for env in crate::preferences::load()
-            .config
-            .branches
-            .environments
-            .iter()
-            .filter(|e| e.branch == branch.name)
-        {
+        for env in environments.iter().filter(|e| e.branch == branch.name) {
             spans.push(Span::styled(
                 format!(" [{}]", env.name),
                 Style::default().fg(Color::Magenta),
@@ -311,13 +415,7 @@ fn local_branch_line(state: &AppState, branch: &Branch, row_width: usize) -> Lin
             format!("* {}", visible_local_branch_name(branch, 2, row_width)),
             current_branch_style(),
         )];
-        for env in crate::preferences::load()
-            .config
-            .branches
-            .environments
-            .iter()
-            .filter(|e| e.branch == branch.name)
-        {
+        for env in environments.iter().filter(|e| e.branch == branch.name) {
             spans.push(Span::styled(
                 format!(" [{}]", env.name),
                 Style::default().fg(Color::Magenta),
@@ -330,13 +428,7 @@ fn local_branch_line(state: &AppState, branch: &Branch, row_width: usize) -> Lin
             format!("  {}", visible_local_branch_name(branch, 2, row_width)),
             Style::default(),
         )];
-        for env in crate::preferences::load()
-            .config
-            .branches
-            .environments
-            .iter()
-            .filter(|e| e.branch == branch.name)
-        {
+        for env in environments.iter().filter(|e| e.branch == branch.name) {
             spans.push(Span::styled(
                 format!(" [{}]", env.name),
                 Style::default().fg(Color::Magenta),

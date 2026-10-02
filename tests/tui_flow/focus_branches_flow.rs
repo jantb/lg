@@ -243,7 +243,7 @@ fn branches_u_reports_missing_matching_remote() {
 fn branches_panel_keeps_context_below_selected_local_row_while_scrolling() {
     let mut state = AppState::new();
     state.focus = Pane::Branches;
-    state.branches_idx = 8;
+    state.branches_list.idx = 8;
     state.branches = (0..14)
         .map(|idx| Branch {
             name: format!("feature/{idx:02}"),
@@ -294,7 +294,7 @@ fn branches_panel_keeps_context_below_selected_remote_row_while_scrolling() {
     let mut state = AppState::new();
     state.focus = Pane::Branches;
     state.branch_view = BranchView::Remote;
-    state.remote_branches_idx = 8;
+    state.remote_branches_list.idx = 8;
     state.remote_branches = (0..14)
         .map(|idx| RemoteBranch {
             name: format!("origin/feature/{idx:02}"),
@@ -542,6 +542,17 @@ fn branches_shortcuts_show_remote_toggle() {
     );
 }
 
+/// Answer the confirmation the last key raised with `y`.
+fn confirm_prompt(state: &mut AppState) {
+    assert_eq!(
+        state.modal,
+        Modal::ConfirmDestructive,
+        "the shortcut should ask before it merges and pushes"
+    );
+    assert_eq!(state.pending_action, None, "nothing runs before the answer");
+    panel::confirm::handle_key(state, key(KeyCode::Char('y'))).unwrap();
+}
+
 #[test]
 fn branches_m_shortcut_queues_merge_main_workflow() {
     let mut state = AppState::new();
@@ -559,6 +570,7 @@ fn branches_m_shortcut_queues_merge_main_workflow() {
     }];
 
     panel::branches::handle_key(&mut state, key(KeyCode::Char('m'))).unwrap();
+    confirm_prompt(&mut state);
 
     assert_eq!(
         state.pending_action,
@@ -583,6 +595,7 @@ fn branches_m_shortcut_allows_develop_when_behind_main() {
     }];
 
     panel::branches::handle_key(&mut state, key(KeyCode::Char('m'))).unwrap();
+    confirm_prompt(&mut state);
 
     assert_eq!(
         state.pending_action,
@@ -642,6 +655,7 @@ fn branches_shift_m_shortcut_queues_sync_all_branches() {
     state.focus = Pane::Branches;
 
     panel::branches::handle_key(&mut state, key(KeyCode::Char('M'))).unwrap();
+    confirm_prompt(&mut state);
 
     assert_eq!(
         state.pending_action,
@@ -659,11 +673,51 @@ fn branches_shift_modifier_m_shortcut_queues_sync_all_branches() {
         KeyEvent::new(KeyCode::Char('m'), KeyModifiers::SHIFT),
     )
     .unwrap();
+    confirm_prompt(&mut state);
 
     assert_eq!(
         state.pending_action,
         Some(PendingAction::MergeMainAllBranches)
     );
+}
+
+/// Syncing every branch pushes branches that are not checked out, so the
+/// prompt has to say which ones before anything is merged.
+#[test]
+fn branches_shift_m_names_every_branch_it_will_merge_and_push() {
+    let mut state = AppState::new();
+    state.focus = Pane::Branches;
+    let branch = |name: &str, upstream: Option<&str>| Branch {
+        name: name.into(),
+        is_current: false,
+        upstream: upstream.map(Into::into),
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 0,
+        last_commit_unix: None,
+    };
+    state.branches = vec![
+        branch("main", Some("origin/main")),
+        branch("feature/tracked", Some("origin/feature/tracked")),
+        branch("feature/local", None),
+        branch("lg/backup/merge-main-feature-1", None),
+    ];
+
+    panel::branches::handle_key(&mut state, key(KeyCode::Char('M'))).unwrap();
+
+    let prompt = state.confirm.as_ref().expect("a confirmation prompt");
+    let shown = format!("{}\n{}", prompt.question, prompt.detail);
+    assert!(shown.contains("feature/tracked"), "{shown}");
+    assert!(shown.contains("origin/feature/tracked"), "{shown}");
+    assert!(shown.contains("feature/local"), "{shown}");
+    assert!(
+        !shown.contains("lg/backup"),
+        "backups are not synced, so they are not named: {shown}"
+    );
+
+    panel::confirm::handle_key(&mut state, key(KeyCode::Char('n'))).unwrap();
+    assert_eq!(state.pending_action, None, "declining runs nothing");
 }
 
 #[test]
@@ -684,9 +738,9 @@ fn branches_d_shortcut_deletes_local_only_branch() {
     panel::branches::handle_key(&mut state, key(KeyCode::Char('d'))).unwrap();
 
     assert_eq!(state.modal, Modal::DeleteBranch);
-    assert_eq!(state.delete_branch_target, "feature/local-only");
-    assert!(state.delete_branch_local);
-    assert!(!state.delete_branch_remote);
+    assert_eq!(state.delete_branch.target, "feature/local-only");
+    assert!(state.delete_branch.local);
+    assert!(!state.delete_branch.remote);
 }
 
 #[test]
@@ -755,7 +809,7 @@ fn branches_d_modal_allows_current_feature_branch() {
     panel::branches::handle_key(&mut state, key(KeyCode::Char('D'))).unwrap();
 
     assert_eq!(state.modal, Modal::DeleteBranch);
-    assert_eq!(state.delete_branch_target, "feature/current");
+    assert_eq!(state.delete_branch.target, "feature/current");
 }
 
 #[test]
@@ -807,7 +861,7 @@ fn delete_branch_modal_hides_remote_option_for_local_only_branch() {
     );
 
     assert_eq!(
-        state.delete_branch_field,
+        state.delete_branch.field,
         lg::state::DeleteBranchField::Force
     );
 }
@@ -847,7 +901,10 @@ fn delete_branch_modal_shows_remote_option_for_tracked_branch() {
         text.contains("delete remote (origin)"),
         "tracked branch should show remote delete option: {text}"
     );
-    assert!(state.delete_branch_remote);
+    assert!(
+        !state.delete_branch.remote,
+        "deleting the remote is offered, not chosen for the user"
+    );
 }
 
 #[test]
@@ -1060,7 +1117,7 @@ fn branch_actions_show_transfer_diff_for_selected_feature_branch() {
             last_commit_unix: None,
         },
     ];
-    state.branches_idx = 1;
+    state.branches_list.idx = 1;
     state.modal = Modal::Flow;
 
     let text = render_flow_text(&state);
@@ -1100,7 +1157,7 @@ fn flow_menu_state() -> AppState {
         behind_main: 2,
         last_commit_unix: None,
     }];
-    state.branches_idx = 0;
+    state.branches_list.idx = 0;
     state.release_branches =
         lg::git::ReleaseBranches::new(Some("develop".into()), Some("test".into()));
     state.modal = Modal::Flow;
@@ -1130,7 +1187,7 @@ fn flow_menu_text(state: &AppState, width: u16, height: u16) -> String {
 #[test]
 fn the_flow_menu_previews_the_highlighted_action() {
     let mut state = flow_menu_state();
-    state.flow_idx = FlowAction::ALL
+    state.flow_list.idx = FlowAction::ALL
         .iter()
         .position(|action| *action == FlowAction::ReleaseTest)
         .unwrap();
@@ -1161,7 +1218,7 @@ fn the_flow_preview_is_coloured_by_branch() {
     // Resetting an environment is offered on that environment's branch.
     state.branch = Some("test".into());
     state.branches[0].name = "test".into();
-    state.flow_idx = panel::flow::available_actions(&state)
+    state.flow_list.idx = panel::flow::available_actions(&state)
         .iter()
         .position(|action| *action == FlowAction::ResetTest)
         .expect("the test branch offers its reset");
@@ -1211,7 +1268,7 @@ fn the_flow_preview_is_coloured_by_branch() {
 #[test]
 fn the_flow_preview_animates_as_the_clock_ticks() {
     let mut state = flow_menu_state();
-    state.flow_idx = FlowAction::ALL
+    state.flow_list.idx = FlowAction::ALL
         .iter()
         .position(|action| *action == FlowAction::ReleaseTest)
         .unwrap();
@@ -1235,7 +1292,7 @@ fn the_flow_preview_animates_as_the_clock_ticks() {
 #[test]
 fn the_flow_preview_is_drawn_to_the_size_of_its_pane() {
     let mut state = flow_menu_state();
-    state.flow_idx = FlowAction::ALL
+    state.flow_list.idx = FlowAction::ALL
         .iter()
         .position(|action| *action == FlowAction::ReleaseTest)
         .unwrap();

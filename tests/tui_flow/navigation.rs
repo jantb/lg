@@ -5,24 +5,24 @@ use super::common::*;
 #[test]
 fn files_panel_navigation_moves_selection() {
     let mut state = make_state_with_files();
-    assert_eq!(state.files_idx, 0);
+    assert_eq!(state.files_list.idx, 0);
     panel::files::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
-    assert_eq!(state.files_idx, 1);
+    assert_eq!(state.files_list.idx, 1);
 }
 
 #[test]
 fn files_panel_k_moves_selection_up() {
     let mut state = make_state_with_files();
-    state.files_idx = 2;
+    state.files_list.idx = 2;
     panel::files::handle_key(&mut state, key(KeyCode::Char('k'))).unwrap();
-    assert_eq!(state.files_idx, 1);
+    assert_eq!(state.files_list.idx, 1);
 }
 
 #[test]
 fn files_panel_keeps_context_below_selected_row_while_scrolling() {
     let mut state = AppState::new();
     state.focus = Pane::Files;
-    state.files_idx = 8;
+    state.files_list.idx = 8;
     state.files = (0..14)
         .map(|idx| FileEntry {
             path: format!("file_{idx:02}.rs"),
@@ -66,9 +66,9 @@ fn files_panel_keeps_context_below_selected_row_while_scrolling() {
 #[test]
 fn scroll_handlers_clamp_stale_indices_before_moving() {
     let mut state = make_state_with_files();
-    state.files_idx = usize::MAX;
+    state.files_list.idx = usize::MAX;
     panel::files::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
-    assert_eq!(state.files_idx, state.tree_rows().len() - 1);
+    assert_eq!(state.files_list.idx, state.tree_rows().len() - 1);
 
     state.branches = vec![
         Branch {
@@ -92,9 +92,9 @@ fn scroll_handlers_clamp_stale_indices_before_moving() {
             last_commit_unix: None,
         },
     ];
-    state.branches_idx = usize::MAX;
+    state.branches_list.idx = usize::MAX;
     panel::branches::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
-    assert_eq!(state.branches_idx, 1);
+    assert_eq!(state.branches_list.idx, 1);
 
     state.commits = vec![Commit {
         sha: "abc1234".into(),
@@ -104,29 +104,29 @@ fn scroll_handlers_clamp_stale_indices_before_moving() {
         is_first_parent: true,
         subject: "initial".into(),
     }];
-    state.commits_idx = usize::MAX;
+    state.commits_list.idx = usize::MAX;
     panel::commits::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
-    assert_eq!(state.commits_idx, 0);
+    assert_eq!(state.commits_list.idx, 0);
 
-    state.conflicts = vec!["src/lib.rs".into()];
-    state.conflict_idx = usize::MAX;
+    state.conflict.files = vec!["src/lib.rs".into()];
+    state.conflict.idx = usize::MAX;
     panel::conflict::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
-    assert_eq!(state.conflict_idx, 0);
+    assert_eq!(state.conflict.idx, 0);
 
     add_flow_branches(&mut state);
     state.release_branches = ReleaseBranches::new(Some("develop".into()), Some("test".into()));
     state.branch = Some("feature/demo".into());
-    state.flow_idx = usize::MAX;
+    state.flow_list.idx = usize::MAX;
     panel::flow::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
-    assert!(state.flow_idx < lg::state::FlowAction::ALL.len());
+    assert!(state.flow_list.idx < lg::state::FlowAction::ALL.len());
 }
 
 #[test]
 fn scroll_handlers_clamp_stale_indices_before_moving_up() {
     let mut state = make_state_with_files();
-    state.files_idx = usize::MAX;
+    state.files_list.idx = usize::MAX;
     panel::files::handle_key(&mut state, key(KeyCode::Char('k'))).unwrap();
-    assert_eq!(state.files_idx, state.tree_rows().len() - 2);
+    assert_eq!(state.files_list.idx, state.tree_rows().len() - 2);
 
     state.branches = vec![
         Branch {
@@ -150,9 +150,9 @@ fn scroll_handlers_clamp_stale_indices_before_moving_up() {
             last_commit_unix: None,
         },
     ];
-    state.branches_idx = usize::MAX;
+    state.branches_list.idx = usize::MAX;
     panel::branches::handle_key(&mut state, key(KeyCode::Char('k'))).unwrap();
-    assert_eq!(state.branches_idx, 0);
+    assert_eq!(state.branches_list.idx, 0);
 
     state.commits = vec![
         Commit {
@@ -172,21 +172,21 @@ fn scroll_handlers_clamp_stale_indices_before_moving_up() {
             subject: "bottom".into(),
         },
     ];
-    state.commits_idx = usize::MAX;
+    state.commits_list.idx = usize::MAX;
     panel::commits::handle_key(&mut state, key(KeyCode::Char('k'))).unwrap();
-    assert_eq!(state.commits_idx, 0);
+    assert_eq!(state.commits_list.idx, 0);
 
-    state.conflicts = vec!["src/lib.rs".into(), "src/main.rs".into()];
-    state.conflict_idx = usize::MAX;
+    state.conflict.files = vec!["src/lib.rs".into(), "src/main.rs".into()];
+    state.conflict.idx = usize::MAX;
     panel::conflict::handle_key(&mut state, key(KeyCode::Char('k'))).unwrap();
-    assert_eq!(state.conflict_idx, 0);
+    assert_eq!(state.conflict.idx, 0);
 
     add_flow_branches(&mut state);
     state.release_branches = ReleaseBranches::new(Some("develop".into()), Some("test".into()));
     state.branch = Some("feature/demo".into());
-    state.flow_idx = usize::MAX;
+    state.flow_list.idx = usize::MAX;
     panel::flow::handle_key(&mut state, key(KeyCode::Char('k'))).unwrap();
-    assert!(state.flow_idx < lg::state::FlowAction::ALL.len());
+    assert!(state.flow_list.idx < lg::state::FlowAction::ALL.len());
 }
 
 #[test]
@@ -210,7 +210,7 @@ fn branch_without_upstream_and_local_commits_can_push() {
 fn conflict_modal_o_opens_selected_conflicted_file() {
     let mut state = AppState::new();
     state.modal = Modal::Conflict;
-    state.conflicts = vec!["src/a.rs".into(), "src/b.rs".into()];
+    state.conflict.files = vec!["src/a.rs".into(), "src/b.rs".into()];
 
     panel::conflict::handle_key(&mut state, key(KeyCode::Down)).unwrap();
     panel::conflict::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
@@ -225,7 +225,7 @@ fn conflict_modal_o_opens_selected_conflicted_file() {
 fn conflict_modal_enter_reports_when_inline_preview_is_unavailable() {
     let mut state = AppState::new();
     state.modal = Modal::Conflict;
-    state.conflicts = vec!["src/conflict.rs".into()];
+    state.conflict.files = vec!["src/conflict.rs".into()];
 
     panel::conflict::handle_key(&mut state, key(KeyCode::Enter)).unwrap();
 
@@ -247,8 +247,8 @@ fn the_claude_fallback_is_told_which_conflicts_are_still_open() {
     let mut state = AppState::new();
     state.modal = Modal::Conflict;
     state.repo_root = Some("/tmp/checkout".into());
-    state.conflicts = vec!["src/easy.rs".into(), "src/hard.rs".into()];
-    state.conflict_resolved.insert("src/easy.rs".into());
+    state.conflict.files = vec!["src/easy.rs".into(), "src/hard.rs".into()];
+    state.conflict.resolved.insert("src/easy.rs".into());
 
     panel::conflict::handle_key(&mut state, key(KeyCode::Char('c'))).unwrap();
 
@@ -281,7 +281,7 @@ fn a_conflict_goes_to_the_agent_that_was_last_started() {
     let mut state = AppState::new();
     state.modal = Modal::Conflict;
     state.repo_root = Some("/tmp/checkout".into());
-    state.conflicts = vec!["src/a.rs".into()];
+    state.conflict.files = vec!["src/a.rs".into()];
     state.preferred_agent = SessionKind::Pi;
 
     panel::conflict::handle_key(&mut state, key(KeyCode::Char('c'))).unwrap();
@@ -303,7 +303,7 @@ fn a_conflict_goes_to_the_agent_that_was_last_started() {
 fn a_conflict_with_no_repository_behind_it_starts_no_local_pass() {
     let mut state = AppState::new();
     state.modal = Modal::Conflict;
-    state.conflicts = vec!["src/a.rs".into()];
+    state.conflict.files = vec!["src/a.rs".into()];
 
     panel::conflict::handle_key(&mut state, key(KeyCode::Char('l'))).unwrap();
 
@@ -319,7 +319,7 @@ fn a_running_local_pass_holds_off_validating_and_aborting() {
         let mut state = AppState::new();
         state.modal = Modal::Conflict;
         state.repo_root = Some("/tmp/checkout".into());
-        state.conflicts = vec!["src/a.rs".into()];
+        state.conflict.files = vec!["src/a.rs".into()];
         let (_tx, rx) = mpsc::channel();
         state.conflict_resolve_job = Some(ConflictResolveJob {
             rx,
@@ -348,7 +348,7 @@ fn files_panel_o_opens_selected_source_file() {
         x: ' ',
         y: 'M',
     }];
-    state.files_idx = 1;
+    state.files_list.idx = 1;
 
     panel::files::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
 
@@ -371,7 +371,7 @@ fn files_panel_o_opens_project_from_top_level_or_folder() {
         x: ' ',
         y: 'M',
     }];
-    state.files_idx = 1;
+    state.files_list.idx = 1;
 
     panel::files::handle_key(&mut state, key(KeyCode::Char('o'))).unwrap();
     assert_eq!(state.pending_action, Some(PendingAction::OpenProject));
@@ -386,7 +386,7 @@ fn files_panel_i_ignores_selected_file_or_folder() {
         y: '?',
     }];
 
-    state.files_idx = 1;
+    state.files_list.idx = 1;
     panel::files::handle_key(&mut state, key(KeyCode::Char('i'))).unwrap();
     assert_eq!(
         state.pending_action,
@@ -397,7 +397,7 @@ fn files_panel_i_ignores_selected_file_or_folder() {
     );
 
     state.pending_action = None;
-    state.files_idx = 2;
+    state.files_list.idx = 2;
     panel::files::handle_key(&mut state, key(KeyCode::Char('i'))).unwrap();
     assert_eq!(
         state.pending_action,
@@ -427,7 +427,7 @@ fn files_panel_d_deletes_selected_file_or_folder_after_confirmation() {
     );
 
     state.status = None;
-    state.files_idx = 1;
+    state.files_list.idx = 1;
     panel::files::handle_key(&mut state, key(KeyCode::Char('d'))).unwrap();
     assert_eq!(state.modal, Modal::ConfirmDestructive);
     assert_eq!(state.pending_action, None);
@@ -441,7 +441,7 @@ fn files_panel_d_deletes_selected_file_or_folder_after_confirmation() {
     );
 
     state.pending_action = None;
-    state.files_idx = 2;
+    state.files_list.idx = 2;
     panel::files::handle_key(&mut state, key(KeyCode::Char('d'))).unwrap();
     assert_eq!(state.modal, Modal::ConfirmDestructive);
     assert_eq!(state.pending_action, None);
@@ -474,7 +474,7 @@ fn files_panel_r_rolls_back_selected_file_or_folder_after_confirmation() {
     );
 
     state.status = None;
-    state.files_idx = 1;
+    state.files_list.idx = 1;
     panel::files::handle_key(&mut state, key(KeyCode::Char('r'))).unwrap();
     assert_eq!(state.modal, Modal::ConfirmDestructive);
     assert_eq!(state.pending_action, None);
@@ -488,7 +488,7 @@ fn files_panel_r_rolls_back_selected_file_or_folder_after_confirmation() {
     );
 
     state.pending_action = None;
-    state.files_idx = 2;
+    state.files_list.idx = 2;
     panel::files::handle_key(&mut state, key(KeyCode::Char('r'))).unwrap();
     assert_eq!(state.modal, Modal::ConfirmDestructive);
     assert_eq!(state.pending_action, None);
@@ -524,10 +524,16 @@ fn g_and_shift_g_jump_to_the_ends_of_a_list() {
     let last = app.state.tree_rows().len() - 1;
 
     app.send_key(key(KeyCode::Char('G'))).unwrap();
-    assert_eq!(app.state.files_idx, last, "G should land on the last row");
+    assert_eq!(
+        app.state.files_list.idx, last,
+        "G should land on the last row"
+    );
 
     app.send_key(key(KeyCode::Char('g'))).unwrap();
-    assert_eq!(app.state.files_idx, 0, "g should land on the first row");
+    assert_eq!(
+        app.state.files_list.idx, 0,
+        "g should land on the first row"
+    );
 }
 
 #[test]
@@ -535,14 +541,17 @@ fn page_keys_move_further_than_a_single_step() {
     let mut app = app_with_many_files(40);
 
     app.send_key(key(KeyCode::PageDown)).unwrap();
-    let paged = app.state.files_idx;
+    let paged = app.state.files_list.idx;
     assert!(
         paged > 1,
         "PageDown should move more than one row, moved to {paged}"
     );
 
     app.send_key(key(KeyCode::PageUp)).unwrap();
-    assert_eq!(app.state.files_idx, 0, "PageUp should come back to the top");
+    assert_eq!(
+        app.state.files_list.idx, 0,
+        "PageUp should come back to the top"
+    );
 }
 
 #[test]
@@ -558,15 +567,15 @@ fn ctrl_d_pages_the_file_list_instead_of_deleting_a_file() {
         "Ctrl-d must not fall through to the plain d that deletes a file"
     );
     assert!(
-        app.state.files_idx > 0,
+        app.state.files_list.idx > 0,
         "Ctrl-d should have moved the selection down a half page"
     );
 
-    let down = app.state.files_idx;
+    let down = app.state.files_list.idx;
     app.send_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL))
         .unwrap();
     assert!(
-        app.state.files_idx < down,
+        app.state.files_list.idx < down,
         "Ctrl-u should move back up rather than unstaging"
     );
 }
@@ -589,7 +598,7 @@ fn a_jump_in_the_commits_pane_skips_the_graph_rows() {
 
     app.send_key(key(KeyCode::Char('G'))).unwrap();
 
-    let landed = &app.state.commits[app.state.commits_idx];
+    let landed = &app.state.commits[app.state.commits_list.idx];
     assert!(!landed.is_graph_row(), "G must land on a real commit row");
 }
 

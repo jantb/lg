@@ -73,20 +73,23 @@ where
 /// A `git` invocation aimed at this thread's repository.
 pub(super) fn git_command(args: &[&str]) -> Command {
     let mut command = base_command();
-    if let Some(dir) = repo_dir() {
+    let dir = repo_dir();
+    if let Some(dir) = &dir {
         command.arg("-C").arg(dir);
     }
     command.args(args);
+    batch_ssh_for_remotes(&mut command, dir.as_deref(), args);
     command
 }
 
 /// A `git` invocation aimed at `dir`. An explicit directory wins over the
 /// selection, so callers that already know which checkout they mean — nested
 /// repositories, worktrees — are unaffected by it.
-pub(super) fn git_command_in_dir(dir: &Path, args: &[&str]) -> Command {
+pub(crate) fn git_command_in_dir(dir: &Path, args: &[&str]) -> Command {
     let mut command = base_command();
     command.arg("-C").arg(dir);
     command.args(args);
+    batch_ssh_for_remotes(&mut command, Some(dir), args);
     command
 }
 
@@ -99,10 +102,72 @@ pub(super) fn git_command_in_dir(dir: &Path, args: &[&str]) -> Command {
 /// a build, the stat data is never fresh, so the two chase each other for as
 /// long as that worktree is busy. Reading a repository must not change it.
 /// Commands that write take locks that are not optional and are unaffected.
+///
+/// None of them can ask for anything either. They run with their output
+/// captured behind the TUI, so a credential prompt git opens on the terminal
+/// is drawn over by the next frame and then waits for an answer nobody knows
+/// is wanted — and the job that asked holds up every git job after it. With
+/// terminal prompts off a missing credential fails the command instead, and
+/// says so. Credential helpers and askpass programs are still consulted.
 fn base_command() -> Command {
     let mut command = Command::new("git");
     command.env("GIT_OPTIONAL_LOCKS", "0");
+    command.env("GIT_TERMINAL_PROMPT", "0");
     command
+}
+
+/// The subcommands lg runs that reach a remote, and with it ssh. `remote` is
+/// not among them: lg only lists remotes and reads their URLs, and asking the
+/// configuration about ssh for each of those would cost a refresh a process.
+const REMOTE_SUBCOMMANDS: [&str; 5] = ["fetch", "pull", "push", "ls-remote", "clone"];
+
+/// What ssh runs as when nobody configured it: the same ssh, refusing to stop
+/// for a passphrase or an unknown host key, for the reason git's own prompts
+/// are off.
+const BATCH_SSH_COMMAND: &str = "ssh -o BatchMode=yes";
+
+/// Keep ssh from prompting too, for a command that may talk to a remote.
+///
+/// Only when ssh is otherwise left at git's default: `GIT_SSH_COMMAND` beats
+/// both `GIT_SSH` and `core.sshCommand`, so setting it over either would throw
+/// away a choice the user made.
+fn batch_ssh_for_remotes(command: &mut Command, dir: Option<&Path>, args: &[&str]) {
+    if subcommand(args).is_some_and(|sub| REMOTE_SUBCOMMANDS.contains(&sub)) && !ssh_configured(dir)
+    {
+        command.env("GIT_SSH_COMMAND", BATCH_SSH_COMMAND);
+    }
+}
+
+/// The git subcommand among `args`, past any `-c key=value` or `-C dir`.
+pub(super) fn subcommand<'a>(args: &[&'a str]) -> Option<&'a str> {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match *arg {
+            "-c" | "-C" => {
+                args.next();
+            }
+            arg if arg.starts_with('-') => {}
+            arg => return Some(arg),
+        }
+    }
+    None
+}
+
+/// Whether the user chose how git runs ssh, in the environment or in the
+/// configuration `dir` sees.
+fn ssh_configured(dir: Option<&Path>) -> bool {
+    let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    if set("GIT_SSH_COMMAND") || set("GIT_SSH") {
+        return true;
+    }
+    let mut config = Command::new("git");
+    if let Some(dir) = dir {
+        config.arg("-C").arg(dir);
+    }
+    config
+        .args(["config", "--get", "core.sshCommand"])
+        .output()
+        .is_ok_and(|out| out.status.success() && !out.stdout.trim_ascii().is_empty())
 }
 
 #[cfg(test)]
@@ -186,5 +251,70 @@ mod tests {
                 "reading a repository must not write to it"
             );
         }
+    }
+
+    fn env_of(command: &Command, name: &str) -> Option<String> {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new(name))
+            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    }
+
+    /// lg's git runs behind the TUI with its output captured, so a prompt
+    /// opened on the terminal would wait for an answer nobody can see.
+    #[test]
+    fn commands_never_wait_on_a_terminal_prompt() {
+        for command in [
+            git_command(&["fetch", "--all"]),
+            git_command(&["status"]),
+            git_command_in_dir(Path::new("/tmp/explicit"), &["push", "origin", "main"]),
+        ] {
+            assert_eq!(
+                env_of(&command, "GIT_TERMINAL_PROMPT").as_deref(),
+                Some("0")
+            );
+        }
+    }
+
+    #[test]
+    fn ssh_runs_in_batch_mode_unless_the_user_chose_how_it_runs() {
+        let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+        if set("GIT_SSH_COMMAND") || set("GIT_SSH") {
+            // The environment already decides; there is nothing of lg's to see.
+            return;
+        }
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        assert!(git(&["init", "-q"]).status.success());
+        let inherited = git(&["config", "--get", "core.sshCommand"]);
+        if inherited.status.success() {
+            // A global core.sshCommand is the user's choice for this repo too.
+            return;
+        }
+
+        let fetch = git_command_in_dir(repo.path(), &["fetch"]);
+        assert_eq!(
+            env_of(&fetch, "GIT_SSH_COMMAND").as_deref(),
+            Some(BATCH_SSH_COMMAND)
+        );
+
+        assert!(
+            git(&["config", "core.sshCommand", "ssh -i /tmp/key"])
+                .status
+                .success()
+        );
+        let fetch = git_command_in_dir(repo.path(), &["fetch"]);
+        assert_eq!(
+            env_of(&fetch, "GIT_SSH_COMMAND"),
+            None,
+            "core.sshCommand would lose to GIT_SSH_COMMAND, so it must not be set"
+        );
     }
 }

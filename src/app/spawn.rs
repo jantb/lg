@@ -3,7 +3,7 @@ use anyhow::Result;
 use crate::config::COMMIT_LIST_LIMIT;
 use crate::state::{
     AppState, CheckoutJob, CheckoutMsg, DiffSource, Modal, OperationJob, OperationKind,
-    OperationMsg, Pane, PushJob, PushMsg, TreeKind,
+    OperationMsg, Pane, PushJob, PushMsg, QueuedAfterFetch, TreeKind,
 };
 
 pub(super) fn git_job_running(state: &AppState) -> bool {
@@ -48,7 +48,7 @@ pub(super) fn selected_diff_source(state: &AppState) -> DiffSource {
     match state.focus {
         Pane::Files => {
             let rows = state.tree_rows();
-            match rows.get(state.files_idx) {
+            match rows.get(state.files_list.idx) {
                 Some(row) => match &row.kind {
                     TreeKind::AllChanges => DiffSource::All,
                     TreeKind::Folder { .. } => DiffSource::Folder(row.path.clone()),
@@ -61,9 +61,10 @@ pub(super) fn selected_diff_source(state: &AppState) -> DiffSource {
                 None => DiffSource::None,
             }
         }
+        Pane::Commits if state.selection_hidden(Pane::Commits) => DiffSource::None,
         Pane::Commits => state
             .commits
-            .get(state.commits_idx)
+            .get(state.commits_list.idx)
             .filter(|c| !c.is_graph_row())
             .map(|c| DiffSource::Commit(c.sha.clone()))
             .unwrap_or(DiffSource::None),
@@ -71,7 +72,11 @@ pub(super) fn selected_diff_source(state: &AppState) -> DiffSource {
             .selected_branch_ref()
             .map(|branch| DiffSource::Branch(branch.to_string()))
             .unwrap_or(DiffSource::None),
-        _ => DiffSource::None,
+        // The diff pane itself selects nothing: it goes on showing what the
+        // pane it was entered from selected, and a refresh while it has focus
+        // — after staging a hunk from it, say — reads that again.
+        Pane::Main => state.diff_source.clone(),
+        Pane::Status => DiffSource::None,
     }
 }
 
@@ -133,9 +138,48 @@ fn load_new_file_text(source: &DiffSource) -> String {
     }
 }
 
+/// What keeps a push or pull from starting now, when something does.
+///
+/// A fetch — the periodic one included — is quick and only reads, so a push
+/// or pull asked for during one waits for it and then starts, rather than
+/// being dropped without a word as it used to be. Anything else is named.
+fn wait_or_block(state: &mut AppState, what: QueuedAfterFetch) -> bool {
+    let blocker = if state.push_job.is_some() {
+        Some("push in progress")
+    } else if state.checkout_job.is_some() {
+        Some("checkout in progress")
+    } else if let Some(job) = &state.operation_job {
+        Some(job.label)
+    } else if state.workflow_job.is_some() {
+        Some("workflow in progress")
+    } else {
+        None
+    };
+    if let Some(reason) = blocker {
+        state.set_status(blocked_operation_status(what.label(), reason), true);
+        return true;
+    }
+    if state.fetch_job.is_some() {
+        state.queued_after_fetch = Some(what);
+        state.set_status(format!("{} queued after fetch", what.label()), false);
+        return true;
+    }
+    false
+}
+
+/// Start whatever was queued behind the fetch that just finished.
+pub(super) fn release_queued_after_fetch(state: &mut AppState) {
+    if state.fetch_job.is_some() || state.pending_action.is_some() {
+        return;
+    }
+    if let Some(queued) = state.queued_after_fetch.take() {
+        state.pending_action = Some(queued.action());
+    }
+}
+
 pub(super) fn spawn_push(state: &mut AppState) {
     let configured_remote = crate::preferences::remote();
-    if git_job_running(state) {
+    if wait_or_block(state, QueuedAfterFetch::Push) {
         return;
     }
     if state.branch_diverged_from_remote() {
@@ -175,13 +219,40 @@ pub(super) fn spawn_push(state: &mut AppState) {
     state.set_status("pushing\u{2026}", false);
 }
 
-pub(super) fn spawn_pull(state: &mut AppState) {
-    let configured_remote = crate::preferences::remote();
+/// Push over a diverged upstream with `--force-with-lease`, in the background
+/// like any push. The lease is the remote commit the confirmation named, so a
+/// remote branch someone pushed to since is refused rather than overwritten.
+pub(super) fn spawn_force_push(state: &mut AppState, plan: crate::git::ForcePushPlan) {
     if git_job_running(state) {
+        state.set_status("force push blocked: another git job is running", true);
         return;
     }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let branch = plan.branch.clone();
+    let remote = plan.remote_ref();
+    let handle = crate::git::spawn_pinned(move || {
+        let _ = tx.send(match crate::git::push_force_with_lease(&plan) {
+            Ok(line) => PushMsg::Done(line),
+            Err(e) => PushMsg::Error(e.to_string()),
+        });
+    });
+    state.push_job = Some(PushJob {
+        rx,
+        handle: Some(handle),
+        spinner: 0,
+        branch,
+        remote,
+    });
+    state.set_status("force-pushing with lease\u{2026}", false);
+}
+
+pub(super) fn spawn_pull(state: &mut AppState) {
+    let configured_remote = crate::preferences::remote();
     if !state.pull_available() {
         state.set_status("nothing to pull", false);
+        return;
+    }
+    if wait_or_block(state, QueuedAfterFetch::Pull) {
         return;
     }
     let branch = state.branch.clone().unwrap_or_default();
@@ -200,26 +271,30 @@ pub(super) fn open_author_modal(state: &mut AppState) {
     let root = crate::git::repo_root().unwrap_or_default();
     match config {
         Ok(config) => {
-            state.author_path_input = if state.author_path_input.trim().is_empty() {
-                root
+            if state.author.path.as_str().trim().is_empty() {
+                state.author.path.set(root);
             } else {
-                state.author_path_input.clone()
-            };
-            state.author_name_input = config
-                .local_name
-                .clone()
-                .or(config.name)
-                .unwrap_or_default();
-            state.author_email_input = config
-                .local_email
-                .clone()
-                .or(config.email)
-                .unwrap_or_default();
-            state.author_has_local_override =
+                state.author.path.end();
+            }
+            state.author.name.set(
+                config
+                    .local_name
+                    .clone()
+                    .or(config.name)
+                    .unwrap_or_default(),
+            );
+            state.author.email.set(
+                config
+                    .local_email
+                    .clone()
+                    .or(config.email)
+                    .unwrap_or_default(),
+            );
+            state.author.has_local_override =
                 config.local_name.is_some() || config.local_email.is_some();
-            state.author_has_subtree_rule =
-                crate::git::subtree_author_rule_exists(&state.author_path_input);
-            state.author_field = crate::state::AuthorField::Path;
+            state.author.has_subtree_rule =
+                crate::git::subtree_author_rule_exists(state.author.path.as_str());
+            state.author.field = crate::state::AuthorField::Path;
             state.modal = Modal::Author;
         }
         Err(err) => {
@@ -503,7 +578,7 @@ pub(super) fn spawn_operation_with_progress<F>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::FetchJob;
+    use crate::state::{FetchJob, PendingAction};
 
     #[test]
     fn index_and_file_operations_can_start_during_fetch() {
@@ -537,6 +612,81 @@ mod tests {
         assert!(operation_block_reason(&state, OperationKind::GitHub).is_none());
         assert!(operation_block_reason(&state, OperationKind::Clone).is_none());
         assert!(operation_block_reason(&state, OperationKind::OpenPullRequest).is_some());
+    }
+
+    fn fetching() -> FetchJob {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        FetchJob {
+            rx,
+            handle: None,
+            spinner: 0,
+        }
+    }
+
+    /// The periodic fetch used to swallow a push pressed while it ran, with
+    /// no word said. The push now waits and then starts.
+    #[test]
+    fn a_push_during_a_fetch_waits_for_it_and_then_starts() {
+        let mut state = AppState::new();
+        state.fetch_job = Some(fetching());
+
+        spawn_push(&mut state);
+
+        assert!(
+            state.push_job.is_none(),
+            "nothing is pushed under the fetch"
+        );
+        let status = state.status.as_ref().expect("a status");
+        assert_eq!(status.text, "push queued after fetch");
+        assert!(!status.is_error);
+
+        release_queued_after_fetch(&mut state);
+        assert!(state.pending_action.is_none(), "the fetch is still running");
+
+        state.fetch_job = None;
+        release_queued_after_fetch(&mut state);
+        assert!(matches!(state.pending_action, Some(PendingAction::Push)));
+        assert!(state.queued_after_fetch.is_none(), "it starts once");
+    }
+
+    #[test]
+    fn a_pull_during_a_fetch_waits_for_it_too() {
+        let mut state = AppState::new();
+        state.branch = Some("main".into());
+        state.ahead_behind = Some((0, 2));
+        state.fetch_job = Some(fetching());
+
+        spawn_pull(&mut state);
+
+        assert!(state.operation_job.is_none());
+        assert_eq!(
+            state.status.as_ref().map(|s| s.text.as_str()),
+            Some("pull queued after fetch")
+        );
+        state.fetch_job = None;
+        release_queued_after_fetch(&mut state);
+        assert!(matches!(state.pending_action, Some(PendingAction::Pull)));
+    }
+
+    /// Anything other than a fetch is named, the way a blocked operation is.
+    #[test]
+    fn a_push_behind_a_checkout_says_what_blocks_it() {
+        let mut state = AppState::new();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        state.checkout_job = Some(CheckoutJob {
+            rx,
+            handle: None,
+            spinner: 0,
+            branch: "feature/demo".into(),
+        });
+
+        spawn_push(&mut state);
+
+        assert!(state.push_job.is_none());
+        assert!(state.queued_after_fetch.is_none());
+        let status = state.status.as_ref().expect("a status");
+        assert!(status.is_error);
+        assert_eq!(status.text, "push blocked: checkout in progress");
     }
 
     #[test]

@@ -232,6 +232,9 @@ fn closing_the_last_session_goes_back_to_the_diff() {
     app.state.session_capture = false;
     app.state.focus = Pane::Main;
     app.send_key(key(KeyCode::Char('x'))).unwrap();
+    // A running agent is stopped only once that is confirmed.
+    assert_eq!(app.state.modal, Modal::ConfirmDestructive);
+    app.send_key(key(KeyCode::Char('y'))).unwrap();
 
     assert!(app.state.sessions.is_empty());
     assert_eq!(app.state.main_view, MainView::Diff);
@@ -441,7 +444,7 @@ fn sessions_are_listed_under_their_checkout_and_can_be_reopened() {
 fn closing_a_session_puts_an_unfinished_conflict_back_up() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
     app.state.repo_root = Some("/workspace".into());
-    app.state.conflicts = vec!["src/a.rs".into()];
+    app.state.conflict.files = vec!["src/a.rs".into()];
     shell_session(&mut app, "exit 0", "/workspace");
     app.state.session_capture = true;
 
@@ -947,9 +950,11 @@ fn closing_the_session_frees_the_worktree_to_be_landed() {
     ];
     shell_session(&mut app, "sleep 30", "/workspace.worktrees/feat-x");
 
-    // x closes the shown session, the way the footer and help say it does.
+    // x closes the shown session, the way the footer and help say it does,
+    // once the prompt for stopping a running agent is answered.
     app.state.session_capture = false;
     app.send_key(key(KeyCode::Char('x'))).unwrap();
+    app.send_key(key(KeyCode::Char('y'))).unwrap();
 
     app.state.show_diff();
     app.state.focus = Pane::Status;

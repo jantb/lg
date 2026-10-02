@@ -17,7 +17,7 @@ pub(super) struct SourceRenderOptions {
 }
 
 pub(super) fn full_source_with_inline_diff(
-    cache: &mut RenderCache,
+    cache: &mut RenderCache<'_>,
     path: &str,
     body: &[String],
     notes: &BTreeMap<usize, Vec<String>>,
@@ -328,7 +328,7 @@ pub(in crate::panel::main) fn inline_diff_overlay(body: &[String]) -> InlineDiff
     let mut in_hunk = false;
 
     for line in body {
-        if let Some((old_start, new_start)) = parse_hunk_header(line) {
+        if let Some((old_start, new_start)) = hunk_starts(line) {
             old_line = old_start;
             new_line = new_start;
             in_hunk = true;
@@ -340,11 +340,10 @@ pub(in crate::panel::main) fn inline_diff_overlay(body: &[String]) -> InlineDiff
         if line.starts_with("\\ No newline") {
             continue;
         }
-        if let Some(source) = line.strip_prefix(' ') {
+        if line.starts_with(' ') {
             overlay.old_line_for_new.insert(new_line.max(1), old_line);
             old_line = old_line.saturating_add(1);
             new_line = new_line.saturating_add(1);
-            let _ = source;
         } else if let Some(source) = line.strip_prefix('-') {
             overlay
                 .removed_before
@@ -364,14 +363,7 @@ pub(in crate::panel::main) fn inline_diff_overlay(body: &[String]) -> InlineDiff
     overlay
 }
 
-pub(super) fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
-    let rest = line.strip_prefix("@@ ")?;
-    let mut parts = rest.split_whitespace();
-    let old = parts.next()?.strip_prefix('-')?;
-    let new = parts.next()?.strip_prefix('+')?;
-    Some((parse_hunk_start(old)?, parse_hunk_start(new)?))
-}
-
-fn parse_hunk_start(part: &str) -> Option<usize> {
-    part.split(',').next()?.parse().ok()
+/// The old and new start lines of an `@@` hunk header.
+pub(super) fn hunk_starts(line: &str) -> Option<(usize, usize)> {
+    crate::git::patch::parse_hunk_header(line).map(|hunk| (hunk.old_start, hunk.new_start))
 }

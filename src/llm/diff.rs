@@ -109,9 +109,7 @@ pub fn diff_excerpt(diff: &str) -> String {
 }
 
 fn parse_diff_path(line: &str) -> Option<String> {
-    let rest = line.strip_prefix("diff --git ")?;
-    let (_, b_path) = rest.split_once(" b/")?;
-    Some(b_path.to_owned())
+    crate::git::patch::diff_git_paths(line).map(|(_, new)| new)
 }
 
 fn push_signal(signals: &mut Vec<String>, prefix: char, line: &str) {

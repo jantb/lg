@@ -1,6 +1,6 @@
 //! Explicit promotion previews and optimistic ref checks before mutation.
 use super::{git_command, run};
-use crate::preferences::{Environment, Promotion};
+use crate::preferences::{Environment, Promotion, Strategy};
 use anyhow::{Context, Result, bail};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,11 +116,11 @@ pub fn promote(preview: &PromotionPreview) -> Result<String> {
     );
     run(&["update-ref", &safety, &preview.target_oid])?;
     let merged = super::with_repo(&dir, || -> Result<String> {
-        match preview.rule.strategy.as_str() {
-            "ff-only" => {
+        match preview.rule.strategy {
+            Strategy::FfOnly => {
                 run(&["merge", "--ff-only", &preview.source_oid])?;
             }
-            "squash" => {
+            Strategy::Squash => {
                 run(&["merge", "--squash", &preview.source_oid])?;
                 run(&[
                     "commit",
@@ -128,10 +128,9 @@ pub fn promote(preview: &PromotionPreview) -> Result<String> {
                     &format!("Promote {} to {}", preview.source, env.name),
                 ])?;
             }
-            "merge" => {
+            Strategy::Merge => {
                 run(&["merge", "--no-edit", "--no-ff", &preview.source_oid])?;
             }
-            _ => bail!("unsupported merge strategy"),
         }
         oid("HEAD")
     });

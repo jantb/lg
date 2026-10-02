@@ -759,21 +759,21 @@ fn the_worktree_form_derives_a_path_from_the_branch_until_it_is_edited() {
     for c in "feat/parser".chars() {
         panel::worktree::handle_key(&mut state, key(KeyCode::Char(c))).unwrap();
     }
-    assert_eq!(state.worktree_path_input, "/dev/lg.worktrees/feat-parser");
+    assert_eq!(state.worktree_form.path, "/dev/lg.worktrees/feat-parser");
 
     // Editing the path takes it over; the branch no longer drives it.
     panel::worktree::handle_key(&mut state, key(KeyCode::Tab)).unwrap();
     panel::worktree::handle_key(&mut state, key(KeyCode::Tab)).unwrap();
     panel::worktree::handle_key(&mut state, key(KeyCode::Char('2'))).unwrap();
     panel::worktree::handle_key(&mut state, key(KeyCode::Char('x'))).unwrap();
-    assert_eq!(state.worktree_path_input, "/dev/lg.worktrees/feat-parser2x");
+    assert_eq!(state.worktree_form.path, "/dev/lg.worktrees/feat-parser2x");
 
     panel::worktree::handle_key(&mut state, key(KeyCode::BackTab)).unwrap();
     panel::worktree::handle_key(&mut state, key(KeyCode::BackTab)).unwrap();
     panel::worktree::handle_key(&mut state, key(KeyCode::Backspace)).unwrap();
-    assert_eq!(state.worktree_branch_input, "feat/parse");
+    assert_eq!(state.worktree_form.branch, "feat/parse");
     assert_eq!(
-        state.worktree_path_input, "/dev/lg.worktrees/feat-parser2x",
+        state.worktree_form.path, "/dev/lg.worktrees/feat-parser2x",
         "an edited path must not snap back to the branch name"
     );
 }
@@ -791,11 +791,8 @@ fn the_worktree_form_turns_typed_spaces_into_dashes() {
     for c in " parse  the   diff ".chars() {
         panel::worktree::handle_key(&mut state, key(KeyCode::Char(c))).unwrap();
     }
-    assert_eq!(state.worktree_branch_input, "parse-the-diff-");
-    assert_eq!(
-        state.worktree_path_input,
-        "/dev/lg.worktrees/parse-the-diff"
-    );
+    assert_eq!(state.worktree_form.branch, "parse-the-diff-");
+    assert_eq!(state.worktree_form.path, "/dev/lg.worktrees/parse-the-diff");
 
     panel::worktree::handle_key(&mut state, key(KeyCode::Enter)).unwrap();
     assert_eq!(
@@ -1054,7 +1051,7 @@ fn started_agent(state: &AppState) -> Option<(String, String, SessionKind, bool)
             path.clone(),
             label.clone(),
             lg::agents::kind(profile),
-            profile.confinement == "terrarium",
+            profile.confinement == lg::preferences::Confinement::Terrarium,
         )),
         _ => None,
     }
@@ -1540,8 +1537,8 @@ fn flow_modal_draws_the_graph_beside_the_running_steps() {
 fn conflict_modal_exposes_inline_and_external_resolution() {
     let mut state = AppState::new();
     state.modal = Modal::Conflict;
-    state.conflicts = vec!["src/conflict.rs".into()];
-    state.conflict_log = "merge failed".into();
+    state.conflict.files = vec!["src/conflict.rs".into()];
+    state.conflict.log = "merge failed".into();
 
     let backend = TestBackend::new(100, 24);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -1581,8 +1578,8 @@ fn conflict_modal_exposes_inline_and_external_resolution() {
 fn the_conflict_modal_separates_files_to_read_from_files_to_resolve() {
     let mut state = AppState::new();
     state.modal = Modal::Conflict;
-    state.conflicts = vec!["src/easy.rs".into(), "src/hard.rs".into()];
-    state.conflict_resolved.insert("src/easy.rs".into());
+    state.conflict.files = vec!["src/easy.rs".into(), "src/hard.rs".into()];
+    state.conflict.resolved.insert("src/easy.rs".into());
 
     let backend = TestBackend::new(140, 32);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -1765,7 +1762,7 @@ fn files_panel_enter_toggles_folder_collapse() {
         y: ' ',
     }];
     // Initial rows: AllChanges, src/, src/lib.rs. Move cursor to folder row.
-    state.files_idx = 1;
+    state.files_list.idx = 1;
     panel::files::handle_key(&mut state, key(KeyCode::Enter)).unwrap();
     assert!(
         state.collapsed_dirs.contains("src"),
@@ -2245,7 +2242,7 @@ fn c_hands_the_conflict_to_a_claude_session_in_the_checkout() {
     state.modal = Modal::Conflict;
     state.repo_root = Some("/workspace/alv-no".into());
     state.branch = Some("feature/send-cv".into());
-    state.conflicts = vec!["src/a.rs".into(), "src/b.rs".into()];
+    state.conflict.files = vec!["src/a.rs".into(), "src/b.rs".into()];
 
     panel::conflict::handle_key(&mut state, key(KeyCode::Char('c'))).unwrap();
 
@@ -2300,7 +2297,7 @@ fn c_hands_the_conflict_to_a_claude_session_in_the_checkout() {
 fn f_reopens_a_conflict_that_is_still_unfinished() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(100, 30)).unwrap();
     app.state.repo_root = Some("/workspace".into());
-    app.state.conflicts = vec!["src/a.rs".into()];
+    app.state.conflict.files = vec!["src/a.rs".into()];
     app.state.modal = Modal::Conflict;
 
     app.send_key(key(KeyCode::Esc)).unwrap();
@@ -2314,7 +2311,7 @@ fn f_reopens_a_conflict_that_is_still_unfinished() {
     );
 
     // With nothing conflicted, F is the branch action menu it has always been.
-    app.state.conflicts.clear();
+    app.state.conflict.files.clear();
     app.state.modal = Modal::None;
     app.send_key(key(KeyCode::Char('F'))).unwrap();
     assert_ne!(app.state.modal, Modal::Conflict);
@@ -2326,8 +2323,8 @@ fn f_reopens_a_conflict_that_is_still_unfinished() {
 fn stopped_sync() -> AppState {
     let mut state = AppState::new();
     state.modal = Modal::Conflict;
-    state.conflicts = vec!["src/a.rs".into()];
-    state.conflict_followup = Some(lg::state::ConflictFollowup::for_branch_sync(Some(
+    state.conflict.files = vec!["src/a.rs".into()];
+    state.conflict.followup = Some(lg::state::ConflictFollowup::for_branch_sync(Some(
         "main".to_string(),
     )));
     state
@@ -2342,7 +2339,8 @@ fn a_stopped_sync_comes_back_to_the_branch_it_was_launched_from() {
 
     assert_eq!(
         state
-            .conflict_followup
+            .conflict
+            .followup
             .as_ref()
             .and_then(|followup| followup.return_branch.as_deref()),
         Some("main"),
@@ -2362,8 +2360,8 @@ fn continuing_a_conflict_resumes_the_sync_that_stopped_on_it() {
         "the sync should run again, which is what pushes the branch just merged"
     );
     assert_eq!(state.modal, Modal::None);
-    assert!(state.conflicts.is_empty());
-    assert_eq!(state.conflict_followup, None, "the followup is spent");
+    assert!(state.conflict.files.is_empty());
+    assert_eq!(state.conflict.followup, None, "the followup is spent");
 }
 
 /// Aborting is giving up on the flow, so it must not start it again.
@@ -2378,7 +2376,7 @@ fn aborting_a_conflict_does_not_resume_anything() {
         "abort must not queue the flow it is giving up on"
     );
     assert_eq!(state.modal, Modal::None);
-    assert_eq!(state.conflict_followup, None);
+    assert_eq!(state.conflict.followup, None);
 }
 
 /// A conflict from something with nothing left to do settles without queueing
@@ -2387,8 +2385,8 @@ fn aborting_a_conflict_does_not_resume_anything() {
 fn continuing_a_conflict_with_nothing_to_resume_queues_nothing() {
     let mut state = AppState::new();
     state.modal = Modal::Conflict;
-    state.conflicts = vec!["src/a.rs".into()];
-    state.conflict_followup = Some(lg::state::ConflictFollowup::default());
+    state.conflict.files = vec!["src/a.rs".into()];
+    state.conflict.followup = Some(lg::state::ConflictFollowup::default());
 
     state.settle_conflict(true);
 
