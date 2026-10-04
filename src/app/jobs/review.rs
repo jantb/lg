@@ -6,7 +6,7 @@ use crate::state::{DiffSource, GenMsg, ReviewFlagMsg, ReviewMsg};
 
 use super::super::App;
 use super::{
-    drain_messages, drain_review_stream, first_status_line, join_worker, reap_stopped,
+    drain_messages, drain_review_stream, first_status_line, reap_stopped,
     take_finished, tick_spinner,
 };
 
@@ -108,7 +108,7 @@ impl App {
         let Some((mut job, msg)) = take_finished(&mut self.state.review_job) else {
             return;
         };
-        join_worker(job.handle.take());
+        self.state.defer_thread_join(job.handle.take());
         {
             match msg {
                 Ok(ReviewMsg::Done(review)) => {
@@ -223,7 +223,7 @@ impl App {
             self.state.review.flag_active_path = None;
             self.state.set_status(stopped, true);
         }
-        join_worker(handle);
+        self.state.defer_thread_join(handle);
         tick_spinner(&mut self.state.review_flag_job);
     }
 
@@ -231,6 +231,7 @@ impl App {
         let status = drain_review_stream(
             &mut self.state.review_assist_job,
             &mut self.state.review.assists,
+            &mut self.state.deferred_threads,
             "review explanation ready",
         );
         if let Some((text, is_error)) = status {
@@ -242,6 +243,7 @@ impl App {
         let status = drain_review_stream(
             &mut self.state.review_pr_job,
             &mut self.state.review.assists,
+            &mut self.state.deferred_threads,
             "PR text ready",
         );
         if let Some((text, is_error)) = status {
@@ -324,7 +326,7 @@ impl App {
             self.state.review.chat_scroll = u16::MAX;
             self.state.set_status(stopped, true);
         }
-        join_worker(handle);
+        self.state.defer_thread_join(handle);
         if self.state.review_chat_job.is_some() {
             tick_spinner(&mut self.state.review_chat_job);
             self.state.review.chat_scroll = u16::MAX;

@@ -4,7 +4,7 @@
 use crate::state::ConflictResolveMsg;
 
 use super::super::App;
-use super::{drain_messages, join_worker, reap_stopped, tick_spinner};
+use super::{drain_messages, reap_stopped, tick_spinner};
 
 impl App {
     pub(in crate::app) fn drain_conflict_resolve_job(&mut self) {
@@ -51,7 +51,7 @@ impl App {
         {
             self.state.set_status(stopped, true);
         }
-        join_worker(handle);
+        self.state.defer_thread_join(handle);
         tick_spinner(&mut self.state.conflict_resolve_job);
     }
 

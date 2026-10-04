@@ -173,7 +173,7 @@ impl App {
         };
         let pending_refresh = self.state.refresh_pending.take();
         let pending_diff = self.state.refresh_pending_diff;
-        join_worker(job.handle.take());
+        self.state.defer_thread_join(job.handle.take());
         self.state.refresh_pending_diff = false;
         match msg {
             Ok(RefreshMsg::Done(snapshot)) => {
@@ -190,7 +190,7 @@ impl App {
         let Some((mut job, msg)) = take_finished(&mut self.state.diff_job) else {
             return;
         };
-        join_worker(job.handle.take());
+        self.state.defer_thread_join(job.handle.take());
         let DiffMsg::Done { source, text } = match msg {
             Ok(msg) => msg,
             Err(stopped) => {
@@ -211,7 +211,7 @@ impl App {
         let Some((mut job, msg)) = take_finished(&mut self.state.release_status_job) else {
             return;
         };
-        join_worker(job.handle.take());
+        self.state.defer_thread_join(job.handle.take());
         {
             match msg {
                 Err(stopped) => self.state.set_status(stopped, true),
@@ -240,7 +240,7 @@ impl App {
         let Some((mut job, msg)) = take_finished(&mut self.state.settings_suggest_job) else {
             return;
         };
-        join_worker(job.handle.take());
+        self.state.defer_thread_join(job.handle.take());
         match msg {
             Err(stopped) => self.state.set_status(stopped, true),
             Ok(SettingsSuggestMsg::Done { language, shapes }) => {
@@ -291,7 +291,7 @@ impl App {
         let Some((mut job, msg)) = take_finished(&mut self.state.commit_log_job) else {
             return;
         };
-        join_worker(job.handle.take());
+        self.state.defer_thread_join(job.handle.take());
         {
             match msg {
                 Err(stopped) => self.state.set_status(stopped, true),
@@ -318,7 +318,7 @@ impl App {
         let Some((mut job, msg)) = take_finished(&mut self.state.fetch_job) else {
             return;
         };
-        join_worker(job.handle.take());
+        self.state.defer_thread_join(job.handle.take());
         self.state.current_branch_releases_ref = None;
         match msg {
             Ok(FetchMsg::Done(s)) => self.state.set_status(s, false),
@@ -334,7 +334,7 @@ impl App {
         let Some((mut job, msg)) = take_finished(&mut self.state.push_job) else {
             return Ok(());
         };
-        join_worker(job.handle.take());
+        self.state.defer_thread_join(job.handle.take());
         // A push started with P runs behind no modal; whatever the user opened
         // in the meantime (Shift-F's flow modal, say) is theirs to close.
         if matches!(self.state.modal, Modal::Push) {
@@ -354,7 +354,7 @@ impl App {
         let Some((mut job, msg)) = take_finished(&mut self.state.checkout_job) else {
             return Ok(());
         };
-        join_worker(job.handle.take());
+        self.state.defer_thread_join(job.handle.take());
         self.state.current_branch_releases_ref = None;
         match msg {
             Ok(CheckoutMsg::Done(s)) => self.state.set_status(s, false),
@@ -402,7 +402,7 @@ impl App {
             return Ok(());
         };
         let kind = job.kind;
-        join_worker(job.handle.take());
+        self.state.defer_thread_join(job.handle.take());
         self.state.current_branch_releases_ref = None;
         let succeeded = matches!(msg, OperationMsg::Done(_));
         match msg {
@@ -493,7 +493,7 @@ impl App {
             .and_then(|job| job.flow.as_ref())
             .map(|flow| flow.action);
         if let Some(mut job) = self.state.workflow_job.take() {
-            join_worker(job.handle.take());
+            self.state.defer_thread_join(job.handle.take());
         }
         {
             self.state.current_branch_releases_ref = None;
@@ -647,7 +647,7 @@ impl App {
             kept = false;
             self.state.set_status(stopped, true);
         }
-        join_worker(handle);
+        self.state.defer_thread_join(handle);
         kept
     }
 

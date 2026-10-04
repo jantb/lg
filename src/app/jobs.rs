@@ -99,10 +99,12 @@ fn tick_spinner<J: BackgroundJob>(slot: &mut Option<J>) {
 
 /// Stream an LLM answer for a review node into the pane. Review explanations and
 /// PR text differ only in what they are called when they finish. Returns the
-/// status to show, if the stream reached an end.
+/// status to show, if the stream reached an end. A finished worker goes into
+/// `deferred` to be joined once it exits, rather than waited on here.
 fn drain_review_stream(
     slot: &mut Option<ReviewAssistJob>,
     assists: &mut std::collections::HashMap<String, String>,
+    deferred: &mut Vec<JoinHandle<()>>,
     ready: &'static str,
 ) -> Option<(String, bool)> {
     let mut status = None;
@@ -162,7 +164,7 @@ fn drain_review_stream(
         assists.insert(job.node_id, format!("llm error: {stopped}"));
         status = Some((stopped, true));
     }
-    join_worker(handle);
+    deferred.extend(handle);
     tick_spinner(slot);
     status
 }
@@ -179,6 +181,10 @@ pub(super) fn mark_if_truncated(text: String, truncated: bool) -> String {
     format!("{}\n\n{}", text.trim_end(), crate::llm::TRUNCATED_NOTE)
 }
 
+/// Wait for a worker to exit. Only for shutdown: a worker can outlive the
+/// message it sent by seconds — the Claude CLI does — and waiting on the UI
+/// thread freezes the screen for that long. Use
+/// [`crate::state::AppState::defer_thread_join`] everywhere else.
 fn join_worker(handle: Option<JoinHandle<()>>) {
     if let Some(handle) = handle {
         let _ = handle.join();
@@ -292,6 +298,42 @@ mod tests {
             status.contains("review chat stopped unexpectedly"),
             "{status}"
         );
+    }
+
+    /// The Claude CLI sends its answer and then takes seconds to exit. The
+    /// answer is shown as it arrives; the screen does not wait for the exit.
+    #[test]
+    fn an_answer_is_taken_without_waiting_for_its_worker_to_exit() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            tx.send(GenMsg::Done {
+                text: "the explanation".into(),
+                stats: crate::llm::GenStats::default(),
+            })
+            .unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        });
+        let mut slot = Some(ReviewAssistJob {
+            rx,
+            handle: Some(handle),
+            node_id: "node".into(),
+            output: String::new(),
+            spinner: 0,
+        });
+        let mut assists = std::collections::HashMap::new();
+        let mut deferred = Vec::new();
+        let started = std::time::Instant::now();
+        let mut status = None;
+        while status.is_none() && started.elapsed() < std::time::Duration::from_secs(1) {
+            status = drain_review_stream(&mut slot, &mut assists, &mut deferred, "ready");
+        }
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "the drain waited for the worker to exit"
+        );
+        assert_eq!(status, Some(("ready".to_string(), false)));
+        assert_eq!(assists.get("node").map(String::as_str), Some("the explanation"));
     }
 
     /// A status line expires; an answer stays on screen and gets pasted into a
