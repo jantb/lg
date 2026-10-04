@@ -74,6 +74,10 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
     if !models.is_empty() {
         state.settings_hub.models = models;
     }
+    let claude_models = crate::llm::served_claude_models();
+    if !claude_models.is_empty() {
+        state.settings_hub.claude_models = claude_models;
+    }
     let hub = &mut state.settings_hub;
     // An error is about the key that caused it; the next key leaves its
     // text up but no longer in red.

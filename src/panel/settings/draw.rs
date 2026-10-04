@@ -89,7 +89,11 @@ pub(super) fn field_lines(
 ) -> Vec<Line<'static>> {
     let indent = "  ".repeat(depth);
     let key = format!("{}{}: ", indent, humanize(&field.key));
-    let value = value_span(&field.value);
+    let unused = unused(hub, field);
+    let mut value = value_span(&field.value);
+    if unused {
+        value.style = Style::default().fg(MUTED);
+    }
     let room = width.saturating_sub(key.chars().count()).max(8);
     let text = value.content.to_string();
     let mut chunks = if text.chars().count() <= room {
@@ -112,7 +116,7 @@ pub(super) fn field_lines(
             } else {
                 continuation.clone()
             },
-            Style::default().fg(KEY_COLOR),
+            Style::default().fg(if unused { MUTED } else { KEY_COLOR }),
         )];
         spans.push(Span::styled(chunk, value.style));
         if i == 0 && hub.changed(&field.path) {
@@ -151,14 +155,25 @@ pub(super) fn list_lines(
     for row in rows {
         match row {
             Row::Header { label, depth } => {
-                let color = GROUP_COLORS[(*depth).min(GROUP_COLORS.len() - 1)];
-                lines.push((
-                    Line::from(Span::styled(
-                        format!("{}{label}", "  ".repeat(*depth)),
-                        Style::default().fg(color).add_modifier(Modifier::BOLD),
-                    )),
-                    None,
-                ));
+                let mut color = GROUP_COLORS[(*depth).min(GROUP_COLORS.len() - 1)];
+                let mut note = None;
+                if let Some((what, in_use)) = provider_heading(hub, label) {
+                    note = Some(if in_use {
+                        Span::styled(format!("  {what} \u{b7} in use"), Style::default().fg(OK))
+                    } else {
+                        color = MUTED;
+                        muted(format!(
+                            "  {what} \u{b7} not used while provider is {}",
+                            hub.draft["provider"].as_str().unwrap_or_default()
+                        ))
+                    });
+                }
+                let mut spans = vec![Span::styled(
+                    format!("{}{label}", "  ".repeat(*depth)),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                )];
+                spans.extend(note);
+                lines.push((Line::from(spans), None));
             }
             Row::Field { index, depth } => {
                 for line in field_lines(hub, &fields[*index], *depth, width) {
@@ -403,12 +418,24 @@ pub(super) fn render_picker(hub: &Settings, picker: &Picker, area: Rect, frame: 
     let first = hub
         .choice
         .map_or(0, |c| c.saturating_sub(room.saturating_sub(1)));
+    // Notes line up in one column past the longest name in view.
+    let width = choices
+        .iter()
+        .skip(first)
+        .take(room)
+        .map(|name| name.chars().count())
+        .max()
+        .unwrap_or_default();
     for (i, name) in choices.iter().enumerate().skip(first).take(room) {
-        let line = if hub.choice == Some(i) {
+        let mut line = if hub.choice == Some(i) {
             Line::from(vec![accent("\u{203a} "), accent(name.clone())]).style(palette::selection())
         } else {
             Line::from(vec![Span::raw("  "), Span::raw(name.clone())])
         };
+        if let Some(note) = picker.note(name) {
+            let pad = width - name.chars().count() + 3;
+            line.push_span(muted(format!("{}{note}", " ".repeat(pad))));
+        }
         lines.push(line);
     }
     frame.render_widget(Paragraph::new(lines), area);
@@ -454,6 +481,12 @@ pub(super) fn render_detail(hub: &Settings, area: Rect, frame: &mut Frame) {
     match describe(hub.current_category(), field) {
         Some(text) => lines.push(Line::from(Span::raw(text))),
         None => lines.push(Line::from(muted("Enter edits the value; r removes this scope's override and falls back to the inherited one."))),
+    }
+    if unused(hub, field) {
+        lines.push(Line::from(muted(format!(
+            "Not read while provider is {}.",
+            hub.draft["provider"].as_str().unwrap_or_default()
+        ))));
     }
     if let Value::String(text) = &field.value
         && text.contains('\n')

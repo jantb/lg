@@ -8,8 +8,10 @@
 
 use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::time::Instant;
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use crate::state::GenMsg;
 
@@ -21,9 +23,175 @@ const DEFAULT_SYSTEM_PROMPT: &str = "You are the text-generation backend of lg, 
 client. Answer with exactly what the request asks for, in the format it asks for. No preamble, \
 no closing remarks, no questions back.";
 
-/// The models offered for the Claude provider. The CLI resolves each alias to
-/// the newest model of that family.
-pub const CLAUDE_MODEL_CHOICES: &[&str] = &["sonnet", "opus", "haiku"];
+/// What the Claude provider offers before the CLI has said what it serves, or
+/// when it cannot be asked. The CLI resolves each alias to the newest model of
+/// that family.
+const CLAUDE_MODEL_FALLBACK: &[&str] = &["sonnet", "opus", "haiku"];
+
+/// How long the CLI gets to say which models it serves. It answers in about a
+/// second; one that has not after this is not going to.
+const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A model the Claude provider may ask for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaudeModel {
+    /// What `--model` takes: an alias such as `opus`, or a full id.
+    pub name: String,
+    /// What the CLI calls it and, for an alias, the model it resolves to:
+    /// `Opus 5.5 · claude-opus-5-5`. Empty when the CLI has not said.
+    pub note: String,
+}
+
+/// The models the CLI said it serves, once anyone has asked it.
+static CLAUDE_MODELS: Mutex<Vec<ClaudeModel>> = Mutex::new(Vec::new());
+/// Whether a fetch is already on its way, so opening Settings twice in a row
+/// does not start a second CLI.
+static FETCHING: AtomicBool = AtomicBool::new(false);
+
+fn cached_claude_models() -> MutexGuard<'static, Vec<ClaudeModel>> {
+    CLAUDE_MODELS.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+/// The models the Claude provider may ask for, in the words `--model` takes:
+/// what the CLI said it serves, or the family aliases until it has. Never
+/// blocks.
+pub fn claude_models() -> Vec<ClaudeModel> {
+    let cached = cached_claude_models();
+    if cached.is_empty() {
+        CLAUDE_MODEL_FALLBACK
+            .iter()
+            .map(|name| ClaudeModel {
+                name: name.to_string(),
+                note: String::new(),
+            })
+            .collect()
+    } else {
+        cached.clone()
+    }
+}
+
+/// What the CLI said it serves; empty until it has answered. Never blocks.
+pub fn served_claude_models() -> Vec<ClaudeModel> {
+    cached_claude_models().clone()
+}
+
+/// Ask the CLI which models it serves, on a thread of its own, unless it has
+/// already answered or is being asked.
+pub fn prime_claude_models_async() {
+    if !cached_claude_models().is_empty() || FETCHING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(|| {
+        let fetched = fetch_claude_models();
+        if !fetched.is_empty() {
+            *cached_claude_models() = fetched;
+        }
+        FETCHING.store(false, Ordering::SeqCst);
+    });
+}
+
+/// The model list the CLI hands an SDK client when it opens a session: one
+/// `initialize` control request, answered before any prompt is sent, so it
+/// costs no tokens. Empty when the CLI is missing, logged out, or too slow.
+fn fetch_claude_models() -> Vec<ClaudeModel> {
+    let agent = crate::agents::claude_profile();
+    let Some(program) = crate::agents::resolve(&agent.executable) else {
+        return Vec::new();
+    };
+    let mut command = Command::new(program);
+    for marker in crate::session::nested_claude_markers() {
+        command.env_remove(marker);
+    }
+    let Ok(mut child) = command
+        .args([
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--tools",
+            "",
+            "--strict-mcp-config",
+            "--setting-sources",
+            "",
+            "--no-session-persistence",
+        ])
+        .current_dir(std::env::temp_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    // Closing stdin after the request is what lets the CLI exit once it has
+    // answered.
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = writeln!(
+            stdin,
+            r#"{{"type":"control_request","request_id":"{MODEL_LIST_REQUEST}","request":{{"subtype":"initialize"}}}}"#
+        );
+    }
+    let Some(stdout) = child.stdout.take() else {
+        stop(&mut child);
+        return Vec::new();
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let models = BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).ok())
+            .find_map(|event| models_from_initialize(&event));
+        let _ = tx.send(models.unwrap_or_default());
+    });
+    let models = rx.recv_timeout(MODEL_LIST_TIMEOUT).unwrap_or_default();
+    stop(&mut child);
+    models
+}
+
+/// The `request_id` lg's `initialize` request goes out under.
+const MODEL_LIST_REQUEST: &str = "lg-models";
+
+/// The models in the answer to lg's `initialize` request, if this event is
+/// that answer. `default` is left out: an empty setting already means the
+/// CLI's default.
+fn models_from_initialize(event: &serde_json::Value) -> Option<Vec<ClaudeModel>> {
+    if event.get("type").and_then(|t| t.as_str()) != Some("control_response")
+        || event
+            .pointer("/response/request_id")
+            .and_then(|id| id.as_str())
+            != Some(MODEL_LIST_REQUEST)
+    {
+        return None;
+    }
+    let text = |model: &serde_json::Value, key: &str| {
+        model
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let mut found: Vec<ClaudeModel> = Vec::new();
+    for model in event.pointer("/response/response/models")?.as_array()? {
+        let name = text(model, "value");
+        if name.is_empty() || name == "default" || found.iter().any(|m| m.name == name) {
+            continue;
+        }
+        // An alias says which model it stands for today; a full id already
+        // is one.
+        let resolved = text(model, "resolvedModel");
+        let note = [text(model, "displayName"), resolved]
+            .into_iter()
+            .filter(|part| !part.is_empty() && *part != name)
+            .collect::<Vec<_>>()
+            .join(" \u{b7} ");
+        found.push(ClaudeModel { name, note });
+    }
+    Some(found)
+}
 
 /// Run one request through `claude -p` and report it on `tx` the way
 /// [`super::stream::stream_messages`] reports a local one: thinking and output
@@ -528,6 +696,55 @@ mod tests {
 
         assert_eq!(system, DEFAULT_SYSTEM_PROMPT);
         assert_eq!(prompt, "Write a commit message.");
+    }
+
+    #[test]
+    fn the_models_offered_are_the_ones_the_cli_says_it_serves() {
+        let event: serde_json::Value = serde_json::from_str(
+            r#"{"type":"control_response","response":{"subtype":"success","request_id":"lg-models","response":{"commands":[],"models":[
+                {"value":"default","resolvedModel":"claude-opus-5-5","displayName":"Default (recommended)"},
+                {"value":"opus","resolvedModel":"claude-opus-5-5","displayName":"Opus 5.5"},
+                {"value":"fable","resolvedModel":"claude-fable-5-1","displayName":"Fable 5.1"},
+                {"value":"claude-sonnet-4-6","resolvedModel":"claude-sonnet-4-6","displayName":"Sonnet 4.6"}
+            ]}}}"#,
+        )
+        .unwrap();
+
+        let models = models_from_initialize(&event).expect("this is the answer");
+        let named = |name: &str| models.iter().find(|m| m.name == name);
+
+        for model in ["opus", "fable", "claude-sonnet-4-6"] {
+            assert!(named(model).is_some(), "{model} in {models:?}");
+        }
+        // An empty setting already means the CLI's default.
+        assert!(named("default").is_none(), "{models:?}");
+        // An alias says which model it means today.
+        let opus = &named("opus").unwrap().note;
+        assert!(
+            opus.contains("Opus 5.5") && opus.contains("claude-opus-5-5"),
+            "{opus}"
+        );
+        assert!(
+            named("claude-sonnet-4-6")
+                .unwrap()
+                .note
+                .contains("Sonnet 4.6"),
+            "{models:?}"
+        );
+    }
+
+    #[test]
+    fn other_events_are_not_mistaken_for_the_model_list() {
+        let init: serde_json::Value =
+            serde_json::from_str(r#"{"type":"system","subtype":"init","model":"claude-opus-5-5"}"#)
+                .unwrap();
+        let someone_elses: serde_json::Value = serde_json::from_str(
+            r#"{"type":"control_response","response":{"request_id":"other","response":{"models":[{"value":"opus"}]}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(models_from_initialize(&init), None);
+        assert_eq!(models_from_initialize(&someone_elses), None);
     }
 
     #[test]

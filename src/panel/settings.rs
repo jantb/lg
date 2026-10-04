@@ -126,7 +126,9 @@ fn describe_category(category: Category) -> &'static str {
         Category::Writing => {
             "How commit messages, pull request text and reviews are phrased and sized."
         }
-        Category::Models => "The language model lg talks to, and where it is reached.",
+        Category::Models => {
+            "The language model lg talks to: a local chat endpoint or the claude CLI, whichever provider names."
+        }
         Category::Agents => {
             "The coding agents and shells a session can run, and how tightly each is confined."
         }
@@ -201,6 +203,8 @@ pub struct Settings {
     branches: Vec<String>,
     /// The models the endpoint serves, offered when a field names a model.
     models: Vec<String>,
+    /// The models the claude CLI offers, for the Claude provider's model.
+    claude_models: Vec<crate::llm::ClaudeModel>,
     /// Editors found on this machine, offered for the editor field.
     editors: Vec<String>,
     /// Shells found on this machine, offered for the terminal field.
@@ -243,6 +247,7 @@ impl Default for Settings {
             diagnostics: None,
             branches: Vec::new(),
             models: Vec::new(),
+            claude_models: Vec::new(),
             editors: Vec::new(),
             shells: Vec::new(),
             choice: None,
@@ -329,6 +334,8 @@ pub fn open(state: &mut AppState, category: Category) {
         crate::llm::prime_models_async();
     }
     state.settings_hub.models = crate::llm::available_models();
+    crate::llm::prime_claude_models_async();
+    state.settings_hub.claude_models = crate::llm::claude_models();
     state.settings_hub.editors = programs_on_path(&["VISUAL", "EDITOR"], KNOWN_EDITORS);
     state.settings_hub.shells = programs_on_path(&["SHELL"], KNOWN_SHELLS);
     state.settings_hub.reload();
@@ -846,6 +853,94 @@ mod tests {
         assert_eq!(
             state.settings_hub.draft["model"],
             Value::String("gpt-oss-120b".into())
+        );
+    }
+
+    #[test]
+    fn a_claude_alias_shows_which_model_it_stands_for() {
+        let mut state = AppState::default();
+        state.decorative_animations = false;
+        state.settings_hub = Settings {
+            category: 2,
+            draft: json!({"claude_model": ""}),
+            claude_models: vec![
+                crate::llm::ClaudeModel {
+                    name: "opus".into(),
+                    note: "Opus 5.5 \u{b7} claude-opus-5-5".into(),
+                },
+                crate::llm::ClaudeModel {
+                    name: "claude-opus-4-8".into(),
+                    note: "Opus 4.8".into(),
+                },
+            ],
+            ..Settings::default()
+        };
+        state.settings_hub.original = state.settings_hub.draft.clone();
+        select(&mut state, "/claude_model");
+        press(&mut state, KeyCode::Enter);
+        let screen = text(&drawn(&state, Rect::new(0, 0, 120, 40)));
+        assert!(screen.contains("claude-opus-5-5"), "{screen}");
+        assert!(screen.contains("Opus 4.8"), "{screen}");
+        for c in "opus".chars() {
+            press(&mut state, KeyCode::Char(c));
+        }
+        press(&mut state, KeyCode::Enter);
+        // The note is shown, not saved.
+        assert_eq!(
+            state.settings_hub.draft["claude_model"],
+            Value::String("opus".into())
+        );
+    }
+
+    /// The settings only one provider reads sit under that provider's
+    /// heading, and the heading of the provider not chosen says it is unused.
+    #[test]
+    fn the_provider_not_chosen_is_marked_unused() {
+        let mut state = AppState::default();
+        state.decorative_animations = false;
+        state.settings_hub = Settings {
+            category: 2,
+            draft: json!({
+                "enabled": true,
+                "provider": "claude",
+                "endpoint": "http://localhost:8000/v1/chat/completions",
+                "model": "Qwen3-27B",
+                "claude_model": "opus",
+            }),
+            ..Settings::default()
+        };
+        state.settings_hub.original = state.settings_hub.draft.clone();
+        let heading = |state: &AppState, name: &str| {
+            text(&drawn(state, Rect::new(0, 0, 120, 40)))
+                .lines()
+                .find(|l| {
+                    l.trim_start_matches(|c: char| !c.is_alphanumeric())
+                        .starts_with(&format!("{name}  "))
+                })
+                .map(str::to_string)
+                .unwrap_or_default()
+        };
+        assert!(
+            heading(&state, "local").contains("not used"),
+            "{}",
+            heading(&state, "local")
+        );
+        assert!(
+            !heading(&state, "claude").contains("not used"),
+            "{}",
+            heading(&state, "claude")
+        );
+
+        state.settings_hub.draft["provider"] = json!("local");
+        assert!(
+            heading(&state, "claude").contains("not used"),
+            "{}",
+            heading(&state, "claude")
+        );
+        assert!(
+            !heading(&state, "local").contains("not used"),
+            "{}",
+            heading(&state, "local")
         );
     }
 

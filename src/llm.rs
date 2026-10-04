@@ -13,7 +13,9 @@ mod stats;
 mod stream;
 mod think;
 
-pub use claude::{CLAUDE_MODEL_CHOICES, run_claude_fix};
+pub use claude::{
+    ClaudeModel, claude_models, prime_claude_models_async, run_claude_fix, served_claude_models,
+};
 pub use prompt::{GIVE_UP_PHRASE, build_conflict_hunk_prompt};
 pub use provider::{
     LlmProvider, api_key, available_models, clear_saved_llm_settings, config_file_display,

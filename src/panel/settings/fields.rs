@@ -1,6 +1,7 @@
 //! The flat list of editable fields a category shows, and how a value is picked, stepped and committed.
 
 use super::*;
+use crate::llm::LlmProvider;
 
 /// What a field is chosen from.
 pub(super) struct Picker {
@@ -10,6 +11,9 @@ pub(super) struct Picker {
     /// Whether the value must be one of the options. An enumeration is; a
     /// branch or a program is a suggestion, and a typed name is kept.
     pub(super) fixed: bool,
+    /// A dim note beside an option, by the option it belongs to: what an
+    /// alias stands for.
+    pub(super) notes: Vec<(String, String)>,
 }
 impl Picker {
     pub(super) fn fixed(options: &[&str], noun: &'static str) -> Self {
@@ -17,6 +21,7 @@ impl Picker {
             options: options.iter().map(|o| (*o).to_string()).collect(),
             noun,
             fixed: true,
+            notes: Vec::new(),
         }
     }
     pub(super) fn suggested(options: &[String], noun: &'static str) -> Self {
@@ -24,7 +29,16 @@ impl Picker {
             options: options.to_vec(),
             noun,
             fixed: false,
+            notes: Vec::new(),
         }
+    }
+    /// The note shown beside `option`, if it has one.
+    pub(super) fn note(&self, option: &str) -> Option<&str> {
+        self.notes
+            .iter()
+            .find(|(name, _)| name == option)
+            .map(|(_, note)| note.as_str())
+            .filter(|note| !note.is_empty())
     }
 }
 /// What a field may be picked from: local branches for a branch, the
@@ -42,9 +56,15 @@ pub(super) fn options(hub: &Settings, field: &Field) -> Option<Picker> {
     Some(match (hub.current_category(), group, field.key.as_str()) {
         (Category::Writing, _, "language") => Picker::fixed(preferences::LANGUAGES, "language"),
         (Category::Models, _, "provider") => Picker::fixed(preferences::PROVIDERS, "provider"),
-        (Category::Models, _, "claude_model") => Picker {
+        (Category::Models, "claude", "model") => Picker {
+            options: hub.claude_models.iter().map(|m| m.name.clone()).collect(),
+            noun: "Claude model",
             fixed: false,
-            ..Picker::fixed(crate::llm::CLAUDE_MODEL_CHOICES, "Claude model")
+            notes: hub
+                .claude_models
+                .iter()
+                .map(|m| (m.name.clone(), m.note.clone()))
+                .collect(),
         },
         (Category::Agents, _, "adapter") => Picker::fixed(preferences::ADAPTERS, "adapter"),
         (Category::Agents, _, "confinement") => {
@@ -59,11 +79,13 @@ pub(super) fn options(hub: &Settings, field: &Field) -> Option<Picker> {
                 .collect(),
             noun: "source",
             fixed: true,
+            notes: Vec::new(),
         },
         (Category::Branches, "promotions", "to") => Picker {
             options: environment_ids(hub),
             noun: "environment",
             fixed: true,
+            notes: Vec::new(),
         },
         (Category::Tools, _, "editor") => Picker::suggested(&hub.editors, "editor"),
         (Category::Tools, _, "terminal") => Picker::suggested(&hub.shells, "shell"),
@@ -233,9 +255,67 @@ pub(super) fn flatten(value: &Value, path: &str, groups: &[String], out: &mut Ve
         }),
     }
 }
+/// The provider whose settings a Models field belongs to, by the word
+/// `provider` takes for it; `None` for the fields every provider shares.
+fn provider_of(path: &str) -> Option<LlmProvider> {
+    match path {
+        "/endpoint" | "/model" => Some(LlmProvider::Mtplx),
+        "/claude_model" => Some(LlmProvider::Claude),
+        _ => None,
+    }
+}
+/// Puts the Models fields under a heading per provider, after the shared
+/// ones, so the settings only one provider reads are seen to be that
+/// provider's. The paths stay as the file has them.
+fn group_by_provider(fields: &mut [Field]) {
+    for field in fields.iter_mut() {
+        let Some(provider) = provider_of(&field.path) else {
+            continue;
+        };
+        let group = provider.config_value().to_string();
+        if field.key == "claude_model" {
+            field.key = "model".into();
+        }
+        field.label = format!("{group} \u{b7} {}", humanize(&field.key));
+        field.groups = vec![group];
+    }
+    fields.sort_by_key(|f| provider_of(&f.path).map(|p| p as usize + 1).unwrap_or(0));
+}
+/// The provider `provider` names in the draft, if it is one.
+pub(super) fn chosen_provider(hub: &Settings) -> Option<LlmProvider> {
+    let word = hub.draft.get("provider")?.as_str()?;
+    LlmProvider::ALL
+        .into_iter()
+        .find(|p| p.config_value() == word)
+}
+/// Whether the field belongs to a provider other than the chosen one, and so
+/// is not read while that choice stands.
+pub(super) fn unused(hub: &Settings, field: &Field) -> bool {
+    hub.current_category() == Category::Models
+        && provider_of(&field.path).is_some_and(|p| chosen_provider(hub).is_some_and(|c| c != p))
+}
+/// What a provider heading in Models says after its name: what the
+/// provider is, and whether it is the one in use. `None` for any other
+/// heading.
+pub(super) fn provider_heading(hub: &Settings, label: &str) -> Option<(&'static str, bool)> {
+    if hub.current_category() != Category::Models {
+        return None;
+    }
+    let provider = LlmProvider::ALL
+        .into_iter()
+        .find(|p| p.config_value() == label)?;
+    let what = match provider {
+        LlmProvider::Mtplx => "an OpenAI-compatible chat endpoint",
+        LlmProvider::Claude => "the claude CLI",
+    };
+    Some((what, chosen_provider(hub).is_none_or(|c| c == provider)))
+}
 pub(super) fn fields(hub: &Settings) -> Vec<Field> {
     let mut fields = Vec::new();
     flatten(&hub.draft, "", &[], &mut fields);
+    if hub.current_category() == Category::Models {
+        group_by_provider(&mut fields);
+    }
     fields.retain(|f| {
         hub.query.is_empty()
             || format!("{} {}", f.label, display(&f.value))
@@ -316,15 +396,17 @@ pub(super) fn describe(category: Category, field: &Field) -> Option<&'static str
             "Whether lg asks the model at all. Off, commit messages are typed by hand and conflicts and reviews are left alone; use it when no model server is running."
         }
         (Category::Models, _, "provider") => {
-            "Who answers every AI request — commit messages, review assists, the review chat, guided reviews and conflict resolutions. local uses the chat endpoint below; claude runs the claude CLI (tools off, your Claude Code login). Enter chooses from the list."
+            "Who answers every AI request — commit messages, review assists, the review chat, guided reviews and conflict resolutions. local sends them to the chat endpoint under local; claude runs the claude CLI (tools off, your Claude Code login) with the settings under claude. Only the chosen provider's settings are read. Enter chooses from the list."
         }
-        (Category::Models, _, "claude_model") => {
-            "Model the claude provider asks for: sonnet, opus, haiku or a full model id. Empty uses the Claude agent profile's model, or the CLI default."
+        (Category::Models, "claude", "model") => {
+            "Model the claude CLI is asked for. Enter picks from the models the CLI offers; any other model id may be typed. Empty uses the Claude agent profile's model, or the CLI default."
         }
-        (Category::Models, _, "model") => {
-            "Local model used for commit messages, reviews and summaries when the provider is local. Enter picks from the models the endpoint serves; L opens the model modal with connectivity checks."
+        (Category::Models, "local", "model") => {
+            "Model the chat endpoint is asked for. Enter picks from the models the endpoint serves; L opens the model modal with connectivity checks."
         }
-        (Category::Models, _, "endpoint") => "Chat completions endpoint the model is reached at.",
+        (Category::Models, "local", "endpoint") => {
+            "OpenAI-compatible chat completions URL the requests are sent to."
+        }
         (Category::Agents, _, "name") => "How the agent is listed in the session picker.",
         (Category::Agents, _, "adapter") => {
             "Which integration drives it: claude, codex, pi, or terminal for a plain shell with no agent protocol. Enter chooses from the list."
