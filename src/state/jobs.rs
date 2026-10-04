@@ -235,6 +235,9 @@ pub struct Generation {
     /// The gap between words once the model has finished, fixed then so
     /// what is left goes out at one steady pace.
     pub finish_gap_ms: Option<u64>,
+    /// When the first of the message came from the model, on the animation
+    /// clock: the words are held back for a while from then.
+    pub first_chunk_ms: Option<u64>,
     /// The finished message, held back until the last word has landed so
     /// the editor does not take the text out from under the words in flight.
     pub finished: Option<(String, crate::llm::GenStats)>,
@@ -254,6 +257,14 @@ const FINISH_MS: u64 = 1_200;
 const FINISH_WORD_GAP_MS: u64 = 80;
 /// The shortest gap between words, however far behind they are.
 const MIN_WORD_GAP_MS: u64 = 10;
+/// Words queued before the first of them goes out. Claude sends the opening
+/// word or two, goes quiet for up to a second, then sends the rest; starting
+/// on the opening alone would show it and then stand still. Held back, the
+/// quiet is spent in the scene, which looks like the network still working.
+const START_WORDS: usize = 8;
+/// How long the opening is held back at most, for a message that is short or
+/// slow to come.
+const START_WAIT_MS: u64 = 1_500;
 
 impl Generation {
     pub fn new(
@@ -273,6 +284,7 @@ impl Generation {
             queued: VecDeque::new(),
             next_word_ms: 0,
             finish_gap_ms: None,
+            first_chunk_ms: None,
             finished: None,
         }
     }
@@ -293,6 +305,7 @@ impl Generation {
         self.queued.clear();
         self.first_output_ms = None;
         self.finish_gap_ms = None;
+        self.first_chunk_ms = None;
     }
 
     /// Let out the words that are due by `now`. A last queued word with no
@@ -300,6 +313,18 @@ impl Generation {
     /// rest of it may be on the way. With `animate` off, everything ready
     /// goes at once.
     pub fn release(&mut self, now: u64, animate: bool) {
+        if !self.queued.is_empty() {
+            self.first_chunk_ms.get_or_insert(now);
+        }
+        let starting = self.first_output_ms.is_none()
+            && self.finished.is_none()
+            && self.queued.len() < START_WORDS
+            && self
+                .first_chunk_ms
+                .is_some_and(|first| now.saturating_sub(first) < START_WAIT_MS);
+        if animate && starting {
+            return;
+        }
         let whole = self.finished.is_some()
             || self
                 .queued
@@ -933,6 +958,57 @@ mod tests {
         finish(&mut g);
         run(&mut g, now, now + FINISH_MS + MAX_WORD_GAP_MS + FRAME_MS);
         assert!(g.queued.is_empty(), "the burst is caught up quickly");
+    }
+
+    /// Claude sends the opening word or two, goes quiet for about a second,
+    /// then sends the rest. The text does not start on the opening alone and
+    /// then stand still: once it starts it keeps moving to the end.
+    #[test]
+    fn an_opening_followed_by_a_pause_does_not_stall_the_text() {
+        let mut g = generation();
+        g.receive("feat(commit): fly");
+        let mut now = 1_000;
+        while now < 2_200 {
+            g.release(now, true);
+            now += FRAME_MS;
+        }
+        g.receive(&" streamed words in one at a time".repeat(4));
+        finish(&mut g);
+
+        let mut last_word_at = None;
+        let mut longest_still = 0;
+        let mut seen = 0;
+        while !g.settled(now) {
+            let before = g.output.len();
+            g.release(now, true);
+            if g.output.len() > before {
+                if seen > 0
+                    && let Some(at) = last_word_at
+                {
+                    longest_still = std::cmp::max(longest_still, now - at);
+                }
+                seen = g.output.len();
+                last_word_at = Some(now);
+            }
+            now += FRAME_MS;
+        }
+        assert!(
+            longest_still <= 300,
+            "the text stood still for {longest_still} ms"
+        );
+    }
+
+    /// A short message that never gets going still shows up.
+    #[test]
+    fn a_lone_opening_is_shown_after_a_while() {
+        let mut g = generation();
+        g.receive("fix: typo ");
+        run(
+            &mut g,
+            1_000,
+            1_000 + START_WAIT_MS + MAX_WORD_GAP_MS + FRAME_MS,
+        );
+        assert_eq!(g.output, "fix: typo ");
     }
 
     #[test]
