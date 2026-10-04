@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::thread::JoinHandle;
 
@@ -217,22 +217,155 @@ pub struct Generation {
     /// Which of the waiting scenes this generation shows, chosen when it
     /// started so the picture does not change under the reader.
     pub scene: usize,
-    /// The chunks that have lately streamed in, still flying from the
-    /// network in the scene to their place in the text.
+    /// The words that have lately left the network, still flying in the
+    /// scene to their place in the text.
     pub arrivals: Vec<Arrival>,
-    /// When the first chunk arrived on the animation clock; the scene makes
-    /// an event of the wait paying off.
+    /// When the first word left the network on the animation clock; the
+    /// scene makes an event of the wait paying off.
     pub first_output_ms: Option<u64>,
     /// The diff that went to the model, prepared for the scene: it is what
     /// flows down the stream into the network.
     pub feed: crate::panel::commit_art::Feed,
+    /// What the model has sent that has not left the network yet, a word to
+    /// an entry. A model may send a word at a time or a line at a time;
+    /// either way the words fly out one after another.
+    pub queued: VecDeque<String>,
+    /// When the next queued word may leave, on the animation clock.
+    pub next_word_ms: u64,
+    /// How long after one word the next leaves: shorter while a backlog
+    /// clears, set as the words come in.
+    pub word_gap_ms: u64,
+    /// The finished message, held back until the last word has landed so
+    /// the editor does not take the text out from under the words in flight.
+    pub finished: Option<(String, crate::llm::GenStats)>,
 }
 
-/// One chunk of the message as it came out of the model: where it sits in
-/// the output, and when it arrived on the animation clock.
+/// Milliseconds between words leaving the network when nothing is waiting.
+const WORD_GAP_MS: u64 = 80;
+/// How long a backlog of words is given to clear: a model that sends a line
+/// at once has its words go out faster, so the text keeps up with it.
+const WORD_CATCH_UP_MS: u64 = 1_200;
+/// The shortest gap between words, however far behind they are.
+const MIN_WORD_GAP_MS: u64 = 10;
+
+impl Generation {
+    pub fn new(
+        rx: Receiver<GenMsg>,
+        handle: JoinHandle<()>,
+        feed: crate::panel::commit_art::Feed,
+    ) -> Self {
+        Self {
+            rx,
+            handle: Some(handle),
+            output: String::new(),
+            spinner: 0,
+            scene: crate::panel::commit_art::fresh_seed(),
+            arrivals: Vec::new(),
+            first_output_ms: None,
+            feed,
+            queued: VecDeque::new(),
+            next_word_ms: 0,
+            word_gap_ms: WORD_GAP_MS,
+            finished: None,
+        }
+    }
+
+    /// Take in a chunk of the message. The last queued word may be the
+    /// first half of one this chunk finishes, so it is cut up again along
+    /// with it.
+    pub fn receive(&mut self, chunk: &str) {
+        let mut text = self.queued.pop_back().unwrap_or_default();
+        text.push_str(chunk);
+        self.queued.extend(words(&text));
+        self.word_gap_ms = (WORD_CATCH_UP_MS / self.queued.len().max(1) as u64)
+            .clamp(MIN_WORD_GAP_MS, WORD_GAP_MS);
+    }
+
+    /// Forget everything received: what came was reasoning, not the message.
+    pub fn restart(&mut self) {
+        self.output.clear();
+        self.arrivals.clear();
+        self.queued.clear();
+        self.first_output_ms = None;
+    }
+
+    /// Let out the words that are due by `now`. A last queued word with no
+    /// space after it waits for more, or for the model to finish, since the
+    /// rest of it may be on the way. With `animate` off, everything ready
+    /// goes at once.
+    pub fn release(&mut self, now: u64, animate: bool) {
+        let whole = self.finished.is_some()
+            || self
+                .queued
+                .back()
+                .is_some_and(|word| word.ends_with(char::is_whitespace));
+        let mut ready = if whole {
+            self.queued.len()
+        } else {
+            self.queued.len().saturating_sub(1)
+        };
+        // After a pause the clock has run on; the words that come next start
+        // from now rather than all leaving at once to make up the time.
+        let mut at = if now.saturating_sub(self.next_word_ms) > WORD_GAP_MS {
+            now
+        } else {
+            self.next_word_ms
+        };
+        self.arrivals
+            .retain(|a| now.saturating_sub(a.at_ms) < crate::panel::commit_art::FLIGHT_TOTAL_MS);
+        while ready > 0 && (!animate || at <= now) {
+            let Some(word) = self.queued.pop_front() else {
+                break;
+            };
+            let at_ms = if animate { at } else { now };
+            self.arrivals.push(Arrival {
+                start: self.output.chars().count(),
+                len: word.chars().count(),
+                at_ms,
+            });
+            self.output.push_str(&word);
+            self.first_output_ms.get_or_insert(at_ms);
+            at += self.word_gap_ms;
+            ready -= 1;
+        }
+        self.next_word_ms = at;
+    }
+
+    /// Whether every word has left the network and landed in the text.
+    pub fn settled(&self, now: u64) -> bool {
+        self.queued.is_empty()
+            && self
+                .arrivals
+                .iter()
+                .all(|a| now.saturating_sub(a.at_ms) >= crate::panel::commit_art::FLIGHT_MS)
+    }
+}
+
+/// `text` cut after each word, so every piece is one word with the space
+/// that follows it.
+fn words(text: &str) -> Vec<String> {
+    let mut words: Vec<String> = Vec::new();
+    let mut after_space = false;
+    for c in text.chars() {
+        let starts_word = !c.is_whitespace()
+            && after_space
+            && words
+                .last()
+                .is_some_and(|word| word.chars().any(|c| !c.is_whitespace()));
+        match words.last_mut() {
+            Some(word) if !starts_word => word.push(c),
+            _ => words.push(c.to_string()),
+        }
+        after_space = c.is_whitespace();
+    }
+    words
+}
+
+/// One word of the message as it left the model: where it sits in the
+/// output, and when it left on the animation clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Arrival {
-    /// First character of the chunk in the output.
+    /// First character of the word in the output.
     pub start: usize,
     pub len: usize,
     pub at_ms: u64,
@@ -627,4 +760,155 @@ pub struct WorkflowJob {
     /// graph the menu drew and move its marker along with the steps. `None` for
     /// the jobs that are not a branch action, which have no graph to draw.
     pub flow: Option<FlowRun>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FRAME_MS: u64 = crate::config::ANIMATION_FRAME_MS;
+
+    fn generation() -> Generation {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        Generation::new(rx, std::thread::spawn(|| {}), Default::default())
+    }
+
+    /// Run the clock from `from` to `to` a frame at a time, as the loop does.
+    fn run(g: &mut Generation, from: u64, to: u64) {
+        let mut now = from;
+        while now <= to {
+            g.release(now, true);
+            now += FRAME_MS;
+        }
+    }
+
+    fn finish(g: &mut Generation) {
+        g.finished = Some((String::new(), Default::default()));
+    }
+
+    /// The words in flight at `now`, as they read in the output.
+    fn in_flight(g: &Generation, now: u64) -> Vec<String> {
+        g.arrivals
+            .iter()
+            .filter(|a| now.saturating_sub(a.at_ms) < crate::panel::commit_art::FLIGHT_MS)
+            .map(|a| g.output.chars().skip(a.start).take(a.len).collect())
+            .collect()
+    }
+
+    /// A model that sends a line at once has it written out a word at a
+    /// time, the way one sending a word at a time would.
+    #[test]
+    fn a_line_from_the_model_comes_out_a_word_at_a_time() {
+        let mut g = generation();
+        g.receive("feat: accept a name argument");
+        finish(&mut g);
+
+        g.release(1_000, true);
+        assert_eq!(g.output, "feat: ");
+
+        run(&mut g, 1_000, 3_000);
+        assert_eq!(g.output, "feat: accept a name argument");
+    }
+
+    /// Half a word in one chunk and the rest in the next fly as one word.
+    #[test]
+    fn a_word_split_across_chunks_flies_whole() {
+        let mut g = generation();
+        g.receive("word-fre");
+        g.receive("quency tool");
+        finish(&mut g);
+        run(&mut g, 1_000, 1_000 + 2 * WORD_GAP_MS);
+
+        let flown: Vec<String> = g
+            .arrivals
+            .iter()
+            .map(|a| g.output.chars().skip(a.start).take(a.len).collect())
+            .collect();
+        assert!(
+            flown.iter().any(|w| w.trim() == "word-frequency"),
+            "{flown:?}"
+        );
+    }
+
+    /// Until the model says more, the word it stopped on may not be whole.
+    #[test]
+    fn the_last_word_waits_for_more_until_the_model_finishes() {
+        let mut g = generation();
+        g.receive("add a READ");
+        run(&mut g, 1_000, 3_000);
+        assert_eq!(g.output, "add a ");
+
+        g.receive("ME file");
+        finish(&mut g);
+        run(&mut g, 3_000, 5_000);
+        assert_eq!(g.output, "add a README file");
+    }
+
+    /// The editor takes the message over only once nothing is left in the
+    /// air, so no word is cut off on its way into the text.
+    #[test]
+    fn a_finished_message_settles_once_its_last_word_has_landed() {
+        let mut g = generation();
+        g.receive("fix: handle empty input");
+        finish(&mut g);
+        assert!(!g.settled(1_000), "nothing has gone out yet");
+
+        let mut now = 1_000;
+        while !g.queued.is_empty() {
+            g.release(now, true);
+            now += FRAME_MS;
+        }
+        assert!(!in_flight(&g, now).is_empty());
+        assert!(!g.settled(now), "the last word is still flying");
+
+        now += crate::panel::commit_art::FLIGHT_MS;
+        assert!(in_flight(&g, now).is_empty());
+        assert!(g.settled(now));
+    }
+
+    /// A long message sent in one go does not keep the reader waiting long
+    /// after the model is done.
+    #[test]
+    fn a_long_backlog_is_written_out_quickly() {
+        let mut g = generation();
+        g.receive(&"word ".repeat(120));
+        finish(&mut g);
+        run(&mut g, 1_000, 1_000 + 2 * WORD_CATCH_UP_MS);
+        assert!(g.queued.is_empty());
+        assert_eq!(g.output, "word ".repeat(120));
+    }
+
+    /// After a pause the words do not all go at once to make up the time.
+    #[test]
+    fn words_after_a_pause_still_go_one_at_a_time() {
+        let mut g = generation();
+        g.receive("one ");
+        g.receive("two");
+        run(&mut g, 1_000, 1_100);
+        g.receive(" three four five six");
+        finish(&mut g);
+        g.release(10_000, true);
+        assert_eq!(in_flight(&g, 10_000).len(), 1);
+    }
+
+    #[test]
+    fn with_animations_off_everything_shows_at_once() {
+        let mut g = generation();
+        g.receive("docs: explain the flag");
+        finish(&mut g);
+        g.release(1_000, false);
+        assert_eq!(g.output, "docs: explain the flag");
+        assert!(g.queued.is_empty());
+    }
+
+    #[test]
+    fn reasoning_taken_back_leaves_nothing_queued() {
+        let mut g = generation();
+        g.receive("thinking about it ");
+        run(&mut g, 1_000, 1_100);
+        g.restart();
+        finish(&mut g);
+        run(&mut g, 1_100, 2_000);
+        assert!(g.output.is_empty());
+    }
 }

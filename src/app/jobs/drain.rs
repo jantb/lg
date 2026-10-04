@@ -582,57 +582,22 @@ impl App {
             match msg {
                 GenMsg::Thinking(_) => {}
                 GenMsg::Output(o) => {
-                    let now = self.state.animation_ms;
                     if let Some(g) = self.state.commit_drafts[i].generation.as_mut() {
-                        // Chunks that have landed and stopped glowing are
-                        // plain text now and need no remembering.
-                        g.arrivals.retain(|a| {
-                            now.saturating_sub(a.at_ms) < crate::panel::commit_art::FLIGHT_TOTAL_MS
-                        });
-                        g.arrivals.push(crate::state::Arrival {
-                            start: g.output.chars().count(),
-                            len: o.chars().count(),
-                            at_ms: now,
-                        });
-                        g.output.push_str(&o);
-                        g.first_output_ms.get_or_insert(now);
+                        g.receive(&o);
                     }
                 }
                 GenMsg::Reset => {
                     if let Some(g) = self.state.commit_drafts[i].generation.as_mut() {
-                        g.output.clear();
-                        g.arrivals.clear();
-                        g.first_output_ms = None;
+                        g.restart();
                     }
                 }
-                GenMsg::Done {
-                    text: final_msg,
-                    stats,
-                } => {
-                    let truncated = stats.truncated;
+                GenMsg::Done { text, stats } => {
                     self.state.model_server_unreachable = false;
+                    // Held until the words still queued or in flight have
+                    // landed; the editor takes the text over after that.
                     if let Some(g) = self.state.commit_drafts[i].generation.as_mut() {
                         handle = g.handle.take();
-                    }
-                    let was = self.state.commit_drafts.len();
-                    self.state.finish_commit_draft(i, final_msg);
-                    kept = self.state.commit_drafts.len() == was;
-                    // A message that ran out of budget goes in the editable
-                    // field either way — it is a draft, and half a draft is
-                    // still a starting point. It is reported as an error so it
-                    // lingers, because the one way to commit a truncated
-                    // message is not to notice it was truncated.
-                    if truncated {
-                        self.state.set_status(
-                            "message generated but cut off at the token budget \u{2014} finish it before committing",
-                            true,
-                        );
-                    } else {
-                        let status = match stats.summary() {
-                            Some(summary) => format!("message generated \u{b7} {summary}"),
-                            None => "message generated".to_string(),
-                        };
-                        self.state.set_status(status, false);
+                        g.finished = Some((text, stats));
                     }
                 }
                 GenMsg::Error(e) => {
@@ -648,10 +613,33 @@ impl App {
                 break;
             }
         }
+        if kept {
+            let now = self.state.animation_ms;
+            let animate = self.state.decorative_animations;
+            let finished = self.state.commit_drafts[i]
+                .generation
+                .as_mut()
+                .and_then(|g| {
+                    g.release(now, animate);
+                    if g.settled(now) || !animate {
+                        g.finished.take()
+                    } else {
+                        None
+                    }
+                });
+            if let Some((text, stats)) = finished {
+                kept = self.finish_draft(i, text, stats);
+            }
+        }
         // The draft is dropped as for an error, rather than left generating
-        // with nothing left to generate it.
+        // with nothing left to generate it. A finished message waiting for
+        // its words to land has nothing left to generate.
         if kept
             && drained.disconnected
+            && self.state.commit_drafts[i]
+                .generation
+                .as_ref()
+                .is_some_and(|g| g.finished.is_none())
             && let Some(mut generation) = self.state.commit_drafts[i].generation.take()
         {
             let stopped = super::stopped(&mut generation);
@@ -661,6 +649,30 @@ impl App {
         }
         join_worker(handle);
         kept
+    }
+
+    /// Hand the finished message at `i` over to its draft or the editor.
+    /// False when the draft is gone from the list.
+    fn finish_draft(&mut self, i: usize, text: String, stats: crate::llm::GenStats) -> bool {
+        let was = self.state.commit_drafts.len();
+        self.state.finish_commit_draft(i, text);
+        // A message that ran out of budget goes in the editable field either
+        // way — it is a draft, and half a draft is still a starting point. It
+        // is reported as an error so it lingers, because the one way to commit
+        // a truncated message is not to notice it was truncated.
+        if stats.truncated {
+            self.state.set_status(
+                "message generated but cut off at the token budget \u{2014} finish it before committing",
+                true,
+            );
+        } else {
+            let status = match stats.summary() {
+                Some(summary) => format!("message generated \u{b7} {summary}"),
+                None => "message generated".to_string(),
+            };
+            self.state.set_status(status, false);
+        }
+        self.state.commit_drafts.len() == was
     }
 
     pub(in crate::app) fn join_background_jobs(&mut self) {

@@ -289,19 +289,9 @@ impl AppState {
         // One draft to a checkout: asking again replaces what was there,
         // whatever state it had reached.
         self.cancel_generation_at(&dir);
-        let generation = Generation {
-            rx,
-            handle: Some(handle),
-            output: String::new(),
-            spinner: 0,
-            scene: crate::panel::commit_art::fresh_seed(),
-            arrivals: Vec::new(),
-            first_output_ms: None,
-            feed,
-        };
         self.commit_drafts.push(CommitDraft {
             dir,
-            generation: Some(generation),
+            generation: Some(Generation::new(rx, handle, feed)),
             text: String::new(),
             ready: false,
         });

@@ -77,16 +77,11 @@ fn status_panel_shows_active_generation() {
     let (_tx, rx) = std::sync::mpsc::channel::<lg::state::GenMsg>();
     state.commit_drafts = vec![lg::state::CommitDraft {
         dir: state.commit_dir(),
-        generation: Some(lg::state::Generation {
+        generation: Some(lg::state::Generation::new(
             rx,
-            handle: None,
-            output: String::new(),
-            spinner: 0,
-            scene: 0,
-            arrivals: Vec::new(),
-            first_output_ms: None,
-            feed: Default::default(),
-        }),
+            std::thread::spawn(|| {}),
+            Default::default(),
+        )),
         text: String::new(),
         ready: false,
     }];
