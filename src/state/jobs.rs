@@ -232,19 +232,26 @@ pub struct Generation {
     pub queued: VecDeque<String>,
     /// When the next queued word may leave, on the animation clock.
     pub next_word_ms: u64,
-    /// How long after one word the next leaves: shorter while a backlog
-    /// clears, set as the words come in.
-    pub word_gap_ms: u64,
+    /// The gap between words once the model has finished, fixed then so
+    /// what is left goes out at one steady pace.
+    pub finish_gap_ms: Option<u64>,
     /// The finished message, held back until the last word has landed so
     /// the editor does not take the text out from under the words in flight.
     pub finished: Option<(String, crate::llm::GenStats)>,
 }
 
-/// Milliseconds between words leaving the network when nothing is waiting.
-const WORD_GAP_MS: u64 = 80;
-/// How long a backlog of words is given to clear: a model that sends a line
-/// at once has its words go out faster, so the text keeps up with it.
-const WORD_CATCH_UP_MS: u64 = 1_200;
+/// How long the words waiting are spread over while the model is still
+/// writing. A model can go quiet for a second or more mid-message and then
+/// send the rest at once; spreading what is queued slows the words down as
+/// the queue runs low, so the text keeps moving through the quiet rather
+/// than stopping dead, and a burst is caught up quickly.
+const WORD_SPREAD_MS: u64 = 1_200;
+/// The longest gap between words, with one word left waiting.
+const MAX_WORD_GAP_MS: u64 = 220;
+/// How long what is left is given to go out once the model has finished.
+const FINISH_MS: u64 = 1_200;
+/// The longest gap between words once the model has finished.
+const FINISH_WORD_GAP_MS: u64 = 80;
 /// The shortest gap between words, however far behind they are.
 const MIN_WORD_GAP_MS: u64 = 10;
 
@@ -265,7 +272,7 @@ impl Generation {
             feed,
             queued: VecDeque::new(),
             next_word_ms: 0,
-            word_gap_ms: WORD_GAP_MS,
+            finish_gap_ms: None,
             finished: None,
         }
     }
@@ -277,8 +284,6 @@ impl Generation {
         let mut text = self.queued.pop_back().unwrap_or_default();
         text.push_str(chunk);
         self.queued.extend(words(&text));
-        self.word_gap_ms = (WORD_CATCH_UP_MS / self.queued.len().max(1) as u64)
-            .clamp(MIN_WORD_GAP_MS, WORD_GAP_MS);
     }
 
     /// Forget everything received: what came was reasoning, not the message.
@@ -287,6 +292,7 @@ impl Generation {
         self.arrivals.clear();
         self.queued.clear();
         self.first_output_ms = None;
+        self.finish_gap_ms = None;
     }
 
     /// Let out the words that are due by `now`. A last queued word with no
@@ -304,9 +310,13 @@ impl Generation {
         } else {
             self.queued.len().saturating_sub(1)
         };
+        if self.finished.is_some() && self.finish_gap_ms.is_none() {
+            self.finish_gap_ms =
+                Some((FINISH_MS / ready.max(1) as u64).clamp(MIN_WORD_GAP_MS, FINISH_WORD_GAP_MS));
+        }
         // After a pause the clock has run on; the words that come next start
         // from now rather than all leaving at once to make up the time.
-        let mut at = if now.saturating_sub(self.next_word_ms) > WORD_GAP_MS {
+        let mut at = if now.saturating_sub(self.next_word_ms) > FINISH_WORD_GAP_MS {
             now
         } else {
             self.next_word_ms
@@ -325,7 +335,9 @@ impl Generation {
             });
             self.output.push_str(&word);
             self.first_output_ms.get_or_insert(at_ms);
-            at += self.word_gap_ms;
+            at += self.finish_gap_ms.unwrap_or_else(|| {
+                (WORD_SPREAD_MS / ready as u64).clamp(MIN_WORD_GAP_MS, MAX_WORD_GAP_MS)
+            });
             ready -= 1;
         }
         self.next_word_ms = at;
@@ -817,7 +829,7 @@ mod tests {
         g.receive("word-fre");
         g.receive("quency tool");
         finish(&mut g);
-        run(&mut g, 1_000, 1_000 + 2 * WORD_GAP_MS);
+        run(&mut g, 1_000, 1_000 + 2 * MAX_WORD_GAP_MS);
 
         let flown: Vec<String> = g
             .arrivals
@@ -873,7 +885,7 @@ mod tests {
         let mut g = generation();
         g.receive(&"word ".repeat(120));
         finish(&mut g);
-        run(&mut g, 1_000, 1_000 + 2 * WORD_CATCH_UP_MS);
+        run(&mut g, 1_000, 1_000 + 2 * FINISH_MS);
         assert!(g.queued.is_empty());
         assert_eq!(g.output, "word ".repeat(120));
     }
@@ -889,6 +901,38 @@ mod tests {
         finish(&mut g);
         g.release(10_000, true);
         assert_eq!(in_flight(&g, 10_000).len(), 1);
+    }
+
+    /// Claude can go quiet for over a second mid-message and then send the
+    /// rest at once. What is already queued is spread over the quiet, so
+    /// the text keeps moving instead of stopping dead until the burst.
+    #[test]
+    fn the_text_keeps_moving_through_a_pause_in_the_stream() {
+        let mut g = generation();
+        g.receive(&"word ".repeat(20));
+        let quiet = 1_400;
+        let mut last_word_at = 0;
+        let mut longest_still = 0;
+        let mut now = 1_000;
+        while now <= 1_000 + quiet {
+            let before = g.output.len();
+            g.release(now, true);
+            if g.output.len() > before {
+                longest_still = longest_still.max(now - last_word_at.max(1_000));
+                last_word_at = now;
+            }
+            now += FRAME_MS;
+        }
+        longest_still = longest_still.max(1_000 + quiet - last_word_at);
+        assert!(
+            longest_still <= 300,
+            "the text stood still for {longest_still} ms"
+        );
+
+        g.receive(&"more ".repeat(60));
+        finish(&mut g);
+        run(&mut g, now, now + FINISH_MS + MAX_WORD_GAP_MS + FRAME_MS);
+        assert!(g.queued.is_empty(), "the burst is caught up quickly");
     }
 
     #[test]
