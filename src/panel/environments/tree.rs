@@ -202,9 +202,10 @@ pub(super) fn row_checkout_dir(state: &AppState, row: NestedRepoTreeRow) -> Opti
 }
 
 /// The active repository's linked worktree that a scanned nested repository
-/// stands for, if it is one.
+/// stands for, if it is one. Matched by path alone: a worktree of the
+/// workspace checkout itself, such as one under `.claude/worktrees`, has no
+/// nested main checkout for the scan to name in `worktree_of`.
 fn worktree_index_for_repo(state: &AppState, repo: &crate::git::NestedRepo) -> Option<usize> {
-    repo.worktree_of.as_ref()?;
     let root = std::path::Path::new(state.workspace_root.as_deref()?);
     let dir = root.join(&repo.path);
     state.worktrees.iter().position(|worktree| {

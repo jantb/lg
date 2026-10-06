@@ -985,6 +985,42 @@ fn a_scanned_worktree_of_the_active_repository_acts_as_a_worktree_row() {
 }
 
 #[test]
+fn a_scanned_worktree_inside_the_workspace_checkout_can_be_removed() {
+    // Worktrees kept inside the repository, the way `.claude/worktrees` is,
+    // are found by the workspace scan. Their main checkout is the workspace
+    // root rather than a nested repository, so the scan does not name one.
+    let mut state = AppState::new();
+    state.workspace_root = Some("/workspace".into());
+    state.repo_root = Some("/workspace".into());
+    state.nested_repositories = vec![NestedRepo {
+        path: ".claude/worktrees/feat-x".into(),
+        branch: Some("claude/feat-x".into()),
+        detached_at: None,
+        has_changes: false,
+        worktree_of: None,
+    }];
+    state.worktrees = vec![
+        Worktree {
+            is_main: true,
+            ..worktree("/workspace", "main")
+        },
+        worktree("/workspace/.claude/worktrees/feat-x", "claude/feat-x"),
+    ];
+
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    panel::environments::handle_key(&mut state, key(KeyCode::Char('D'))).unwrap();
+
+    assert_eq!(state.modal, Modal::ConfirmDestructive);
+    assert_eq!(
+        state.confirm.as_ref().expect("confirm prompt").action,
+        PendingAction::RemoveWorktree {
+            path: "/workspace/.claude/worktrees/feat-x".into(),
+            force: false,
+        }
+    );
+}
+
+#[test]
 fn removing_a_missing_worktree_prunes_instead() {
     let mut state = AppState::new();
     state.workspace_root = Some("/workspace".into());
