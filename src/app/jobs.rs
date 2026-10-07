@@ -333,7 +333,10 @@ mod tests {
             "the drain waited for the worker to exit"
         );
         assert_eq!(status, Some(("ready".to_string(), false)));
-        assert_eq!(assists.get("node").map(String::as_str), Some("the explanation"));
+        assert_eq!(
+            assists.get("node").map(String::as_str),
+            Some("the explanation")
+        );
     }
 
     /// A status line expires; an answer stays on screen and gets pasted into a

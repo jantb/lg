@@ -221,6 +221,7 @@ mod tests {
                 "Status",
                 &[
                     ("j/k", "repo tree"),
+                    ("H", "github/clone"),
                     ("Enter", "expand/checkout"),
                     ("Space", "actions"),
                     ("s", "agent"),

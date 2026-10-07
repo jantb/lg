@@ -580,6 +580,32 @@ mod tests {
         assert!(!close.contains("approve"), "{close}");
     }
 
+    /// Cloning starts two keys away from where lg opens, and both keys have
+    /// to be on the bar of an ordinary terminal, not cut off past its edge.
+    #[test]
+    fn the_way_to_clone_a_repository_is_on_the_bar() {
+        let bar = |state: &AppState| {
+            let width = 80;
+            let backend = ratatui::backend::TestBackend::new(width, 1);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| draw(frame, Rect::new(0, 0, width, 1), state))
+                .unwrap();
+            let buf = terminal.backend().buffer().clone();
+            (0..width)
+                .map(|col| buf[(col, 0)].symbol().to_string())
+                .collect::<String>()
+        };
+        let mut state = AppState::new();
+        state.focus = Pane::Status;
+        let status = bar(&state);
+        assert!(status.contains("H github/clone"), "{status}");
+
+        state.modal = Modal::GitHub;
+        let github = bar(&state);
+        assert!(github.contains("Tab clone repo"), "{github}");
+    }
+
     /// While a list filter is typed, letters go into it, and the footer says
     /// what its keys are instead of the pane's.
     #[test]

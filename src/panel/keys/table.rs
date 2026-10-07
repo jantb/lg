@@ -21,7 +21,7 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "H",
                 help: "GitHub: pull requests, review, merge, clone",
-                footer: Some(("H", "github")),
+                footer: Some(("H", "github/clone")),
             },
             Binding {
                 key: ",",
@@ -305,6 +305,7 @@ pub const SECTIONS: &[Section] = &[
         footer_meta: Some((1, "Status")),
         footer_order: &[
             "j/k",
+            "H",
             "Enter",
             "Space",
             "s",
@@ -1716,7 +1717,7 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "Tab",
                 help: "Pull requests or repositories to clone",
-                footer: Some(("Tab", "repos")),
+                footer: Some(("Tab", "clone repo")),
             },
             Binding {
                 key: "Esc",
@@ -2194,7 +2195,7 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         prefix: "GitHub ",
         tone: Tone::Normal,
         order: &[
-            "j/k", "Enter", "w", "v", "a", "x", "c", "m", "D", "X", "n", "o", "Tab", "Esc",
+            "j/k", "Tab", "Enter", "w", "v", "a", "x", "c", "m", "D", "X", "n", "o", "Esc",
         ],
     },
     ModalFooter {

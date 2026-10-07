@@ -6,8 +6,8 @@ use crate::state::{DiffSource, GenMsg, ReviewFlagMsg, ReviewMsg};
 
 use super::super::App;
 use super::{
-    drain_messages, drain_review_stream, first_status_line, reap_stopped,
-    take_finished, tick_spinner,
+    drain_messages, drain_review_stream, first_status_line, reap_stopped, take_finished,
+    tick_spinner,
 };
 
 pub(super) fn default_review_collapsed_nodes(
