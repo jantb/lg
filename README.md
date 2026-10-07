@@ -52,7 +52,8 @@ agents safely.
   and exits.
 - **Guided review.** Walk the branch against `main` (`V`; on `main` itself,
   your uncommitted changes), or a pull request (`v` in GitHub), one hunk at a
-  time. `?` inside it lists every key. Each step comes with the model's read of
+  time; `b` switches between the whole branch and only what is uncommitted.
+  `?` inside it lists every key. Each step comes with the model's read of
   it, and the next steps are read ahead so the walk does not wait. Move a line
   cursor, pin notes to lines, ask follow-up questions, and fix things as you
   go: `e` opens `$EDITOR` at the line with lg suspended, and `f` has Claude

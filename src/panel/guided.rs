@@ -15,7 +15,7 @@ use std::sync::mpsc::Receiver;
 use crate::git::guided::{GuidedHunk, GuidedNote, GuidedProgress, Side};
 use crate::panel::text_input::TextInput;
 use crate::state::{AppState, GenMsg, Modal, PendingAction, Poll, poll_once, stopped_unexpectedly};
-use ratatui::crossterm::event::MouseEvent;
+use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 mod draw;
 mod keys;
@@ -24,21 +24,29 @@ mod work;
 pub use draw::render;
 pub use keys::{handle_key, handle_paste};
 
-/// The wheel over the step list moves between steps, and over the pane beside
-/// it scrolls the commentary (or the notes, in the summary). A click on a step
-/// in the list goes to it. None of it marks a step reviewed: that stays with
-/// the keys that say so.
+/// The wheel over the step list moves between steps, over the hunk moves its
+/// cursor, and over the commentary scrolls it (or the notes, in the summary).
+/// A click on a step in the list goes to it, and the divider beside the list
+/// drags to resize it. None of it marks a step reviewed: that stays with the
+/// keys that say so.
 pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &MouseEvent) {
     use crate::panel::pointer;
+    let Some((list, side)) = state
+        .guided
+        .as_deref()
+        .and_then(|guided| draw::pane_areas(guided, area, state.guided_list_width))
+    else {
+        return;
+    };
+    if resize_list(state, list, m) {
+        return;
+    }
     let Some(guided) = state.guided.as_deref() else {
         return;
     };
     if guided.typing() && !matches!(guided.mode, Mode::Summary { .. }) {
         return;
     }
-    let Some((list, side)) = draw::pane_areas(guided, area) else {
-        return;
-    };
     let current = guided.current;
     let total = guided.total();
     let browsing = matches!(guided.mode, Mode::Browse);
@@ -52,7 +60,19 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
             go_to(state, next, false);
         }
         Some(down) if pointer::inside(side, m.column, m.row) => {
-            keys::scroll_side(state, if down { 3 } else { -3 });
+            // The hunk scrolls with its cursor, as j and k move it.
+            let over_hunk = browsing
+                && guided.step().is_some_and(|step| {
+                    let (parts, _) = draw::step_areas(guided, step, side);
+                    pointer::inside(parts[0], m.column, m.row)
+                });
+            if over_hunk {
+                for _ in 0..3 {
+                    move_cursor(state, down);
+                }
+            } else {
+                keys::scroll_side(state, if down { 3 } else { -3 });
+            }
         }
         Some(_) => {}
         None if pointer::left_click(m) && browsing => {
@@ -64,6 +84,28 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
             }
         }
         None => {}
+    }
+}
+
+/// The divider right of the step list, dragged, sets how wide the list is.
+/// Returns whether the event went to the drag.
+fn resize_list(state: &mut AppState, list: ratatui::layout::Rect, m: &MouseEvent) -> bool {
+    match m.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            let divider = list.x.saturating_add(list.width);
+            let rows = list.y..list.y.saturating_add(list.height);
+            state.guided_list_drag_active = m.column == divider && rows.contains(&m.row);
+            state.guided_list_drag_active
+        }
+        MouseEventKind::Drag(MouseButton::Left) if state.guided_list_drag_active => {
+            state.guided_list_width = Some(m.column.saturating_sub(list.x));
+            true
+        }
+        MouseEventKind::Up(MouseButton::Left) if state.guided_list_drag_active => {
+            state.guided_list_drag_active = false;
+            true
+        }
+        _ => false,
     }
 }
 
@@ -367,6 +409,12 @@ pub fn open_branch(state: &mut AppState) {
             base_ref: base,
         }
     };
+    open_local(state, source);
+}
+
+/// Walk the checkout as `source` has it, or go back to that walk if it is the
+/// one already under way.
+fn open_local(state: &mut AppState, source: Source) {
     if let Some(guided) = state.guided.as_ref()
         && guided.source.progress_key() == source.progress_key()
     {
@@ -384,6 +432,44 @@ pub fn open_branch(state: &mut AppState) {
     state.guided = Some(Box::new(guided));
     state.modal = Modal::GuidedReview;
     state.set_status(format!("reading {what} for a guided review\u{2026}"), false);
+}
+
+/// Switch the walk between the whole branch against main and only what has
+/// not been committed yet. Each keeps its own progress and notes, so switching
+/// back resumes where that walk stopped.
+pub(super) fn switch_scope(state: &mut AppState) {
+    let Some(guided) = state.guided.as_deref() else {
+        return;
+    };
+    if guided.fixing.is_some() {
+        state.set_status(
+            "claude is still changing the code; switch once it is done",
+            true,
+        );
+        return;
+    }
+    let base = crate::preferences::base_branch();
+    let source = match &guided.source {
+        Source::Branch { branch, .. } => Source::Changes {
+            branch: branch.clone(),
+        },
+        Source::Changes { branch } if *branch == base => {
+            state.set_status(
+                format!("{branch} is the base branch; there is no branch against it to review"),
+                true,
+            );
+            return;
+        }
+        Source::Changes { branch } => Source::Branch {
+            branch: branch.clone(),
+            base_ref: base,
+        },
+        Source::PullRequest { .. } => {
+            state.set_status("a pull request is walked as GitHub has it", true);
+            return;
+        }
+    };
+    open_local(state, source);
 }
 
 /// Walk a pull request as GitHub has it.
@@ -1321,6 +1407,181 @@ mod tests {
         c.done = false;
 
         assert_eq!(c.verdict(), None);
+    }
+
+    const AREA: ratatui::layout::Rect = ratatui::layout::Rect::new(0, 0, 120, 40);
+
+    /// A walk over a branch, on its one hunk, long enough to need scrolling.
+    fn walk_on_a_long_hunk() -> AppState {
+        let mut diff =
+            String::from("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,40 +1,40 @@\n");
+        for n in 0..40 {
+            diff.push_str(&format!("-old {n}\n+new {n}\n"));
+        }
+        let mut guided = Guided::new(Source::Branch {
+            branch: "guided-test-branch".into(),
+            base_ref: "main".into(),
+        });
+        guided.steps = crate::git::guided::parse_hunks(&diff);
+        guided.current = 1;
+        let mut state = AppState::new();
+        state.guided = Some(Box::new(guided));
+        state.modal = Modal::GuidedReview;
+        state
+    }
+
+    fn panes(state: &AppState) -> (ratatui::layout::Rect, ratatui::layout::Rect) {
+        draw::pane_areas(
+            state.guided.as_deref().unwrap(),
+            AREA,
+            state.guided_list_width,
+        )
+        .unwrap()
+    }
+
+    fn mouse(state: &mut AppState, kind: MouseEventKind, column: u16, row: u16) {
+        let event = MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        };
+        handle_mouse(state, AREA, &event);
+    }
+
+    #[test]
+    fn the_step_list_is_as_wide_as_its_divider_is_dragged() {
+        let mut state = walk_on_a_long_hunk();
+        let (list, _) = panes(&state);
+        let divider = list.x + list.width;
+        let row = list.y + 2;
+
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            divider,
+            row,
+        );
+        mouse(
+            &mut state,
+            MouseEventKind::Drag(MouseButton::Left),
+            divider + 10,
+            row,
+        );
+        mouse(
+            &mut state,
+            MouseEventKind::Up(MouseButton::Left),
+            divider + 10,
+            row,
+        );
+        let (wider, side) = panes(&state);
+        assert_eq!(wider.x + wider.width, divider + 10);
+        assert!(side.x > divider + 10, "the hunk moves over for it");
+
+        // A drag that did not start on the divider leaves the list be.
+        mouse(
+            &mut state,
+            MouseEventKind::Drag(MouseButton::Left),
+            divider + 20,
+            row,
+        );
+        assert_eq!(panes(&state).0, wider);
+    }
+
+    /// The verdict sits in the list's first column, where a list dragged
+    /// narrow cannot cut it off.
+    #[test]
+    fn a_steps_verdict_shows_at_the_left_edge_of_a_narrow_list() {
+        let mut state = walk_on_a_long_hunk();
+        state.guided_list_width = Some(12);
+        let guided = state.guided.as_mut().unwrap();
+        let key = guided.steps[0].key();
+        guided
+            .commentary
+            .insert(key, commentary("Drops a check.\nVerdict: issue"));
+        let (list, _) = panes(&state);
+
+        let backend = ratatui::backend::TestBackend::new(AREA.width, AREA.height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(&state, AREA, frame)).unwrap();
+        let buf = terminal.backend().buffer();
+
+        assert!(
+            (list.y..list.y + list.height).any(|y| buf[(list.x, y)].symbol() == "\u{25cf}"),
+            "no verdict at the list's left edge"
+        );
+    }
+
+    #[test]
+    fn the_wheel_over_the_hunk_scrolls_the_hunk_and_over_the_commentary_the_commentary() {
+        let mut state = walk_on_a_long_hunk();
+        let (_, side) = panes(&state);
+        let guided = state.guided.as_deref().unwrap();
+        let (parts, _) = draw::step_areas(guided, guided.step().unwrap(), side);
+        let (hunk, commentary) = (parts[0], parts[1]);
+
+        mouse(
+            &mut state,
+            MouseEventKind::ScrollDown,
+            hunk.x + 5,
+            hunk.y + 3,
+        );
+        let cursor = state.guided.as_ref().unwrap().cursor;
+        assert!(cursor > 0, "the hunk's cursor moves down it");
+
+        mouse(
+            &mut state,
+            MouseEventKind::ScrollDown,
+            commentary.x + 5,
+            commentary.y + 1,
+        );
+        let guided = state.guided.as_ref().unwrap();
+        assert_eq!(guided.cursor, cursor, "the hunk stays where it was");
+        assert!(guided.side_scroll > 0, "the commentary scrolls");
+    }
+
+    #[test]
+    fn b_switches_between_the_whole_branch_and_what_is_uncommitted() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE);
+        let mut state = walk_on_a_long_hunk();
+
+        handle_key(&mut state, b).unwrap();
+        assert_eq!(
+            state.guided.as_ref().unwrap().source,
+            Source::Changes {
+                branch: "guided-test-branch".into()
+            }
+        );
+
+        handle_key(&mut state, b).unwrap();
+        assert_eq!(
+            state.guided.as_ref().unwrap().source,
+            Source::Branch {
+                branch: "guided-test-branch".into(),
+                base_ref: crate::preferences::base_branch(),
+            }
+        );
+    }
+
+    /// On the base branch there is no branch against it to walk, so the walk
+    /// over its uncommitted changes stays put and says why.
+    #[test]
+    fn the_base_branch_has_only_its_uncommitted_changes_to_walk() {
+        let mut state = AppState::new();
+        let branch = crate::preferences::base_branch();
+        state.guided = Some(Box::new(Guided::new(Source::Changes {
+            branch: branch.clone(),
+        })));
+        state.modal = Modal::GuidedReview;
+
+        switch_scope(&mut state);
+
+        assert_eq!(
+            state.guided.as_ref().unwrap().source,
+            Source::Changes { branch }
+        );
+        assert!(state.status.is_some_and(|status| status.is_error));
     }
 
     #[test]

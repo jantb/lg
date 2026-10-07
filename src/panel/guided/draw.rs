@@ -49,7 +49,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         ],
     );
     draw_progress(state, guided, rows[0], frame);
-    let list_width = (inner.width / 4).clamp(24, 44);
+    let list_width = list_width(inner.width, state.guided_list_width);
     let (panes, gaps) = ui::modal_columns(
         frame,
         rows[1],
@@ -68,9 +68,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
 }
 
 /// Where the step list and the pane beside it land, measured the way
-/// [`render`] lays them out; `None` when the terminal is too small to draw
-/// either.
-pub(super) fn pane_areas(guided: &Guided, area: Rect) -> Option<(Rect, Rect)> {
+/// [`render`] lays them out with the list `list_width` asked for; `None`
+/// when the terminal is too small to draw either.
+pub(super) fn pane_areas(
+    guided: &Guided,
+    area: Rect,
+    requested_list_width: Option<u16>,
+) -> Option<(Rect, Rect)> {
     let modal = Rect {
         height: area.height.saturating_sub(1),
         ..area
@@ -87,12 +91,28 @@ pub(super) fn pane_areas(guided: &Guided, area: Rect) -> Option<(Rect, Rect)> {
             Constraint::Length(bottom_height(guided)),
         ],
     );
-    let list_width = (inner.width / 4).clamp(24, 44);
+    let list_width = list_width(inner.width, requested_list_width);
     let (panes, _) = ui::modal_column_areas(
         rows[1],
         &[Constraint::Length(list_width), Constraint::Min(30)],
     );
     Some((panes[0], panes[1]))
+}
+
+/// The narrowest the step list is dragged to, and the least the hunk beside
+/// it keeps.
+const MIN_LIST_WIDTH: u16 = 12;
+const MIN_SIDE_WIDTH: u16 = 30;
+
+/// The step list's width in a modal `inner_width` wide: as wide as it was
+/// dragged, or a quarter of the modal, and never so wide the hunk is squeezed.
+pub(super) fn list_width(inner_width: u16, requested: Option<u16>) -> u16 {
+    let widest = inner_width
+        .saturating_sub(1 + MIN_SIDE_WIDTH)
+        .max(MIN_LIST_WIDTH);
+    requested
+        .unwrap_or((inner_width / 4).clamp(24, 44))
+        .clamp(MIN_LIST_WIDTH, widest)
 }
 
 /// The step each row of the step list stands for, from its first row: the
@@ -217,16 +237,17 @@ fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
         } else {
             Span::styled("\u{b7} ", LABEL)
         };
+        // In the first column, where a narrow list cannot cut it off.
         let verdict = match guided.commentary.get(&step.key()) {
-            Some(c) if c.error.is_some() => Span::styled(" \u{26a0}", LABEL),
+            Some(c) if c.error.is_some() => Span::styled("\u{26a0} ", LABEL),
             Some(c) => match c.verdict() {
-                Some(Verdict::Issue) => Span::styled(" \u{25cf}", Style::default().fg(Color::Red)),
-                Some(Verdict::Nit) => Span::styled(" \u{25cf}", Style::default().fg(Color::Yellow)),
-                Some(Verdict::Ok) => Span::styled(" \u{25cf}", Style::default().fg(Color::Green)),
-                None if !c.done => Span::styled(" \u{2026}", LABEL),
-                None => Span::raw(""),
+                Some(Verdict::Issue) => Span::styled("\u{25cf} ", Style::default().fg(Color::Red)),
+                Some(Verdict::Nit) => Span::styled("\u{25cf} ", Style::default().fg(Color::Yellow)),
+                Some(Verdict::Ok) => Span::styled("\u{25cf} ", Style::default().fg(Color::Green)),
+                None if !c.done => Span::styled("\u{2026} ", LABEL),
+                None => Span::raw("  "),
             },
-            None => Span::raw(""),
+            None => Span::raw("  "),
         };
         let notes = guided.notes_for(step).len();
         let base = if here {
@@ -235,12 +256,12 @@ fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
             Style::default()
         };
         let mut spans = vec![
-            Span::raw("  "),
+            verdict,
             mark,
             Span::styled(
                 format!(
                     "{} {}",
-                    hunk_label(step),
+                    change_size(step),
                     step.header
                         .rsplit("@@")
                         .next()
@@ -250,7 +271,6 @@ fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
                 ),
                 base,
             ),
-            verdict,
         ];
         if notes > 0 {
             spans.push(Span::styled(format!(" \u{270e}{notes}"), NOTE));
@@ -260,6 +280,18 @@ fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
     let offset = selected.saturating_sub(area.height as usize / 2);
     let list = List::new(items.into_iter().skip(offset).collect::<Vec<_>>());
     frame.render_widget(list, area);
+}
+
+/// What a step changes, as the step list shows it: the lines it adds and
+/// removes, or what happened to the file when there is no text diff.
+fn change_size(step: &GuidedHunk) -> String {
+    if step.lines.is_empty() {
+        step.file_note
+            .clone()
+            .unwrap_or_else(|| "no text diff".into())
+    } else {
+        format!("+{} -{}", step.added(), step.removed())
+    }
 }
 
 fn hunk_label(step: &GuidedHunk) -> String {
@@ -289,17 +321,20 @@ fn draw_step(
         draw_overview(state, guided, area, frame);
         return;
     };
-    let diff_height = (step.lines.len() as u16 + 2 + notes_height(guided, step))
-        .min(area.height * 3 / 5)
-        .max(area.height.min(6));
-    let (parts, gaps) = ui::modal_rows(
-        frame,
-        area,
-        &[Constraint::Length(diff_height), Constraint::Min(3)],
-    );
+    let (parts, gaps) = step_areas(guided, step, area);
+    ui::draw_dividers(frame, &gaps);
     dividers.extend(gaps);
     draw_hunk(guided, step, parts[0], frame);
     draw_commentary(state, guided, &step.key(), parts[1], frame);
+}
+
+/// The hunk and the commentary under it, as [`draw_step`] splits `area`,
+/// with the divider between them.
+pub(super) fn step_areas(guided: &Guided, step: &GuidedHunk, area: Rect) -> (Vec<Rect>, Vec<Rect>) {
+    let diff_height = (step.lines.len() as u16 + 2 + notes_height(guided, step))
+        .min(area.height * 3 / 5)
+        .max(area.height.min(6));
+    ui::modal_row_areas(area, &[Constraint::Length(diff_height), Constraint::Min(3)])
 }
 
 fn notes_height(guided: &Guided, step: &GuidedHunk) -> u16 {

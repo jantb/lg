@@ -1508,6 +1508,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("R", "reload")),
             },
             Binding {
+                key: "b",
+                help: "Whole branch vs main, or only uncommitted",
+                footer: Some(("b", "branch/uncommitted")),
+            },
+            Binding {
                 key: "g / G",
                 help: "Overview / last step",
                 footer: None,
@@ -1524,7 +1529,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "wheel / click",
-                help: "Move steps, scroll commentary; pick a step",
+                help: "Steps, scroll hunk/commentary; pick a step",
                 footer: None,
             },
         ],
@@ -2206,6 +2211,7 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
             "\u{2192} / \u{2190}",
             "] / [",
             "j/k",
+            "b",
             "c / Enter",
             "a",
             "e / o",

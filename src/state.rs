@@ -263,6 +263,10 @@ pub struct AppState {
 
     pub left_column_width: Option<u16>,
     pub column_drag_active: bool,
+    /// The guided review's step list as wide as it was dragged, kept for
+    /// the next review in this session.
+    pub guided_list_width: Option<u16>,
+    pub guided_list_drag_active: bool,
     pub left_panel_heights: Option<crate::ui::LeftPanelHeights>,
     pub row_drag_active: Option<(usize, usize)>,
     /// Text being selected with the mouse, or just selected and not yet copied.
@@ -447,6 +451,8 @@ impl AppState {
 
             left_column_width: None,
             column_drag_active: false,
+            guided_list_width: None,
+            guided_list_drag_active: false,
             left_panel_heights: None,
             row_drag_active: None,
             selection: None,

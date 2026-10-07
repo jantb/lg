@@ -88,6 +88,7 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('F') => start_fix(state, true),
         KeyCode::Char('s') => super::open_summary(state),
         KeyCode::Char('y') => copy_notes(state),
+        KeyCode::Char('b') => super::switch_scope(state),
         _ => {}
     }
 }
