@@ -119,9 +119,16 @@ pub fn set_branch_upstream(branch: &str, upstream: &str) -> Result<String> {
     Ok(format!("{branch} tracks {upstream}"))
 }
 
-pub fn pull(remote: &str, branch: &str) -> Result<String> {
-    if branch.trim().is_empty() {
-        anyhow::bail!("branch name must not be empty");
+/// Bring the current branch up to date with its upstream, whatever that
+/// upstream is called and whichever remote it lives on.
+///
+/// The fetch has already happened, so this is a merge of `@{u}`: a fast-forward
+/// when the branch is only behind, a merge commit when it has diverged.
+pub fn pull() -> Result<String> {
+    // Checked before anything is stashed, so a branch with nowhere to pull
+    // from leaves the working tree alone.
+    if run(&["rev-parse", "--verify", "--quiet", "@{u}"]).is_err() {
+        anyhow::bail!("current branch has no upstream to pull from");
     }
     let stale = fetch_before("pull");
     let stashed = stash_uncommitted_changes("lg: auto-stash before pull")?;
@@ -131,12 +138,18 @@ pub fn pull(remote: &str, branch: &str) -> Result<String> {
     {
         run_combined(&["merge", "--no-edit", "@{u}"])
     } else {
-        run_combined(&["pull", "--ff-only", remote, branch])
+        run_combined(&["merge", "--ff-only", "@{u}"])
     };
 
     match res {
         Ok(mut out) => {
-            pop_stash_with_index_if_needed(stashed)?;
+            if let Err(err) = pop_stash_with_index_if_needed(stashed) {
+                out.push_str(&format!(
+                    "pulled, but restoring auto-stashed local changes failed ({}); they were left in stash",
+                    err.to_string().trim()
+                ));
+                anyhow::bail!("{}", with_fetch_warning(out, stale.as_deref()).trim_end());
+            }
             if stashed {
                 out.push_str("applied stashed local changes after pull\n");
             }

@@ -247,7 +247,6 @@ pub(super) fn spawn_force_push(state: &mut AppState, plan: crate::git::ForcePush
 }
 
 pub(super) fn spawn_pull(state: &mut AppState) {
-    let configured_remote = crate::preferences::remote();
     if !state.pull_available() {
         state.set_status("nothing to pull", false);
         return;
@@ -255,9 +254,8 @@ pub(super) fn spawn_pull(state: &mut AppState) {
     if wait_or_block(state, QueuedAfterFetch::Pull) {
         return;
     }
-    let branch = state.branch.clone().unwrap_or_default();
     spawn_operation(state, "pulling", OperationKind::WorkingTree, move || {
-        let out = crate::git::pull(configured_remote.as_str(), &branch)?;
+        let out = crate::git::pull()?;
         Ok(out
             .lines()
             .rfind(|line| !line.trim().is_empty())
