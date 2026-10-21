@@ -11,7 +11,7 @@ use ratatui::{
 
 use super::{
     Compose, CreateField, CreateForm, MergeForm, MergeRow, Mode, Tab, clone_destination,
-    clone_request, is_current_branch, selected_pr, visible_repos,
+    clone_request, is_current_branch, is_mine, selected_pr, visible_repos,
 };
 use crate::github::{Mergeable, PrState, PullRequest, ReviewDecision};
 use crate::panel::keys;
@@ -264,11 +264,28 @@ fn draw_pr_list(state: &AppState, area: Rect, frame: &mut Frame) {
         .map(|pr| pr.number.to_string().len())
         .max()
         .unwrap_or(1);
+    // The authors get a column of their own, as wide as the longest name
+    // up to a limit; the user's own pull requests just say "you".
+    let author_name = |pr: &PullRequest| {
+        if is_mine(gh, pr) {
+            "you".to_string()
+        } else {
+            pr.author.clone()
+        }
+    };
+    let author_width = gh
+        .prs
+        .iter()
+        .map(|pr| author_name(pr).chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(14);
     let items: Vec<ListItem> = gh
         .prs
         .iter()
         .map(|pr| {
             let here = is_current_branch(state, pr);
+            let mine = is_mine(gh, pr);
             let mut spans = vec![
                 Span::styled(
                     if here { "\u{25cf} " } else { "  " },
@@ -277,6 +294,22 @@ fn draw_pr_list(state: &AppState, area: Rect, frame: &mut Frame) {
                 Span::styled(format!("#{:<digits$} ", pr.number), state_style(pr.state)),
             ];
             let mut marks: Vec<Span> = Vec::new();
+            if author_width > 0 {
+                let style = if mine {
+                    Style::default()
+                        .fg(palette::ACCENT)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(palette::author(&pr.author))
+                };
+                marks.push(Span::styled(
+                    format!(
+                        " {:<author_width$}",
+                        truncate(&author_name(pr), author_width)
+                    ),
+                    style,
+                ));
+            }
             if let Some(checks) = checks_span(pr) {
                 marks.push(Span::raw(" "));
                 marks.push(checks);
@@ -293,20 +326,30 @@ fn draw_pr_list(state: &AppState, area: Rect, frame: &mut Frame) {
                     .iter()
                     .map(|s| s.content.chars().count())
                     .sum::<usize>();
-            let mut title = String::new();
-            if pr.draft {
-                title.push_str("draft \u{b7} ");
-            }
-            title.push_str(&pr.title);
             let room = width.saturating_sub(used + 1);
-            spans.push(Span::styled(
-                format!("{:<room$}", truncate(&title, room)),
-                if pr.draft {
-                    Style::default().fg(palette::TEXT_IDLE)
-                } else {
-                    Style::default().fg(Color::White)
-                },
-            ));
+            let title_style = if pr.draft {
+                Style::default().fg(palette::TEXT_IDLE)
+            } else if mine {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            if pr.draft {
+                let label = "draft \u{b7} ";
+                spans.push(Span::styled(label, Style::default().fg(palette::LANE_TEST)));
+                let room = room.saturating_sub(label.chars().count());
+                spans.push(Span::styled(
+                    format!("{:<room$}", truncate(&pr.title, room)),
+                    title_style,
+                ));
+            } else {
+                spans.push(Span::styled(
+                    format!("{:<room$}", truncate(&pr.title, room)),
+                    title_style,
+                ));
+            }
             spans.extend(marks);
             ListItem::new(Line::from(spans))
         })
@@ -339,12 +382,25 @@ fn draw_pr_detail(state: &AppState, area: Rect, frame: &mut Frame) {
         Some(owner) => format!("{owner}:{}", pr.head),
         None => pr.head.clone(),
     };
+    let author = if is_mine(&state.github, pr) {
+        Span::styled(
+            format!("{} (you)", pr.author),
+            Style::default()
+                .fg(palette::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(
+            pr.author.clone(),
+            Style::default().fg(palette::author(&pr.author)),
+        )
+    };
     lines.push(Line::from(vec![
-        Span::styled(pr.author.clone(), Style::default().fg(Color::Cyan)),
+        author,
         Span::styled(" wants to merge ", LABEL),
-        Span::styled(head, Style::default().fg(Color::Yellow)),
+        Span::styled(head, Style::default().fg(palette::LANE_FEATURE)),
         Span::styled(" \u{2192} ", LABEL),
-        Span::styled(pr.base.clone(), Style::default().fg(Color::Yellow)),
+        Span::styled(pr.base.clone(), Style::default().fg(palette::LANE_MAIN)),
     ]));
 
     let mut status = vec![Span::styled(pr.state.label(), state_style(pr.state))];
@@ -443,7 +499,7 @@ fn draw_pr_detail(state: &AppState, area: Rect, frame: &mut Frame) {
             };
             spans.push(Span::styled(
                 review.author.clone(),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(palette::author(&review.author)),
             ));
             spans.push(Span::styled(format!(" {word}"), style));
         }

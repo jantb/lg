@@ -24,6 +24,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("H", "github/clone")),
             },
             Binding {
+                key: "N",
+                help: "Open a pull request for this branch",
+                footer: Some(("N", "new PR")),
+            },
+            Binding {
                 key: ",",
                 help: "Settings and project preferences",
                 footer: Some((",", "settings")),

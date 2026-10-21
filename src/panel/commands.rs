@@ -64,6 +64,7 @@ const SPECIAL: &[(&str, &str, bool)] = &[
         "H",
         false,
     ),
+    ("Create a pull request for the current branch", "N", true),
     (
         "Guided review \u{2014} walk the branch (or, on main, uncommitted changes) hunk by hunk",
         "V",

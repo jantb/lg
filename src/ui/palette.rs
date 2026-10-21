@@ -166,6 +166,27 @@ pub fn selection() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+/// The colour a person is drawn in, the same wherever their name shows: the
+/// commit log, a pull request list, a review.
+pub fn author(name: &str) -> Color {
+    const COLORS: &[Color] = &[
+        Color::Cyan,
+        Color::Yellow,
+        Color::Green,
+        Color::Magenta,
+        Color::Blue,
+        Color::LightCyan,
+        Color::LightYellow,
+        Color::LightGreen,
+        Color::LightMagenta,
+        Color::LightBlue,
+    ];
+    let hash = name.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    COLORS[hash as usize % COLORS.len()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

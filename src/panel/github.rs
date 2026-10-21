@@ -156,6 +156,9 @@ pub struct GitHub {
 
     /// Where a clone in flight is going, so lg can move there once it lands.
     pub clone_target: Option<PathBuf>,
+    /// The new pull request form opens once the list arrives, since it needs
+    /// to know whether the branch already has one.
+    pub create_on_load: bool,
 }
 
 impl GitHub {
@@ -198,6 +201,17 @@ pub fn open(state: &mut AppState) {
     }
 }
 
+/// Open the modal straight into the new pull request form for the branch
+/// checked out here.
+pub fn open_create(state: &mut AppState) {
+    if state.repo_root.is_none() {
+        state.set_status("lg is not pointed at a Git checkout", false);
+        return;
+    }
+    open(state);
+    state.github.create_on_load = true;
+}
+
 /// Read the pull request list again, and the repository's details if this
 /// checkout has not had them yet.
 pub fn load_pull_requests(state: &mut AppState) {
@@ -211,6 +225,10 @@ pub fn load_pull_requests(state: &mut AppState) {
     state.github.prs_loading = Some(work::pull_requests(filter, need_info));
     state.github.prs_dir = crate::git::active_repo();
     state.github.prs_error = None;
+    // Who the user is, so their own pull requests can be told apart.
+    if state.github.owners.is_none() {
+        load_owners(state);
+    }
 }
 
 pub fn load_repositories(state: &mut AppState) {
@@ -271,6 +289,7 @@ pub fn after_action(state: &mut AppState) {
 /// Take in whatever the lists being read have sent back.
 pub fn poll(state: &mut AppState) {
     let gh = &mut state.github;
+    let mut create = false;
     if let Some(result) = take_answer(&mut gh.prs_loading) {
         match result {
             Ok((info, prs)) => {
@@ -280,8 +299,13 @@ pub fn poll(state: &mut AppState) {
                 gh.prs = prs;
                 gh.pr_idx = gh.pr_idx.min(gh.prs.len().saturating_sub(1));
                 gh.prs_error = None;
+                put_mine_first(gh);
+                create = std::mem::take(&mut gh.create_on_load);
             }
-            Err(err) => gh.prs_error = Some(err),
+            Err(err) => {
+                gh.prs_error = Some(err);
+                gh.create_on_load = false;
+            }
         }
     }
     if let Some(result) = take_answer(&mut gh.repos_loading) {
@@ -295,7 +319,10 @@ pub fn poll(state: &mut AppState) {
     }
     let owners = take_answer(&mut gh.owners_loading);
     match owners {
-        Some(Ok(owners)) => state.github.owners = Some(owners),
+        Some(Ok(owners)) => {
+            state.github.owners = Some(owners);
+            put_mine_first(&mut state.github);
+        }
         // Only the organizations are missing; the user's own list stands.
         Some(Err(err)) => {
             state.set_status(format!("could not read your organizations: {err}"), true)
@@ -304,6 +331,21 @@ pub fn poll(state: &mut AppState) {
     }
     let visible = visible_repos(&state.github).len();
     state.github.repo_idx = state.github.repo_idx.min(visible.saturating_sub(1));
+    if create && state.modal == Modal::GitHub && state.github.mode == Mode::Browse {
+        start_create(state);
+    }
+}
+
+/// The user's own pull requests go to the top, in the order GitHub listed
+/// them; the selection stays on the same pull request.
+fn put_mine_first(gh: &mut GitHub) {
+    let selected = gh.prs.get(gh.pr_idx).map(|pr| pr.number);
+    let mut prs = std::mem::take(&mut gh.prs);
+    prs.sort_by_key(|pr| !is_mine(gh, pr));
+    gh.prs = prs;
+    if let Some(idx) = selected.and_then(|n| gh.prs.iter().position(|pr| pr.number == n)) {
+        gh.pr_idx = idx;
+    }
 }
 
 // ─── What is selected ────────────────────────────────────────────────────────
@@ -353,6 +395,13 @@ pub fn clone_parent(state: &AppState) -> Option<PathBuf> {
 
 pub fn clone_destination(state: &AppState) -> Option<PathBuf> {
     crate::github::clone_dir(&clone_parent(state)?, &clone_request(state)?)
+}
+
+/// Whether the signed-in user opened `pr`. Unknown until their login is read.
+pub fn is_mine(gh: &GitHub, pr: &PullRequest) -> bool {
+    gh.owners
+        .as_ref()
+        .is_some_and(|owners| !owners.login.is_empty() && owners.login == pr.author)
 }
 
 /// Whether `pr` is the pull request for the branch checked out here.
@@ -1435,6 +1484,117 @@ mod tests {
         assert_eq!(
             state.github.prs_error.as_deref(),
             Some("gh auth login required")
+        );
+    }
+
+    fn by(author: &str, number: u64) -> PullRequest {
+        PullRequest {
+            author: author.into(),
+            ..pr(number, &format!("branch-{number}"))
+        }
+    }
+
+    fn signed_in_as(state: &mut AppState, login: &str) {
+        state.github.owners = Some(Owners {
+            login: login.into(),
+            orgs: Vec::new(),
+        });
+    }
+
+    fn arrive(state: &mut AppState, prs: Vec<PullRequest>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        state.github.prs_loading = Some(rx);
+        tx.send(Ok((None, prs))).unwrap();
+        poll(state);
+    }
+
+    fn numbers(state: &AppState) -> Vec<u64> {
+        state.github.prs.iter().map(|pr| pr.number).collect()
+    }
+
+    #[test]
+    fn the_users_own_pull_requests_come_first() {
+        let mut state = with_prs(Vec::new());
+        signed_in_as(&mut state, "me");
+        arrive(
+            &mut state,
+            vec![by("alice", 1), by("me", 2), by("bob", 3), by("me", 4)],
+        );
+
+        let order = numbers(&state);
+        let last_mine = order.iter().rposition(|n| [2, 4].contains(n)).unwrap();
+        let first_other = order.iter().position(|n| [1, 3].contains(n)).unwrap();
+        assert!(last_mine < first_other, "{order:?}");
+    }
+
+    #[test]
+    fn learning_who_the_user_is_moves_their_pull_requests_up_and_keeps_the_selection() {
+        let mut state = with_prs(Vec::new());
+        arrive(&mut state, vec![by("alice", 1), by("bob", 3), by("me", 2)]);
+        select_pr(&mut state, 1);
+        let (tx, rx) = std::sync::mpsc::channel();
+        state.github.owners_loading = Some(rx);
+        tx.send(Ok(Owners {
+            login: "me".into(),
+            orgs: Vec::new(),
+        }))
+        .unwrap();
+
+        poll(&mut state);
+
+        assert_eq!(state.github.prs[0].number, 2);
+        assert_eq!(selected_pr(&state).map(|pr| pr.number), Some(3));
+    }
+
+    #[test]
+    fn asking_for_a_new_pull_request_opens_the_form_once_the_list_is_in() {
+        let mut state = with_prs(Vec::new());
+        state.github.create_on_load = true;
+
+        arrive(&mut state, vec![pr(1, "other")]);
+
+        let Mode::Create(form) = &state.github.mode else {
+            panic!("the form opens");
+        };
+        assert_eq!(form.branch, "feat/login");
+    }
+
+    #[test]
+    fn asking_for_a_new_pull_request_on_a_branch_that_has_one_shows_it() {
+        let mut state = with_prs(Vec::new());
+        state.github.create_on_load = true;
+
+        arrive(&mut state, vec![pr(1, "other"), pr(8, "feat/login")]);
+
+        assert_eq!(state.github.mode, Mode::Browse);
+        assert_eq!(selected_pr(&state).map(|pr| pr.number), Some(8));
+    }
+
+    #[test]
+    fn the_list_names_each_author_and_the_user_as_you() {
+        let mut state = with_prs(Vec::new());
+        signed_in_as(&mut state, "me");
+        arrive(&mut state, vec![by("alice", 1), by("me", 2)]);
+        let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| render(&state, area, frame)).unwrap();
+        let buf = terminal.backend().buffer();
+        // The list is the first column inside the frame; the details beside
+        // it name the selected pull request too.
+        let rows: Vec<String> = (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .filter_map(|row: String| row.split('\u{2502}').nth(1).map(str::to_string))
+            .collect();
+
+        let row = |title: &str| rows.iter().find(|row| row.contains(title)).cloned();
+        assert!(
+            row("PR 1").is_some_and(|row| row.contains("alice")),
+            "{rows:#?}"
+        );
+        assert!(
+            row("PR 2").is_some_and(|row| row.contains("you")),
+            "{rows:#?}"
         );
     }
 }

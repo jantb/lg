@@ -420,6 +420,10 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
             panel::github::open(host.state_mut());
             return Ok(());
         }
+        KeyCode::Char('N') if !focused_review_panel(host.state()) => {
+            panel::github::open_create(host.state_mut());
+            return Ok(());
+        }
         KeyCode::Char(',') => {
             panel::settings::open(host.state_mut(), panel::settings::Category::Identity);
             return Ok(());

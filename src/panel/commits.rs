@@ -88,10 +88,10 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
             };
             let author_style = if c.is_first_parent {
                 Style::default()
-                    .fg(author_color(&c.author))
+                    .fg(crate::ui::palette::author(&c.author))
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(author_color(&c.author))
+                Style::default().fg(crate::ui::palette::author(&c.author))
             };
             let mut spans = vec![
                 Span::styled(
@@ -357,23 +357,4 @@ fn selected_style(style: Style, selected: bool) -> Style {
     } else {
         style
     }
-}
-
-fn author_color(author: &str) -> Color {
-    const COLORS: &[Color] = &[
-        Color::Cyan,
-        Color::Yellow,
-        Color::Green,
-        Color::Magenta,
-        Color::Blue,
-        Color::LightCyan,
-        Color::LightYellow,
-        Color::LightGreen,
-        Color::LightMagenta,
-        Color::LightBlue,
-    ];
-    let hash = author.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
-    });
-    COLORS[hash as usize % COLORS.len()]
 }
