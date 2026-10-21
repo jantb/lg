@@ -99,7 +99,12 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
         hub.selected = 0;
         return Ok(());
     }
-    if hub.editing && !(ctrl && key.code == KeyCode::Char('s')) {
+    // Ctrl-L opens the model modal from inside a field too, where a plain
+    // letter is text.
+    let model_modal = ctrl
+        && key.code == KeyCode::Char('l')
+        && matches!(hub.current_category(), Category::Writing | Category::Models);
+    if hub.editing && !(ctrl && key.code == KeyCode::Char('s')) && !model_modal {
         let picking = picking(hub);
         match key.code {
             KeyCode::Esc => hub.editing = false,
@@ -199,10 +204,11 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Home => hub.selected = 0,
         KeyCode::End => move_selection(state, true, usize::MAX / 2),
         KeyCode::Enter => start_edit(hub),
-        KeyCode::Char('L')
-            if hub.current_category() == Category::Writing
-                || hub.current_category() == Category::Models =>
-        {
+        KeyCode::Char('l') if model_modal => {
+            // A field opened but not typed in has nothing to lose.
+            if hub.editing && !hub.typed {
+                hub.editing = false;
+            }
             if hub.dirty() {
                 hub.notify(
                     NoticeKind::Warning,

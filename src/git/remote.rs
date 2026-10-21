@@ -144,6 +144,9 @@ pub fn pull() -> Result<String> {
     match res {
         Ok(mut out) => {
             if let Err(err) = pop_stash_with_index_if_needed(stashed) {
+                if !out.is_empty() && !out.ends_with('\n') {
+                    out.push('\n');
+                }
                 out.push_str(&format!(
                     "pulled, but restoring auto-stashed local changes failed ({}); they were left in stash",
                     err.to_string().trim()

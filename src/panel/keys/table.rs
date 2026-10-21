@@ -1278,9 +1278,9 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("v", "preview prompt")),
             },
             Binding {
-                key: "L",
+                key: "Ctrl-L",
                 help: "Model modal; derives style from history",
-                footer: Some(("L", "derive style from history")),
+                footer: Some(("Ctrl-L", "derive style from history")),
             },
         ],
         footer_meta: None,
@@ -1290,9 +1290,9 @@ pub const SECTIONS: &[Section] = &[
         title: "Settings: Models",
         pane: None,
         bindings: &[Binding {
-            key: "L",
+            key: "Ctrl-L",
             help: "Model modal: live model list, connectivity",
-            footer: Some(("L", "model picker")),
+            footer: Some(("Ctrl-L", "model picker")),
         }],
         footer_meta: None,
         footer_order: &[],

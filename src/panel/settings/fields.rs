@@ -380,7 +380,7 @@ pub(super) fn describe(category: Category, field: &Field) -> Option<&'static str
             "Language commit messages and pull request text are written in."
         }
         (Category::Writing, _, "comment_style") => {
-            "The shape of a commit message: Conventional Commits, plain imperative, and so on. Press L to derive it from this checkout's history."
+            "The shape of a commit message: Conventional Commits, plain imperative, and so on. Press Ctrl-L to derive it from this checkout's history, even while editing."
         }
         (Category::Writing, _, "subject_max") => {
             "Longest subject line the commit writer may produce, in characters."
@@ -402,7 +402,7 @@ pub(super) fn describe(category: Category, field: &Field) -> Option<&'static str
             "Model the claude CLI is asked for. Enter picks from the models the CLI offers; any other model id may be typed. Empty uses the Claude agent profile's model, or the CLI default."
         }
         (Category::Models, "local", "model") => {
-            "Model the chat endpoint is asked for. Enter picks from the models the endpoint serves; L opens the model modal with connectivity checks."
+            "Model the chat endpoint is asked for. Enter picks from the models the endpoint serves; Ctrl-L opens the model modal with connectivity checks."
         }
         (Category::Models, "local", "endpoint") => {
             "OpenAI-compatible chat completions URL the requests are sent to."

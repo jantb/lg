@@ -567,11 +567,11 @@ pub(super) fn category_keys(category: Category) -> (Option<&'static str>, &'stat
         ),
         Category::Writing => (
             Some("Settings: Writing"),
-            "L opens the model modal, which reads this checkout's commits to suggest language and message shape.",
+            "Ctrl-L opens the model modal, which reads this checkout's commits to suggest language and message shape.",
         ),
         Category::Models => (
             Some("Settings: Models"),
-            "L opens the model modal with the live model list and connectivity check.",
+            "Ctrl-L opens the model modal with the live model list and connectivity check.",
         ),
         Category::Agents => (
             Some("Settings: Agents"),

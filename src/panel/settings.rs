@@ -1006,4 +1006,26 @@ mod tests {
         let screen = text(&drawn(&state, Rect::new(0, 0, 120, 40)));
         assert!(screen.contains("dev and test"), "{screen}");
     }
+
+    /// A capital L is part of a commit style like "Like Linux", not a shortcut.
+    #[test]
+    fn a_capital_l_is_typed_into_the_comment_style() {
+        let mut state = writing_hub();
+        select(&mut state, "/writing/comment_style");
+        press(&mut state, KeyCode::Enter);
+        handle_key(&mut state, KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)).unwrap();
+        press(&mut state, KeyCode::Char('L'));
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(state.settings_hub.draft["writing"]["comment_style"], json!("L"));
+        assert_eq!(state.modal, Modal::None);
+    }
+
+    #[test]
+    fn ctrl_l_derives_the_style_from_inside_the_comment_style_field() {
+        let mut state = writing_hub();
+        select(&mut state, "/writing/comment_style");
+        press(&mut state, KeyCode::Enter);
+        handle_key(&mut state, KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL)).unwrap();
+        assert_eq!(state.modal, Modal::Model);
+    }
 }
