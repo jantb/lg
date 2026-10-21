@@ -731,6 +731,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_identity_scope_is_chosen_from_repository_or_folder() {
+        let mut state = AppState::default();
+        state.decorative_animations = false;
+        state.settings_hub = Settings {
+            category: 0,
+            draft: json!({"scope": "Repository", "folder": "/tmp", "name": "", "email": ""}),
+            ..Settings::default()
+        };
+        state.settings_hub.original = state.settings_hub.draft.clone();
+        select(&mut state, "/scope");
+        press(&mut state, KeyCode::Enter);
+        let screen = text(&drawn(&state, Rect::new(0, 0, 120, 40)));
+        for option in IDENTITY_SCOPES {
+            assert!(screen.contains(option), "{option} is offered: {screen}");
+        }
+        for c in "Folder".chars() {
+            press(&mut state, KeyCode::Char(c));
+        }
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(state.settings_hub.draft["scope"], json!("Folder"));
+
+        press(&mut state, KeyCode::Enter);
+        for c in "Everywhere".chars() {
+            press(&mut state, KeyCode::Char(c));
+        }
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(state.settings_hub.draft["scope"], json!("Folder"));
+    }
+
     /// Typing the whole word is as good as highlighting it.
     #[test]
     fn a_typed_allowed_value_is_applied() {
@@ -1013,10 +1043,17 @@ mod tests {
         let mut state = writing_hub();
         select(&mut state, "/writing/comment_style");
         press(&mut state, KeyCode::Enter);
-        handle_key(&mut state, KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)).unwrap();
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
         press(&mut state, KeyCode::Char('L'));
         press(&mut state, KeyCode::Enter);
-        assert_eq!(state.settings_hub.draft["writing"]["comment_style"], json!("L"));
+        assert_eq!(
+            state.settings_hub.draft["writing"]["comment_style"],
+            json!("L")
+        );
         assert_eq!(state.modal, Modal::None);
     }
 
@@ -1025,7 +1062,11 @@ mod tests {
         let mut state = writing_hub();
         select(&mut state, "/writing/comment_style");
         press(&mut state, KeyCode::Enter);
-        handle_key(&mut state, KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL)).unwrap();
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
         assert_eq!(state.modal, Modal::Model);
     }
 }

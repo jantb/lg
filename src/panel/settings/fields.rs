@@ -41,6 +41,9 @@ impl Picker {
             .filter(|note| !note.is_empty())
     }
 }
+/// Where the Identity category writes the author: this checkout or every
+/// repository below a folder.
+pub(super) const IDENTITY_SCOPES: &[&str] = &["Repository", "Folder"];
 /// What a field may be picked from: local branches for a branch, the
 /// endpoint's models for the model, the programs on this machine for the
 /// editor and terminal, and the allowed words for a field that takes one of a
@@ -54,6 +57,7 @@ pub(super) fn options(hub: &Settings, field: &Field) -> Option<Picker> {
     }
     let group = field.groups.first().map(String::as_str).unwrap_or_default();
     Some(match (hub.current_category(), group, field.key.as_str()) {
+        (Category::Identity, _, "scope") => Picker::fixed(IDENTITY_SCOPES, "scope"),
         (Category::Writing, _, "language") => Picker::fixed(preferences::LANGUAGES, "language"),
         (Category::Models, _, "provider") => Picker::fixed(preferences::PROVIDERS, "provider"),
         (Category::Models, "claude", "model") => Picker {
