@@ -336,9 +336,32 @@ pub(crate) fn suggest_repo_settings_if_unset(state: &mut AppState) {
     {
         return;
     }
+    scan_repo_conventions(state, false);
+}
+
+/// Reads language and message shape out of this checkout's commit history on
+/// request, whatever is saved already; the result replaces the modal's rows
+/// but is only kept once saved.
+pub(crate) fn derive_repo_settings(state: &mut AppState) {
+    if state.settings_suggest_job.is_some() {
+        return;
+    }
+    if !state.ai_assist {
+        state.set_status("AI is off; turn it on under Models to read history", true);
+        return;
+    }
+    scan_repo_conventions(state, true);
+}
+
+fn scan_repo_conventions(state: &mut AppState, requested: bool) {
     let history = match crate::git::recent_commit_messages(30) {
         Ok(history) if !history.trim().is_empty() => history,
-        _ => return,
+        _ => {
+            if requested {
+                state.set_status("no commit history to read conventions from", true);
+            }
+            return;
+        }
     };
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
@@ -348,6 +371,7 @@ pub(crate) fn suggest_repo_settings_if_unset(state: &mut AppState) {
         rx,
         handle: Some(handle),
         spinner: 0,
+        requested,
     });
     state.set_status("reading this checkout's conventions", false);
 }

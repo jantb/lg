@@ -3,8 +3,9 @@
 use anyhow::Result;
 
 use crate::state::{
-    CheckoutMsg, CommitLogMsg, DiffMsg, FetchMsg, GenMsg, Modal, OperationKind, OperationMsg,
-    PushMsg, RefreshMsg, RefreshScope, ReleaseStatusMsg, SettingsSuggestMsg, WorkflowMsg,
+    AppState, CheckoutMsg, CommitLogMsg, DiffMsg, FetchMsg, GenMsg, Modal, OperationKind,
+    OperationMsg, PushMsg, RefreshMsg, RefreshScope, ReleaseStatusMsg, SettingsSuggestMsg,
+    WorkflowMsg,
 };
 
 use super::super::{App, selected_commit_ref, spawn_push};
@@ -233,9 +234,6 @@ impl App {
         }
     }
 
-    /// Applies derived conventions only to rows the user has not touched, and
-    /// only while the settings modal is still open — a suggestion must never
-    /// overwrite something typed in the meantime.
     pub(in crate::app) fn drain_settings_suggest_job(&mut self) {
         let Some((mut job, msg)) = take_finished(&mut self.state.settings_suggest_job) else {
             return;
@@ -244,41 +242,7 @@ impl App {
         match msg {
             Err(stopped) => self.state.set_status(stopped, true),
             Ok(SettingsSuggestMsg::Done { language, shapes }) => {
-                if self.state.modal != Modal::Model || crate::settings::is_configured() {
-                    return;
-                }
-                let mut applied = Vec::new();
-                if let Some(language) = language.filter(|language| !language.trim().is_empty()) {
-                    self.state.settings_pr_language_input = language;
-                    self.state.settings_derived_language = true;
-                    applied.push("language".to_string());
-                }
-                let shapes: Vec<String> = shapes
-                    .into_iter()
-                    .filter(|shape| !shape.trim().is_empty())
-                    .collect();
-                if !shapes.is_empty() {
-                    // The first shape is the model's best reading; the rest stay
-                    // available as the row's choice list to step through.
-                    if self.state.settings_comment_style_input.trim().is_empty() {
-                        self.state.settings_comment_style_input = shapes[0].clone();
-                    }
-                    self.state.settings_comment_style_choices = shapes.clone();
-                    self.state.settings_derived_shape = true;
-                    applied.push(format!("{} message shapes", shapes.len()));
-                }
-                if applied.is_empty() {
-                    self.state
-                        .set_status("could not derive conventions from history", false);
-                } else {
-                    self.state.set_status(
-                        format!(
-                            "suggested {} from history; Up/Down to compare, Enter to save",
-                            applied.join(" and ")
-                        ),
-                        false,
-                    );
-                }
+                apply_suggested_conventions(&mut self.state, job.requested, language, shapes);
             }
             Ok(SettingsSuggestMsg::Error(message)) => {
                 self.state
@@ -691,5 +655,98 @@ impl App {
         for handle in handles {
             join_worker(Some(handle));
         }
+    }
+}
+
+/// Applies derived conventions only while the settings modal is still open.
+/// An automatic scan fills only rows the user has not touched; one the user
+/// asked for replaces the message shape. The rows are locked while it runs,
+/// so nothing typed is lost either way.
+fn apply_suggested_conventions(
+    state: &mut AppState,
+    requested: bool,
+    language: Option<String>,
+    shapes: Vec<String>,
+) {
+    if state.modal != Modal::Model || (!requested && crate::settings::is_configured()) {
+        return;
+    }
+    let mut applied = Vec::new();
+    if let Some(language) = language.filter(|language| !language.trim().is_empty()) {
+        state.settings_pr_language_input = language;
+        state.settings_derived_language = true;
+        applied.push("language".to_string());
+    }
+    let shapes: Vec<String> = shapes
+        .into_iter()
+        .filter(|shape| !shape.trim().is_empty())
+        .collect();
+    if !shapes.is_empty() {
+        // The first shape is the model's best reading; the rest stay
+        // available as the row's choice list to step through.
+        if requested || state.settings_comment_style_input.trim().is_empty() {
+            state.settings_comment_style_input = shapes[0].clone();
+        }
+        state.settings_comment_style_choices = shapes.clone();
+        state.settings_derived_shape = true;
+        applied.push(format!("{} message shapes", shapes.len()));
+    }
+    if applied.is_empty() {
+        state.set_status("could not derive conventions from history", false);
+    } else {
+        state.set_status(
+            format!(
+                "suggested {} from history; Up/Down to compare, Enter to save",
+                applied.join(" and ")
+            ),
+            false,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn modal_with_style(style: &str) -> AppState {
+        let mut state = AppState::default();
+        state.modal = Modal::Model;
+        state.settings_comment_style_input = style.into();
+        state
+    }
+
+    #[test]
+    fn a_requested_scan_replaces_a_saved_message_shape() {
+        let mut state = modal_with_style("plain imperative");
+        apply_suggested_conventions(
+            &mut state,
+            true,
+            Some("Norwegian".into()),
+            vec!["Conventional Commits".into(), "plain imperative".into()],
+        );
+        assert_eq!(state.settings_comment_style_input, "Conventional Commits");
+        assert_eq!(state.settings_pr_language_input, "Norwegian");
+        assert!(
+            state
+                .settings_comment_style_choices
+                .contains(&"plain imperative".to_string())
+        );
+    }
+
+    #[test]
+    fn an_automatic_scan_keeps_a_shape_already_there() {
+        let mut state = modal_with_style("plain imperative");
+        apply_suggested_conventions(&mut state, false, None, vec!["Conventional Commits".into()]);
+        // Whether or not this machine has writing settings saved, the row
+        // already filled in is not replaced.
+        assert_eq!(state.settings_comment_style_input, "plain imperative");
+    }
+
+    #[test]
+    fn a_scan_that_lands_after_the_modal_closed_changes_nothing() {
+        let mut state = modal_with_style("plain imperative");
+        state.modal = Modal::None;
+        apply_suggested_conventions(&mut state, true, None, vec!["Conventional Commits".into()]);
+        assert_eq!(state.settings_comment_style_input, "plain imperative");
     }
 }

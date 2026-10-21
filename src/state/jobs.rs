@@ -633,6 +633,9 @@ pub struct SettingsSuggestJob {
     pub rx: Receiver<SettingsSuggestMsg>,
     pub handle: Option<JoinHandle<()>>,
     pub spinner: usize,
+    /// Asked for by the user, so its answer replaces saved values in the
+    /// modal; an automatic scan only fills a checkout that has none.
+    pub requested: bool,
 }
 
 #[derive(Debug)]

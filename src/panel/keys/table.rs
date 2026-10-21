@@ -1159,6 +1159,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: None,
             },
             Binding {
+                key: "Ctrl+D",
+                help: "Read language and message shape off history",
+                footer: None,
+            },
+            Binding {
                 key: "Ctrl+U",
                 help: "Reset saved settings to defaults",
                 footer: Some(("Ctrl+U", "reset")),

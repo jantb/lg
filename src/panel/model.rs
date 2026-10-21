@@ -219,6 +219,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             ("Ctrl+S", Color::Green, "save"),
             ("Ctrl+E", Color::Cyan, "prompt"),
             ("Ctrl+R", Color::Cyan, "review style"),
+            ("Ctrl+D", Color::Cyan, "derive from history"),
             ("Ctrl+U", Color::Red, "reset"),
             ("Esc", Color::Gray, "cancel"),
         ]
@@ -458,6 +459,10 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('u') if ctrl => {
             state.pending_action = Some(PendingAction::ClearSettings);
+        }
+        KeyCode::Char('d') if ctrl => {
+            state.settings_mode = SettingsMode::Browse;
+            crate::app::derive_repo_settings(state);
         }
         KeyCode::Char('s') if ctrl => save(state),
         _ if state.settings_mode == SettingsMode::Edit => edit_key(state, key, ctrl),
@@ -921,6 +926,7 @@ mod tests {
             rx,
             handle: None,
             spinner: 0,
+            requested: false,
         });
         focus(&mut state, SettingsField::PrLanguage);
         handle_key(&mut state, key(KeyCode::Enter, false)).unwrap();

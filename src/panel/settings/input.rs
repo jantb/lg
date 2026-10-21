@@ -215,7 +215,12 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
                     "Save or discard edits before opening the model modal.",
                 );
             } else {
+                let writing = hub.current_category() == Category::Writing;
                 crate::app::open_model_modal(state);
+                // From Writing the key promises the style read off history.
+                if writing {
+                    crate::app::derive_repo_settings(state);
+                }
             }
         }
         KeyCode::Char('s') if ctrl => {
