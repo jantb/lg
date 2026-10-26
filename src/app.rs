@@ -384,7 +384,9 @@ impl App {
                     }
                 }
                 clock.input();
-                if self.state.session_input_active() {
+                if self.state.session_input_active()
+                    || crate::panel::guided::chat_has_keyboard(&self.state)
+                {
                     // What was typed echoes back in a moment.
                     clock.shown_live(Instant::now());
                 }

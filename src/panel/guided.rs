@@ -1418,6 +1418,13 @@ pub(super) fn chat_session(state: &AppState) -> Option<crate::session::SessionId
         .filter(|id| state.sessions.get(*id).is_some())
 }
 
+/// The review's chat, while it is drawn beside the hunk.
+pub fn chat_on_screen(state: &AppState) -> Option<crate::session::SessionId> {
+    (state.modal == Modal::GuidedReview)
+        .then(|| chat_session(state))
+        .flatten()
+}
+
 /// Whether the review's chat holds the keyboard, as a session does: then
 /// every key, Ctrl-C and Esc included, goes to Claude.
 pub fn chat_has_keyboard(state: &AppState) -> bool {
