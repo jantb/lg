@@ -7,6 +7,7 @@ mod side_by_side;
 mod syntax;
 use super::highlight::highlight_line;
 use crate::language::Language;
+pub use side_by_side::DiffContentKind;
 use side_by_side::*;
 use syntax::*;
 pub use syntax::{Token, diff_header_path, diff_line_tokens};
@@ -112,6 +113,39 @@ pub fn highlight_side_by_side_diff_text_for_path(
         renderer.push_line(line);
     }
     renderer.finish()
+}
+
+/// Two lines beside each other the way the side-by-side diff draws them,
+/// `width` wide and wrapped: the old file's on the left, the new file's on
+/// the right, either side empty. Each is its number, its code without the
+/// sign, and what happened to it.
+pub fn side_by_side_pair_for_path(
+    old: Option<(usize, &str, DiffContentKind)>,
+    new: Option<(usize, &str, DiffContentKind)>,
+    width: u16,
+    path: &str,
+) -> Vec<Line<'static>> {
+    let cell = |(number, text, kind): (usize, &str, DiffContentKind)| {
+        Some(SideDiffCell {
+            number: u32::try_from(number).ok()?,
+            text: text.to_string(),
+            kind,
+        })
+    };
+    render_side_by_side_rows(
+        old.and_then(cell).as_ref(),
+        new.and_then(cell).as_ref(),
+        usize::from(width),
+        Language::from_path(path),
+    )
+}
+
+/// Where the right side of a side-by-side row `width` wide starts, and how
+/// wide its left side is.
+pub fn side_by_side_columns(width: u16) -> (u16, u16) {
+    let separator = SIDE_SEPARATOR.chars().count() as u16;
+    let left = width.saturating_sub(separator) / 2;
+    (left, left + separator)
 }
 
 pub fn side_by_side_diff_line_count(text: &str, width: u16) -> usize {

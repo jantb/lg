@@ -61,12 +61,18 @@ Established repo style:
 - Immutable by default: prefer values that are set once, read-only collections, and copies over in-place mutation.
 - Names describe domain intent and behavior. Flag vague, misleading, or overly generic names and suggest a concrete replacement.
 - Functions do one thing and stay short enough to read in one screen; extract helpers with names that say what they decide.
+- Functional and idiomatic: clear, condensed logic that reads top to bottom, built by composing small functions and types rather than by inheritance, in the language's current idioms rather than legacy patterns.
 - Dependencies are passed in (constructor or parameter injection), never reached for through globals, singletons, or service locators.
 - Layers stay honest: request handlers, controllers, adapters, and message consumers translate and validate; business rules live in the service or domain layer.
 - Errors carry context and are handled where something can be done about them; never swallow one silently.
+- Errors are typed: a custom error or exception type when one is needed, never a generic one, and errors report failure rather than drive ordinary control flow.
+- Prefer compile-time guarantees to runtime checks: types, exhaustive matches, non-null types, constructors that only build valid values.
+- Every case is handled, and the best handling makes the invalid case impossible to represent; flag missing branches, catch-all arms that hide new cases, and sentinel values standing in for absence.
+- Never order by time: wall-clock timestamps, created-at fields and file times are not a reliable order; use sequence numbers, versions or explicit links.
 - Side effects (I/O, messaging, time, randomness) sit at the edges so the rules in the middle can be tested without them.
+- Outgoing HTTP calls and messages forward the correlation id or trace context of the request that caused them, where the codebase has one, so a call can be traced end to end.
 - Model variants with sum types (sealed types, enums with data, discriminated unions) rather than flags and nullable fields.
-- Tests assert behavior a caller depends on, not the shape of the implementation; prefer small real fakes over mocks.
+- Tests assert behavior a caller depends on, not the shape of the implementation; use as few mocks as possible, preferring small concrete fakes that can be stepped through in a debugger. Keep the suite small: tests do not overlap, and a test another already covers is folded into it and pruned. No parameterized tests: each test reads on its own, top to bottom. Prefer testing a unit with concrete fakes to a test that boots the whole application context (such as a Spring Boot test).
 - Generated code is never edited by hand.
 - Run the repo formatter and linter before declaring work done; the linter wins on formatting.";
 

@@ -247,16 +247,9 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
         KeyCode::Char('d') if hunks::hunks_shown(state) => hunks::discard(state),
         KeyCode::Char('C') if hunks::log_shown(state) => hunks::cherry_pick(state),
         KeyCode::Char('v') if diff_view_toggle_available(state) => {
-            state.diff_view_mode = match state.diff_view_mode {
-                DiffViewMode::Unified => DiffViewMode::SideBySide,
-                DiffViewMode::SideBySide => DiffViewMode::Unified,
-            };
+            state.diff_view_mode = state.diff_view_mode.toggled();
             state.diff_offset = state.diff_offset.min(max_scroll_offset(state));
-            let label = match state.diff_view_mode {
-                DiffViewMode::Unified => "unified diff",
-                DiffViewMode::SideBySide => "side-by-side diff",
-            };
-            state.set_status(format!("showing {label}"), false);
+            state.set_status(format!("showing {}", state.diff_view_mode.label()), false);
         }
         KeyCode::Char('o') => {
             if let Some(path) = selected_diff_open_path(state) {

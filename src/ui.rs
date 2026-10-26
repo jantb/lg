@@ -12,11 +12,11 @@ pub use chrome::{
     modal_rows, section_title,
 };
 pub use diff::{
-    Token, diff_header_path, diff_line_tokens, diff_text_line_count, highlight_diff_line,
-    highlight_diff_line_for_path, highlight_diff_line_wrapped_for_path, highlight_diff_text,
-    highlight_diff_text_wrapped, highlight_side_by_side_diff_text,
+    DiffContentKind, Token, diff_header_path, diff_line_tokens, diff_text_line_count,
+    highlight_diff_line, highlight_diff_line_for_path, highlight_diff_line_wrapped_for_path,
+    highlight_diff_text, highlight_diff_text_wrapped, highlight_side_by_side_diff_text,
     highlight_side_by_side_diff_text_for_path, highlight_source_line_for_path,
-    side_by_side_diff_line_count,
+    side_by_side_columns, side_by_side_diff_line_count, side_by_side_pair_for_path,
 };
 pub use layout::{
     LEFT_PANEL_COUNT, LayoutRects, LeftPanelHeights, centered, clamp_left_column_width,

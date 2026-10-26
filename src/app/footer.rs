@@ -100,6 +100,19 @@ fn modal_footer_spans(state: &AppState, modal: Modal) -> Option<Vec<Span<'static
     let keys_shown: Vec<&'static str> = if modal == Modal::Flow && !state.branch_actions_available()
     {
         vec!["Esc"]
+    } else if title == "Guided review"
+        && !state
+            .guided
+            .as_deref()
+            .is_some_and(|guided| guided.source.is_pull_request())
+    {
+        // Only a pull request has a page to open in the browser.
+        footer
+            .order
+            .iter()
+            .copied()
+            .filter(|key| *key != "O")
+            .collect()
     } else {
         footer.order.to_vec()
     };
@@ -553,6 +566,31 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    /// Only a pull request has a page, so only its walk offers the browser.
+    #[test]
+    fn the_guided_review_footer_offers_the_browser_for_a_pull_request() {
+        use crate::panel::guided::{Guided, Source};
+        let mut state = AppState::new();
+        state.modal = Modal::GuidedReview;
+
+        state.guided = Some(Box::new(Guided::new(Source::PullRequest {
+            number: 7,
+            title: "Add a cache".into(),
+            head: "cache".into(),
+            base: "main".into(),
+            commit: String::new(),
+            local: false,
+        })));
+        let pr = footer_text(&state);
+        assert!(pr.contains("O browser"), "{pr}");
+
+        state.guided = Some(Box::new(Guided::new(Source::Changes {
+            branch: "feature".into(),
+        })));
+        let local = footer_text(&state);
+        assert!(!local.contains("browser"), "{local}");
     }
 
     /// The repositories tab types letters into its search, so the footer

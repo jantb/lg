@@ -178,7 +178,7 @@ fn wrap_plain(
         .collect()
 }
 
-fn word_wrap(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn word_wrap(text: &str, width: usize) -> Vec<String> {
     if text.is_empty() {
         return vec![String::new()];
     }

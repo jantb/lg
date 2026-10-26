@@ -57,6 +57,22 @@ pub enum DiffViewMode {
     SideBySide,
 }
 
+impl DiffViewMode {
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Unified => Self::SideBySide,
+            Self::SideBySide => Self::Unified,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unified => "unified diff",
+            Self::SideBySide => "side-by-side diff",
+        }
+    }
+}
+
 /// Which hunk of the diff pane the hunk keys act on: the `index`th hunk of
 /// those on `side`. Held per side rather than as one position, so staging a
 /// hunk — which moves it from the worktree half of the pane to the staged

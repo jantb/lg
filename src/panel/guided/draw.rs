@@ -9,16 +9,20 @@ use ratatui::{
     widgets::{List, ListItem, Paragraph, Wrap},
 };
 
+use super::findings::{self, Finding, Severity};
+use super::layout::{self, Row};
 use super::{Commentary, Guided, Mode, OVERVIEW, Source, Verdict};
-use crate::git::guided::{GuidedHunk, Side};
+use crate::git::guided::{GuidedHunk, HunkLine, LineKind, Side};
 use crate::panel::keys;
-use crate::state::{AppState, SPINNER_FRAMES};
-use crate::ui;
+use crate::state::{AppState, DiffViewMode, SPINNER_FRAMES};
+use crate::ui::{self, DiffContentKind};
 
 const LABEL: Style = Style::new().fg(Color::DarkGray);
 const KEY: Style = Style::new().fg(Color::Yellow);
 const NOTE: Style = Style::new().fg(Color::LightMagenta);
 const CURSOR_BG: Color = Color::Rgb(40, 46, 60);
+const ISSUE: Color = Color::LightRed;
+const NIT: Color = Color::Yellow;
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let Some(guided) = state.guided.as_deref() else {
@@ -153,6 +157,8 @@ fn draw_progress(state: &AppState, guided: &Guided, area: Rect, frame: &mut Fram
     let bar_width = 20usize;
     let filled = (reviewed * bar_width).checked_div(total).unwrap_or(0);
     let mut spans = vec![
+        scope_badge(&guided.source),
+        Span::raw(" "),
         Span::styled(
             if guided.current == OVERVIEW {
                 format!("overview \u{b7} {total} steps ")
@@ -174,6 +180,7 @@ fn draw_progress(state: &AppState, guided: &Guided, area: Rect, frame: &mut Fram
             NOTE,
         ),
     ];
+    spans.extend(verdict_tally(guided));
     let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
     if guided.loading.is_some() {
         spans.push(Span::styled(
@@ -200,6 +207,45 @@ fn draw_progress(state: &AppState, guided: &Guided, area: Rect, frame: &mut Fram
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// How many steps the model called an issue, a nit and ok, worst first, each
+/// in its colour, so how iffy the change is shows before walking it.
+fn verdict_tally(guided: &Guided) -> Vec<Span<'static>> {
+    let verdicts: Vec<Verdict> = guided
+        .steps
+        .iter()
+        .filter_map(|step| guided.commentary.get(&step.key())?.verdict())
+        .collect();
+    [Verdict::Issue, Verdict::Nit, Verdict::Ok]
+        .into_iter()
+        .map(|verdict| (verdict, verdicts.iter().filter(|v| **v == verdict).count()))
+        .filter(|(_, count)| *count > 0)
+        .map(|(verdict, count)| {
+            let (word, color) = verdict_look(verdict);
+            Span::styled(
+                format!("  \u{25cf} {count} {word}"),
+                Style::default().fg(color),
+            )
+        })
+        .collect()
+}
+
+/// What the walk covers, in a colour of its own, so a review of the whole
+/// branch is never mistaken for one of only what is not committed yet.
+fn scope_badge(source: &Source) -> Span<'static> {
+    let (text, color) = match source {
+        Source::Branch { base_ref, .. } => (format!(" WHOLE BRANCH vs {base_ref} "), Color::Blue),
+        Source::Changes { .. } => (" UNCOMMITTED ONLY ".to_string(), Color::Magenta),
+        Source::PullRequest { number, .. } => (format!(" PR #{number} "), Color::Cyan),
+    };
+    Span::styled(
+        text,
+        Style::default()
+            .fg(Color::Black)
+            .bg(color)
+            .add_modifier(Modifier::BOLD),
+    )
 }
 
 /// The steps, one row each, grouped under their file.
@@ -241,19 +287,20 @@ fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
         let verdict = match guided.commentary.get(&step.key()) {
             Some(c) if c.error.is_some() => Span::styled("\u{26a0} ", LABEL),
             Some(c) => match c.verdict() {
-                Some(Verdict::Issue) => Span::styled("\u{25cf} ", Style::default().fg(Color::Red)),
-                Some(Verdict::Nit) => Span::styled("\u{25cf} ", Style::default().fg(Color::Yellow)),
-                Some(Verdict::Ok) => Span::styled("\u{25cf} ", Style::default().fg(Color::Green)),
+                Some(verdict) => {
+                    Span::styled("\u{25cf} ", Style::default().fg(verdict_look(verdict).1))
+                }
                 None if !c.done => Span::styled("\u{2026} ", LABEL),
                 None => Span::raw("  "),
             },
             None => Span::raw("  "),
         };
         let notes = guided.notes_for(step).len();
-        let base = if here {
-            Style::default().bg(CURSOR_BG).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
+        // What is left to look at stands out; what is done steps back.
+        let base = match (here, guided.is_reviewed(step)) {
+            (true, _) => Style::default().bg(CURSOR_BG).add_modifier(Modifier::BOLD),
+            (false, true) => LABEL,
+            (false, false) => Style::default().fg(Color::White),
         };
         let mut spans = vec![
             verdict,
@@ -294,6 +341,22 @@ fn change_size(step: &GuidedHunk) -> String {
     }
 }
 
+/// How a verdict reads and the colour it is shown in, wherever it is shown.
+fn verdict_look(verdict: Verdict) -> (&'static str, Color) {
+    match verdict {
+        Verdict::Ok => ("ok", Color::Green),
+        Verdict::Nit => ("nit", NIT),
+        Verdict::Issue => ("issue", Color::Red),
+    }
+}
+
+fn severity_color(severity: Severity) -> Color {
+    match severity {
+        Severity::Nit => NIT,
+        Severity::Issue => ISSUE,
+    }
+}
+
 fn hunk_label(step: &GuidedHunk) -> String {
     let (added, removed) = (step.added(), step.removed());
     if step.lines.is_empty() {
@@ -321,91 +384,112 @@ fn draw_step(
         draw_overview(state, guided, area, frame);
         return;
     };
-    let (parts, gaps) = step_areas(guided, step, area);
+    let mode = state.diff_view_mode;
+    let (parts, gaps) = step_areas(guided, step, area, mode);
     ui::draw_dividers(frame, &gaps);
     dividers.extend(gaps);
-    draw_hunk(guided, step, parts[0], frame);
-    draw_commentary(state, guided, &step.key(), parts[1], frame);
+    draw_hunk(guided, step, mode, parts[0], frame);
+    draw_commentary(state, guided, step, parts[1], frame);
 }
 
 /// The hunk and the commentary under it, as [`draw_step`] splits `area`,
-/// with the divider between them.
-pub(super) fn step_areas(guided: &Guided, step: &GuidedHunk, area: Rect) -> (Vec<Rect>, Vec<Rect>) {
-    let diff_height = (step.lines.len() as u16 + 2 + notes_height(guided, step))
-        .min(area.height * 3 / 5)
+/// with the divider between them. The findings sit in the hunk, so it gets
+/// most of the room and the commentary what is left.
+pub(super) fn step_areas(
+    guided: &Guided,
+    step: &GuidedHunk,
+    area: Rect,
+    mode: DiffViewMode,
+) -> (Vec<Rect>, Vec<Rect>) {
+    let rows = hunk_lines(guided, step, mode, area.width).lines.len();
+    let diff_height = u16::try_from(rows)
+        .unwrap_or(u16::MAX)
+        .min(area.height * 2 / 3)
         .max(area.height.min(6));
     ui::modal_row_areas(area, &[Constraint::Length(diff_height), Constraint::Min(3)])
 }
 
-fn notes_height(guided: &Guided, step: &GuidedHunk) -> u16 {
-    guided
-        .notes_for(step)
-        .iter()
-        .map(|(_, note)| note.body.lines().count().max(1) as u16)
-        .sum()
+fn draw_hunk(
+    guided: &Guided,
+    step: &GuidedHunk,
+    mode: DiffViewMode,
+    area: Rect,
+    frame: &mut Frame,
+) {
+    let hunk = hunk_lines(guided, step, mode, area.width);
+    // The cursor line and what is pinned under it stay in view, with a little
+    // of what follows, unless that would push the line itself off the top.
+    let height = usize::from(area.height);
+    let scroll = (hunk.cursor.end + 2)
+        .saturating_sub(height)
+        .min(hunk.cursor.start);
+    frame.render_widget(Paragraph::new(hunk.lines).scroll((scroll as u16, 0)), area);
 }
 
-fn draw_hunk(guided: &Guided, step: &GuidedHunk, area: Rect, frame: &mut Frame) {
-    let mut lines = Vec::new();
-    let mut title = vec![Span::styled(
-        step.path.clone(),
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    )];
-    title.push(Span::styled(format!("  {}", hunk_label(step)), LABEL));
-    if let Some(note) = &step.file_note {
-        title.push(Span::styled(
-            format!("  [{note}]"),
-            Style::default().fg(Color::Yellow),
-        ));
-    }
-    if guided.is_reviewed(step) {
-        title.push(Span::styled(
-            "  reviewed",
-            Style::default().fg(Color::Green),
-        ));
-    }
-    lines.push(Line::from(title));
-    lines.push(Line::from(Span::styled(step.header.clone(), LABEL)));
+/// A hunk drawn for the pane: every row, and which of them the cursor's line
+/// and what is pinned under it take up.
+struct HunkLines {
+    lines: Vec<Line<'static>>,
+    cursor: std::ops::Range<usize>,
+}
+
+/// The hunk `width` wide, laid out as `mode` says, with each line's notes and
+/// findings under the row it is on.
+fn hunk_lines(guided: &Guided, step: &GuidedHunk, mode: DiffViewMode, width: u16) -> HunkLines {
+    let mut lines = vec![
+        hunk_title(guided, step),
+        Line::from(Span::styled(step.header.clone(), LABEL)),
+    ];
     let notes = guided.notes_for(step);
-    let mut cursor_row = 0usize;
-    for (index, line) in step.lines.iter().enumerate() {
-        let gutter = format!(
-            "{:>5} {:>5} ",
-            line.old.map(|n| n.to_string()).unwrap_or_default(),
-            line.new.map(|n| n.to_string()).unwrap_or_default()
-        );
-        let mut spans = vec![Span::styled(gutter, LABEL)];
-        spans.extend(
-            ui::highlight_diff_line_for_path(&line.text, &step.path)
-                .spans
-                .into_iter()
-                .map(|span| Span::styled(span.content.into_owned(), span.style)),
-        );
-        let mut rendered = Line::from(spans);
-        if index == guided.cursor {
-            cursor_row = lines.len();
-            rendered = rendered.style(Style::default().bg(CURSOR_BG));
-        }
-        lines.push(rendered);
-        if let Some(anchor) = line.anchor() {
-            for (_, note) in notes
-                .iter()
-                .filter(|(_, note)| (note.line, note.side) == anchor)
-            {
-                for (i, text) in note.body.lines().enumerate() {
-                    let lead = if i == 0 {
-                        "      \u{270e} "
-                    } else {
-                        "        "
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled(lead, NOTE),
-                        Span::styled(text.to_string(), NOTE),
-                    ]));
+    let flagged = inline_findings(guided, step, width);
+    let mut cursor = 0..0;
+    for row in layout::rows(step, mode) {
+        let start = lines.len();
+        // A bar in the worst flag's colour marks a row the model flagged.
+        let worst = flagged
+            .iter()
+            .filter(|(at, ..)| row.lines().any(|line| line == *at))
+            .map(|(_, severity, _)| *severity)
+            .max();
+        let bar = match worst {
+            Some(severity) => {
+                Span::styled("\u{258c}", Style::default().fg(severity_color(severity)))
+            }
+            None => Span::raw(" "),
+        };
+        let body = match row {
+            Row::Whole(at) => vec![unified_line(step, at, at == guided.cursor)],
+            Row::Pair(left, right) => {
+                paired_lines(step, left, right, guided.cursor, width.saturating_sub(1))
+            }
+        };
+        lines.extend(body.into_iter().enumerate().map(|(i, line)| {
+            let lead = if i == 0 { bar.clone() } else { Span::raw(" ") };
+            Line::from(std::iter::once(lead).chain(line.spans).collect::<Vec<_>>())
+                .style(line.style)
+        }));
+        for at in row.lines() {
+            let here = at == guided.cursor;
+            if let Some(anchor) = step.lines[at].anchor() {
+                for (_, note) in notes
+                    .iter()
+                    .filter(|(_, note)| (note.line, note.side) == anchor)
+                {
+                    lines.extend(note_lines(&note.body));
                 }
             }
+            for (.., finding) in flagged.iter().filter(|(on, ..)| *on == at) {
+                lines.extend(finding.iter().cloned().map(|line| {
+                    if here {
+                        line.style(Style::default().bg(CURSOR_BG).add_modifier(Modifier::BOLD))
+                    } else {
+                        line
+                    }
+                }));
+            }
+        }
+        if row.lines().any(|at| at == guided.cursor) {
+            cursor = start..lines.len();
         }
     }
     // Notes pinned to lines this hunk no longer shows, said once at the end.
@@ -425,9 +509,188 @@ fn draw_hunk(guided: &Guided, step: &GuidedHunk, area: Rect, frame: &mut Frame) 
             LABEL,
         )));
     }
-    let height = area.height as usize;
-    let scroll = cursor_row.saturating_sub(height.saturating_sub(3));
-    frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), area);
+    HunkLines { lines, cursor }
+}
+
+/// The file, where the hunk sits in it, and what has been said about it.
+fn hunk_title(guided: &Guided, step: &GuidedHunk) -> Line<'static> {
+    let mut title = vec![Span::styled(
+        step.path.clone(),
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    )];
+    title.push(Span::styled(format!("  {}", hunk_label(step)), LABEL));
+    if let Some(note) = &step.file_note {
+        title.push(Span::styled(
+            format!("  [{note}]"),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    if let Some(verdict) = guided
+        .commentary
+        .get(&step.key())
+        .and_then(Commentary::verdict)
+    {
+        let (word, color) = verdict_look(verdict);
+        title.push(Span::raw("  "));
+        title.push(Span::styled(
+            format!(" {word} "),
+            Style::default()
+                .fg(Color::Black)
+                .bg(color)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if guided.is_reviewed(step) {
+        title.push(Span::styled(
+            "  reviewed",
+            Style::default().fg(Color::Green),
+        ));
+    }
+    Line::from(title)
+}
+
+/// Line `at` across the whole row, both its numbers in the gutter.
+fn unified_line(step: &GuidedHunk, at: usize, here: bool) -> Line<'static> {
+    let line = &step.lines[at];
+    let number = |n: Option<usize>| n.map(|n| n.to_string()).unwrap_or_default();
+    let gutter = format!("{:>5} {:>5} ", number(line.old), number(line.new));
+    let spans: Vec<Span<'static>> = std::iter::once(Span::styled(gutter, LABEL))
+        .chain(
+            ui::highlight_diff_line_for_path(&line.text, &step.path)
+                .spans
+                .into_iter()
+                .map(|span| Span::styled(span.content.into_owned(), span.style)),
+        )
+        .collect();
+    let rendered = Line::from(spans);
+    if here {
+        rendered.style(Style::default().bg(CURSOR_BG))
+    } else {
+        rendered
+    }
+}
+
+/// The old file's line beside the new file's, the cursor's side lit up.
+fn paired_lines(
+    step: &GuidedHunk,
+    left: Option<usize>,
+    right: Option<usize>,
+    cursor: usize,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let cell = |at: Option<usize>, number: fn(&HunkLine) -> Option<usize>| {
+        let line = &step.lines[at?];
+        let kind = match line.kind {
+            LineKind::Context => DiffContentKind::Context,
+            LineKind::Added => DiffContentKind::Added,
+            LineKind::Removed => DiffContentKind::Removed,
+            LineKind::Meta => return None,
+        };
+        Some((number(line)?, line.text.get(1..).unwrap_or_default(), kind))
+    };
+    let rows = ui::side_by_side_pair_for_path(
+        cell(left, |line| line.old),
+        cell(right, |line| line.new),
+        width,
+        &step.path,
+    );
+    let (left_width, right_start) = ui::side_by_side_columns(width);
+    let lit = match (left == Some(cursor), right == Some(cursor)) {
+        (true, true) => Some(0..width),
+        (true, false) => Some(0..left_width),
+        (false, true) => Some(right_start..width),
+        (false, false) => None,
+    };
+    match lit {
+        Some(columns) => rows.into_iter().map(|row| light(row, &columns)).collect(),
+        None => rows,
+    }
+}
+
+/// `line` with the cursor's background on the spans that start in `columns`.
+fn light(line: Line<'static>, columns: &std::ops::Range<u16>) -> Line<'static> {
+    let mut column = 0u16;
+    let spans = line
+        .spans
+        .into_iter()
+        .map(|span| {
+            let start = column;
+            column = column.saturating_add(u16::try_from(span.width()).unwrap_or(u16::MAX));
+            if columns.contains(&start) {
+                let lit = span.style.bg(CURSOR_BG);
+                span.style(lit)
+            } else {
+                span
+            }
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans)
+}
+
+/// A note under the line it is pinned to.
+fn note_lines(body: &str) -> Vec<Line<'static>> {
+    body.lines()
+        .enumerate()
+        .map(|(i, text)| {
+            let lead = if i == 0 {
+                "       \u{270e} "
+            } else {
+                "         "
+            };
+            Line::from(vec![
+                Span::styled(lead, NOTE),
+                Span::styled(text.to_string(), NOTE),
+            ])
+        })
+        .collect()
+}
+
+/// The findings drawn under each flagged line of the hunk, wrapped to `width`.
+fn inline_findings(
+    guided: &Guided,
+    step: &GuidedHunk,
+    width: u16,
+) -> Vec<(usize, Severity, Vec<Line<'static>>)> {
+    let Some(commentary) = guided.commentary.get(&step.key()) else {
+        return Vec::new();
+    };
+    let reading = findings::read(&commentary.text);
+    findings::place(step, &reading.findings)
+        .0
+        .into_iter()
+        .map(|(row, finding)| {
+            (
+                row,
+                finding.severity,
+                finding_lines(finding, "       ", width),
+            )
+        })
+        .collect()
+}
+
+/// One finding, marked by how much it matters and wrapped under its mark.
+fn finding_lines(finding: &Finding, lead: &str, width: u16) -> Vec<Line<'static>> {
+    let mark = match finding.severity {
+        Severity::Issue => "\u{25cf} ",
+        Severity::Nit => "\u{25cb} ",
+    };
+    let style = Style::default().fg(severity_color(finding.severity));
+    let indent = lead.chars().count() + 2;
+    let available = usize::from(width).saturating_sub(indent).max(10);
+    crate::panel::markdown::word_wrap(&finding.text, available)
+        .into_iter()
+        .enumerate()
+        .map(|(i, chunk)| {
+            let head = if i == 0 {
+                format!("{lead}{mark}")
+            } else {
+                " ".repeat(indent)
+            };
+            Line::from(vec![Span::styled(head, style), Span::styled(chunk, style)])
+        })
+        .collect()
 }
 
 fn draw_overview(state: &AppState, guided: &Guided, area: Rect, frame: &mut Frame) {
@@ -477,14 +740,98 @@ fn wrapped_rows(lines: &[Line<'_>], width: u16) -> usize {
         .sum()
 }
 
-fn draw_commentary(state: &AppState, guided: &Guided, key: &str, area: Rect, frame: &mut Frame) {
-    let mut lines = commentary_lines(state, guided.commentary.get(key), area.width);
-    lines.extend(exchange_lines(state, guided, key, area.width));
+fn draw_commentary(
+    state: &AppState,
+    guided: &Guided,
+    step: &GuidedHunk,
+    area: Rect,
+    frame: &mut Frame,
+) {
+    let mut lines = step_commentary_lines(state, guided, step, area.width);
+    lines.extend(exchange_lines(state, guided, &step.key(), area.width));
     // Pinned to the bottom when a new answer is asked for, like a chat.
     let max = (lines.len() as u16).saturating_sub(area.height);
     guided.side_max.set(max);
     let scroll = guided.side_scroll.min(max);
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
+}
+
+/// The model's read of a step less the findings drawn in the hunk: the
+/// verdict, what the hunk does, findings on lines it does not show, and
+/// anything else that was said.
+fn step_commentary_lines(
+    state: &AppState,
+    guided: &Guided,
+    step: &GuidedHunk,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let commentary = guided.commentary.get(&step.key());
+    let Some(c) = commentary.filter(|c| c.error.is_none() && !c.text.is_empty()) else {
+        return commentary_lines(state, commentary, width);
+    };
+    let reading = findings::read(&c.text);
+    let (placed, unplaced) = findings::place(step, &reading.findings);
+    let mut header = vec![Span::styled(
+        "AI",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if let Some(verdict) = c.verdict() {
+        let (word, color) = verdict_look(verdict);
+        header.push(Span::styled(
+            format!(" \u{b7} {word}"),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if !placed.is_empty() {
+        header.push(Span::styled(
+            format!(" \u{b7} {} in the hunk, \u{2193} walks them", placed.len()),
+            LABEL,
+        ));
+    }
+    let mut lines = vec![Line::from(header)];
+    let wrap = width.saturating_sub(2);
+    if let Some(summary) = &reading.summary {
+        lines.extend(
+            crate::panel::markdown::render(summary, "  ", wrap)
+                .into_iter()
+                .map(|line| line.style(Style::default().fg(Color::White))),
+        );
+    }
+    for finding in unplaced {
+        let cited = Finding {
+            text: format!("L{} {}", finding.line, finding.text),
+            ..finding.clone()
+        };
+        lines.extend(finding_lines(&cited, "  ", width));
+    }
+    if let Some(check) = &reading.check {
+        lines.extend(
+            crate::panel::markdown::word_wrap(check, usize::from(wrap.saturating_sub(2)).max(10))
+                .into_iter()
+                .enumerate()
+                .map(|(i, chunk)| {
+                    let head = if i == 0 { "  \u{2192} " } else { "    " };
+                    Line::from(vec![
+                        Span::styled(head, Style::default().fg(Color::Cyan)),
+                        Span::styled(chunk, Style::default().fg(Color::Cyan)),
+                    ])
+                }),
+        );
+    }
+    let rest = reading.rest.join("\n");
+    if !rest.trim().is_empty() {
+        lines.extend(crate::panel::markdown::render(&rest, "  ", wrap));
+    }
+    if !c.done {
+        let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
+        lines.push(Line::from(Span::styled(
+            format!("  {spinner}"),
+            Style::default().fg(Color::Cyan),
+        )));
+    }
+    lines
 }
 
 fn commentary_lines(
@@ -691,10 +1038,15 @@ fn draw_bottom(guided: &Guided, area: Rect, frame: &mut Frame) {
         }
         Mode::Browse => {
             let mut hints = keys::footer_pairs("Guided review");
-            // Changing the code needs a checkout of it.
-            if !guided.source.editable() {
-                hints.retain(|(key, _)| !matches!(*key, "e" | "f"));
-            }
+            // Changing the code needs a checkout of it, and only a pull
+            // request has a page to open.
+            let editable = guided.source.editable();
+            let is_pr = guided.source.is_pull_request();
+            hints.retain(|(key, _)| match *key {
+                "e" | "f" => editable,
+                "O" => is_pr,
+                _ => true,
+            });
             frame.render_widget(Paragraph::new(ui::key_hints(&hints)), area);
             return;
         }

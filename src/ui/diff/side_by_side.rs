@@ -18,8 +18,9 @@ pub(super) struct DiffLineNumbers {
     pub(super) new_line: u32,
 }
 
+/// What happened to a line of a diff.
 #[derive(Clone, Copy)]
-pub(super) enum DiffContentKind {
+pub enum DiffContentKind {
     Context,
     Added,
     Removed,

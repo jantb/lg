@@ -1450,12 +1450,17 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "] / [",
                 help: "First hunk of the next / previous file",
-                footer: Some(("[/]", "file")),
+                footer: None,
+            },
+            Binding {
+                key: "\u{2193} / \u{2191}",
+                help: "Next / previous finding, then next step",
+                footer: Some(("\u{2193}/\u{2191}", "finding")),
             },
             Binding {
                 key: "j/k",
                 help: "Move the line cursor in the hunk",
-                footer: Some(("j/k", "line")),
+                footer: None,
             },
             Binding {
                 key: "c / Enter",
@@ -1483,14 +1488,24 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("e", "edit")),
             },
             Binding {
+                key: "O",
+                help: "Open the pull request in the browser",
+                footer: Some(("O", "browser")),
+            },
+            Binding {
                 key: "f / F",
                 help: "Have Claude make a change / fix all notes",
-                footer: Some(("f", "claude fix")),
+                footer: Some(("f", "fix")),
             },
             Binding {
                 key: "m",
                 help: "Toggle the step reviewed",
-                footer: Some(("m", "mark")),
+                footer: None,
+            },
+            Binding {
+                key: "v",
+                help: "Side by side / unified, as the diff pane",
+                footer: Some(("v", "view")),
             },
             Binding {
                 key: "u",
@@ -1505,7 +1520,7 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "s",
                 help: "All notes; for a PR, submit the review",
-                footer: Some(("s", "notes/submit")),
+                footer: Some(("s", "notes")),
             },
             Binding {
                 key: "y",
@@ -1515,12 +1530,12 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "R",
                 help: "Read the change again",
-                footer: Some(("R", "reload")),
+                footer: None,
             },
             Binding {
                 key: "b",
                 help: "Whole branch vs main, or only uncommitted",
-                footer: Some(("b", "branch/uncommitted")),
+                footer: Some(("b", "scope")),
             },
             Binding {
                 key: "g / G",
@@ -2219,17 +2234,16 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         tone: Tone::Normal,
         order: &[
             "\u{2192} / \u{2190}",
-            "] / [",
-            "j/k",
+            "\u{2193} / \u{2191}",
             "b",
             "c / Enter",
             "a",
             "e / o",
+            "O",
             "f / F",
-            "m",
+            "v",
             "u",
             "s",
-            "R",
             "?",
             "Esc / q",
         ],

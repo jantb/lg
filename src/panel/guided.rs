@@ -14,11 +14,15 @@ use std::sync::mpsc::Receiver;
 
 use crate::git::guided::{GuidedHunk, GuidedNote, GuidedProgress, Side};
 use crate::panel::text_input::TextInput;
-use crate::state::{AppState, GenMsg, Modal, PendingAction, Poll, poll_once, stopped_unexpectedly};
+use crate::state::{
+    AppState, DiffViewMode, GenMsg, Modal, PendingAction, Poll, poll_once, stopped_unexpectedly,
+};
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 mod draw;
+mod findings;
 mod keys;
+mod layout;
 mod work;
 
 pub use draw::render;
@@ -63,7 +67,7 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
             // The hunk scrolls with its cursor, as j and k move it.
             let over_hunk = browsing
                 && guided.step().is_some_and(|step| {
-                    let (parts, _) = draw::step_areas(guided, step, side);
+                    let (parts, _) = draw::step_areas(guided, step, side, state.diff_view_mode);
                     pointer::inside(parts[0], m.column, m.row)
                 });
             if over_hunk {
@@ -296,7 +300,7 @@ pub struct Guided {
 }
 
 impl Guided {
-    fn new(source: Source) -> Self {
+    pub(crate) fn new(source: Source) -> Self {
         let progress = crate::git::guided::load_progress(&source.progress_key());
         Self {
             source,
@@ -380,6 +384,62 @@ impl Guided {
             .notes
             .iter()
             .position(|note| note.path == step.path && (note.line, note.side) == anchor)
+    }
+
+    /// The lines of the hunk on screen in the order the cursor visits them,
+    /// as `mode` lays them out.
+    fn visit_order(&self, mode: DiffViewMode) -> Vec<usize> {
+        self.step()
+            .map(|step| layout::visit_order(&layout::rows(step, mode)))
+            .unwrap_or_default()
+    }
+
+    /// The lines of the hunk on screen the model flagged, in visiting order.
+    fn flagged_lines(&self, mode: DiffViewMode) -> Vec<usize> {
+        let flagged: HashSet<usize> = self
+            .placed_findings()
+            .into_iter()
+            .map(|(at, _)| at)
+            .collect();
+        self.visit_order(mode)
+            .into_iter()
+            .filter(|at| flagged.contains(at))
+            .collect()
+    }
+
+    /// What the model flagged on the cursor line, one finding a line.
+    pub(super) fn findings_at_cursor(&self) -> String {
+        self.placed_findings()
+            .into_iter()
+            .filter(|(at, _)| *at == self.cursor)
+            .map(|(_, finding)| finding.text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn placed_findings(&self) -> Vec<(usize, findings::Finding)> {
+        let Some(step) = self.step() else {
+            return Vec::new();
+        };
+        let Some(commentary) = self.commentary.get(&step.key()) else {
+            return Vec::new();
+        };
+        let reading = findings::read(&commentary.text);
+        findings::place(step, &reading.findings)
+            .0
+            .into_iter()
+            .map(|(at, finding)| (at, finding.clone()))
+            .collect()
+    }
+
+    /// Whether the model has yet to finish its read of the step on screen,
+    /// or is about to start it.
+    fn still_reading(&self, ai: bool) -> bool {
+        let key = self.step_key();
+        match self.commentary.get(&key) {
+            Some(commentary) => !commentary.done,
+            None => ai && !self.failed.contains(&key),
+        }
     }
 
     fn save(&self) -> Result<(), String> {
@@ -497,6 +557,25 @@ pub fn open_pull_request(state: &mut AppState, pr: &crate::github::PullRequest) 
         format!("reading #{} for a guided review\u{2026}", pr.number),
         false,
     );
+}
+
+/// Open the pull request under review on GitHub. A walk over local changes has
+/// no page to open.
+pub(super) fn open_in_browser(state: &mut AppState) {
+    let url = state
+        .guided
+        .as_deref()
+        .and_then(|guided| guided.pull_request.as_ref())
+        .map(|pr| pr.url.clone())
+        .filter(|url| !url.is_empty());
+    match url {
+        Some(url) => {
+            state.pending_action = Some(PendingAction::GitHub(
+                crate::state::GitHubAction::OpenInBrowser { url },
+            ))
+        }
+        None => state.set_status("only a pull request has a page to open", false),
+    }
 }
 
 /// Read the change again, keeping the place, the notes and every answer whose
@@ -982,23 +1061,109 @@ pub(super) fn toggle_reviewed(state: &mut AppState) {
     }
 }
 
+/// The cursor to the next line, or the previous, in the order the hunk is
+/// laid out on screen; on the overview, the text scrolls instead.
 pub(super) fn move_cursor(state: &mut AppState, down: bool) {
+    let mode = state.diff_view_mode;
     let Some(guided) = state.guided.as_mut() else {
         return;
     };
-    let Some(len) = guided.step().map(|step| step.lines.len()) else {
+    if guided.step().is_none() {
         guided.side_scroll = if down {
             guided.side_scroll.saturating_add(1)
         } else {
             guided.side_scroll.saturating_sub(1)
         };
         return;
-    };
-    guided.cursor = if down {
-        (guided.cursor + 1).min(len.saturating_sub(1))
+    }
+    let order = guided.visit_order(mode);
+    let here = order
+        .iter()
+        .position(|&at| at == guided.cursor)
+        .unwrap_or(0);
+    let next = if down {
+        here + 1
     } else {
-        guided.cursor.saturating_sub(1)
+        here.saturating_sub(1)
     };
+    if let Some(&at) = order.get(next) {
+        guided.cursor = at;
+    }
+}
+
+/// Down the findings: the next line below the cursor the model flagged, or
+/// past the last one the next step, landing on its first. On the overview,
+/// or while the model is still reading the step, there is nothing to go by,
+/// so it moves a line instead.
+pub(super) fn next_finding(state: &mut AppState) {
+    let (ai, mode) = (state.ai_assist, state.diff_view_mode);
+    let Some(guided) = state.guided.as_mut() else {
+        return;
+    };
+    if guided.step().is_none() || guided.still_reading(ai) {
+        move_cursor(state, true);
+        return;
+    }
+    let (order, flagged) = (guided.visit_order(mode), guided.flagged_lines(mode));
+    let place = |at: usize| order.iter().position(|&o| o == at);
+    let here = place(guided.cursor);
+    if let Some(at) = flagged.into_iter().find(|&at| place(at) > here) {
+        guided.cursor = at;
+        return;
+    }
+    let left = guided.current;
+    next_step(state);
+    land_on_finding(state, left, true);
+}
+
+/// Up the findings: the previous flagged line above the cursor, or the
+/// previous step's last one.
+pub(super) fn previous_finding(state: &mut AppState) {
+    let (ai, mode) = (state.ai_assist, state.diff_view_mode);
+    let Some(guided) = state.guided.as_mut() else {
+        return;
+    };
+    if guided.step().is_none() || guided.still_reading(ai) {
+        move_cursor(state, false);
+        return;
+    }
+    let (order, flagged) = (guided.visit_order(mode), guided.flagged_lines(mode));
+    let place = |at: usize| order.iter().position(|&o| o == at);
+    let here = place(guided.cursor);
+    if let Some(at) = flagged.into_iter().rev().find(|&at| place(at) < here) {
+        guided.cursor = at;
+        return;
+    }
+    let left = guided.current;
+    previous_step(state);
+    land_on_finding(state, left, false);
+}
+
+/// Put the cursor on the first, or last, flagged line of the step just moved
+/// to from `left`; a step with none keeps the cursor where it opened.
+fn land_on_finding(state: &mut AppState, left: usize, first: bool) {
+    let mode = state.diff_view_mode;
+    let Some(guided) = state.guided.as_mut() else {
+        return;
+    };
+    if guided.current == left || !matches!(guided.mode, Mode::Browse) {
+        return;
+    }
+    let flagged = guided.flagged_lines(mode);
+    if let Some(&at) = if first {
+        flagged.first()
+    } else {
+        flagged.last()
+    } {
+        guided.cursor = at;
+    }
+}
+
+/// Lay hunks out side by side or one line a row: the setting the diff pane
+/// follows too, so both show a diff the same way.
+pub(super) fn toggle_layout(state: &mut AppState) {
+    state.diff_view_mode = state.diff_view_mode.toggled();
+    state.set_status(format!("showing {}", state.diff_view_mode.label()), false);
 }
 
 /// Save the note being written on the cursor line.
@@ -1363,6 +1528,84 @@ mod tests {
         }
     }
 
+    fn press(state: &mut AppState, code: ratatui::crossterm::event::KeyCode) {
+        let key = ratatui::crossterm::event::KeyEvent::new(
+            code,
+            ratatui::crossterm::event::KeyModifiers::NONE,
+        );
+        handle_key(state, key).unwrap();
+    }
+
+    fn opened_in_browser(state: &AppState) -> Option<&str> {
+        match &state.pending_action {
+            Some(PendingAction::GitHub(crate::state::GitHubAction::OpenInBrowser { url })) => {
+                Some(url)
+            }
+            _ => None,
+        }
+    }
+
+    /// A pull request being walked can be looked at on GitHub too.
+    #[test]
+    fn a_pull_request_under_review_opens_in_the_browser() {
+        use crate::github::{Checks, Mergeable, PrState, PullRequest, ReviewDecision};
+        let pr = PullRequest {
+            number: 7,
+            title: "Add a cache".into(),
+            author: "alice".into(),
+            head: "cache".into(),
+            head_owner: None,
+            base: "main".into(),
+            state: PrState::Open,
+            draft: false,
+            review: ReviewDecision::ReviewRequired,
+            reviews: Vec::new(),
+            checks: Checks::default(),
+            mergeable: Mergeable::Yes,
+            url: "https://github.com/acme/app/pull/7".into(),
+            body: String::new(),
+            additions: 0,
+            deletions: 0,
+            changed_files: 0,
+            updated_at: String::new(),
+        };
+        let mut guided = Guided::new(Source::PullRequest {
+            number: pr.number,
+            title: pr.title.clone(),
+            head: pr.head.clone(),
+            base: pr.base.clone(),
+            commit: String::new(),
+            local: false,
+        });
+        guided.pull_request = Some(pr);
+        let mut state = AppState::new();
+        state.guided = Some(Box::new(guided));
+        state.modal = Modal::GuidedReview;
+
+        press(&mut state, ratatui::crossterm::event::KeyCode::Char('O'));
+
+        assert_eq!(
+            opened_in_browser(&state),
+            Some("https://github.com/acme/app/pull/7")
+        );
+    }
+
+    /// A walk over local changes has no page, so nothing is opened and the
+    /// reason is given instead.
+    #[test]
+    fn a_walk_over_local_changes_has_nothing_to_open() {
+        let mut state = AppState::new();
+        state.guided = Some(Box::new(Guided::new(Source::Changes {
+            branch: "feature".into(),
+        })));
+        state.modal = Modal::GuidedReview;
+
+        press(&mut state, ratatui::crossterm::event::KeyCode::Char('O'));
+
+        assert_eq!(opened_in_browser(&state), None);
+        assert!(state.status.is_some());
+    }
+
     /// A read whose worker died must end the loading state and say why,
     /// rather than leave the walk waiting on it.
     #[test]
@@ -1389,7 +1632,7 @@ mod tests {
     }
 
     #[test]
-    fn the_verdict_is_read_off_the_last_line() {
+    fn the_verdict_is_read_off_the_last_line_once_the_answer_is_done() {
         assert_eq!(
             commentary("Adds a cache.\nVerdict: issue").verdict(),
             Some(Verdict::Issue)
@@ -1399,14 +1642,10 @@ mod tests {
             Some(Verdict::Ok)
         );
         assert_eq!(commentary("No verdict here").verdict(), None);
-    }
 
-    #[test]
-    fn an_unfinished_answer_has_no_verdict_yet() {
-        let mut c = commentary("Verdict: ok");
-        c.done = false;
-
-        assert_eq!(c.verdict(), None);
+        let mut unfinished = commentary("Verdict: ok");
+        unfinished.done = false;
+        assert_eq!(unfinished.verdict(), None);
     }
 
     const AREA: ratatui::layout::Rect = ratatui::layout::Rect::new(0, 0, 120, 40);
@@ -1517,7 +1756,8 @@ mod tests {
         let mut state = walk_on_a_long_hunk();
         let (_, side) = panes(&state);
         let guided = state.guided.as_deref().unwrap();
-        let (parts, _) = draw::step_areas(guided, guided.step().unwrap(), side);
+        let (parts, _) =
+            draw::step_areas(guided, guided.step().unwrap(), side, state.diff_view_mode);
         let (hunk, commentary) = (parts[0], parts[1]);
 
         mouse(
@@ -1594,5 +1834,158 @@ mod tests {
         assert!(text.contains("- abc fix it"));
         assert_eq!(text.matches("a.rs").count(), 1, "{text}");
         assert!(text.contains("+2 -1"), "{text}");
+    }
+
+    /// A branch walk over two hunks of one file, both already looked at so
+    /// walking past them has nothing to save, the model having flagged two
+    /// lines of the first and nothing in the second.
+    fn walk_with_findings() -> AppState {
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n\
+                    @@ -1,3 +1,3 @@\n keep\n-old one\n+new one\n tail\n\
+                    @@ -20,3 +20,3 @@\n keep\n-old two\n+new two\n keep\n";
+        let mut guided = Guided::new(Source::Branch {
+            branch: "guided-test-findings".into(),
+            base_ref: "main".into(),
+        });
+        guided.steps = crate::git::guided::parse_hunks(diff);
+        guided.progress.reviewed = guided.steps.iter().map(GuidedHunk::key).collect();
+        guided.commentary.insert(
+            guided.steps[0].key(),
+            commentary(
+                "Summary: Renames a line.\n\
+                 L2 issue: -1 stands in for missing and is used as an index.\n\
+                 L3 nit: tail could say what it ends.\n\
+                 Verdict: issue",
+            ),
+        );
+        guided.commentary.insert(
+            guided.steps[1].key(),
+            commentary("Summary: Same rename.\nVerdict: ok"),
+        );
+        guided.current = 1;
+        guided.cursor = guided.steps[0].first_changed();
+        let mut state = AppState::new();
+        state.guided = Some(Box::new(guided));
+        state.modal = Modal::GuidedReview;
+        state
+    }
+
+    fn cursor_line(state: &AppState) -> (usize, String) {
+        let guided = state.guided.as_deref().unwrap();
+        let line = &guided.step().unwrap().lines[guided.cursor];
+        (guided.current, line.text.clone())
+    }
+
+    fn screen(state: &AppState) -> Vec<String> {
+        let backend = ratatui::backend::TestBackend::new(AREA.width, AREA.height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(state, AREA, frame)).unwrap();
+        let buf = terminal.backend().buffer();
+        (0..AREA.height)
+            .map(|y| (0..AREA.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    /// ↓ goes from flagged line to flagged line and on into the next hunk,
+    /// ↑ back to the last one before it, and a note on a flagged line starts
+    /// as what the model said there.
+    #[test]
+    fn the_arrows_walk_the_flagged_lines_across_hunks() {
+        use ratatui::crossterm::event::KeyCode::{Char, Down, Esc, Up};
+        let mut state = walk_with_findings();
+
+        press(&mut state, Down);
+        assert_eq!(cursor_line(&state), (1, "+new one".into()));
+
+        press(&mut state, Char('c'));
+        let Mode::Note { text, .. } = &state.guided.as_ref().unwrap().mode else {
+            panic!("c opens a note");
+        };
+        assert!(text.contains("-1 stands in for missing"), "{}", &**text);
+        press(&mut state, Esc);
+
+        press(&mut state, Down);
+        assert_eq!(cursor_line(&state), (1, " tail".into()));
+        press(&mut state, Down);
+        assert_eq!(cursor_line(&state).0, 2);
+        press(&mut state, Up);
+        assert_eq!(cursor_line(&state), (1, " tail".into()));
+    }
+
+    /// Until the model has read the hunk there is nothing to jump to, so the
+    /// arrow moves a line rather than skip the hunk unread.
+    #[test]
+    fn down_moves_a_line_while_the_model_is_still_reading() {
+        let mut state = walk_with_findings();
+        let guided = state.guided.as_mut().unwrap();
+        let key = guided.steps[0].key();
+        guided.commentary.get_mut(&key).unwrap().done = false;
+        let start = guided.cursor;
+
+        press(&mut state, ratatui::crossterm::event::KeyCode::Down);
+
+        let guided = state.guided.as_ref().unwrap();
+        assert_eq!((guided.current, guided.cursor), (1, start + 1));
+    }
+
+    /// Side by side, as the diff pane shows it by default, a removed line
+    /// sits beside its replacement; `v` puts them one above the other. Either
+    /// way the finding sits in the hunk, under the line it is about.
+    #[test]
+    fn the_hunk_follows_the_diff_layout_with_findings_under_their_line() {
+        let mut state = walk_with_findings();
+        let hunk = |state: &AppState| {
+            let (_, side) = panes(state);
+            let guided = state.guided.as_deref().unwrap();
+            let (parts, _) =
+                draw::step_areas(guided, guided.step().unwrap(), side, state.diff_view_mode);
+            parts[0].y..parts[0].y + parts[0].height
+        };
+        let row_of =
+            |rows: &[String], text: &str| rows.iter().position(|row| row.contains(text)).unwrap();
+
+        assert_eq!(state.diff_view_mode, DiffViewMode::SideBySide);
+        let rows = screen(&state);
+        assert_eq!(row_of(&rows, "old one"), row_of(&rows, "new one"));
+        let finding = row_of(&rows, "-1 stands in for missing");
+        assert!(finding > row_of(&rows, "new one"));
+        assert!(hunk(&state).contains(&(finding as u16)));
+
+        press(&mut state, ratatui::crossterm::event::KeyCode::Char('v'));
+
+        assert_eq!(state.diff_view_mode, DiffViewMode::Unified);
+        let rows = screen(&state);
+        assert!(row_of(&rows, "new one") > row_of(&rows, "old one"));
+        let finding = row_of(&rows, "-1 stands in for missing");
+        assert!(finding > row_of(&rows, "new one"));
+        assert!(hunk(&state).contains(&(finding as u16)));
+    }
+
+    #[test]
+    fn the_walk_says_whether_it_covers_the_branch_or_only_uncommitted_code() {
+        let shows = |source: Source| {
+            let mut state = AppState::new();
+            state.guided = Some(Box::new(Guided::new(source)));
+            state.modal = Modal::GuidedReview;
+            let rows = screen(&state);
+            (
+                rows.iter().any(|row| row.contains("BRANCH")),
+                rows.iter().any(|row| row.contains("UNCOMMITTED")),
+            )
+        };
+
+        assert_eq!(
+            shows(Source::Branch {
+                branch: "guided-test-scope".into(),
+                base_ref: "main".into(),
+            }),
+            (true, false)
+        );
+        assert_eq!(
+            shows(Source::Changes {
+                branch: "guided-test-scope".into(),
+            }),
+            (false, true)
+        );
     }
 }

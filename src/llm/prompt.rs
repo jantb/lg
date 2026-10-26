@@ -58,6 +58,10 @@ pub fn build_review_agent_prompt(
          Look for: behavior that contradicts the stated intent or an existing invariant, error paths that\n\
          are swallowed or unreachable, concurrency and lifecycle problems, missing or misleading tests,\n\
          compatibility risks for callers and stored data, and concrete violations of the repo style below.\n\
+         Think about sentinel values: a magic number, -1, 0, MAX, an empty string or a placeholder date\n\
+         standing in for \"none\" or \"unknown\". Follow each one to where it is read and check whether it\n\
+         can collide with a real value or leak into arithmetic, indexing, comparison, storage or display,\n\
+         and whether an optional or a sum type would say the same thing safely.\n\
          Prefer a few findings you have verified in the code over many you suspect. For each finding give\n\
          the file and line, what is wrong, why it matters, and what to do instead.\n\n\
          When you are done, write your findings as Markdown to this file and nothing else:\n\
@@ -99,21 +103,26 @@ pub fn review_style(settings: &RepoSettings, reviewed: &str) -> String {
 }
 
 /// What one step of a guided review asks: a reviewer's read of this hunk, in
-/// the light of the change it belongs to, short enough to read before moving
-/// on.
+/// the light of the change it belongs to, one finding a line and each pinned
+/// to the line it is about, so lg can draw it there.
 pub fn build_guided_step_prompt(context: &str, settings: &RepoSettings) -> String {
     format!(
         "You are walking a reviewer through a change one hunk at a time. Below is the overview of\n\
          the whole change, then the one hunk on screen now with the source around it.\n\
-         Explain this hunk to someone about to approve it:\n\
-         1. What it does, in one or two sentences, in terms of behavior rather than lines.\n\
-         2. Anything wrong or risky in it: a bug, an unhandled case, a broken contract, a missing\n\
-            test, or a concrete violation of the repo style below. Cite the line (`L123`) for each.\n\
-            Say plainly when there is nothing to flag.\n\
-         3. What to check next, if the answer depends on code not shown.\n\
-         End with exactly one line `Verdict: ok`, `Verdict: nit` or `Verdict: issue`.\n\
-         Be brief: at most 10 lines before the verdict. Do not restate the diff. Do not use code\n\
-         fences. Do not invent code that is not shown.\n\n\
+         Reply in exactly this shape, one item a line, and nothing else:\n\
+         Summary: <what the hunk does, in one sentence, in terms of behavior rather than lines>\n\
+         L<n> issue: <what is wrong and why it matters>\n\
+         L<n> nit: <a smaller point>\n\
+         Check: <what to look at next, only when the answer depends on code not shown>\n\
+         Verdict: ok|nit|issue\n\
+         Write one `L<n>` line per finding, most severe first, where <n> is the number the hunk\n\
+         below shows for the line it is about. A finding is a bug, an unhandled case, a broken\n\
+         contract, a missing test, a sentinel value (-1, 0, MAX, an empty string standing in for\n\
+         \"none\") that can collide with a real value or leak into arithmetic, indexing or display,\n\
+         or a concrete violation of the repo style below. Leave out the `L` lines when there is\n\
+         nothing to flag and the Check line when there is nothing to check.\n\
+         Keep each line under 25 words. Keep the words Summary, Check, Verdict, issue and nit in\n\
+         English. Do not restate the diff, use code fences, or invent code that is not shown.\n\n\
          {}\n\n\
          {}\n\
          {context}",
@@ -411,6 +420,18 @@ mod tests {
         assert!(prompt.contains("\nTypeScript:\n"), "{prompt}");
         assert!(!prompt.contains("\nRust:\n"), "{prompt}");
         assert!(!prompt.contains("\nC# / .NET:\n"), "{prompt}");
+    }
+
+    #[test]
+    fn the_review_agent_is_asked_to_think_about_sentinel_values() {
+        let prompt = build_review_agent_prompt(
+            "assisted review",
+            "main",
+            Path::new("/tmp/findings.md"),
+            &RepoSettings::default(),
+        );
+
+        assert!(prompt.contains("sentinel values"), "{prompt}");
     }
 
     #[test]

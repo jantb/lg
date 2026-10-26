@@ -60,8 +60,10 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('u') if ctrl => scroll_side(state, -8),
         KeyCode::Char('u') => super::next_unreviewed(state),
         KeyCode::Char('m') => super::toggle_reviewed(state),
-        KeyCode::Down | KeyCode::Char('j') => super::move_cursor(state, true),
-        KeyCode::Up | KeyCode::Char('k') => super::move_cursor(state, false),
+        KeyCode::Down => super::next_finding(state),
+        KeyCode::Up => super::previous_finding(state),
+        KeyCode::Char('j') => super::move_cursor(state, true),
+        KeyCode::Char('k') => super::move_cursor(state, false),
         KeyCode::PageDown | KeyCode::Char('J') => scroll_side(state, 8),
         KeyCode::PageUp | KeyCode::Char('K') => scroll_side(state, -8),
         KeyCode::Char('g') | KeyCode::Home => go_overview(state),
@@ -84,11 +86,13 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         }
         KeyCode::Char('e') => super::edit_at_cursor(state, false),
         KeyCode::Char('o') => super::edit_at_cursor(state, true),
+        KeyCode::Char('O') => super::open_in_browser(state),
         KeyCode::Char('f') => start_fix(state, false),
         KeyCode::Char('F') => start_fix(state, true),
         KeyCode::Char('s') => super::open_summary(state),
         KeyCode::Char('y') => copy_notes(state),
         KeyCode::Char('b') => super::switch_scope(state),
+        KeyCode::Char('v') => super::toggle_layout(state),
         _ => {}
     }
 }
@@ -114,7 +118,8 @@ pub(super) fn scroll_side(state: &mut AppState, by: i32) {
     }
 }
 
-/// Write a note on the cursor line, or change the one already there.
+/// Write a note on the cursor line, or change the one already there. On a
+/// line the model flagged, the note starts as what it said.
 fn start_note(state: &mut AppState) {
     let Some(guided) = state.guided.as_mut() else {
         return;
@@ -127,15 +132,16 @@ fn start_note(state: &mut AppState) {
     let text = editing
         .and_then(|index| guided.progress.notes.get(index))
         .map(|note| note.body.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(|| guided.findings_at_cursor());
     guided.mode = Mode::Note {
         text: text.into(),
         editing,
     };
 }
 
-/// Ask Claude for a change: what the note on the cursor line says, or what is
-/// typed; with `all_notes`, every note in the review.
+/// Ask Claude for a change: what the note on the cursor line says, else what
+/// the model flagged there, or what is typed; with `all_notes`, every note in
+/// the review.
 fn start_fix(state: &mut AppState, all_notes: bool) {
     let Some(guided) = state.guided.as_mut() else {
         return;
@@ -162,7 +168,7 @@ fn start_fix(state: &mut AppState, all_notes: bool) {
             .note_at_cursor()
             .and_then(|index| guided.progress.notes.get(index))
             .map(|note| note.body.clone())
-            .unwrap_or_default()
+            .unwrap_or_else(|| guided.findings_at_cursor())
     };
     guided.mode = Mode::Fix {
         text: text.into(),
