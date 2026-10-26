@@ -41,8 +41,8 @@ use prompt::{
     build_review_style_flag_prompt,
 };
 pub use prompt::{
-    build_guided_chat_next_file, build_guided_chat_prompt, build_guided_fix_prompt,
-    build_review_agent_prompt,
+    build_guided_chat_next_file, build_guided_chat_prompt, build_guided_chat_redo,
+    build_guided_fix_prompt, build_review_agent_prompt,
 };
 use reply::{
     finalize, finalize_conflict_hunk, finalize_review_assist, finalize_review_chat,

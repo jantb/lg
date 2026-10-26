@@ -119,6 +119,27 @@ fn follow_file_in_chat(guided: &mut Guided, sessions: &mut crate::session::Sessi
     guided.chat_file = Some(path);
 }
 
+/// Once the read `r` asked for is in, tell the chat what it found: what the
+/// change fixed and what is still open.
+fn report_redo_to_chat(guided: &mut Guided, sessions: &mut crate::session::Sessions) {
+    let settled: Vec<String> = guided
+        .chat_update
+        .iter()
+        .filter(|path| redo_settled(guided, path))
+        .cloned()
+        .collect();
+    guided.chat_update.retain(|path| !settled.contains(path));
+    let Some(session) = guided.chat.and_then(|id| sessions.get_mut(id)) else {
+        return;
+    };
+    for path in settled {
+        let message = crate::llm::build_guided_chat_redo(&guided.chat_brief(&path));
+        let bracketed = session.bracketed_paste();
+        session.send(&crate::term::encode_paste(&message, bracketed));
+        session.send(b"\r");
+    }
+}
+
 /// The wheel over the chat goes to it, and a click in it hands it the
 /// keyboard; a click anywhere else while it has the keyboard takes it back.
 /// Returns whether the event was the chat's.
@@ -387,6 +408,9 @@ pub struct Guided {
     /// The file the chat was last told about, so moving to another one tells
     /// it what is open there.
     pub chat_file: Option<String>,
+    /// The files `r` sent back to the model while the chat was open, whose
+    /// new read the chat is told about once it is in.
+    chat_update: Vec<String>,
 }
 
 impl Guided {
@@ -415,6 +439,7 @@ impl Guided {
             delete_armed: None,
             chat: None,
             chat_file: None,
+            chat_update: Vec::new(),
         }
     }
 
@@ -547,7 +572,11 @@ impl Guided {
             let Some(commentary) = self.commentary.get(&step.key()).filter(|c| c.done) else {
                 continue;
             };
-            let open = findings::read(&commentary.text)
+            let reading = findings::read(&commentary.text);
+            for fixed in &reading.fixed {
+                out.push_str(&format!("- fixed: {fixed}\n"));
+            }
+            let open = reading
                 .findings
                 .into_iter()
                 .filter(|finding| !self.is_ticked(&ticket_in(path, finding)));
@@ -847,12 +876,14 @@ pub fn poll(state: &mut AppState) {
         .is_some_and(|id| state.sessions.get(id).is_none())
     {
         guided.chat = None;
+        guided.chat_update.clear();
         if guided.mode == Mode::Chat {
             guided.mode = Mode::Browse;
         }
         notices.push(("the review chat ended".to_string(), false));
     }
     follow_file_in_chat(guided, &mut state.sessions);
+    report_redo_to_chat(guided, &mut state.sessions);
 
     for (text, is_error) in notices {
         state.set_status(text, is_error);
@@ -971,14 +1002,20 @@ fn concurrency() -> usize {
     }
 }
 
-/// The steps whose commentary the walk wants now, nearest first: the one on
-/// screen and up to `ahead` after it in the same file. A file is read once
-/// the walk reaches it, not before; on the overview, only the overview is.
-fn steps_to_read(guided: &Guided, ahead: usize) -> Vec<usize> {
+/// The steps whose commentary the walk wants, most wanted first: the one on
+/// screen, the rest of its file after it and then before it, and every hunk
+/// of a file a redo still owes the chat. A file is otherwise read once the
+/// walk reaches it, not before; on the overview, only the overview is.
+fn steps_to_read(guided: &Guided) -> Vec<usize> {
+    let path_of = |i: usize| guided.steps[i - 1].path.as_str();
     let here = guided.step().map(|step| step.path.as_str());
-    (guided.current..=guided.current + ahead)
-        .filter(|&i| i <= guided.total())
-        .filter(|&i| i == guided.current || Some(guided.steps[i - 1].path.as_str()) == here)
+    let total = guided.total();
+    let mut seen = HashSet::new();
+    std::iter::once(guided.current)
+        .chain((guided.current + 1..=total).filter(|&i| Some(path_of(i)) == here))
+        .chain((1..guided.current).filter(|&i| Some(path_of(i)) == here))
+        .chain((1..=total).filter(|&i| guided.chat_update.iter().any(|path| path == path_of(i))))
+        .filter(|&i| seen.insert(i))
         .collect()
 }
 
@@ -997,7 +1034,7 @@ fn start_wanted_commentary(guided: &mut Guided) {
     if running >= limit {
         return;
     }
-    let wanted = steps_to_read(guided, limit);
+    let wanted = steps_to_read(guided);
     let mut slots = limit - running;
     for index in wanted {
         if slots == 0 {
@@ -1629,8 +1666,23 @@ pub(super) fn review_again(state: &mut AppState) {
         guided.earlier.insert(path.clone(), said.join("\n\n"));
     }
     forget(guided, &keys);
+    if guided.chat.is_some() && !guided.chat_update.contains(&path) {
+        guided.chat_update.push(path.clone());
+    }
     state.set_status(format!("reviewing {path} again\u{2026}"), false);
     reload(state);
+}
+
+/// Whether the read `r` asked for of the file at `path` is in: the change is
+/// read again, and every hunk the file still has has its answer. A file the
+/// change no longer touches has nothing left to wait for.
+fn redo_settled(guided: &Guided, path: &str) -> bool {
+    guided.loading.is_none()
+        && guided
+            .steps
+            .iter()
+            .filter(|step| step.path == path)
+            .all(|step| guided.commentary.get(&step.key()).is_some_and(|c| c.done))
 }
 
 /// Drop what the model said, or is saying, about `keys`, so each is asked for
@@ -2309,8 +2361,8 @@ mod tests {
         assert!(!brief.contains("in another file"), "{brief}");
     }
 
-    /// The model reads ahead within the file on screen, and a file only once
-    /// the walk reaches it; on the overview, only the overview.
+    /// The model reads the file on screen, and a file only once the walk
+    /// reaches it or a redo of it is owed; on the overview, only the overview.
     #[test]
     fn the_model_reads_ahead_only_in_the_file_on_screen() {
         let mut state = walk_with_findings();
@@ -2319,12 +2371,21 @@ mod tests {
             "diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1,1 +1,1 @@\n-x\n+y\n",
         ));
 
-        guided.current = 1;
-        assert_eq!(steps_to_read(guided, 3), vec![1, 2]);
+        guided.current = 2;
+        assert_eq!(
+            steps_to_read(guided),
+            vec![2, 1],
+            "the whole file on screen"
+        );
         guided.current = 3;
-        assert_eq!(steps_to_read(guided, 3), vec![3]);
+        assert_eq!(steps_to_read(guided), vec![3], "not a file the walk left");
         guided.current = OVERVIEW;
-        assert_eq!(steps_to_read(guided, 3), vec![OVERVIEW]);
+        assert_eq!(steps_to_read(guided), vec![OVERVIEW]);
+
+        // A file whose redo the chat is still owed goes on being read.
+        guided.chat_update.push("a.rs".into());
+        guided.current = 3;
+        assert_eq!(steps_to_read(guided), vec![3, 1, 2]);
     }
 
     /// After an edit in the editor, `r` sends the file back to the model:
@@ -2343,6 +2404,33 @@ mod tests {
         let guided = state.guided.as_ref().unwrap();
         assert!(!guided.commentary.contains_key(&guided.steps[0].key()));
         assert!(hunk_context(guided, 1).contains("-1 stands in for missing"));
+
+        // The new read is in once the change is read again and the file's
+        // hunks have their answers; a chat open beside the walk then hears
+        // what was fixed.
+        let guided = state.guided.as_mut().unwrap();
+        assert!(!redo_settled(guided, "a.rs"));
+        guided.loading = None;
+        let key = guided.steps[0].key();
+        guided.commentary.insert(
+            key,
+            commentary("Summary: Same.\nFixed: the index sentinel.\nVerdict: ok"),
+        );
+        assert!(!redo_settled(guided, "a.rs"), "one of the file's two hunks");
+        let key = guided.steps[1].key();
+        guided
+            .commentary
+            .insert(key, commentary("Summary: Same.\nVerdict: ok"));
+        assert!(redo_settled(guided, "a.rs"));
+        assert!(
+            redo_settled(guided, "gone.rs"),
+            "a file the change no longer has"
+        );
+        assert!(
+            guided
+                .chat_brief("a.rs")
+                .contains("fixed: the index sentinel.")
+        );
     }
 
     /// Side by side, as the diff pane shows it by default, a removed line

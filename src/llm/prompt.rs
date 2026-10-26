@@ -159,6 +159,15 @@ pub fn build_guided_chat_next_file(brief: &str) -> String {
     )
 }
 
+/// What the review's chat is told when the reviewer has changed a file and lg
+/// has reviewed it again.
+pub fn build_guided_chat_redo(brief: &str) -> String {
+    format!(
+        "The reviewer has changed the file and lg has reviewed it again. {brief}\n\
+         Say in two or three lines what is fixed and what is still open, then wait."
+    )
+}
+
 /// The opening of a guided review: what the change is for and the order its
 /// files are best read in.
 pub fn build_guided_overview_prompt(context: &str, settings: &RepoSettings) -> String {
