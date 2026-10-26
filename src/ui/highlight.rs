@@ -13,6 +13,7 @@ use crate::language::Language;
 #[derive(Clone, Copy)]
 enum Keywords {
     CSharp,
+    Java,
     Kotlin,
     Rust,
 }
@@ -23,9 +24,8 @@ impl Keywords {
             Language::Rust => Some(Self::Rust),
             Language::Kotlin => Some(Self::Kotlin),
             Language::CSharp => Some(Self::CSharp),
-            Language::Java | Language::JavaScript | Language::TypeScript | Language::Markdown => {
-                None
-            }
+            Language::Java => Some(Self::Java),
+            Language::JavaScript | Language::TypeScript | Language::Markdown => None,
         }
     }
 }
@@ -411,6 +411,66 @@ fn keyword_style(word: &str, syntax: Keywords, base: Style) -> Option<Style> {
                 | "void"
                 | "when"
                 | "where"
+                | "while"
+                | "yield"
+        ),
+        Keywords::Java => matches!(
+            word,
+            "abstract"
+                | "assert"
+                | "boolean"
+                | "break"
+                | "byte"
+                | "case"
+                | "catch"
+                | "char"
+                | "class"
+                | "continue"
+                | "default"
+                | "do"
+                | "double"
+                | "else"
+                | "enum"
+                | "extends"
+                | "false"
+                | "final"
+                | "finally"
+                | "float"
+                | "for"
+                | "if"
+                | "implements"
+                | "import"
+                | "instanceof"
+                | "int"
+                | "interface"
+                | "long"
+                | "module"
+                | "native"
+                | "new"
+                | "null"
+                | "package"
+                | "permits"
+                | "private"
+                | "protected"
+                | "public"
+                | "record"
+                | "return"
+                | "sealed"
+                | "short"
+                | "static"
+                | "super"
+                | "switch"
+                | "synchronized"
+                | "this"
+                | "throw"
+                | "throws"
+                | "transient"
+                | "true"
+                | "try"
+                | "var"
+                | "void"
+                | "volatile"
+                | "when"
                 | "while"
                 | "yield"
         ),

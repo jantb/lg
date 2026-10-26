@@ -1543,6 +1543,38 @@ fn diff_highlighting_tracks_kotlin_syntax_by_file() {
 }
 
 #[test]
+fn side_by_side_diff_highlights_java_syntax() {
+    let rows = lg::ui::highlight_side_by_side_diff_text_for_path(
+        "@@ -1,2 +1,2 @@\n-import java.util.List;\n+import module java.base;\n-public final class Shape {\n+public sealed interface Shape permits Circle {",
+        160,
+        "src/main/java/org/example/Shape.java",
+    );
+    let is_keyword = |word: &str| {
+        rows.iter().flat_map(|row| &row.spans).any(|span| {
+            span.content.as_ref() == word
+                && span.style.fg == Some(Color::Yellow)
+                && span.style.add_modifier.contains(Modifier::BOLD)
+        })
+    };
+
+    for word in [
+        "import",
+        "module",
+        "public",
+        "final",
+        "class",
+        "sealed",
+        "interface",
+        "permits",
+    ] {
+        assert!(
+            is_keyword(word),
+            "{word} should be highlighted as a Java keyword"
+        );
+    }
+}
+
+#[test]
 fn review_diff_line_highlighting_uses_node_file_syntax() {
     let line = lg::ui::highlight_diff_line_for_path(
         "+    private val log by Logger()",

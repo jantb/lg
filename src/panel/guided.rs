@@ -314,6 +314,9 @@ pub struct Commentary {
     pub text: String,
     pub thinking: bool,
     pub done: bool,
+    /// Claude is reading the checkout to settle the questions the answer
+    /// raised, which are held back until it has.
+    pub checking: bool,
     pub error: Option<String>,
 }
 
@@ -359,6 +362,22 @@ struct Ask {
     /// the question being answered.
     target: Target,
     rx: Receiver<GenMsg>,
+}
+
+/// A step's questions out with Claude to be settled in the code.
+struct Check {
+    key: String,
+    /// Put back as they were if the check fails.
+    questions: Vec<String>,
+    answer: CheckAnswer,
+}
+
+/// Who settles a step's questions: the review chat when one is open, since it
+/// is already reading the code with the reviewer, else a headless run.
+enum CheckAnswer {
+    Headless(Receiver<Result<String, String>>),
+    /// The file the chat was told to write its answer to.
+    Chat(std::path::PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -434,6 +453,7 @@ pub struct Guided {
     /// The pull request being walked, as the list had it, to read it again.
     pull_request: Option<crate::github::PullRequest>,
     asks: Vec<Ask>,
+    checks: Vec<Check>,
     /// Steps whose commentary was asked for and failed, so they are not asked
     /// again every frame.
     failed: HashSet<String>,
@@ -475,6 +495,7 @@ impl Guided {
             fixing: None,
             pull_request: None,
             asks: Vec::new(),
+            checks: Vec::new(),
             failed: HashSet::new(),
             earlier: HashMap::new(),
             delete_armed: None,
@@ -515,7 +536,10 @@ impl Guided {
     }
 
     pub fn working(&self) -> bool {
-        self.loading.is_some() || self.fixing.is_some() || !self.asks.is_empty()
+        self.loading.is_some()
+            || self.fixing.is_some()
+            || !self.asks.is_empty()
+            || !self.checks.is_empty()
     }
 
     /// The notes that belong on `step`: those written on it, and those pinned
@@ -882,6 +906,7 @@ fn overview_of(title: &str, body: &str, commits: &[String], steps: &[GuidedHunk]
 /// start the commentary the reviewer is about to want.
 pub fn poll(state: &mut AppState) {
     let ai = state.ai_assist;
+    let root = state.repo_root.clone();
     let Some(guided) = state.guided.as_mut() else {
         return;
     };
@@ -944,7 +969,12 @@ pub fn poll(state: &mut AppState) {
         }
     }
 
-    drain_asks(guided);
+    for key in drain_asks(guided) {
+        if let Some(root) = &root {
+            start_question_check(guided, root, &key, &mut state.sessions);
+        }
+    }
+    drain_checks(guided, &mut notices);
     if ai {
         start_wanted_commentary(guided);
     }
@@ -1007,8 +1037,10 @@ fn first_unreviewed(guided: &Guided) -> Option<usize> {
         .map(|index| index + 1)
 }
 
-fn drain_asks(guided: &mut Guided) {
+/// The keys of the steps whose commentary came in whole.
+fn drain_asks(guided: &mut Guided) -> Vec<String> {
     let mut finished = Vec::new();
+    let mut answered = Vec::new();
     for (index, ask) in guided.asks.iter().enumerate() {
         let entry = match &ask.target {
             Target::Commentary(key) => guided.commentary.entry(key.clone()).or_default(),
@@ -1040,6 +1072,9 @@ fn drain_asks(guided: &mut Guided) {
                     }
                     entry.done = true;
                     entry.thinking = false;
+                    if let Target::Commentary(key) = &ask.target {
+                        answered.push(key.clone());
+                    }
                     finished.push(index);
                     break;
                 }
@@ -1067,6 +1102,125 @@ fn drain_asks(guided: &mut Guided) {
     }
     for index in finished.into_iter().rev() {
         guided.asks.remove(index);
+    }
+    answered
+}
+
+/// Send the questions step `key`'s commentary raised to Claude, to be settled
+/// in the checkout, when the files there are the ones being reviewed.
+fn start_question_check(
+    guided: &mut Guided,
+    root: &str,
+    key: &str,
+    sessions: &mut crate::session::Sessions,
+) {
+    if !guided.source.editable() {
+        return;
+    }
+    let Some(index) = guided.steps.iter().position(|step| step.key() == key) else {
+        return;
+    };
+    let Some(commentary) = guided.commentary.get(key) else {
+        return;
+    };
+    let (without, questions) = findings::split_questions(&commentary.text);
+    if questions.is_empty() {
+        return;
+    }
+    let step = &guided.steps[index];
+    let chat = guided
+        .chat
+        .and_then(|id| sessions.get_mut(id))
+        .and_then(|chat| {
+            let file = crate::hooks::fresh_session_file(
+                std::path::Path::new(root),
+                &answer_file_name(key),
+            )
+            .ok()?;
+            Some((chat, file))
+        });
+    let answer = match chat {
+        Some((chat, file)) => {
+            let message = crate::llm::build_guided_chat_questions(
+                &step.path,
+                &step.header,
+                &questions.join("\n"),
+                &file,
+            );
+            let bracketed = chat.bracketed_paste();
+            chat.send(&crate::term::encode_paste(&message, bracketed));
+            chat.send(b"\r");
+            CheckAnswer::Chat(file)
+        }
+        None => {
+            let prompt = crate::llm::build_guided_question_check_prompt(
+                &step_context(guided, index + 1),
+                &questions.join("\n"),
+                &crate::settings::load(),
+            );
+            CheckAnswer::Headless(work::check_questions(root.to_string(), prompt))
+        }
+    };
+    if let Some(commentary) = guided.commentary.get_mut(key) {
+        commentary.text = without;
+        commentary.done = false;
+        commentary.checking = true;
+    }
+    guided.checks.push(Check {
+        key: key.to_string(),
+        questions,
+        answer,
+    });
+}
+
+/// One file per step: the key's own hash covers only the changed lines, which
+/// two files can share.
+fn answer_file_name(key: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hasher);
+    format!("guided-questions-{:016x}.md", hasher.finish())
+}
+
+/// Put what each finished check settled back into its step's commentary. A
+/// check that failed puts the questions back as they were asked.
+fn drain_checks(guided: &mut Guided, notices: &mut Vec<(String, bool)>) {
+    let mut finished = Vec::new();
+    for (index, check) in guided.checks.iter().enumerate() {
+        let polled = match &check.answer {
+            CheckAnswer::Headless(rx) => poll_once(rx),
+            CheckAnswer::Chat(file) => match std::fs::read_to_string(file) {
+                Ok(settled) => {
+                    let _ = std::fs::remove_file(file);
+                    Poll::Message(Ok(settled))
+                }
+                Err(_) if guided.chat.is_none() => Poll::Message(Err(
+                    "the review chat ended before it settled the questions".to_string(),
+                )),
+                Err(_) => Poll::Pending,
+            },
+        };
+        let settled = match polled {
+            Poll::Pending => continue,
+            Poll::Message(Ok(settled)) => settled,
+            Poll::Message(Err(message)) => {
+                notices.push((format!("checking the questions: {message}"), true));
+                check.questions.join("\n")
+            }
+            Poll::Disconnected => {
+                notices.push((stopped_unexpectedly("checking the questions"), true));
+                check.questions.join("\n")
+            }
+        };
+        if let Some(commentary) = guided.commentary.get_mut(&check.key) {
+            commentary.text = findings::with_settled(&commentary.text, &settled);
+            commentary.done = true;
+            commentary.checking = false;
+        }
+        finished.push(index);
+    }
+    for index in finished.into_iter().rev() {
+        guided.checks.remove(index);
     }
 }
 
@@ -1721,6 +1875,7 @@ fn forget(guided: &mut Guided, keys: &[String]) {
         Target::Commentary(key) => !keys.contains(key),
         Target::Answer(..) => true,
     });
+    guided.checks.retain(|check| !keys.contains(&check.key));
     for key in keys {
         guided.commentary.remove(key);
         guided.failed.remove(key);
@@ -2293,6 +2448,135 @@ mod tests {
         state.guided = Some(Box::new(guided));
         state.modal = Modal::GuidedReview;
         state
+    }
+
+    /// Step one of `walk_with_findings` with `questions` out with Claude, and
+    /// the end of the channel its answer comes in on.
+    fn checking(
+        guided: &mut Guided,
+        questions: &[&str],
+    ) -> std::sync::mpsc::Sender<Result<String, String>> {
+        let key = guided.steps[0].key();
+        guided.commentary.insert(
+            key.clone(),
+            Commentary {
+                text: "Summary: Renames a line.\nVerdict: ok".into(),
+                checking: true,
+                ..Default::default()
+            },
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        guided.checks.push(Check {
+            key,
+            questions: questions.iter().map(|q| q.to_string()).collect(),
+            answer: CheckAnswer::Headless(rx),
+        });
+        tx
+    }
+
+    fn open_questions(guided: &Guided) -> Vec<String> {
+        let commentary = &guided.commentary[&guided.steps[0].key()];
+        findings::read(&commentary.text)
+            .findings
+            .into_iter()
+            .filter(|finding| finding.severity == findings::Severity::Question)
+            .map(|finding| finding.text)
+            .collect()
+    }
+
+    #[test]
+    fn only_the_questions_the_code_cannot_settle_are_left_for_the_reviewer() {
+        let mut state = walk_with_findings();
+        let guided = state.guided.as_mut().unwrap();
+        let tx = checking(
+            guided,
+            &[
+                "L2 question: is old one read anywhere else?",
+                "L3 question: should the rename change the output?",
+            ],
+        );
+        assert!(!guided.has_read("a.rs"), "its questions are still out");
+
+        tx.send(Ok(
+            "L3 question: should the rename change the output?".into()
+        ))
+        .unwrap();
+        drain_checks(guided, &mut Vec::new());
+
+        assert!(guided.has_read("a.rs"));
+        assert_eq!(
+            open_questions(guided),
+            vec!["should the rename change the output?"]
+        );
+    }
+
+    #[test]
+    fn a_check_that_fails_leaves_the_questions_as_they_were_asked() {
+        let mut state = walk_with_findings();
+        let guided = state.guided.as_mut().unwrap();
+        let tx = checking(guided, &["L2 question: is old one read anywhere else?"]);
+
+        tx.send(Err("claude was not found on PATH".into())).unwrap();
+        let mut notices = Vec::new();
+        drain_checks(guided, &mut notices);
+
+        assert!(guided.has_read("a.rs"));
+        assert_eq!(
+            open_questions(guided),
+            vec!["is old one read anywhere else?"]
+        );
+        assert!(notices.iter().any(|(_, is_error)| *is_error));
+    }
+
+    #[test]
+    fn an_open_chat_settles_the_questions_through_the_file_it_was_told_to_write() {
+        let mut state = walk_with_findings();
+        let guided = state.guided.as_mut().unwrap();
+        drop(checking(guided, &[]));
+        let file =
+            std::env::temp_dir().join(format!("lg-guided-questions-{}.md", std::process::id()));
+        let _ = std::fs::remove_file(&file);
+        guided.checks[0].questions = vec![
+            "L2 question: is old one read anywhere else?".into(),
+            "L3 question: should the rename change the output?".into(),
+        ];
+        guided.checks[0].answer = CheckAnswer::Chat(file.clone());
+        guided.chat = Some(crate::session::SessionId::unstarted(1));
+
+        drain_checks(guided, &mut Vec::new());
+        assert!(!guided.has_read("a.rs"), "the chat has not answered yet");
+
+        std::fs::write(&file, "L2 nit: old one is still read by the export.\n").unwrap();
+        drain_checks(guided, &mut Vec::new());
+
+        assert!(guided.has_read("a.rs"));
+        assert!(open_questions(guided).is_empty());
+        let commentary = &guided.commentary[&guided.steps[0].key()];
+        assert!(
+            commentary
+                .text
+                .contains("old one is still read by the export.")
+        );
+    }
+
+    #[test]
+    fn a_chat_that_ends_before_answering_leaves_the_questions_as_they_were_asked() {
+        let mut state = walk_with_findings();
+        let guided = state.guided.as_mut().unwrap();
+        drop(checking(
+            guided,
+            &["L2 question: is old one read anywhere else?"],
+        ));
+        guided.checks[0].answer =
+            CheckAnswer::Chat(std::env::temp_dir().join("lg-guided-questions-never-written.md"));
+
+        drain_checks(guided, &mut Vec::new());
+
+        assert!(guided.has_read("a.rs"));
+        assert_eq!(
+            open_questions(guided),
+            vec!["is old one read anywhere else?"]
+        );
     }
 
     fn cursor_line(state: &AppState) -> (usize, String) {

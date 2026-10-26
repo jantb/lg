@@ -14,7 +14,8 @@ mod stream;
 mod think;
 
 pub use claude::{
-    ClaudeModel, claude_models, prime_claude_models_async, run_claude_fix, served_claude_models,
+    ClaudeModel, claude_models, prime_claude_models_async, run_claude_check, run_claude_fix,
+    served_claude_models,
 };
 pub use prompt::{GIVE_UP_PHRASE, build_conflict_hunk_prompt};
 pub use provider::{
@@ -41,8 +42,9 @@ use prompt::{
     build_review_style_flag_prompt,
 };
 pub use prompt::{
-    build_guided_chat_file_read, build_guided_chat_prompt, build_guided_chat_redo,
-    build_guided_fix_prompt, build_review_agent_prompt,
+    build_guided_chat_file_read, build_guided_chat_prompt, build_guided_chat_questions,
+    build_guided_chat_redo, build_guided_fix_prompt, build_guided_question_check_prompt,
+    build_review_agent_prompt,
 };
 use reply::{
     finalize, finalize_conflict_hunk, finalize_review_assist, finalize_review_chat,

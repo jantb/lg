@@ -67,6 +67,37 @@ pub fn read(text: &str) -> Reading {
     reading
 }
 
+/// The commentary `text` without its question lines, and those lines.
+pub fn split_questions(text: &str) -> (String, Vec<String>) {
+    let mut kept = Vec::new();
+    let mut questions = Vec::new();
+    for line in text.lines() {
+        match parse_finding(without_markup(line)) {
+            Some(finding) if finding.severity == Severity::Question => {
+                questions.push(line.trim().to_string());
+            }
+            _ => kept.push(line),
+        }
+    }
+    (kept.join("\n"), questions)
+}
+
+/// `text` with the findings `settled` names put back ahead of its verdict,
+/// which the step prompt keeps as the last line. Anything in `settled` that is
+/// not a finding is dropped.
+pub fn with_settled(text: &str, settled: &str) -> String {
+    let mut lines: Vec<&str> = text.lines().collect();
+    let verdict_at = lines
+        .iter()
+        .rposition(|line| after_key(without_markup(line), "verdict").is_some())
+        .unwrap_or(lines.len());
+    let findings = settled
+        .lines()
+        .filter(|line| parse_finding(without_markup(line)).is_some());
+    lines.splice(verdict_at..verdict_at, findings);
+    lines.join("\n")
+}
+
 /// Findings on a line the hunk shows, with that line's index; then the rest.
 pub fn place<'a>(
     step: &GuidedHunk,
@@ -194,6 +225,39 @@ mod tests {
             severity: Severity::Question,
             text: "is the cache shared between threads?".into(),
         }));
+    }
+
+    #[test]
+    fn settled_questions_take_the_place_of_the_ones_asked() {
+        let (text, questions) = split_questions(
+            "Summary: Caches the lookup.\n\
+             L12 issue: -1 is used as an index.\n\
+             L20 question: is the cache shared between threads?\n\
+             L30 question: is lookup called elsewhere?\n\
+             Verdict: issue",
+        );
+        assert_eq!(questions.len(), 2);
+
+        let settled = with_settled(
+            &text,
+            "Checked the callers.\nL20 issue: the cache is shared and unguarded.",
+        );
+        let reading = read(&settled);
+
+        assert!(
+            reading
+                .findings
+                .iter()
+                .all(|finding| finding.severity != Severity::Question)
+        );
+        assert!(reading.findings.contains(&Finding {
+            line: 20,
+            severity: Severity::Issue,
+            text: "the cache is shared and unguarded.".into(),
+        }));
+        assert!(reading.findings.iter().any(|finding| finding.line == 12));
+        assert!(reading.rest.is_empty(), "{:?}", reading.rest);
+        assert!(settled.trim_end().ends_with("Verdict: issue"));
     }
 
     #[test]

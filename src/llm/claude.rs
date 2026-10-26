@@ -347,6 +347,10 @@ fn claude_args(system: &str, task: ChatTask, model: &str) -> Vec<String> {
 /// nothing that runs a command.
 const FIX_TOOLS: &str = "Read,Edit,Write,Grep,Glob";
 
+/// The tools a check may use: enough to read the code, and nothing that
+/// changes it or runs a command.
+const CHECK_TOOLS: &str = "Read,Grep,Glob";
+
 /// Have Claude Code apply one change in `cwd` and wait for it, returning the
 /// one line it says about what it did.
 ///
@@ -354,6 +358,35 @@ const FIX_TOOLS: &str = "Read,Edit,Write,Grep,Glob";
 /// settings files with hooks of their own, and edits accepted without asking
 /// because nobody is at its terminal to ask. Blocks, so it belongs on a thread.
 pub fn run_claude_fix(cwd: &std::path::Path, prompt: &str) -> anyhow::Result<String> {
+    let said = run_claude_headless(
+        cwd,
+        prompt,
+        FIX_TOOLS,
+        &["--permission-mode", "acceptEdits"],
+    )?;
+    let said = last_lines(&said, 1);
+    Ok(if said.is_empty() {
+        "claude applied the change".to_string()
+    } else {
+        said
+    })
+}
+
+/// Have Claude Code read the code in `cwd` to answer `prompt`, and wait for
+/// its whole answer. It cannot change a file or run a command. Blocks, so it
+/// belongs on a thread.
+pub fn run_claude_check(cwd: &std::path::Path, prompt: &str) -> anyhow::Result<String> {
+    run_claude_headless(cwd, prompt, CHECK_TOOLS, &[])
+}
+
+/// One `claude -p` run in `cwd` limited to `tools`, with no MCP servers and no
+/// settings files with hooks of their own: what it answered, trimmed.
+fn run_claude_headless(
+    cwd: &std::path::Path,
+    prompt: &str,
+    tools: &str,
+    extra_args: &[&str],
+) -> anyhow::Result<String> {
     use anyhow::Context;
     let agent = crate::agents::claude_profile();
     let program = crate::agents::resolve(&agent.executable)
@@ -367,16 +400,15 @@ pub fn run_claude_fix(cwd: &std::path::Path, prompt: &str) -> anyhow::Result<Str
         "--output-format",
         "json",
         "--tools",
-        FIX_TOOLS,
+        tools,
         "--allowedTools",
-        FIX_TOOLS,
-        "--permission-mode",
-        "acceptEdits",
+        tools,
         "--strict-mcp-config",
         "--setting-sources",
         "",
         "--no-session-persistence",
     ]);
+    command.args(extra_args);
     let model = super::provider::configured_claude_model();
     if !model.is_empty() {
         command.args(["--model", &model]);
@@ -405,16 +437,16 @@ pub fn run_claude_fix(cwd: &std::path::Path, prompt: &str) -> anyhow::Result<Str
             Ok(result
                 .get("result")
                 .and_then(|r| r.as_str())
-                .map(|r| last_lines(r.trim(), 1))
-                .filter(|r| !r.is_empty())
-                .unwrap_or_else(|| "claude applied the change".to_string()))
+                .unwrap_or_default()
+                .trim()
+                .to_string())
         }
         Some(result) => anyhow::bail!(
             "claude: {}",
             result
                 .get("result")
                 .and_then(|r| r.as_str())
-                .unwrap_or("the fix failed")
+                .unwrap_or("the run failed")
         ),
         None => anyhow::bail!(
             "claude exited without an answer: {}",

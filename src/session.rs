@@ -54,6 +54,14 @@ const TRACE_TAIL_LINES: usize = 6;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionId(u64);
 
+#[cfg(test)]
+impl SessionId {
+    /// An id no session was started under, for code that only holds one.
+    pub(crate) fn unstarted(id: u64) -> Self {
+        Self(id)
+    }
+}
+
 impl std::fmt::Display for SessionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)

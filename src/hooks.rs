@@ -76,9 +76,15 @@ pub fn install(cwd: &Path) -> Result<HookChannel> {
 /// Whatever an earlier review left there is removed, so the next one is read
 /// from nothing rather than from stale findings.
 pub fn review_findings_path(cwd: &Path) -> Result<PathBuf> {
+    fresh_session_file(cwd, "review-findings.md")
+}
+
+/// A file named `name` beside the hook files for a session to write an answer
+/// into, cleared of whatever an earlier answer left there.
+pub fn fresh_session_file(cwd: &Path, name: &str) -> Result<PathBuf> {
     let dir = channel_dir(cwd)?;
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-    let path = dir.join("review-findings.md");
+    let path = dir.join(name);
     match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

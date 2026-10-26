@@ -203,6 +203,56 @@ pub fn build_guided_fix_prompt(context: &str, instruction: &str) -> String {
     )
 }
 
+/// What a headless Claude Code run is asked when a step's commentary raised
+/// questions: settle them in the code, and keep only what the reviewer has to
+/// decide.
+pub fn build_guided_question_check_prompt(
+    context: &str,
+    questions: &str,
+    settings: &RepoSettings,
+) -> String {
+    format!(
+        "A reviewer is walking through a change in this checkout one hunk at a time. A model that\n\
+         saw only the hunk below raised the questions below it. Settle each one by reading the code:\n\
+         open the files, follow the callers and the tests. Do not change any file.\n\
+         Then reply with one line per question that still matters, in exactly this shape, and nothing else:\n\
+         L<n> issue: <what is wrong and why it matters>\n\
+         L<n> nit: <a smaller point>\n\
+         L<n> question: <only what the code cannot settle and the reviewer must decide, such as intent; say what you found>\n\
+         Leave out every question the code answers with nothing to flag: the reviewer does not need\n\
+         to hear about it. Reply with nothing at all when every question is settled that way.\n\
+         Keep <n> as the question had it. Keep each line under 25 words. Keep the words issue, nit\n\
+         and question in English.\n\n\
+         {}\n\
+         Questions:\n{questions}\n\n\
+         {context}",
+        crate::settings::language_instruction(settings)
+    )
+}
+
+/// What the review chat is told when lg's read of a hunk raised questions:
+/// settle them in the code and write what still matters where lg reads it.
+pub fn build_guided_chat_questions(
+    path: &str,
+    header: &str,
+    questions: &str,
+    answer: &Path,
+) -> String {
+    format!(
+        "lg's read of {path} ({header}) raised the questions below. Settle each one by reading\n\
+         the code: open the file, follow the callers and the tests. Change nothing.\n\
+         Then write one line per question that still matters to {answer}, in exactly this shape:\n\
+         L<n> issue: <what is wrong and why it matters>\n\
+         L<n> nit: <a smaller point>\n\
+         L<n> question: <only what the code cannot settle and the reviewer must decide; say what you found>\n\
+         Leave out every question the code answers with nothing to flag, and write an empty file\n\
+         when that is all of them. Keep <n> as the question had it. Then say in one line what you\n\
+         found, and wait.\n\n\
+         {questions}",
+        answer = answer.display(),
+    )
+}
+
 pub fn build_review_chat_system_prompt(context: &str, settings: &RepoSettings) -> String {
     format!(
         "You are a senior code reviewer helping inspect a full branch review against main.\n\

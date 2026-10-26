@@ -114,6 +114,18 @@ pub(super) fn ask_question(
     rx
 }
 
+/// Claude Code reading the checkout at `root` to settle the questions
+/// `prompt` carries: the findings that still matter, one a line.
+pub(super) fn check_questions(root: String, prompt: String) -> Receiver<Result<String, String>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    crate::git::spawn_pinned(move || {
+        let result = crate::llm::run_claude_check(std::path::Path::new(&root), &prompt)
+            .map_err(|e| format!("{e:#}"));
+        let _ = tx.send(result);
+    });
+    rx
+}
+
 /// Claude Code making the change `prompt` describes in the checkout at
 /// `root`: what it said it did, or why it could not.
 pub(super) fn run_fix(root: String, prompt: String) -> Receiver<Result<String, String>> {

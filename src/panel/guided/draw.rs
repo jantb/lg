@@ -978,8 +978,13 @@ fn step_commentary_lines(
     }
     if !c.done {
         let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
+        let doing = if c.checking {
+            " checking its questions in the code\u{2026}"
+        } else {
+            ""
+        };
         lines.push(Line::from(Span::styled(
-            format!("  {spinner}"),
+            format!("  {spinner}{doing}"),
             Style::default().fg(Color::Cyan),
         )));
     }
