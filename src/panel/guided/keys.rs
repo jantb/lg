@@ -100,6 +100,7 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('F') => start_fix(state, true),
         KeyCode::Char('s') => super::open_summary(state),
         KeyCode::Char('y') => copy_notes(state),
+        KeyCode::Char('Y') => copy_file_findings(state),
         KeyCode::Char('b') => super::switch_scope(state),
         KeyCode::Char('v') => super::toggle_layout(state),
         KeyCode::Char('t') => super::tick_at_cursor(state),
@@ -201,6 +202,21 @@ fn start_fix(state: &mut AppState, all_notes: bool) {
         text: text.into(),
         all_notes,
     };
+}
+
+/// Copy what is still open in the file on screen, to carry into a chat.
+fn copy_file_findings(state: &mut AppState) {
+    let Some(guided) = state.guided.as_ref() else {
+        return;
+    };
+    let Some(path) = guided.step().map(|step| step.path.clone()) else {
+        state.set_status("the findings are a file's: \u{2192} to a hunk first", false);
+        return;
+    };
+    state.pending_action = Some(PendingAction::CopyToClipboard {
+        label: format!("what is open in {path}"),
+        text: guided.chat_brief(&path),
+    });
 }
 
 fn copy_notes(state: &mut AppState) {

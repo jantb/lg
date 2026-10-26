@@ -1,7 +1,7 @@
 //! The mouse in a guided review: the wheel over the step list moves between
 //! steps, over the pane beside it scrolls the commentary, a click on a step
-//! goes to it, and a click on a finding ticks it off. None of it marks a step
-//! reviewed.
+//! goes to it, a click on a finding ticks it off, and a drag selects text to
+//! copy. None of it marks a step reviewed.
 
 use std::path::Path;
 use std::process::Command;
@@ -149,6 +149,8 @@ fn the_wheel_and_clicks_move_through_a_guided_review() {
     let finding = row_with(&app, "bee is spelled oddly", 140).expect("the finding in the hunk");
     app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 100, finding))
         .unwrap();
+    app.send_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 100, finding))
+        .unwrap();
     app.render().unwrap();
     let saved = lg::git::guided::load_progress("branch-feat/x");
     assert!(
@@ -160,4 +162,38 @@ fn the_wheel_and_clicks_move_through_a_guided_review() {
     );
     let row = row_with(&app, "bee is spelled oddly", 140).unwrap();
     assert!(row_with(&app, "\u{2713} bee is spelled oddly", 140) == Some(row));
+
+    // A drag across it selects its text for the clipboard instead, and
+    // leaves the tick as it was.
+    let line: String = {
+        let buf = app.terminal.backend().buffer();
+        (0..140)
+            .map(|col| buf[(col, row)].symbol().to_string())
+            .collect()
+    };
+    let start = line[..line.find("bee is").unwrap()].chars().count() as u16;
+    app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), start, row))
+        .unwrap();
+    app.send_mouse(mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        start + 5,
+        row,
+    ))
+    .unwrap();
+    app.send_mouse(mouse(MouseEventKind::Up(MouseButton::Left), start + 5, row))
+        .unwrap();
+    app.render().unwrap();
+    match &app.state.pending_action {
+        Some(lg::state::PendingAction::CopyToClipboard { text, .. }) => {
+            assert_eq!(text, "bee is")
+        }
+        other => panic!("the drag copies what it covered, not {other:?}"),
+    }
+    let saved = lg::git::guided::load_progress("branch-feat/x");
+    assert!(
+        saved
+            .ticked
+            .iter()
+            .any(|tick| tick.text == "bee is spelled oddly")
+    );
 }

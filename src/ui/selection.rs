@@ -30,7 +30,12 @@ impl TextSelection {
     /// Start a selection at a cell inside `pane`, whose border is not
     /// selectable. `None` when the pane has no inside to select.
     pub fn start(pane: Rect, column: u16, row: u16) -> Option<Self> {
-        let area = pane.inner(Margin::new(1, 1));
+        Self::within(pane.inner(Margin::new(1, 1)), column, row)
+    }
+
+    /// Start a selection at a cell of `area`, every cell of which may be
+    /// selected: a region inside a modal, which draws no border of its own.
+    pub fn within(area: Rect, column: u16, row: u16) -> Option<Self> {
         if area.is_empty() {
             return None;
         }

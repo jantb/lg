@@ -1538,6 +1538,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: None,
             },
             Binding {
+                key: "Y",
+                help: "Copy what is open in this file",
+                footer: None,
+            },
+            Binding {
                 key: "R",
                 help: "Read the change again",
                 footer: None,

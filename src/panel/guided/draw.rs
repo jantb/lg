@@ -431,6 +431,22 @@ fn draw_step(
     }
 }
 
+/// The regions of the pane beside the step list whose text the mouse can
+/// select: the hunk and the commentary under it, or the overview whole. The
+/// chat is a program's screen, and takes the mouse for itself.
+pub(super) fn selectable_areas(guided: &Guided, side: Rect, mode: DiffViewMode) -> Vec<Rect> {
+    let Some(step) = guided.step() else {
+        return vec![side];
+    };
+    let (parts, _) = step_areas(guided, step, side, mode);
+    let commentary = if guided.chat.is_some() {
+        ui::modal_column_areas(parts[1], &CHAT_SPLIT).0[0]
+    } else {
+        parts[1]
+    };
+    vec![parts[0], commentary]
+}
+
 /// The commentary on the left under the hunk, the chat on the right.
 const CHAT_SPLIT: [Constraint; 2] = [Constraint::Percentage(40), Constraint::Percentage(60)];
 

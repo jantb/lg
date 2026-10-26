@@ -131,13 +131,6 @@ fn draw(frame: &mut Frame, state: &AppState) -> Option<String> {
 
     footer::draw(frame, rects.footer, state);
 
-    let selected = state.selection.map(|selection| {
-        selection.highlight(frame.buffer_mut());
-        selection
-            .copy_requested
-            .then(|| selection.text(frame.buffer_mut()))
-    });
-
     match state.modal {
         Modal::None => {}
         Modal::Commit => panel::commit::render(state, area, frame),
@@ -162,7 +155,14 @@ fn draw(frame: &mut Frame, state: &AppState) -> Option<String> {
         Modal::StatusDetails => panel::details::render(state, area, frame),
         Modal::ReviewChat => {}
     }
-    selected.flatten()
+    // Last, so a selection made inside a modal is read off what the modal
+    // drew rather than what lies under it.
+    state.selection.and_then(|selection| {
+        selection.highlight(frame.buffer_mut());
+        selection
+            .copy_requested
+            .then(|| selection.text(frame.buffer_mut()))
+    })
 }
 
 /// Keep the program's window the same size as the pane it is drawn in. The

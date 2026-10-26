@@ -48,6 +48,9 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
     if chat_mouse(state, side, m) {
         return;
     }
+    if select_text(state, side, m) {
+        return;
+    }
     let Some(guided) = state.guided.as_deref() else {
         return;
     };
@@ -83,10 +86,13 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
         }
         Some(_) => {}
         None if pointer::left_click(m) && browsing && pointer::inside(side, m.column, m.row) => {
-            let finding = draw::finding_at(guided, side, state.diff_view_mode, m.column, m.row);
-            if let Some(finding) = finding {
-                toggle_ticks(state, vec![finding]);
-            }
+            // A drag from here selects text; whether it was a click on a
+            // finding is known once the button comes up.
+            let area = draw::selectable_areas(guided, side, state.diff_view_mode)
+                .into_iter()
+                .find(|area| pointer::inside(*area, m.column, m.row));
+            state.selection =
+                area.and_then(|area| crate::ui::TextSelection::within(area, m.column, m.row));
         }
         None if pointer::left_click(m) && browsing => {
             let (rows, first) = draw::step_rows(guided, list.height);
@@ -137,6 +143,52 @@ fn report_redo_to_chat(guided: &mut Guided, sessions: &mut crate::session::Sessi
         let bracketed = session.bracketed_paste();
         session.send(&crate::term::encode_paste(&message, bracketed));
         session.send(b"\r");
+    }
+}
+
+/// A drag across the hunk or the commentary selects text, copied once the
+/// button comes up; a press and release that never moved is a click, which
+/// ticks off the finding under it. Returns whether the event was one of
+/// those.
+fn select_text(state: &mut AppState, side: ratatui::layout::Rect, m: &MouseEvent) -> bool {
+    match m.kind {
+        MouseEventKind::Drag(MouseButton::Left) => {
+            match state
+                .selection
+                .as_mut()
+                .filter(|selection| selection.dragging)
+            {
+                Some(selection) => {
+                    selection.extend(m.column, m.row);
+                    true
+                }
+                None => false,
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            let Some(pressed) = state.selection.take() else {
+                return false;
+            };
+            state.selection = pressed.release();
+            let clicked = state.selection.is_none();
+            let finding = state
+                .guided
+                .as_deref()
+                .filter(|guided| clicked && guided.mode == Mode::Browse)
+                .and_then(|guided| {
+                    draw::finding_at(guided, side, state.diff_view_mode, m.column, m.row)
+                });
+            if let Some(finding) = finding {
+                toggle_ticks(state, vec![finding]);
+            }
+            true
+        }
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+            // What was selected is about to move from under the selection.
+            state.selection = None;
+            false
+        }
+        _ => false,
     }
 }
 
@@ -2369,7 +2421,8 @@ mod tests {
     }
 
     /// `C` opens a chat about the file on screen that starts on what is
-    /// still open in it: not a finding ticked off, nor another file's.
+    /// still open in it, and `Y` copies the same: not a finding ticked off,
+    /// nor another file's.
     #[test]
     fn the_chat_starts_on_what_is_open_in_the_file_on_screen() {
         let mut state = walk_with_findings();
@@ -2399,6 +2452,13 @@ mod tests {
         );
         assert!(!brief.contains("tail could say"), "{brief}");
         assert!(!brief.contains("in another file"), "{brief}");
+
+        // `Y` copies the same, to carry into a chat of one's own.
+        press(&mut state, ratatui::crossterm::event::KeyCode::Char('Y'));
+        let Some(PendingAction::CopyToClipboard { text, .. }) = &state.pending_action else {
+            panic!("Y copies");
+        };
+        assert_eq!(*text, brief);
     }
 
     /// The model reads the file on screen, and a file only once the walk
