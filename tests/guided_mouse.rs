@@ -127,10 +127,11 @@ fn the_wheel_and_clicks_move_through_a_guided_review() {
 
     // A click on a step in the list goes to it.
     app.render().unwrap();
+    // b.txt is one hunk, so its step shares the row with its name.
     let b_row = row_with(&app, "b.txt", 40).expect("the second file's row");
-    app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 4, b_row + 1))
+    app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 4, b_row))
         .unwrap();
-    assert_eq!(current(&app), 2, "the step under b.txt");
+    assert_eq!(current(&app), 2, "the step of b.txt");
     assert_eq!(reviewed(&app), 0);
 
     // A click on a finding drawn under its line ticks it off, and the tick
