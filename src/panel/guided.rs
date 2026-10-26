@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Receiver;
 
-use crate::git::guided::{GuidedHunk, GuidedNote, GuidedProgress, Side};
+use crate::git::guided::{GuidedHunk, GuidedNote, GuidedProgress, Side, TickedFinding};
 use crate::panel::text_input::TextInput;
 use crate::state::{
     AppState, DiffViewMode, GenMsg, Modal, PendingAction, Poll, poll_once, stopped_unexpectedly,
@@ -79,6 +79,12 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
             }
         }
         Some(_) => {}
+        None if pointer::left_click(m) && browsing && pointer::inside(side, m.column, m.row) => {
+            let finding = draw::finding_at(guided, side, state.diff_view_mode, m.column, m.row);
+            if let Some(finding) = finding {
+                toggle_ticks(state, vec![finding]);
+            }
+        }
         None if pointer::left_click(m) && browsing => {
             let (rows, first) = draw::step_rows(guided, list.height);
             if let Some(at) = pointer::list_row(list, first, rows.len(), m.column, m.row)
@@ -295,6 +301,9 @@ pub struct Guided {
     /// Steps whose commentary was asked for and failed, so they are not asked
     /// again every frame.
     failed: HashSet<String>,
+    /// What the model last said about each file `r` sent back to it, so its
+    /// next read can say what the reviewer's change fixed.
+    earlier: HashMap<String, String>,
     /// The note `x` was pressed on once; pressing it again deletes it.
     pub(super) delete_armed: Option<usize>,
 }
@@ -319,6 +328,7 @@ impl Guided {
             pull_request: None,
             asks: Vec::new(),
             failed: HashSet::new(),
+            earlier: HashMap::new(),
             delete_armed: None,
         }
     }
@@ -394,11 +404,13 @@ impl Guided {
             .unwrap_or_default()
     }
 
-    /// The lines of the hunk on screen the model flagged, in visiting order.
+    /// The lines of the hunk on screen with a finding not yet ticked off, in
+    /// visiting order.
     fn flagged_lines(&self, mode: DiffViewMode) -> Vec<usize> {
         let flagged: HashSet<usize> = self
             .placed_findings()
             .into_iter()
+            .filter(|(_, finding)| !self.is_ticked(&self.ticket(finding)))
             .map(|(at, _)| at)
             .collect();
         self.visit_order(mode)
@@ -430,6 +442,22 @@ impl Guided {
             .into_iter()
             .map(|(at, finding)| (at, finding.clone()))
             .collect()
+    }
+
+    /// The finding on the step on screen, as a tick names it.
+    fn ticket(&self, finding: &findings::Finding) -> TickedFinding {
+        TickedFinding {
+            path: self
+                .step()
+                .map(|step| step.path.clone())
+                .unwrap_or_default(),
+            line: finding.line,
+            text: finding.text.clone(),
+        }
+    }
+
+    pub fn is_ticked(&self, finding: &TickedFinding) -> bool {
+        self.progress.ticked.contains(finding)
     }
 
     /// Whether the model has yet to finish its read of the step on screen,
@@ -856,7 +884,7 @@ fn start_wanted_commentary(guided: &mut Guided) {
         let rx = if index == OVERVIEW {
             work::ask_overview(guided.overview.clone())
         } else {
-            work::ask_step(step_context(guided, index))
+            work::ask_step(guided.overview.clone(), hunk_context(guided, index))
         };
         guided.commentary.insert(key.clone(), Commentary::default());
         guided.asks.push(Ask {
@@ -871,10 +899,19 @@ fn start_wanted_commentary(guided: &mut Guided) {
 /// the hunk with every line numbered, and the source around it when the files
 /// on disk are the ones being reviewed.
 fn step_context(guided: &Guided, index: usize) -> String {
+    format!(
+        "Change overview:\n{}{}",
+        guided.overview,
+        hunk_context(guided, index)
+    )
+}
+
+/// What the model is shown of step `index` alone: the hunk with every line
+/// numbered, the source around it when the files on disk are the ones being
+/// reviewed, and what it said about the file before `r` sent it back.
+fn hunk_context(guided: &Guided, index: usize) -> String {
     let step = &guided.steps[index - 1];
     let mut out = String::new();
-    out.push_str("Change overview:\n");
-    out.push_str(&guided.overview);
     out.push_str(&format!(
         "\nHunk on screen: {} (hunk {} of {} in this file){}\n",
         step.path,
@@ -900,6 +937,13 @@ fn step_context(guided: &Guided, index: usize) -> String {
     {
         out.push_str("\nThe file around this hunk, as it is now:\n");
         out.push_str(&source);
+    }
+    if let Some(earlier) = guided.earlier.get(&step.path) {
+        out.push_str(
+            "\nYour earlier read of this file, before the reviewer changed it. Give each finding \
+             the code now fixes as a `Fixed:` line, and repeat only what still stands:\n",
+        );
+        out.push_str(earlier);
     }
     out
 }
@@ -1159,6 +1203,46 @@ fn land_on_finding(state: &mut AppState, left: usize, first: bool) {
     }
 }
 
+/// Tick off the findings on the cursor line, or, when every one of them is
+/// ticked already, take the ticks back.
+pub(super) fn tick_at_cursor(state: &mut AppState) {
+    let Some(guided) = state.guided.as_ref() else {
+        return;
+    };
+    let here: Vec<TickedFinding> = guided
+        .placed_findings()
+        .into_iter()
+        .filter(|(at, _)| *at == guided.cursor)
+        .map(|(_, finding)| guided.ticket(&finding))
+        .collect();
+    if here.is_empty() {
+        state.set_status("nothing flagged on this line", false);
+        return;
+    }
+    toggle_ticks(state, here);
+}
+
+/// Tick `findings` off, or all back on when every one is ticked already, and
+/// keep that with the walk's progress.
+fn toggle_ticks(state: &mut AppState, findings: Vec<TickedFinding>) {
+    let Some(guided) = state.guided.as_mut() else {
+        return;
+    };
+    let ticked = &mut guided.progress.ticked;
+    if findings.iter().all(|finding| ticked.contains(finding)) {
+        ticked.retain(|finding| !findings.contains(finding));
+    } else {
+        let new: Vec<TickedFinding> = findings
+            .into_iter()
+            .filter(|f| !ticked.contains(f))
+            .collect();
+        ticked.extend(new);
+    }
+    if let Err(message) = guided.save() {
+        state.set_status(message, true);
+    }
+}
+
 /// Lay hunks out side by side or one line a row: the setting the diff pane
 /// follows too, so both show a diff the same way.
 pub(super) fn toggle_layout(state: &mut AppState) {
@@ -1280,8 +1364,11 @@ pub(super) fn ask_question(state: &mut AppState) {
     guided.side_scroll = u16::MAX;
 }
 
-/// Throw away the commentary on the step on screen and ask for it again.
-pub(super) fn regenerate(state: &mut AppState) {
+/// Review the file on screen again: read the change from disk, so an edit
+/// made in the editor is in it, and ask about every hunk of the file anew,
+/// handing the model what it said last time so it can say what is fixed. On
+/// the overview, the change is read again and the overview asked for anew.
+pub(super) fn review_again(state: &mut AppState) {
     if !state.ai_assist {
         state.set_status(crate::panel::commit::AI_OFF_NOTICE, false);
         return;
@@ -1289,17 +1376,45 @@ pub(super) fn regenerate(state: &mut AppState) {
     let Some(guided) = state.guided.as_mut() else {
         return;
     };
-    let key = guided.step_key();
-    let running = guided
-        .asks
-        .iter()
-        .any(|ask| ask.target == Target::Commentary(key.clone()));
-    if running {
-        state.set_status("already reading this step", false);
+    let Some(path) = guided.step().map(|step| step.path.clone()) else {
+        forget(guided, &[OVERVIEW_KEY.to_string()]);
+        reload(state);
         return;
+    };
+    let keys: Vec<String> = guided
+        .steps
+        .iter()
+        .filter(|step| step.path == path)
+        .map(GuidedHunk::key)
+        .collect();
+    let said: Vec<String> = guided
+        .steps
+        .iter()
+        .filter(|step| step.path == path)
+        .filter_map(|step| {
+            let commentary = guided.commentary.get(&step.key()).filter(|c| c.done)?;
+            Some(format!("{}\n{}", step.header, commentary.text.trim()))
+        })
+        .collect();
+    if !said.is_empty() {
+        guided.earlier.insert(path.clone(), said.join("\n\n"));
     }
-    guided.commentary.remove(&key);
-    guided.failed.remove(&key);
+    forget(guided, &keys);
+    state.set_status(format!("reviewing {path} again\u{2026}"), false);
+    reload(state);
+}
+
+/// Drop what the model said, or is saying, about `keys`, so each is asked for
+/// again when the walk next wants it.
+fn forget(guided: &mut Guided, keys: &[String]) {
+    guided.asks.retain(|ask| match &ask.target {
+        Target::Commentary(key) => !keys.contains(key),
+        Target::Answer(..) => true,
+    });
+    for key in keys {
+        guided.commentary.remove(key);
+        guided.failed.remove(key);
+    }
 }
 
 /// Have Claude Code make the change the reviewer described, in the checkout.
@@ -1926,6 +2041,24 @@ mod tests {
 
         let guided = state.guided.as_ref().unwrap();
         assert_eq!((guided.current, guided.cursor), (1, start + 1));
+    }
+
+    /// After an edit in the editor, `r` sends the file back to the model:
+    /// what it said is dropped from the screen and handed to its next read,
+    /// which can then say what the edit fixed.
+    #[test]
+    fn r_reviews_the_file_again_with_what_was_said_before() {
+        let mut state = walk_with_findings();
+        state.ai_assist = true;
+        // A read of the change already under way, so the test starts none.
+        let (_reading, rx) = std::sync::mpsc::channel();
+        state.guided.as_mut().unwrap().loading = Some(rx);
+
+        press(&mut state, ratatui::crossterm::event::KeyCode::Char('r'));
+
+        let guided = state.guided.as_ref().unwrap();
+        assert!(!guided.commentary.contains_key(&guided.steps[0].key()));
+        assert!(hunk_context(guided, 1).contains("-1 stands in for missing"));
     }
 
     /// Side by side, as the diff pane shows it by default, a removed line

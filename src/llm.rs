@@ -36,8 +36,9 @@ pub use stream::error_means_unreachable;
 
 use prompt::{
     build_commit_prompt, build_conventions_prompt, build_guided_overview_prompt,
-    build_guided_question_system_prompt, build_guided_step_prompt, build_review_assist_prompt,
-    build_review_chat_system_prompt, build_review_pr_text_prompt, build_review_style_flag_prompt,
+    build_guided_question_system_prompt, build_guided_step_system_prompt,
+    build_review_assist_prompt, build_review_chat_system_prompt, build_review_pr_text_prompt,
+    build_review_style_flag_prompt,
 };
 pub use prompt::{build_guided_fix_prompt, build_review_agent_prompt};
 use reply::{
@@ -161,10 +162,21 @@ pub fn stream_review_pr_text(context: String, tx: Sender<GenMsg>) {
     );
 }
 
-/// A reviewer's read of one step of a guided review.
-pub fn stream_guided_step(context: String, tx: Sender<GenMsg>) {
-    stream_prompt(
-        build_guided_step_prompt(&context, &crate::settings::load()),
+/// A reviewer's read of one step of a guided review: the walk's shared
+/// system prompt, built from `overview`, and the step's own `hunk` after it.
+pub fn stream_guided_step(overview: String, hunk: String, tx: Sender<GenMsg>) {
+    let messages = vec![
+        ChatMessage {
+            role: "system",
+            content: build_guided_step_system_prompt(&overview, &crate::settings::load()),
+        },
+        ChatMessage {
+            role: "user",
+            content: hunk,
+        },
+    ];
+    stream_messages(
+        messages,
         ChatTask::new("lg-guided-step", GUIDED_STEP_NUM_PREDICT, false),
         finalize_review_chat,
         tx,

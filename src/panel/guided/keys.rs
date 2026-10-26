@@ -79,7 +79,7 @@ fn browse(state: &mut AppState, key: KeyEvent) {
                 text: Default::default(),
             },
         ),
-        KeyCode::Char('r') => super::regenerate(state),
+        KeyCode::Char('r') => super::review_again(state),
         KeyCode::Char('R') => {
             super::reload(state);
             state.set_status("reading the change again\u{2026}", false);
@@ -93,6 +93,7 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('y') => copy_notes(state),
         KeyCode::Char('b') => super::switch_scope(state),
         KeyCode::Char('v') => super::toggle_layout(state),
+        KeyCode::Char('t') => super::tick_at_cursor(state),
         _ => {}
     }
 }

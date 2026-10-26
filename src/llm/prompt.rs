@@ -102,31 +102,34 @@ pub fn review_style(settings: &RepoSettings, reviewed: &str) -> String {
     out
 }
 
-/// What one step of a guided review asks: a reviewer's read of this hunk, in
-/// the light of the change it belongs to, one finding a line and each pinned
-/// to the line it is about, so lg can draw it there.
-pub fn build_guided_step_prompt(context: &str, settings: &RepoSettings) -> String {
+/// The system prompt for every step of a guided review: how to read a hunk,
+/// one finding a line and each pinned to the line it is about so lg can draw
+/// it there, the repo style, and the overview of the whole change. It is the
+/// same for every step of a walk, so the prompt cache serves it once and each
+/// step pays only for its own hunk, which comes as the user message.
+pub fn build_guided_step_system_prompt(overview: &str, settings: &RepoSettings) -> String {
     format!(
-        "You are walking a reviewer through a change one hunk at a time. Below is the overview of\n\
-         the whole change, then the one hunk on screen now with the source around it.\n\
+        "You are walking a reviewer through a change one hunk at a time. The overview of the\n\
+         whole change is below; each message then gives one hunk with the source around it.\n\
          Reply in exactly this shape, one item a line, and nothing else:\n\
          Summary: <what the hunk does, in one sentence, in terms of behavior rather than lines>\n\
+         Fixed: <a finding from your earlier read that the code now fixes, only when one is given>\n\
          L<n> issue: <what is wrong and why it matters>\n\
          L<n> nit: <a smaller point>\n\
          Check: <what to look at next, only when the answer depends on code not shown>\n\
          Verdict: ok|nit|issue\n\
          Write one `L<n>` line per finding, most severe first, where <n> is the number the hunk\n\
-         below shows for the line it is about. A finding is a bug, an unhandled case, a broken\n\
+         shows for the line it is about. A finding is a bug, an unhandled case, a broken\n\
          contract, a missing test, a sentinel value (-1, 0, MAX, an empty string standing in for\n\
          \"none\") that can collide with a real value or leak into arithmetic, indexing or display,\n\
          or a concrete violation of the repo style below. Leave out the `L` lines when there is\n\
          nothing to flag and the Check line when there is nothing to check.\n\
-         Keep each line under 25 words. Keep the words Summary, Check, Verdict, issue and nit in\n\
-         English. Do not restate the diff, use code fences, or invent code that is not shown.\n\n\
+         Keep each line under 25 words. Keep the words Summary, Fixed, Check, Verdict, issue and\n\
+         nit in English. Do not restate the diff, use code fences, or invent code that is not shown.\n\n\
          {}\n\n\
          {}\n\
-         {context}",
-        review_style(settings, context),
+         Change overview:\n{overview}",
+        review_style(settings, overview),
         crate::settings::language_instruction(settings)
     )
 }

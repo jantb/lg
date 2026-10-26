@@ -1,6 +1,7 @@
 //! The mouse in a guided review: the wheel over the step list moves between
-//! steps, over the pane beside it scrolls the commentary, and a click on a
-//! step goes to it. None of it marks a step reviewed.
+//! steps, over the pane beside it scrolls the commentary, a click on a step
+//! goes to it, and a click on a finding ticks it off. None of it marks a step
+//! reviewed.
 
 use std::path::Path;
 use std::process::Command;
@@ -131,4 +132,32 @@ fn the_wheel_and_clicks_move_through_a_guided_review() {
         .unwrap();
     assert_eq!(current(&app), 2, "the step under b.txt");
     assert_eq!(reviewed(&app), 0);
+
+    // A click on a finding drawn under its line ticks it off, and the tick
+    // is kept with the walk.
+    let guided = app.state.guided.as_mut().unwrap();
+    let key = guided.steps[1].key();
+    guided.commentary.insert(
+        key,
+        lg::panel::guided::Commentary {
+            text: "Summary: Renames b.\nL1 issue: bee is spelled oddly\nVerdict: issue".into(),
+            done: true,
+            ..Default::default()
+        },
+    );
+    app.render().unwrap();
+    let finding = row_with(&app, "bee is spelled oddly", 140).expect("the finding in the hunk");
+    app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 100, finding))
+        .unwrap();
+    app.render().unwrap();
+    let saved = lg::git::guided::load_progress("branch-feat/x");
+    assert!(
+        saved
+            .ticked
+            .iter()
+            .any(|tick| tick.text == "bee is spelled oddly"),
+        "{saved:?}"
+    );
+    let row = row_with(&app, "bee is spelled oddly", 140).unwrap();
+    assert!(row_with(&app, "\u{2713} bee is spelled oddly", 140) == Some(row));
 }

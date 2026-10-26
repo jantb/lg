@@ -30,6 +30,8 @@ pub struct Reading {
     pub findings: Vec<Finding>,
     /// Where to look next, when the answer depends on code not shown.
     pub check: Option<String>,
+    /// What an earlier read flagged that the code now fixes.
+    pub fixed: Vec<String>,
     pub rest: Vec<String>,
 }
 
@@ -42,6 +44,8 @@ pub fn read(text: &str) -> Reading {
         }
         if let Some(summary) = after_key(line, "summary") {
             reading.summary = Some(summary.to_string());
+        } else if let Some(fixed) = after_key(line, "fixed") {
+            reading.fixed.push(fixed.to_string());
         } else if let Some(check) = after_key(line, "check") {
             reading.check = Some(check.to_string());
         } else if after_key(line, "verdict").is_some() {
@@ -156,6 +160,7 @@ mod tests {
              L12 issue: -1 means missing but is used as an index.\n\
              - `L40` **issue** \u{2014} unchecked unwrap\n\
              * L7-L9 (nit): long\n\
+             Fixed: the unchecked cast.\n\
              Check: who else calls lookup.\n\
              This line ignored the shape.\n\
              Verdict: issue",
@@ -163,6 +168,7 @@ mod tests {
 
         assert_eq!(reading.summary.as_deref(), Some("Caches the lookup."));
         assert_eq!(reading.check.as_deref(), Some("who else calls lookup."));
+        assert_eq!(reading.fixed, vec!["the unchecked cast."]);
         assert_eq!(reading.rest, vec!["This line ignored the shape."]);
         assert!(reading.findings.contains(&Finding {
             line: 12,

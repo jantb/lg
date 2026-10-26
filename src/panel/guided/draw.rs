@@ -12,7 +12,7 @@ use ratatui::{
 use super::findings::{self, Finding, Severity};
 use super::layout::{self, Row};
 use super::{Commentary, Guided, Mode, OVERVIEW, Source, Verdict};
-use crate::git::guided::{GuidedHunk, HunkLine, LineKind, Side};
+use crate::git::guided::{GuidedHunk, HunkLine, LineKind, Side, TickedFinding};
 use crate::panel::keys;
 use crate::state::{AppState, DiffViewMode, SPINNER_FRAMES};
 use crate::ui::{self, DiffContentKind};
@@ -417,20 +417,50 @@ fn draw_hunk(
     frame: &mut Frame,
 ) {
     let hunk = hunk_lines(guided, step, mode, area.width);
-    // The cursor line and what is pinned under it stay in view, with a little
-    // of what follows, unless that would push the line itself off the top.
-    let height = usize::from(area.height);
-    let scroll = (hunk.cursor.end + 2)
-        .saturating_sub(height)
-        .min(hunk.cursor.start);
+    let scroll = hunk.scroll(area.height);
     frame.render_widget(Paragraph::new(hunk.lines).scroll((scroll as u16, 0)), area);
 }
 
-/// A hunk drawn for the pane: every row, and which of them the cursor's line
-/// and what is pinned under it take up.
+/// The finding drawn at `column`, `row` of the pane beside the step list,
+/// named the way a tick names it; `None` off the hunk or off a finding.
+pub(super) fn finding_at(
+    guided: &Guided,
+    side: Rect,
+    mode: DiffViewMode,
+    column: u16,
+    row: u16,
+) -> Option<TickedFinding> {
+    let step = guided.step()?;
+    let (parts, _) = step_areas(guided, step, side, mode);
+    let area = parts[0];
+    if !crate::panel::pointer::inside(area, column, row) {
+        return None;
+    }
+    let hunk = hunk_lines(guided, step, mode, area.width);
+    let at = hunk.scroll(area.height) + usize::from(row - area.y);
+    hunk.findings
+        .into_iter()
+        .find(|(rows, _)| rows.contains(&at))
+        .map(|(_, finding)| finding)
+}
+
+/// A hunk drawn for the pane: every row, which of them the cursor's line and
+/// what is pinned under it take up, and which each finding takes up.
 struct HunkLines {
     lines: Vec<Line<'static>>,
     cursor: std::ops::Range<usize>,
+    findings: Vec<(std::ops::Range<usize>, TickedFinding)>,
+}
+
+impl HunkLines {
+    /// How far down a pane `height` rows tall starts: the cursor line and
+    /// what is pinned under it stay in view, with a little of what follows,
+    /// unless that would push the line itself off the top.
+    fn scroll(&self, height: u16) -> usize {
+        (self.cursor.end + 2)
+            .saturating_sub(usize::from(height))
+            .min(self.cursor.start)
+    }
 }
 
 /// The hunk `width` wide, laid out as `mode` says, with each line's notes and
@@ -443,13 +473,14 @@ fn hunk_lines(guided: &Guided, step: &GuidedHunk, mode: DiffViewMode, width: u16
     let notes = guided.notes_for(step);
     let flagged = inline_findings(guided, step, width);
     let mut cursor = 0..0;
+    let mut ticks = Vec::new();
     for row in layout::rows(step, mode) {
         let start = lines.len();
-        // A bar in the worst flag's colour marks a row the model flagged.
+        // A bar in the worst open flag's colour marks a row the model flagged.
         let worst = flagged
             .iter()
-            .filter(|(at, ..)| row.lines().any(|line| line == *at))
-            .map(|(_, severity, _)| *severity)
+            .filter(|inline| !inline.ticked && row.lines().any(|line| line == inline.at))
+            .map(|inline| inline.finding.severity)
             .max();
         let bar = match worst {
             Some(severity) => {
@@ -478,14 +509,16 @@ fn hunk_lines(guided: &Guided, step: &GuidedHunk, mode: DiffViewMode, width: u16
                     lines.extend(note_lines(&note.body));
                 }
             }
-            for (.., finding) in flagged.iter().filter(|(on, ..)| *on == at) {
-                lines.extend(finding.iter().cloned().map(|line| {
+            for inline in flagged.iter().filter(|inline| inline.at == at) {
+                let first = lines.len();
+                lines.extend(inline.lines.iter().cloned().map(|line| {
                     if here {
                         line.style(Style::default().bg(CURSOR_BG).add_modifier(Modifier::BOLD))
                     } else {
                         line
                     }
                 }));
+                ticks.push((first..lines.len(), guided.ticket(&inline.finding)));
             }
         }
         if row.lines().any(|at| at == guided.cursor) {
@@ -509,7 +542,11 @@ fn hunk_lines(guided: &Guided, step: &GuidedHunk, mode: DiffViewMode, width: u16
             LABEL,
         )));
     }
-    HunkLines { lines, cursor }
+    HunkLines {
+        lines,
+        cursor,
+        findings: ticks,
+    }
 }
 
 /// The file, where the hunk sits in it, and what has been said about it.
@@ -647,12 +684,17 @@ fn note_lines(body: &str) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// A finding drawn under the hunk line it is about.
+struct Inline {
+    /// The line it is about, by its index in the hunk.
+    at: usize,
+    finding: Finding,
+    ticked: bool,
+    lines: Vec<Line<'static>>,
+}
+
 /// The findings drawn under each flagged line of the hunk, wrapped to `width`.
-fn inline_findings(
-    guided: &Guided,
-    step: &GuidedHunk,
-    width: u16,
-) -> Vec<(usize, Severity, Vec<Line<'static>>)> {
+fn inline_findings(guided: &Guided, step: &GuidedHunk, width: u16) -> Vec<Inline> {
     let Some(commentary) = guided.commentary.get(&step.key()) else {
         return Vec::new();
     };
@@ -660,23 +702,31 @@ fn inline_findings(
     findings::place(step, &reading.findings)
         .0
         .into_iter()
-        .map(|(row, finding)| {
-            (
-                row,
-                finding.severity,
-                finding_lines(finding, "       ", width),
-            )
+        .map(|(at, finding)| {
+            let ticked = guided.is_ticked(&guided.ticket(finding));
+            Inline {
+                at,
+                finding: finding.clone(),
+                ticked,
+                lines: finding_lines(finding, ticked, "       ", width),
+            }
         })
         .collect()
 }
 
-/// One finding, marked by how much it matters and wrapped under its mark.
-fn finding_lines(finding: &Finding, lead: &str, width: u16) -> Vec<Line<'static>> {
-    let mark = match finding.severity {
-        Severity::Issue => "\u{25cf} ",
-        Severity::Nit => "\u{25cb} ",
+/// One finding, marked by how much it matters, or as ticked off, and wrapped
+/// under its mark.
+fn finding_lines(finding: &Finding, ticked: bool, lead: &str, width: u16) -> Vec<Line<'static>> {
+    let (mark, style) = match (ticked, finding.severity) {
+        (true, _) => (
+            "\u{2713} ",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::CROSSED_OUT),
+        ),
+        (false, Severity::Issue) => ("\u{25cf} ", Style::default().fg(ISSUE)),
+        (false, Severity::Nit) => ("\u{25cb} ", Style::default().fg(NIT)),
     };
-    let style = Style::default().fg(severity_color(finding.severity));
     let indent = lead.chars().count() + 2;
     let available = usize::from(width).saturating_sub(indent).max(10);
     crate::panel::markdown::word_wrap(&finding.text, available)
@@ -784,10 +834,21 @@ fn step_commentary_lines(
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ));
     }
-    if !placed.is_empty() {
+    let ticked = placed
+        .iter()
+        .filter(|(_, finding)| guided.is_ticked(&guided.ticket(finding)))
+        .count();
+    let open = placed.len() - ticked;
+    if open > 0 {
         header.push(Span::styled(
-            format!(" \u{b7} {} in the hunk, \u{2193} walks them", placed.len()),
+            format!(" \u{b7} {open} in the hunk, \u{2193} walks them"),
             LABEL,
+        ));
+    }
+    if ticked > 0 {
+        header.push(Span::styled(
+            format!(" \u{b7} {ticked} ticked off"),
+            Style::default().fg(Color::Green),
         ));
     }
     let mut lines = vec![Line::from(header)];
@@ -799,26 +860,19 @@ fn step_commentary_lines(
                 .map(|line| line.style(Style::default().fg(Color::White))),
         );
     }
+    for fixed in &reading.fixed {
+        lines.extend(marked_lines(fixed, "\u{2713}", Color::Green, wrap));
+    }
     for finding in unplaced {
         let cited = Finding {
             text: format!("L{} {}", finding.line, finding.text),
             ..finding.clone()
         };
-        lines.extend(finding_lines(&cited, "  ", width));
+        let ticked = guided.is_ticked(&guided.ticket(finding));
+        lines.extend(finding_lines(&cited, ticked, "  ", width));
     }
     if let Some(check) = &reading.check {
-        lines.extend(
-            crate::panel::markdown::word_wrap(check, usize::from(wrap.saturating_sub(2)).max(10))
-                .into_iter()
-                .enumerate()
-                .map(|(i, chunk)| {
-                    let head = if i == 0 { "  \u{2192} " } else { "    " };
-                    Line::from(vec![
-                        Span::styled(head, Style::default().fg(Color::Cyan)),
-                        Span::styled(chunk, Style::default().fg(Color::Cyan)),
-                    ])
-                }),
-        );
+        lines.extend(marked_lines(check, "\u{2192}", Color::Cyan, wrap));
     }
     let rest = reading.rest.join("\n");
     if !rest.trim().is_empty() {
@@ -832,6 +886,23 @@ fn step_commentary_lines(
         )));
     }
     lines
+}
+
+/// `text` behind `mark`, wrapped to `width` under itself, all in `color`.
+fn marked_lines(text: &str, mark: &str, color: Color, width: u16) -> Vec<Line<'static>> {
+    let style = Style::default().fg(color);
+    crate::panel::markdown::word_wrap(text, usize::from(width.saturating_sub(2)).max(10))
+        .into_iter()
+        .enumerate()
+        .map(|(i, chunk)| {
+            let head = if i == 0 {
+                format!("  {mark} ")
+            } else {
+                "    ".to_string()
+            };
+            Line::from(vec![Span::styled(head, style), Span::styled(chunk, style)])
+        })
+        .collect()
 }
 
 fn commentary_lines(

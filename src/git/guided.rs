@@ -230,14 +230,25 @@ pub struct GuidedNote {
     pub quote: String,
 }
 
+/// A finding of the model's the reviewer ticked off as dealt with: the file,
+/// the line it cited and what it said, which together tell it from any other.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TickedFinding {
+    pub path: String,
+    pub line: usize,
+    pub text: String,
+}
+
 /// What a guided review remembers between visits: which steps were looked at,
-/// and the notes written along the way.
+/// the notes written along the way, and the findings ticked off.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuidedProgress {
     #[serde(default)]
     pub reviewed: Vec<String>,
     #[serde(default)]
     pub notes: Vec<GuidedNote>,
+    #[serde(default)]
+    pub ticked: Vec<TickedFinding>,
 }
 
 /// Where the progress of the review named `key` is kept: inside the git
@@ -368,6 +379,11 @@ new file mode 100644
                 body: "why remove this?".into(),
                 step: "src/a.rs#1".into(),
                 quote: "-old line".into(),
+            }],
+            ticked: vec![TickedFinding {
+                path: "src/a.rs".into(),
+                line: 12,
+                text: "-1 is used as an index".into(),
             }],
         };
         let text = serde_json::to_string(&progress).unwrap();

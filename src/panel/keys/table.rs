@@ -1479,8 +1479,8 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "r",
-                help: "Ask for this step's commentary again",
-                footer: None,
+                help: "Re-read this file and review it again",
+                footer: Some(("r", "redo")),
             },
             Binding {
                 key: "e / o",
@@ -1500,6 +1500,11 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "m",
                 help: "Toggle the step reviewed",
+                footer: None,
+            },
+            Binding {
+                key: "t / click",
+                help: "Tick off the findings on the line",
                 footer: None,
             },
             Binding {
@@ -2238,6 +2243,7 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
             "b",
             "c / Enter",
             "a",
+            "r",
             "e / o",
             "O",
             "f / F",
