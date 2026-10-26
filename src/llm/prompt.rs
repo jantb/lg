@@ -134,6 +134,23 @@ pub fn build_guided_step_system_prompt(overview: &str, settings: &RepoSettings) 
     )
 }
 
+/// What a Claude Code chat opened from a guided review starts on: the change
+/// under review, what is still open in it, and to wait for the reviewer.
+pub fn build_guided_chat_prompt(title: &str, review: &str, settings: &RepoSettings) -> String {
+    format!(
+        "You are pairing with a reviewer on {title}, in this checkout. lg's guided review has\n\
+         walked the change hunk by hunk; the findings still open and the reviewer's notes are below.\n\
+         Read the code they point at, but change nothing until the reviewer says what to fix, one\n\
+         at a time or all at once. Keep each change minimal, match the surrounding style, and never\n\
+         commit or otherwise change git state. Start by saying in two or three lines what is open.\n\n\
+         {}\n\n\
+         {}\n\
+         {review}",
+        review_style(settings, review),
+        crate::settings::language_instruction(settings)
+    )
+}
+
 /// The opening of a guided review: what the change is for and the order its
 /// files are best read in.
 pub fn build_guided_overview_prompt(context: &str, settings: &RepoSettings) -> String {

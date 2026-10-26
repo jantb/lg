@@ -471,7 +471,8 @@ fn hunk_lines(guided: &Guided, step: &GuidedHunk, mode: DiffViewMode, width: u16
         Line::from(Span::styled(step.header.clone(), LABEL)),
     ];
     let notes = guided.notes_for(step);
-    let flagged = inline_findings(guided, step, width);
+    let lead = inline_lead(mode, width);
+    let flagged = inline_findings(guided, step, &lead, width);
     let mut cursor = 0..0;
     let mut ticks = Vec::new();
     for row in layout::rows(step, mode) {
@@ -506,7 +507,7 @@ fn hunk_lines(guided: &Guided, step: &GuidedHunk, mode: DiffViewMode, width: u16
                     .iter()
                     .filter(|(_, note)| (note.line, note.side) == anchor)
                 {
-                    lines.extend(note_lines(&note.body));
+                    lines.extend(note_lines(&note.body, &lead));
                 }
             }
             for inline in flagged.iter().filter(|inline| inline.at == at) {
@@ -667,17 +668,13 @@ fn light(line: Line<'static>, columns: &std::ops::Range<u16>) -> Line<'static> {
 }
 
 /// A note under the line it is pinned to.
-fn note_lines(body: &str) -> Vec<Line<'static>> {
+fn note_lines(body: &str, lead: &str) -> Vec<Line<'static>> {
     body.lines()
         .enumerate()
         .map(|(i, text)| {
-            let lead = if i == 0 {
-                "       \u{270e} "
-            } else {
-                "         "
-            };
+            let mark = if i == 0 { "\u{270e} " } else { "  " };
             Line::from(vec![
-                Span::styled(lead, NOTE),
+                Span::styled(format!("{lead}{mark}"), NOTE),
                 Span::styled(text.to_string(), NOTE),
             ])
         })
@@ -693,8 +690,23 @@ struct Inline {
     lines: Vec<Line<'static>>,
 }
 
-/// The findings drawn under each flagged line of the hunk, wrapped to `width`.
-fn inline_findings(guided: &Guided, step: &GuidedHunk, width: u16) -> Vec<Inline> {
+/// Where the text pinned under a line starts, in a hunk `width` wide: past
+/// the line numbers, or side by side just right of the middle, under the new
+/// code it is nearly always about.
+fn inline_lead(mode: DiffViewMode, width: u16) -> String {
+    let column = match mode {
+        DiffViewMode::Unified => 7,
+        // The bar's column, then the right side's start in what is left.
+        DiffViewMode::SideBySide => {
+            1 + usize::from(ui::side_by_side_columns(width.saturating_sub(1)).1)
+        }
+    };
+    " ".repeat(column)
+}
+
+/// The findings drawn under each flagged line of the hunk, behind `lead` and
+/// wrapped to `width`.
+fn inline_findings(guided: &Guided, step: &GuidedHunk, lead: &str, width: u16) -> Vec<Inline> {
     let Some(commentary) = guided.commentary.get(&step.key()) else {
         return Vec::new();
     };
@@ -708,7 +720,7 @@ fn inline_findings(guided: &Guided, step: &GuidedHunk, width: u16) -> Vec<Inline
                 at,
                 finding: finding.clone(),
                 ticked,
-                lines: finding_lines(finding, ticked, "       ", width),
+                lines: finding_lines(finding, ticked, lead, width),
             }
         })
         .collect()

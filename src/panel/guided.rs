@@ -270,8 +270,16 @@ pub enum Mode {
 pub struct Loaded {
     pub source: Source,
     pub steps: Vec<GuidedHunk>,
-    /// Commits and the file list, which every step's prompt opens with.
-    pub overview: String,
+    pub overview: Overview,
+}
+
+/// What the change says it is and what it touches, in the two forms a walk
+/// needs: `text` with each file's line counts, shown on the overview and sent
+/// with every question; `brief` without them, the shared opening of every
+/// step's prompt, which an edit then leaves as it was so it stays cached.
+pub struct Overview {
+    pub text: String,
+    pub brief: String,
 }
 
 /// A guided review in progress.
@@ -279,6 +287,11 @@ pub struct Guided {
     pub source: Source,
     pub steps: Vec<GuidedHunk>,
     pub overview: String,
+    /// The overview without line counts, as the latest read has it.
+    brief: String,
+    /// The brief every step's prompt opens with: the first of the walk, kept
+    /// so the prompt cache serves it to every step and every redo.
+    shared_brief: Option<String>,
     /// Which step is on screen: [`OVERVIEW`], or a hunk counted from one.
     pub current: usize,
     /// The line of the hunk the cursor is on.
@@ -306,6 +319,8 @@ pub struct Guided {
     earlier: HashMap<String, String>,
     /// The note `x` was pressed on once; pressing it again deletes it.
     pub(super) delete_armed: Option<usize>,
+    /// The Claude Code chat opened from this walk, to go back to.
+    pub chat: Option<crate::session::SessionId>,
 }
 
 impl Guided {
@@ -315,6 +330,8 @@ impl Guided {
             source,
             steps: Vec::new(),
             overview: String::new(),
+            brief: String::new(),
+            shared_brief: None,
             current: OVERVIEW,
             cursor: 0,
             side_scroll: 0,
@@ -330,6 +347,7 @@ impl Guided {
             failed: HashSet::new(),
             earlier: HashMap::new(),
             delete_armed: None,
+            chat: None,
         }
     }
 
@@ -446,14 +464,48 @@ impl Guided {
 
     /// The finding on the step on screen, as a tick names it.
     fn ticket(&self, finding: &findings::Finding) -> TickedFinding {
-        TickedFinding {
-            path: self
-                .step()
-                .map(|step| step.path.clone())
+        ticket_in(
+            self.step()
+                .map(|step| step.path.as_str())
                 .unwrap_or_default(),
-            line: finding.line,
-            text: finding.text.clone(),
+            finding,
+        )
+    }
+
+    /// What a chat opened from the walk starts on: every finding not ticked
+    /// off yet, file by file, and every note.
+    pub fn chat_brief(&self) -> String {
+        let mut out = format!("Open findings: {}\n", self.source.title());
+        let mut path = "";
+        for step in &self.steps {
+            let Some(commentary) = self.commentary.get(&step.key()).filter(|c| c.done) else {
+                continue;
+            };
+            let open: Vec<findings::Finding> = findings::read(&commentary.text)
+                .findings
+                .into_iter()
+                .filter(|finding| !self.is_ticked(&ticket_in(&step.path, finding)))
+                .collect();
+            if open.is_empty() {
+                continue;
+            }
+            if step.path != path {
+                path = &step.path;
+                out.push_str(&format!("\n## {path}\n"));
+            }
+            for finding in open {
+                let word = match finding.severity {
+                    findings::Severity::Issue => "issue",
+                    findings::Severity::Nit => "nit",
+                };
+                out.push_str(&format!("- L{} {word}: {}\n", finding.line, finding.text));
+            }
         }
+        if !self.progress.notes.is_empty() {
+            out.push('\n');
+            out.push_str(&notes_markdown(self));
+        }
+        out
     }
 
     pub fn is_ticked(&self, finding: &TickedFinding) -> bool {
@@ -621,9 +673,9 @@ pub fn reload(state: &mut AppState) {
     });
 }
 
-/// What every prompt opens with: what the change says it is, and every file
-/// it touches with how much.
-fn overview_text(title: &str, body: &str, commits: &[String], steps: &[GuidedHunk]) -> String {
+/// What the change says it is, and every file it touches, with how much in
+/// the overview's text and without in its brief.
+fn overview_of(title: &str, body: &str, commits: &[String], steps: &[GuidedHunk]) -> Overview {
     let mut out = format!("{title}\n");
     if !body.trim().is_empty() {
         out.push_str("\nDescription:\n");
@@ -652,11 +704,13 @@ fn overview_text(title: &str, body: &str, commits: &[String], steps: &[GuidedHun
             )),
         }
     }
+    let (mut text, mut brief) = (out.clone(), out);
     for (path, added, removed, note) in files {
         let note = note.map(|n| format!(" ({n})")).unwrap_or_default();
-        out.push_str(&format!("- {path} +{added} -{removed}{note}\n"));
+        text.push_str(&format!("- {path} +{added} -{removed}{note}\n"));
+        brief.push_str(&format!("- {path}{note}\n"));
     }
-    out
+    Overview { text, brief }
 }
 
 // ─── Polling ─────────────────────────────────────────────────────────────────
@@ -745,7 +799,8 @@ fn apply_loaded(guided: &mut Guided, loaded: Loaded, first_load: bool) {
     // A fresh read keeps a pull request's commit, which only the load knows.
     guided.source = loaded.source;
     guided.steps = loaded.steps;
-    guided.overview = loaded.overview;
+    guided.overview = loaded.overview.text;
+    guided.brief = loaded.overview.brief;
     if let Some((key, path)) = previous {
         // The same hunk if it is still there, else the first one left in the
         // same file, else where the walk was.
@@ -884,7 +939,14 @@ fn start_wanted_commentary(guided: &mut Guided) {
         let rx = if index == OVERVIEW {
             work::ask_overview(guided.overview.clone())
         } else {
-            work::ask_step(guided.overview.clone(), hunk_context(guided, index))
+            // The opening every step shares is the first brief of the walk;
+            // a later one travels with the hunk instead, so that opening
+            // stays what the prompt cache already holds.
+            let shared = guided
+                .shared_brief
+                .get_or_insert_with(|| guided.brief.clone())
+                .clone();
+            work::ask_step(shared, hunk_context(guided, index))
         };
         guided.commentary.insert(key.clone(), Commentary::default());
         guided.asks.push(Ask {
@@ -937,6 +999,16 @@ fn hunk_context(guided: &Guided, index: usize) -> String {
     {
         out.push_str("\nThe file around this hunk, as it is now:\n");
         out.push_str(&source);
+    }
+    if guided
+        .shared_brief
+        .as_ref()
+        .is_some_and(|shared| *shared != guided.brief)
+    {
+        out.push_str(
+            "\nThe change has moved on since the overview you were given; it now reads:\n",
+        );
+        out.push_str(&guided.brief);
     }
     if let Some(earlier) = guided.earlier.get(&step.path) {
         out.push_str(
@@ -1240,6 +1312,31 @@ fn toggle_ticks(state: &mut AppState, findings: Vec<TickedFinding>) {
     }
     if let Err(message) = guided.save() {
         state.set_status(message, true);
+    }
+}
+
+/// Open the Claude Code chat for fixing what the walk found, or go back to
+/// the one already open.
+pub(super) fn open_chat(state: &mut AppState) {
+    let Some(guided) = state.guided.as_ref() else {
+        return;
+    };
+    if !guided.source.editable() {
+        state.set_status(
+            "this pull request is not checked out here \u{2014} check it out to fix it in a chat",
+            false,
+        );
+        return;
+    }
+    state.pending_action = Some(PendingAction::GuidedChat);
+}
+
+/// A finding in the file at `path`, as a tick names it.
+fn ticket_in(path: &str, finding: &findings::Finding) -> TickedFinding {
+    TickedFinding {
+        path: path.to_string(),
+        line: finding.line,
+        text: finding.text.clone(),
     }
 }
 
@@ -1944,11 +2041,15 @@ mod tests {
         let steps = crate::git::guided::parse_hunks(
             "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,2 @@\n x\n+y\n@@ -9,1 +10,1 @@\n-p\n+q\n",
         );
-        let text = overview_text("Branch b", "", &["abc fix it".into()], &steps);
+        let Overview { text, brief } = overview_of("Branch b", "", &["abc fix it".into()], &steps);
 
         assert!(text.contains("- abc fix it"));
         assert_eq!(text.matches("a.rs").count(), 1, "{text}");
         assert!(text.contains("+2 -1"), "{text}");
+        // The brief every step's prompt opens with leaves the counts out, so
+        // an edit does not change it.
+        assert!(brief.contains("- a.rs\n"), "{brief}");
+        assert!(!brief.contains("+2 -1"), "{brief}");
     }
 
     /// A branch walk over two hunks of one file, both already looked at so
@@ -2043,6 +2144,29 @@ mod tests {
         assert_eq!((guided.current, guided.cursor), (1, start + 1));
     }
 
+    /// `C` opens a chat over the checkout that starts on what is still open:
+    /// a finding ticked off is not in it.
+    #[test]
+    fn the_chat_starts_on_the_findings_not_yet_ticked_off() {
+        let mut state = walk_with_findings();
+        let guided = state.guided.as_mut().unwrap();
+        guided.progress.ticked.push(TickedFinding {
+            path: "a.rs".into(),
+            line: 3,
+            text: "tail could say what it ends.".into(),
+        });
+
+        press(&mut state, ratatui::crossterm::event::KeyCode::Char('C'));
+
+        assert_eq!(state.pending_action, Some(PendingAction::GuidedChat));
+        let brief = state.guided.as_ref().unwrap().chat_brief();
+        assert!(
+            brief.contains("L2 issue: -1 stands in for missing"),
+            "{brief}"
+        );
+        assert!(!brief.contains("tail could say"), "{brief}");
+    }
+
     /// After an edit in the editor, `r` sends the file back to the model:
     /// what it said is dropped from the screen and handed to its next read,
     /// which can then say what the edit fixed.
@@ -2062,8 +2186,9 @@ mod tests {
     }
 
     /// Side by side, as the diff pane shows it by default, a removed line
-    /// sits beside its replacement; `v` puts them one above the other. Either
-    /// way the finding sits in the hunk, under the line it is about.
+    /// sits beside its replacement and a finding sits under the new code; `v`
+    /// puts them one above the other. Either way the finding sits in the
+    /// hunk, under the line it is about.
     #[test]
     fn the_hunk_follows_the_diff_layout_with_findings_under_their_line() {
         let mut state = walk_with_findings();
@@ -2083,6 +2208,13 @@ mod tests {
         let finding = row_of(&rows, "-1 stands in for missing");
         assert!(finding > row_of(&rows, "new one"));
         assert!(hunk(&state).contains(&(finding as u16)));
+        let column = |row: &str, text: &str| row[..row.find(text).unwrap()].chars().count();
+        let old = row_of(&rows, "old one");
+        assert!(
+            column(&rows[finding], "-1 stands in")
+                > column(&rows[old], "old one") + "old one".len(),
+            "side by side, the finding sits right of the old code, under the new"
+        );
 
         press(&mut state, ratatui::crossterm::event::KeyCode::Char('v'));
 

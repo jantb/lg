@@ -38,6 +38,7 @@ mod conflict_editor;
 mod footer;
 mod frame;
 mod github;
+mod guided_chat;
 mod header;
 mod input;
 mod jobs;

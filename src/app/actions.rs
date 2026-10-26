@@ -79,6 +79,7 @@ impl App {
             PendingAction::ReviewPrText => spawn_review_pr_text(&mut self.state),
             PendingAction::ReviewStyleFlags => spawn_review_style_flags(&mut self.state),
             PendingAction::ReviewAgent => self.start_review_agent(),
+            PendingAction::GuidedChat => self.open_guided_chat(),
             PendingAction::ReviewChat(prompt) => spawn_review_chat(&mut self.state, prompt),
 
             PendingAction::Commit => self.commit(),

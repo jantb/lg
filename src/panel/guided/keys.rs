@@ -94,6 +94,7 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('b') => super::switch_scope(state),
         KeyCode::Char('v') => super::toggle_layout(state),
         KeyCode::Char('t') => super::tick_at_cursor(state),
+        KeyCode::Char('C') => super::open_chat(state),
         _ => {}
     }
 }

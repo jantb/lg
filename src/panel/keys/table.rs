@@ -1515,7 +1515,12 @@ pub const SECTIONS: &[Section] = &[
             Binding {
                 key: "u",
                 help: "Jump to the next unreviewed step",
-                footer: Some(("u", "unreviewed")),
+                footer: None,
+            },
+            Binding {
+                key: "C",
+                help: "Chat with Claude in the checkout to fix",
+                footer: Some(("C", "chat")),
             },
             Binding {
                 key: "J/K",
@@ -2248,7 +2253,7 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
             "O",
             "f / F",
             "v",
-            "u",
+            "C",
             "s",
             "?",
             "Esc / q",

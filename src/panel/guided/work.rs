@@ -37,7 +37,7 @@ pub(super) fn load_local(source: &Source) -> Receiver<Result<Loaded, String>> {
                         },
                     )
                 };
-                let overview = super::overview_text(&title, "", &diff.commits, &steps);
+                let overview = super::overview_of(&title, "", &diff.commits, &steps);
                 Loaded {
                     source,
                     steps,
@@ -60,7 +60,7 @@ pub(super) fn load_pull_request(
             let diff = crate::github::pr_diff(pr.number)?;
             let commit = crate::github::pr_head(pr.number)?;
             let steps = crate::git::guided::parse_hunks(&diff);
-            let overview = super::overview_text(
+            let overview = super::overview_of(
                 &format!(
                     "Pull request #{} {} ({} into {})",
                     pr.number, pr.title, pr.head, pr.base

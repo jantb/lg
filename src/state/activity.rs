@@ -172,6 +172,7 @@ impl AppState {
                 Some(PendingAction::ReviewPrText) => Some("starting PR text"),
                 Some(PendingAction::ReviewStyleFlags) => Some("starting style flag pass"),
                 Some(PendingAction::ReviewAgent) => Some("starting agent review"),
+                Some(PendingAction::GuidedChat) => Some("opening the review chat"),
                 Some(PendingAction::ReviewChat(_)) => Some("starting chat"),
                 Some(PendingAction::CopyToClipboard { .. }) => Some("copying"),
                 Some(PendingAction::EditFile { .. }) => Some("opening the editor"),
