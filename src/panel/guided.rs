@@ -301,7 +301,8 @@ impl Commentary {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Ordered by how much it matters, so the worst of several is their `max`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Verdict {
     Ok,
     Nit,
@@ -592,6 +593,44 @@ impl Guided {
             out.push_str(&format!("- L{} note: {}\n", note.line, note.body));
         }
         out
+    }
+
+    /// Where `step` stands once the model has read it: the worst finding not
+    /// yet ticked off, or ok when every one is. An answer that named no
+    /// findings keeps the verdict it gave.
+    pub fn verdict(&self, step: &GuidedHunk) -> Option<Verdict> {
+        let commentary = self.commentary.get(&step.key())?;
+        let given = commentary.verdict()?;
+        let findings = findings::read(&commentary.text).findings;
+        if findings.is_empty() {
+            return Some(given);
+        }
+        Some(
+            findings
+                .iter()
+                .filter(|finding| !self.is_ticked(&ticket_in(&step.path, finding)))
+                .map(|finding| match finding.severity {
+                    findings::Severity::Issue => Verdict::Issue,
+                    findings::Severity::Nit => Verdict::Nit,
+                })
+                .max()
+                .unwrap_or(Verdict::Ok),
+        )
+    }
+
+    /// The findings still open in the file at `path`: how many issues, and
+    /// how many nits.
+    pub fn open_in_file(&self, path: &str) -> (usize, usize) {
+        self.steps
+            .iter()
+            .filter(|step| step.path == path)
+            .filter_map(|step| self.commentary.get(&step.key()).filter(|c| c.done))
+            .flat_map(|commentary| findings::read(&commentary.text).findings)
+            .filter(|finding| !self.is_ticked(&ticket_in(path, finding)))
+            .fold((0, 0), |(issues, nits), finding| match finding.severity {
+                findings::Severity::Issue => (issues + 1, nits),
+                findings::Severity::Nit => (issues, nits + 1),
+            })
     }
 
     pub fn is_ticked(&self, finding: &TickedFinding) -> bool {
@@ -1005,7 +1044,8 @@ fn concurrency() -> usize {
 /// The steps whose commentary the walk wants, most wanted first: the one on
 /// screen, the rest of its file after it and then before it, and every hunk
 /// of a file a redo still owes the chat. A file is otherwise read once the
-/// walk reaches it, not before; on the overview, only the overview is.
+/// walk reaches it, not before, so on the overview only the overview and an
+/// owed redo are.
 fn steps_to_read(guided: &Guided) -> Vec<usize> {
     let path_of = |i: usize| guided.steps[i - 1].path.as_str();
     let here = guided.step().map(|step| step.path.as_str());
@@ -1013,7 +1053,7 @@ fn steps_to_read(guided: &Guided) -> Vec<usize> {
     let mut seen = HashSet::new();
     std::iter::once(guided.current)
         .chain((guided.current + 1..=total).filter(|&i| Some(path_of(i)) == here))
-        .chain((1..guided.current).filter(|&i| Some(path_of(i)) == here))
+        .chain((1..guided.current.min(total)).filter(|&i| Some(path_of(i)) == here))
         .chain((1..=total).filter(|&i| guided.chat_update.iter().any(|path| path == path_of(i))))
         .filter(|&i| seen.insert(i))
         .collect()
@@ -2386,6 +2426,33 @@ mod tests {
         guided.chat_update.push("a.rs".into());
         guided.current = 3;
         assert_eq!(steps_to_read(guided), vec![3, 1, 2]);
+    }
+
+    /// A finding ticked off is dealt with: the hunk, the file and the walk's
+    /// count stand where the findings still open put them.
+    #[test]
+    fn ticking_findings_off_settles_the_hunk_and_its_file() {
+        let mut state = walk_with_findings();
+        let guided = state.guided.as_mut().unwrap();
+        let first = guided.steps[0].clone();
+        assert_eq!(guided.verdict(&first), Some(Verdict::Issue));
+        assert_eq!(guided.open_in_file("a.rs"), (1, 1));
+
+        guided.progress.ticked.push(TickedFinding {
+            path: "a.rs".into(),
+            line: 2,
+            text: "-1 stands in for missing and is used as an index.".into(),
+        });
+        assert_eq!(guided.verdict(&first), Some(Verdict::Nit));
+        assert_eq!(guided.open_in_file("a.rs"), (0, 1));
+
+        guided.progress.ticked.push(TickedFinding {
+            path: "a.rs".into(),
+            line: 3,
+            text: "tail could say what it ends.".into(),
+        });
+        assert_eq!(guided.verdict(&first), Some(Verdict::Ok));
+        assert_eq!(guided.open_in_file("a.rs"), (0, 0));
     }
 
     /// After an edit in the editor, `r` sends the file back to the model:

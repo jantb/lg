@@ -215,7 +215,7 @@ fn verdict_tally(guided: &Guided) -> Vec<Span<'static>> {
     let verdicts: Vec<Verdict> = guided
         .steps
         .iter()
-        .filter_map(|step| guided.commentary.get(&step.key())?.verdict())
+        .filter_map(|step| guided.verdict(step))
         .collect();
     [Verdict::Issue, Verdict::Nit, Verdict::Ok]
         .into_iter()
@@ -266,10 +266,7 @@ fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
     for (index, step) in guided.steps.iter().enumerate() {
         if last_file != Some(step.file_index) {
             last_file = Some(step.file_index);
-            items.push(ListItem::new(Line::from(Span::styled(
-                truncate_left(&step.path, width),
-                Style::default().fg(Color::Gray),
-            ))));
+            items.push(ListItem::new(file_row(guided, &step.path, width)));
         }
         let number = index + 1;
         let here = guided.current == number;
@@ -286,7 +283,7 @@ fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
         // In the first column, where a narrow list cannot cut it off.
         let verdict = match guided.commentary.get(&step.key()) {
             Some(c) if c.error.is_some() => Span::styled("\u{26a0} ", LABEL),
-            Some(c) => match c.verdict() {
+            Some(c) => match guided.verdict(step) {
                 Some(verdict) => {
                     Span::styled("\u{25cf} ", Style::default().fg(verdict_look(verdict).1))
                 }
@@ -327,6 +324,40 @@ fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
     let offset = selected.saturating_sub(area.height as usize / 2);
     let list = List::new(items.into_iter().skip(offset).collect::<Vec<_>>());
     frame.render_widget(list, area);
+}
+
+/// A file's row in the step list: its path, and what is still open in it,
+/// or a tick once every hunk of it is read and nothing is left open.
+fn file_row(guided: &Guided, path: &str, width: usize) -> Line<'static> {
+    let (issues, nits) = guided.open_in_file(path);
+    let read = guided
+        .steps
+        .iter()
+        .filter(|step| step.path == path)
+        .all(|step| guided.verdict(step).is_some());
+    let mut tally: Vec<Span<'static>> = Vec::new();
+    if issues > 0 {
+        tally.push(Span::styled(
+            format!(" \u{25cf}{issues}"),
+            Style::default().fg(ISSUE),
+        ));
+    }
+    if nits > 0 {
+        tally.push(Span::styled(
+            format!(" \u{25cb}{nits}"),
+            Style::default().fg(NIT),
+        ));
+    }
+    if tally.is_empty() && read {
+        tally.push(Span::styled(" \u{2713}", Style::default().fg(Color::Green)));
+    }
+    let used: usize = tally.iter().map(Span::width).sum();
+    let mut spans = vec![Span::styled(
+        truncate_left(path, width.saturating_sub(used)),
+        Style::default().fg(Color::Gray),
+    )];
+    spans.extend(tally);
+    Line::from(spans)
 }
 
 /// What a step changes, as the step list shows it: the lines it adds and
@@ -643,11 +674,7 @@ fn hunk_title(guided: &Guided, step: &GuidedHunk) -> Line<'static> {
             Style::default().fg(Color::Yellow),
         ));
     }
-    if let Some(verdict) = guided
-        .commentary
-        .get(&step.key())
-        .and_then(Commentary::verdict)
-    {
+    if let Some(verdict) = guided.verdict(step) {
         let (word, color) = verdict_look(verdict);
         title.push(Span::raw("  "));
         title.push(Span::styled(
@@ -917,7 +944,7 @@ fn step_commentary_lines(
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
     )];
-    if let Some(verdict) = c.verdict() {
+    if let Some(verdict) = guided.verdict(step) {
         let (word, color) = verdict_look(verdict);
         header.push(Span::styled(
             format!(" \u{b7} {word}"),
