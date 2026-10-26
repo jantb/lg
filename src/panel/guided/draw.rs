@@ -23,6 +23,7 @@ const NOTE: Style = Style::new().fg(Color::LightMagenta);
 const CURSOR_BG: Color = Color::Rgb(40, 46, 60);
 const ISSUE: Color = Color::LightRed;
 const NIT: Color = Color::Yellow;
+const QUESTION: Color = Color::LightCyan;
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let Some(guided) = state.guided.as_deref() else {
@@ -322,25 +323,22 @@ fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
 }
 
 fn file_row(guided: &Guided, path: &str, width: usize) -> Line<'static> {
-    let (issues, nits) = guided.open_in_file(path);
     let read = guided
         .steps
         .iter()
         .filter(|step| step.path == path)
         .all(|step| guided.verdict(step).is_some());
-    let mut tally: Vec<Span<'static>> = Vec::new();
-    if issues > 0 {
-        tally.push(Span::styled(
-            format!(" \u{25cf}{issues}"),
-            Style::default().fg(ISSUE),
-        ));
-    }
-    if nits > 0 {
-        tally.push(Span::styled(
-            format!(" \u{25cb}{nits}"),
-            Style::default().fg(NIT),
-        ));
-    }
+    let mut tally: Vec<Span<'static>> = Severity::ALL
+        .into_iter()
+        .map(|severity| (severity, guided.open_in_file(path, severity)))
+        .filter(|(_, open)| *open > 0)
+        .map(|(severity, open)| {
+            Span::styled(
+                format!(" {}{open}", severity_mark(severity).trim_end()),
+                Style::default().fg(severity_color(severity)),
+            )
+        })
+        .collect();
     if tally.is_empty() && read {
         tally.push(Span::styled(" \u{2713}", Style::default().fg(Color::Green)));
     }
@@ -373,8 +371,17 @@ fn verdict_look(verdict: Verdict) -> (&'static str, Color) {
     }
 }
 
+fn severity_mark(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Issue => "\u{25cf} ",
+        Severity::Nit => "\u{25cb} ",
+        Severity::Question => "? ",
+    }
+}
+
 fn severity_color(severity: Severity) -> Color {
     match severity {
+        Severity::Question => QUESTION,
         Severity::Nit => NIT,
         Severity::Issue => ISSUE,
     }
@@ -816,8 +823,10 @@ fn finding_lines(finding: &Finding, ticked: bool, lead: &str, width: u16) -> Vec
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::CROSSED_OUT),
         ),
-        (false, Severity::Issue) => ("\u{25cf} ", Style::default().fg(ISSUE)),
-        (false, Severity::Nit) => ("\u{25cb} ", Style::default().fg(NIT)),
+        (false, severity) => (
+            severity_mark(severity),
+            Style::default().fg(severity_color(severity)),
+        ),
     };
     let indent = lead.chars().count() + 2;
     let available = usize::from(width).saturating_sub(indent).max(10);

@@ -112,17 +112,17 @@ pub fn build_guided_step_system_prompt(overview: &str, settings: &RepoSettings) 
          Fixed: <a finding from your earlier read that the code now fixes, only when one is given>\n\
          L<n> issue: <what is wrong and why it matters>\n\
          L<n> nit: <a smaller point>\n\
-         Check: <what to look at next, only when the answer depends on code not shown>\n\
+         L<n> question: <what the code shown cannot settle, asked as a question>\n\
          Verdict: ok|nit|issue\n\
          Write one `L<n>` line per finding, most severe first, where <n> is the number the hunk\n\
          shows for the line it is about. A finding is a bug, an unhandled case, a broken\n\
          contract, a missing test, a sentinel value (-1, 0, MAX, an empty string standing in for\n\
          \"none\") that can collide with a real value or leak into arithmetic, indexing or display,\n\
          or a concrete violation of the repo style below. A missing comment is never a finding.\n\
-         Leave out the `L` lines when there is nothing to flag and the Check line when there is\n\
-         nothing to check.\n\
-         Keep each line under 25 words. Keep the words Summary, Fixed, Check, Verdict, issue and\n\
-         nit in English. Do not restate the diff, use code fences, or invent code that is not shown.\n\n\
+         Ask a question rather than guess when the answer depends on code not shown; a question\n\
+         does not change the verdict. Leave out the `L` lines when there is nothing to flag.\n\
+         Keep each line under 25 words. Keep the words Summary, Fixed, Verdict, issue, nit and\n\
+         question in English. Do not restate the diff, use code fences, or invent code that is not shown.\n\n\
          {}\n\n\
          {}\n\
          Change overview:\n{overview}",
@@ -147,9 +147,10 @@ pub fn build_guided_chat_prompt(title: &str, review: &str, settings: &RepoSettin
     )
 }
 
-pub fn build_guided_chat_next_file(brief: &str) -> String {
+pub fn build_guided_chat_file_read(brief: &str) -> String {
     format!(
-        "The reviewer has moved on to another file. {brief}\n         Say in two or three lines what is open there, then wait."
+        "lg has read the file the reviewer is on now. {brief}\n\
+         Say in two or three lines what is open there, then wait."
     )
 }
 

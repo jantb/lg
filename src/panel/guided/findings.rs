@@ -3,11 +3,25 @@
 
 use crate::git::guided::GuidedHunk;
 
-/// Ordered so the worst of several is their `max`.
+/// Ordered so the worst of several is their `max`. A question is not a
+/// defect, so it ranks below a nit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
+    Question,
     Nit,
     Issue,
+}
+
+impl Severity {
+    pub const ALL: [Self; 3] = [Self::Issue, Self::Nit, Self::Question];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Issue => "issue",
+            Self::Nit => "nit",
+            Self::Question => "question",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,11 +132,10 @@ fn parse_finding(line: &str) -> Option<Finding> {
     let word_end = rest
         .find(|c: char| !c.is_ascii_alphabetic())
         .unwrap_or(rest.len());
-    let severity = match rest[..word_end].to_ascii_lowercase().as_str() {
-        "issue" => Severity::Issue,
-        "nit" => Severity::Nit,
-        _ => return None,
-    };
+    let word = rest[..word_end].to_ascii_lowercase();
+    let severity = Severity::ALL
+        .into_iter()
+        .find(|severity| severity.word() == word)?;
     // One separator, and no more: the text itself may open on `-1`.
     let text = rest[word_end..]
         .trim_start_matches(['*', ')', '`'])
@@ -150,6 +163,7 @@ mod tests {
              L12 issue: -1 means missing but is used as an index.\n\
              - `L40` **issue** \u{2014} unchecked unwrap\n\
              * L7-L9 (nit): long\n\
+             L20 question: is the cache shared between threads?\n\
              Fixed: the unchecked cast.\n\
              Check: who else calls lookup.\n\
              This line ignored the shape.\n\
@@ -174,6 +188,11 @@ mod tests {
             line: 7,
             severity: Severity::Nit,
             text: "long".into(),
+        }));
+        assert!(reading.findings.contains(&Finding {
+            line: 20,
+            severity: Severity::Question,
+            text: "is the cache shared between threads?".into(),
         }));
     }
 

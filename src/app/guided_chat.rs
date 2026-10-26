@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use crate::panel::guided::Mode;
+use crate::panel::guided::{ChatNews, Mode};
 use crate::session::{SessionId, SessionKind, SessionSpec};
 use crate::state::AppState;
 
@@ -32,9 +32,15 @@ fn start(state: &mut AppState) -> Result<String> {
         .map(|step| step.path.clone())
         .context("no file on screen")?;
     let cwd = PathBuf::from(state.repo_root.as_deref().context("no repository open")?);
+    let read = guided.has_read(&path);
+    let brief = if read {
+        guided.chat_brief(&path)
+    } else {
+        format!("lg is still reading {path}; what is open there follows once it is read.")
+    };
     let prompt = crate::llm::build_guided_chat_prompt(
         &guided.source.title(),
-        &guided.chat_brief(&path),
+        &brief,
         &crate::settings::load(),
     );
     let profile = crate::agents::claude_profile();
@@ -59,6 +65,9 @@ fn start(state: &mut AppState) -> Result<String> {
         guided.chat = Some(id);
         guided.chat_file = Some(path.clone());
         guided.mode = Mode::Chat;
+        if !read {
+            guided.owe_chat(path.clone(), ChatNews::FileRead);
+        }
     }
     Ok(path)
 }

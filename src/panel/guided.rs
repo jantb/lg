@@ -105,36 +105,32 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
     }
 }
 
-fn follow_file_in_chat(guided: &mut Guided, sessions: &mut crate::session::Sessions) {
-    let Some(session) = guided.chat.and_then(|id| sessions.get_mut(id)) else {
-        return;
-    };
+fn note_file_change_for_chat(guided: &mut Guided) {
     let Some(path) = guided.step().map(|step| step.path.clone()) else {
         return;
     };
-    if guided.chat_file.as_deref() == Some(path.as_str()) {
+    if guided.chat.is_none() || guided.chat_file.as_deref() == Some(path.as_str()) {
         return;
     }
-    let message = crate::llm::build_guided_chat_next_file(&guided.chat_brief(&path));
-    let bracketed = session.bracketed_paste();
-    session.send(&crate::term::encode_paste(&message, bracketed));
-    session.send(b"\r");
-    guided.chat_file = Some(path);
+    guided.chat_file = Some(path.clone());
+    guided.owe_chat(path, ChatNews::FileRead);
 }
 
-fn report_redo_to_chat(guided: &mut Guided, sessions: &mut crate::session::Sessions) {
-    let settled: Vec<String> = guided
-        .chat_update
-        .iter()
-        .filter(|path| redo_settled(guided, path))
-        .cloned()
-        .collect();
-    guided.chat_update.retain(|path| !settled.contains(path));
+/// Each piece of news waits until lg has read the whole file it is about.
+fn tell_chat_what_is_read(guided: &mut Guided, sessions: &mut crate::session::Sessions) {
+    let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut guided.chat_owed)
+        .into_iter()
+        .partition(|(path, _)| guided.has_read(path));
+    guided.chat_owed = waiting;
     let Some(session) = guided.chat.and_then(|id| sessions.get_mut(id)) else {
         return;
     };
-    for path in settled {
-        let message = crate::llm::build_guided_chat_redo(&guided.chat_brief(&path));
+    for (path, news) in ready {
+        let brief = guided.chat_brief(&path);
+        let message = match news {
+            ChatNews::FileRead => crate::llm::build_guided_chat_file_read(&brief),
+            ChatNews::Redone => crate::llm::build_guided_chat_redo(&brief),
+        };
         let bracketed = session.bracketed_paste();
         session.send(&crate::term::encode_paste(&message, bracketed));
         session.send(b"\r");
@@ -447,8 +443,15 @@ pub struct Guided {
     pub(super) delete_armed: Option<usize>,
     pub chat: Option<crate::session::SessionId>,
     pub chat_file: Option<String>,
-    /// Files whose new read the chat is told about once it is in.
-    chat_update: Vec<String>,
+    chat_owed: Vec<(String, ChatNews)>,
+}
+
+/// What the chat is told about a file once lg has read all of it.
+/// Ordered so a redo's news replaces a plain read's still waiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ChatNews {
+    FileRead,
+    Redone,
 }
 
 impl Guided {
@@ -477,7 +480,7 @@ impl Guided {
             delete_armed: None,
             chat: None,
             chat_file: None,
-            chat_update: Vec::new(),
+            chat_owed: Vec::new(),
         }
     }
 
@@ -611,10 +614,7 @@ impl Guided {
                 .into_iter()
                 .filter(|finding| !self.is_ticked(&ticket_in(path, finding)));
             for finding in open {
-                let word = match finding.severity {
-                    findings::Severity::Issue => "issue",
-                    findings::Severity::Nit => "nit",
-                };
+                let word = finding.severity.word();
                 out.push_str(&format!("- L{} {word}: {}\n", finding.line, finding.text));
             }
         }
@@ -639,24 +639,40 @@ impl Guided {
                 .map(|finding| match finding.severity {
                     findings::Severity::Issue => Verdict::Issue,
                     findings::Severity::Nit => Verdict::Nit,
+                    findings::Severity::Question => Verdict::Ok,
                 })
                 .max()
                 .unwrap_or(Verdict::Ok),
         )
     }
 
-    /// (issues, nits) not yet ticked off.
-    pub fn open_in_file(&self, path: &str) -> (usize, usize) {
+    /// How many findings of `severity` in the file are not yet ticked off.
+    pub fn open_in_file(&self, path: &str, severity: findings::Severity) -> usize {
         self.steps
             .iter()
             .filter(|step| step.path == path)
             .filter_map(|step| self.commentary.get(&step.key()).filter(|c| c.done))
             .flat_map(|commentary| findings::read(&commentary.text).findings)
+            .filter(|finding| finding.severity == severity)
             .filter(|finding| !self.is_ticked(&ticket_in(path, finding)))
-            .fold((0, 0), |(issues, nits), finding| match finding.severity {
-                findings::Severity::Issue => (issues + 1, nits),
-                findings::Severity::Nit => (issues, nits + 1),
-            })
+            .count()
+    }
+
+    /// A file the change no longer touches has nothing left to wait for.
+    pub fn has_read(&self, path: &str) -> bool {
+        self.loading.is_none()
+            && self
+                .steps
+                .iter()
+                .filter(|step| step.path == path)
+                .all(|step| self.commentary.get(&step.key()).is_some_and(|c| c.done))
+    }
+
+    pub fn owe_chat(&mut self, path: String, news: ChatNews) {
+        match self.chat_owed.iter_mut().find(|(owed, _)| *owed == path) {
+            Some((_, owed)) => *owed = (*owed).max(news),
+            None => self.chat_owed.push((path, news)),
+        }
     }
 
     pub fn is_ticked(&self, finding: &TickedFinding) -> bool {
@@ -937,14 +953,14 @@ pub fn poll(state: &mut AppState) {
         .is_some_and(|id| state.sessions.get(id).is_none())
     {
         guided.chat = None;
-        guided.chat_update.clear();
+        guided.chat_owed.clear();
         if guided.mode == Mode::Chat {
             guided.mode = Mode::Browse;
         }
         notices.push(("the review chat ended".to_string(), false));
     }
-    follow_file_in_chat(guided, &mut state.sessions);
-    report_redo_to_chat(guided, &mut state.sessions);
+    note_file_change_for_chat(guided);
+    tell_chat_what_is_read(guided, &mut state.sessions);
 
     for (text, is_error) in notices {
         state.set_status(text, is_error);
@@ -1072,7 +1088,7 @@ fn steps_to_read(guided: &Guided) -> Vec<usize> {
     std::iter::once(guided.current)
         .chain((guided.current + 1..=total).filter(|&i| Some(path_of(i)) == here))
         .chain((1..guided.current.min(total)).filter(|&i| Some(path_of(i)) == here))
-        .chain((1..=total).filter(|&i| guided.chat_update.iter().any(|path| path == path_of(i))))
+        .chain((1..=total).filter(|&i| guided.chat_owed.iter().any(|(path, _)| path == path_of(i))))
         .filter(|&i| seen.insert(i))
         .collect()
 }
@@ -1693,21 +1709,11 @@ pub(super) fn review_again(state: &mut AppState) {
         guided.earlier.insert(path.clone(), said.join("\n\n"));
     }
     forget(guided, &keys);
-    if guided.chat.is_some() && !guided.chat_update.contains(&path) {
-        guided.chat_update.push(path.clone());
+    if guided.chat.is_some() {
+        guided.owe_chat(path.clone(), ChatNews::Redone);
     }
     state.set_status(format!("reviewing {path} again\u{2026}"), false);
     reload(state);
-}
-
-/// A file the change no longer touches has nothing left to wait for.
-fn redo_settled(guided: &Guided, path: &str) -> bool {
-    guided.loading.is_none()
-        && guided
-            .steps
-            .iter()
-            .filter(|step| step.path == path)
-            .all(|step| guided.commentary.get(&step.key()).is_some_and(|c| c.done))
 }
 
 fn forget(guided: &mut Guided, keys: &[String]) {
@@ -2398,7 +2404,13 @@ mod tests {
         guided.current = OVERVIEW;
         assert_eq!(steps_to_read(guided), vec![OVERVIEW]);
 
-        guided.chat_update.push("a.rs".into());
+        guided.owe_chat("a.rs".into(), ChatNews::FileRead);
+        guided.owe_chat("a.rs".into(), ChatNews::Redone);
+        guided.owe_chat("a.rs".into(), ChatNews::FileRead);
+        assert_eq!(
+            guided.chat_owed,
+            vec![("a.rs".to_string(), ChatNews::Redone)]
+        );
         guided.current = 3;
         assert_eq!(steps_to_read(guided), vec![3, 1, 2]);
     }
@@ -2409,7 +2421,13 @@ mod tests {
         let guided = state.guided.as_mut().unwrap();
         let first = guided.steps[0].clone();
         assert_eq!(guided.verdict(&first), Some(Verdict::Issue));
-        assert_eq!(guided.open_in_file("a.rs"), (1, 1));
+        let open = |guided: &Guided| {
+            (
+                guided.open_in_file("a.rs", findings::Severity::Issue),
+                guided.open_in_file("a.rs", findings::Severity::Nit),
+            )
+        };
+        assert_eq!(open(guided), (1, 1));
 
         guided.progress.ticked.push(TickedFinding {
             path: "a.rs".into(),
@@ -2417,7 +2435,7 @@ mod tests {
             text: "-1 stands in for missing and is used as an index.".into(),
         });
         assert_eq!(guided.verdict(&first), Some(Verdict::Nit));
-        assert_eq!(guided.open_in_file("a.rs"), (0, 1));
+        assert_eq!(open(guided), (0, 1));
 
         guided.progress.ticked.push(TickedFinding {
             path: "a.rs".into(),
@@ -2425,7 +2443,16 @@ mod tests {
             text: "tail could say what it ends.".into(),
         });
         assert_eq!(guided.verdict(&first), Some(Verdict::Ok));
-        assert_eq!(guided.open_in_file("a.rs"), (0, 0));
+        assert_eq!(open(guided), (0, 0));
+
+        // An open question is not a defect: the hunk stays ok.
+        let key = first.key();
+        guided.commentary.insert(
+            key,
+            commentary("L2 question: can the index be -1 here?\nVerdict: ok"),
+        );
+        assert_eq!(guided.verdict(&first), Some(Verdict::Ok));
+        assert_eq!(guided.open_in_file("a.rs", findings::Severity::Question), 1);
     }
 
     #[test]
@@ -2443,21 +2470,21 @@ mod tests {
         assert!(hunk_context(guided, 1).contains("-1 stands in for missing"));
 
         let guided = state.guided.as_mut().unwrap();
-        assert!(!redo_settled(guided, "a.rs"));
+        assert!(!guided.has_read("a.rs"));
         guided.loading = None;
         let key = guided.steps[0].key();
         guided.commentary.insert(
             key,
             commentary("Summary: Same.\nFixed: the index sentinel.\nVerdict: ok"),
         );
-        assert!(!redo_settled(guided, "a.rs"), "one of the file's two hunks");
+        assert!(!guided.has_read("a.rs"), "one of the file's two hunks");
         let key = guided.steps[1].key();
         guided
             .commentary
             .insert(key, commentary("Summary: Same.\nVerdict: ok"));
-        assert!(redo_settled(guided, "a.rs"));
+        assert!(guided.has_read("a.rs"));
         assert!(
-            redo_settled(guided, "gone.rs"),
+            guided.has_read("gone.rs"),
             "a file the change no longer has"
         );
         assert!(
