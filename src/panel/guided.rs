@@ -971,8 +971,19 @@ fn concurrency() -> usize {
     }
 }
 
-/// Ask for the commentary on the step on screen and the few after it, nearest
-/// first, as far as the provider allows at once.
+/// The steps whose commentary the walk wants now, nearest first: the one on
+/// screen and up to `ahead` after it in the same file. A file is read once
+/// the walk reaches it, not before; on the overview, only the overview is.
+fn steps_to_read(guided: &Guided, ahead: usize) -> Vec<usize> {
+    let here = guided.step().map(|step| step.path.as_str());
+    (guided.current..=guided.current + ahead)
+        .filter(|&i| i <= guided.total())
+        .filter(|&i| i == guided.current || Some(guided.steps[i - 1].path.as_str()) == here)
+        .collect()
+}
+
+/// Ask for the commentary on the steps the walk wants now, as far as the
+/// provider allows at once.
 fn start_wanted_commentary(guided: &mut Guided) {
     if guided.loading.is_some() || (guided.steps.is_empty() && guided.overview.is_empty()) {
         return;
@@ -986,10 +997,7 @@ fn start_wanted_commentary(guided: &mut Guided) {
     if running >= limit {
         return;
     }
-    let total = guided.total();
-    let wanted: Vec<usize> = (guided.current..=guided.current + limit)
-        .filter(|&i| i <= total)
-        .collect();
+    let wanted = steps_to_read(guided, limit);
     let mut slots = limit - running;
     for index in wanted {
         if slots == 0 {
@@ -2299,6 +2307,24 @@ mod tests {
         );
         assert!(!brief.contains("tail could say"), "{brief}");
         assert!(!brief.contains("in another file"), "{brief}");
+    }
+
+    /// The model reads ahead within the file on screen, and a file only once
+    /// the walk reaches it; on the overview, only the overview.
+    #[test]
+    fn the_model_reads_ahead_only_in_the_file_on_screen() {
+        let mut state = walk_with_findings();
+        let guided = state.guided.as_mut().unwrap();
+        guided.steps.extend(crate::git::guided::parse_hunks(
+            "diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1,1 +1,1 @@\n-x\n+y\n",
+        ));
+
+        guided.current = 1;
+        assert_eq!(steps_to_read(guided, 3), vec![1, 2]);
+        guided.current = 3;
+        assert_eq!(steps_to_read(guided, 3), vec![3]);
+        guided.current = OVERVIEW;
+        assert_eq!(steps_to_read(guided, 3), vec![OVERVIEW]);
     }
 
     /// After an edit in the editor, `r` sends the file back to the model:
