@@ -41,6 +41,7 @@ impl Language {
             Self::JavaScript | Self::TypeScript => script_item_label(line),
             Self::CSharp => csharp_item_label(line),
             Self::Markdown => markdown_item_label(line),
+            Self::Json => None,
         }
     }
 
@@ -61,7 +62,7 @@ impl Language {
                     || (line.starts_with("export ") && line.contains(" from "))
                     || (line.contains("require(") && line.starts_with("const "))
             }
-            Self::Markdown => false,
+            Self::Markdown | Self::Json => false,
         }
     }
 
@@ -112,6 +113,11 @@ C# / .NET:
 - Nullable reference types are honoured; no ! (null-forgiving) outside tests.
 - Dispose IDisposable/IAsyncDisposable with using; do not hold them in fields without ownership.
 - Constructor injection; controllers stay thin and services hold the rules.",
+            Self::Json => "\
+JSON:
+- Valid JSON: no comments or trailing commas unless every reader of the file accepts them.
+- New keys follow the naming and order the file already uses, so the diff shows only what changed.
+- No secrets, and no value that differs per environment, in a committed file.",
             Self::Markdown => "\
 Markdown:
 - Headings form one outline; a change under a heading should still belong there.

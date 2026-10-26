@@ -527,6 +527,13 @@ mod tests {
     }
 
     #[test]
+    fn the_built_in_guide_rules_out_parameterized_tests() {
+        let style = review_style(&RepoSettings::default(), "");
+
+        assert!(style.contains("No parameterized tests"), "{style}");
+    }
+
+    #[test]
     fn the_review_agent_is_asked_to_check_the_invariants_the_change_relies_on() {
         let prompt = build_review_agent_prompt(
             "assisted review",

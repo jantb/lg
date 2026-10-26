@@ -74,7 +74,8 @@ Established repo style:
 - Side effects (I/O, messaging, time, randomness) sit at the edges so the rules in the middle can be tested without them.
 - Outgoing HTTP calls and messages forward the correlation id or trace context of the request that caused them, where the codebase has one, so a call can be traced end to end.
 - Model variants with sum types (sealed types, enums with data, discriminated unions) rather than flags and nullable fields.
-- Tests assert behavior a caller depends on, not the shape of the implementation; use as few mocks as possible, preferring small concrete fakes that can be stepped through in a debugger. Keep the suite small: tests do not overlap, and a test another already covers is folded into it and pruned. No parameterized tests: each test reads on its own, top to bottom. Prefer testing a unit with concrete fakes to a test that boots the whole application context (such as a Spring Boot test).
+- Tests assert behavior a caller depends on, not the shape of the implementation; use as few mocks as possible, preferring small concrete fakes that can be stepped through in a debugger. Keep the suite small: tests do not overlap, and a test another already covers is folded into it and pruned. Prefer testing a unit with concrete fakes to a test that boots the whole application context (such as a Spring Boot test).
+- No parameterized tests, and no loop over a table of inputs inside one test either: a failure then names a row rather than a behaviour, and the case has to be pieced together from the table. Each test is one named case that reads on its own, top to bottom.
 - Generated code is never edited by hand.
 - Run the repo formatter and linter before declaring work done; the linter wins on formatting.";
 

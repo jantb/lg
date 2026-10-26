@@ -13,10 +13,11 @@ pub enum Language {
     TypeScript,
     CSharp,
     Markdown,
+    Json,
 }
 
 impl Language {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Rust,
         Self::Kotlin,
         Self::Java,
@@ -24,6 +25,7 @@ impl Language {
         Self::TypeScript,
         Self::CSharp,
         Self::Markdown,
+        Self::Json,
     ];
 
     /// The language of the file at `path`, judged by its extension.
@@ -37,6 +39,7 @@ impl Language {
             "ts" | "tsx" | "mts" | "cts" => Self::TypeScript,
             "cs" | "csx" => Self::CSharp,
             "md" | "markdown" => Self::Markdown,
+            "json" => Self::Json,
             _ => return None,
         })
     }
@@ -52,6 +55,7 @@ impl Language {
             "ts" | "tsx" | "mts" | "cts" | "typescript" => Self::TypeScript,
             "cs" | "csx" | "csharp" | "c#" => Self::CSharp,
             "md" | "markdown" => Self::Markdown,
+            "json" => Self::Json,
             _ => return None,
         })
     }
@@ -65,6 +69,7 @@ impl Language {
             Self::TypeScript => "TypeScript",
             Self::CSharp => "C#",
             Self::Markdown => "Markdown",
+            Self::Json => "JSON",
         }
     }
 }
@@ -107,7 +112,7 @@ mod tests {
         );
         assert_eq!(Language::from_path("README.md"), Some(Language::Markdown));
         assert_eq!(Language::from_path("Makefile"), None);
-        assert_eq!(Language::from_path("data.json"), None);
+        assert_eq!(Language::from_path("data.json"), Some(Language::Json));
     }
 
     #[test]

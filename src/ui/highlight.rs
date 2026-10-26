@@ -25,7 +25,9 @@ impl Keywords {
             Language::Kotlin => Some(Self::Kotlin),
             Language::CSharp => Some(Self::CSharp),
             Language::Java => Some(Self::Java),
-            Language::JavaScript | Language::TypeScript | Language::Markdown => None,
+            Language::JavaScript | Language::TypeScript | Language::Markdown | Language::Json => {
+                None
+            }
         }
     }
 }
@@ -37,10 +39,56 @@ pub(crate) fn highlight_line(
     language: Option<Language>,
     default_style: Style,
 ) -> Vec<Span<'static>> {
-    if language == Some(Language::Markdown) {
-        return highlight_markdown(code, default_style);
+    match language {
+        Some(Language::Markdown) => highlight_markdown(code, default_style),
+        Some(Language::Json) => highlight_json(code, default_style),
+        _ => highlight_code(code, language, default_style),
     }
-    highlight_code(code, language, default_style)
+}
+
+/// A line of JSON: keys apart from string values, and numbers and the three
+/// words JSON has. A line may be any part of a document, so a string is a key
+/// when a colon follows it on the line, whatever came before.
+fn highlight_json(code: &str, base: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut plain_start = 0usize;
+    let mut chars = code.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        let end = if ch == '"' {
+            string_end(code, idx + 1)
+        } else if ch == '-' || ch.is_ascii_digit() || ch.is_ascii_alphabetic() {
+            idx + code[idx..]
+                .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')))
+                .unwrap_or(code.len() - idx)
+        } else {
+            continue;
+        };
+        let token = &code[idx..end];
+        let color = if ch == '"' {
+            if code[end..].trim_start().starts_with(':') {
+                Color::LightCyan
+            } else {
+                Color::LightYellow
+            }
+        } else if matches!(token, "true" | "false" | "null") {
+            Color::Yellow
+        } else if ch == '-' || ch.is_ascii_digit() {
+            Color::LightYellow
+        } else {
+            while chars.peek().is_some_and(|(next, _)| *next < end) {
+                chars.next();
+            }
+            continue;
+        };
+        push_plain_code(&mut spans, code, plain_start, idx, base);
+        spans.push(Span::styled(token.to_string(), color_style(color, base)));
+        while chars.peek().is_some_and(|(next, _)| *next < end) {
+            chars.next();
+        }
+        plain_start = end;
+    }
+    push_plain_code(&mut spans, code, plain_start, code.len(), base);
+    spans
 }
 
 /// A line of code coloured by the code lexer: comments, strings, keywords,

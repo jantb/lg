@@ -254,6 +254,49 @@ mod tests {
     }
 
     #[test]
+    fn json_in_the_side_by_side_diff_tells_keys_from_values() {
+        let diff = "diff --git a/package.json b/package.json\n\
+                    --- a/package.json\n\
+                    +++ b/package.json\n\
+                    @@ -1,3 +1,3 @@\n \
+                    {\n\
+                    -  \"version\": \"1.0.0\",\n\
+                    +  \"version\": \"1.1.0\",\n \
+                    }\n";
+
+        let lines = highlight_side_by_side_diff_text(diff, 120);
+
+        let keys: String = lines
+            .iter()
+            .map(|line| styled_text(line, Color::LightCyan))
+            .collect();
+        let values: String = lines
+            .iter()
+            .map(|line| styled_text(line, Color::LightYellow))
+            .collect();
+        assert!(keys.contains("\"version\""), "{keys}");
+        assert!(values.contains("\"1.1.0\""), "{values}");
+        assert!(!values.contains("version"), "{values}");
+    }
+
+    #[test]
+    fn json_numbers_and_its_three_words_are_literals() {
+        let line = "+  \"retries\": 3, \"debug\": false, \"proxy\": null";
+        let tokens = diff_line_tokens(line, "config/app.json");
+        let of = |needle: &str, token: Token| {
+            let at = line.find(needle).expect("the line has it");
+            tokens[at..at + needle.chars().count()]
+                .iter()
+                .all(|t| *t == token)
+        };
+
+        assert!(of("\"retries\"", Token::Type), "{tokens:?}");
+        assert!(of("3", Token::Literal), "{tokens:?}");
+        assert!(of("false", Token::Keyword), "{tokens:?}");
+        assert!(of("null", Token::Keyword), "{tokens:?}");
+    }
+
+    #[test]
     fn a_header_naming_a_path_with_spaces_gives_the_whole_path() {
         assert_eq!(
             diff_header_path("diff --git a/my dir/x.rs b/my dir/x.rs").as_deref(),

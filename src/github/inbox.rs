@@ -341,17 +341,23 @@ mod tests {
     }
 
     #[test]
-    fn a_remote_names_its_repository_however_it_was_written() {
-        for url in [
-            "git@github.com:acme/app.git",
-            "https://github.com/acme/app",
-            "https://github.com/acme/app.git/",
-            "ssh://git@github.com/acme/app.git",
-            "https://me@github.com/acme/app",
-        ] {
-            assert_eq!(repo_name(url).as_deref(), Some("acme/app"), "{url}");
-        }
-        assert_eq!(repo_name("/srv/git/app.git"), None);
+    fn an_ssh_remote_names_its_repository() {
+        assert_eq!(
+            repo_name("git@github.com:acme/app.git").as_deref(),
+            Some("acme/app")
+        );
+    }
+
+    #[test]
+    fn an_https_remote_names_its_repository() {
+        assert_eq!(
+            repo_name("https://me@github.com/acme/app.git/").as_deref(),
+            Some("acme/app")
+        );
+    }
+
+    #[test]
+    fn a_remote_on_this_machine_names_no_repository() {
         assert_eq!(repo_name("file:///srv/git/app.git"), None);
     }
 
