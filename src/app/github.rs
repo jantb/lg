@@ -120,6 +120,16 @@ impl App {
                 Ok(()) => state.set_status(format!("opened {url}"), false),
                 Err(err) => state.set_status(format!("{err:#}"), true),
             },
+            GitHubAction::ReviewInCheckout { dir, number } => {
+                if crate::git::active_repo().as_deref() != Some(dir.as_path()) {
+                    let label = dir
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| dir.to_string_lossy().into_owned());
+                    self.switch_to_repository(&dir, &label);
+                }
+                crate::panel::github::inbox::start_review(&mut self.state, number);
+            }
         }
     }
 

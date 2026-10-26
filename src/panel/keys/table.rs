@@ -20,7 +20,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "H",
-                help: "GitHub: pull requests, review, merge, clone",
+                help: "GitHub: inbox, PRs, review, merge, clone",
                 footer: Some(("H", "github/clone")),
             },
             Binding {
@@ -1779,8 +1779,51 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "Tab",
-                help: "Pull requests or repositories to clone",
+                help: "Next tab: repositories to clone",
                 footer: Some(("Tab", "clone repo")),
+            },
+            Binding {
+                key: "Esc",
+                help: "Close",
+                footer: Some(("Esc", "close")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "GitHub inbox",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "j/k",
+                help: "Move between what is waiting",
+                footer: Some(("j/k", "select")),
+            },
+            Binding {
+                key: "Enter / v",
+                help: "Review a PR in its checkout; else browser",
+                footer: Some(("Enter", "review")),
+            },
+            Binding {
+                key: "d",
+                help: "Done: off the list here and on GitHub",
+                footer: Some(("d", "done")),
+            },
+            Binding {
+                key: "o",
+                help: "Open it in the browser",
+                footer: Some(("o", "browser")),
+            },
+            Binding {
+                key: "r",
+                help: "Read the inbox again",
+                footer: Some(("r", "reload")),
+            },
+            Binding {
+                key: "Tab",
+                help: "Next tab: pull requests",
+                footer: Some(("Tab", "pull requests")),
             },
             Binding {
                 key: "Esc",
@@ -1832,8 +1875,8 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "Tab",
-                help: "Back to the pull requests",
-                footer: Some(("Tab", "pull requests")),
+                help: "Next tab: the inbox",
+                footer: Some(("Tab", "inbox")),
             },
             Binding {
                 key: "Esc",
@@ -2305,6 +2348,12 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         prefix: "Submit review ",
         tone: Tone::Normal,
         order: &["Tab", "type", "Enter / Ctrl-S", "Ctrl-Y", "Esc"],
+    },
+    ModalFooter {
+        section: "GitHub inbox",
+        prefix: "Inbox ",
+        tone: Tone::Normal,
+        order: &["j/k", "Enter / v", "d", "o", "r", "Tab", "Esc"],
     },
     ModalFooter {
         section: "GitHub repositories",

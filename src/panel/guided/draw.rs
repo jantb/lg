@@ -122,14 +122,15 @@ pub(super) fn list_width(inner_width: u16, requested: Option<u16>) -> u16 {
 
 /// The step each row of the step list stands for, from its first row: the
 /// overview, then each step under the name of its file, which has a row of
-/// its own and stands for none. With the first row shown, as [`draw_steps`]
-/// scrolls the list to keep the current step in the middle.
+/// its own and stands for none — unless the file is that one step, which is
+/// then named on the step's own row. With the first row shown, as
+/// [`draw_steps`] scrolls the list to keep the current step in the middle.
 pub(super) fn step_rows(guided: &Guided, height: u16) -> (Vec<Option<usize>>, usize) {
     let mut rows = vec![Some(OVERVIEW)];
     let mut selected = 0usize;
     let mut last_file = None;
     for (index, step) in guided.steps.iter().enumerate() {
-        if last_file != Some(step.file_index) {
+        if has_file_row(step) && last_file != Some(step.file_index) {
             last_file = Some(step.file_index);
             rows.push(None);
         }
@@ -245,6 +246,12 @@ fn scope_badge(source: &Source) -> Span<'static> {
     )
 }
 
+/// A file of several steps is named on a row above them; a file of one is
+/// named on the step's row.
+fn has_file_row(step: &GuidedHunk) -> bool {
+    step.hunks_in_file > 1
+}
+
 /// The steps, one row each, grouped under their file.
 fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
     let width = area.width as usize;
@@ -261,7 +268,7 @@ fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
     ))));
     let mut last_file = None;
     for (index, step) in guided.steps.iter().enumerate() {
-        if last_file != Some(step.file_index) {
+        if has_file_row(step) && last_file != Some(step.file_index) {
             last_file = Some(step.file_index);
             items.push(ListItem::new(file_row(guided, &step.path, width)));
         }
@@ -295,26 +302,24 @@ fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
             (false, true) => LABEL,
             (false, false) => Style::default().fg(Color::White),
         };
-        let mut spans = vec![
-            verdict,
-            mark,
-            Span::styled(
-                format!(
-                    "{} {}",
-                    change_size(step),
-                    step.header
-                        .rsplit("@@")
-                        .next()
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or("")
-                ),
-                base,
-            ),
-        ];
+        let mut tail = Vec::new();
         if notes > 0 {
-            spans.push(Span::styled(format!(" \u{270e}{notes}"), NOTE));
+            tail.push(Span::styled(format!(" \u{270e}{notes}"), NOTE));
         }
+        // A file of one step shares its row: the path, with the step's name
+        // after everything else, where a narrow list cuts it off first.
+        let label = if has_file_row(step) {
+            Span::styled(step_label(step), base)
+        } else {
+            tail.extend(file_tally(guided, &step.path));
+            let used = 4 + tail.iter().map(Span::width).sum::<usize>();
+            if let Some(name) = step_name(step) {
+                tail.push(Span::styled(format!(" {name}"), LABEL));
+            }
+            Span::styled(truncate_left(&step.path, width.saturating_sub(used)), base)
+        };
+        let mut spans = vec![verdict, mark, label];
+        spans.extend(tail);
         items.push(ListItem::new(Line::from(spans)).style(base));
     }
     let offset = selected.saturating_sub(area.height as usize / 2);
@@ -323,6 +328,19 @@ fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
 }
 
 fn file_row(guided: &Guided, path: &str, width: usize) -> Line<'static> {
+    let tally = file_tally(guided, path);
+    let used: usize = tally.iter().map(Span::width).sum();
+    let mut spans = vec![Span::styled(
+        truncate_left(path, width.saturating_sub(used)),
+        Style::default().fg(Color::Gray),
+    )];
+    spans.extend(tally);
+    Line::from(spans)
+}
+
+/// The findings still open in a file by severity, or a tick once every step
+/// of it has been read and nothing is open.
+fn file_tally(guided: &Guided, path: &str) -> Vec<Span<'static>> {
     let read = guided
         .steps
         .iter()
@@ -342,25 +360,30 @@ fn file_row(guided: &Guided, path: &str, width: usize) -> Line<'static> {
     if tally.is_empty() && read {
         tally.push(Span::styled(" \u{2713}", Style::default().fg(Color::Green)));
     }
-    let used: usize = tally.iter().map(Span::width).sum();
-    let mut spans = vec![Span::styled(
-        truncate_left(path, width.saturating_sub(used)),
-        Style::default().fg(Color::Gray),
-    )];
-    spans.extend(tally);
-    Line::from(spans)
+    tally
 }
 
-/// What a step changes, as the step list shows it: the lines it adds and
-/// removes, or what happened to the file when there is no text diff.
-fn change_size(step: &GuidedHunk) -> String {
+/// A step as the step list names it under its file.
+fn step_label(step: &GuidedHunk) -> String {
+    step_name(step).unwrap_or_else(|| format!("hunk {}", step.hunk_index + 1))
+}
+
+/// What happened to the file when there is no text diff, otherwise the
+/// function the hunk is in, when the hunk header names one.
+fn step_name(step: &GuidedHunk) -> Option<String> {
     if step.lines.is_empty() {
-        step.file_note
-            .clone()
-            .unwrap_or_else(|| "no text diff".into())
-    } else {
-        format!("+{} -{}", step.added(), step.removed())
+        return Some(
+            step.file_note
+                .clone()
+                .unwrap_or_else(|| "no text diff".into()),
+        );
     }
+    step.header
+        .rsplit("@@")
+        .next()
+        .map(str::trim)
+        .filter(|context| !context.is_empty())
+        .map(str::to_string)
 }
 
 fn verdict_look(verdict: Verdict) -> (&'static str, Color) {

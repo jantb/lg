@@ -12,7 +12,7 @@ pub type Pending<T> = Receiver<Result<T, String>>;
 /// Run `read` on a worker pinned to the selected checkout. Left to finish on
 /// its own if replaced: it only reads, and its answer is dropped along with
 /// the channel.
-fn spawn_read<T, F>(read: F) -> Pending<T>
+pub(super) fn spawn_read<T, F>(read: F) -> Pending<T>
 where
     T: Send + 'static,
     F: FnOnce() -> anyhow::Result<T> + Send + 'static,

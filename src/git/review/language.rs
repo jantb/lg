@@ -87,6 +87,7 @@ Kotlin:
 Java:
 - Prefer records, final fields and immutable collections; expose no mutable internals.
 - No null returns for collections or optionals; Optional is a return type, not a field or parameter.
+- No Boolean.TRUE.equals(x) or \"literal\".equals(s) to dodge a null check; use a primitive boolean, or say what null means where it can arise.
 - Checked exceptions are either handled or wrapped with context, never swallowed.
 - Streams stay short and side-effect free; a loop is fine when it reads better.
 - Constructor injection; no static mutable state.",

@@ -1,6 +1,8 @@
 //! Drawing the GitHub modal: a tab bar, the list beside the selected entry's
 //! details, and a bottom line that is whatever the modal is asking for.
 
+mod inbox;
+
 use ratatui::{
     Frame,
     layout::{Constraint, Position, Rect},
@@ -19,7 +21,7 @@ use crate::panel::text_input::TextInput;
 use crate::state::{AppState, SPINNER_FRAMES};
 use crate::ui::{self, palette};
 
-const LABEL: Style = Style::new().fg(Color::DarkGray);
+pub(super) const LABEL: Style = Style::new().fg(Color::DarkGray);
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     // Tall enough to read a description, and clear of the footer, where the
@@ -50,6 +52,16 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     draw_tabs(state, rows[0], frame);
     match (&state.github.mode, state.github.tab) {
         (Mode::Create(form), _) => draw_create(form, rows[1], frame),
+        (_, Tab::Inbox) => {
+            let (panes, gaps) = ui::modal_columns(
+                frame,
+                rows[1],
+                &[Constraint::Percentage(50), Constraint::Min(20)],
+            );
+            dividers.extend(gaps);
+            inbox::draw_list(state, panes[0], frame);
+            inbox::draw_detail(state, panes[1], frame);
+        }
         (_, Tab::PullRequests) => {
             let (panes, gaps) = ui::modal_columns(
                 frame,
@@ -80,12 +92,12 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     }
 }
 
-fn spinner(state: &AppState) -> &'static str {
+pub(super) fn spinner(state: &AppState) -> &'static str {
     SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()]
 }
 
 fn draw_tabs(state: &AppState, area: Rect, frame: &mut Frame) {
-    let tab = |label: &'static str, active: bool| {
+    let tab = |label: &str, active: bool| {
         if active {
             Span::styled(
                 format!(" {label} "),
@@ -102,13 +114,28 @@ fn draw_tabs(state: &AppState, area: Rect, frame: &mut Frame) {
         }
     };
     let gh = &state.github;
+    let inbox_label = match gh.inbox.items().len() {
+        0 => "Inbox".to_string(),
+        count => format!("Inbox {count}"),
+    };
     let mut spans = vec![
+        tab(&inbox_label, gh.tab == Tab::Inbox),
+        Span::raw(" "),
         tab("Pull requests", gh.tab == Tab::PullRequests),
         Span::raw(" "),
         tab("Repositories", gh.tab == Tab::Repositories),
         Span::raw("   "),
     ];
     match gh.tab {
+        Tab::Inbox => {
+            spans.push(Span::styled("across this workspace", LABEL));
+            if gh.inbox.loading.is_some() {
+                spans.push(Span::styled(
+                    format!("   {} reading GitHub", spinner(state)),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+        }
         Tab::PullRequests => {
             spans.push(Span::styled("showing ", LABEL));
             spans.push(Span::styled(
@@ -187,7 +214,7 @@ fn owner_spans(state: &AppState, room: usize) -> Vec<Span<'static>> {
 }
 
 /// A message filling a pane in place of a list: loading, empty, or failed.
-fn draw_placeholder(text: &str, error: bool, area: Rect, frame: &mut Frame) {
+pub(super) fn draw_placeholder(text: &str, error: bool, area: Rect, frame: &mut Frame) {
     let style = if error {
         Style::default().fg(Color::Red)
     } else {
@@ -201,7 +228,7 @@ fn draw_placeholder(text: &str, error: bool, area: Rect, frame: &mut Frame) {
     );
 }
 
-fn truncate(text: &str, width: usize) -> String {
+pub(super) fn truncate(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
         return text.to_string();
     }
@@ -890,6 +917,7 @@ fn draw_bottom(state: &AppState, area: Rect, frame: &mut Frame) {
         }
         (Mode::Merge(_), _) => hints("GitHub merge"),
         (Mode::Create(_), _) => hints("GitHub new pull request"),
+        (Mode::Browse, Tab::Inbox) => hints("GitHub inbox"),
         (Mode::Browse, Tab::PullRequests) => hints("GitHub"),
         (Mode::Browse, Tab::Repositories) => hints("GitHub repositories"),
     };

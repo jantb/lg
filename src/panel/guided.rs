@@ -803,8 +803,14 @@ pub(super) fn switch_scope(state: &mut AppState) {
 
 /// Walk a pull request as GitHub has it.
 pub fn open_pull_request(state: &mut AppState, pr: &crate::github::PullRequest) {
+    // The number alone could be another repository's pull request: the inbox
+    // opens reviews across the workspace.
     if let Some(guided) = state.guided.as_ref()
         && matches!(&guided.source, Source::PullRequest { number, .. } if *number == pr.number)
+        && guided
+            .pull_request
+            .as_ref()
+            .is_none_or(|open| open.url == pr.url)
     {
         state.modal = Modal::GuidedReview;
         return;
@@ -2266,6 +2272,38 @@ mod tests {
             modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
         };
         handle_mouse(state, AREA, &event);
+    }
+
+    #[test]
+    fn a_file_of_one_hunk_is_one_row_that_opens_its_hunk() {
+        let mut state = walk_on_a_long_hunk();
+        let one_hunk_file = |name: &str| {
+            format!(
+                "diff --git a/{name} b/{name}\n--- a/{name}\n+++ b/{name}\n@@ -1 +1 @@ fn {name}\n-a\n+b\n"
+            )
+        };
+        let guided = state.guided.as_mut().unwrap();
+        guided.steps = crate::git::guided::parse_hunks(&format!(
+            "{}{}",
+            one_hunk_file("first.rs"),
+            one_hunk_file("second.rs")
+        ));
+        guided.current = OVERVIEW;
+        let (list, _) = panes(&state);
+
+        // The overview, first.rs, second.rs: the third row is the second file.
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            list.x + 2,
+            list.y + 2,
+        );
+
+        let guided = state.guided.as_deref().unwrap();
+        assert_eq!(
+            guided.step().map(|step| step.path.as_str()),
+            Some("second.rs")
+        );
     }
 
     #[test]

@@ -69,6 +69,7 @@ Established repo style:
 - Errors are typed: a custom error or exception type when one is needed, never a generic one, and errors report failure rather than drive ordinary control flow.
 - Prefer compile-time guarantees to runtime checks: types, exhaustive matches, non-null types, constructors that only build valid values.
 - Every case is handled, and the best handling makes the invalid case impossible to represent; flag missing branches, catch-all arms that hide new cases, and sentinel values standing in for absence.
+- No Yoda comparisons: the value comes first, never the constant (`Boolean.TRUE.equals(flag)`, `\"literal\".equals(name)`, `null == value`). Putting the constant first quietly treats null as false and hides that the value can be null; handle the null where it arises, or make it impossible.
 - Never order by time: wall-clock timestamps, created-at fields and file times are not a reliable order; use sequence numbers, versions or explicit links.
 - Side effects (I/O, messaging, time, randomness) sit at the edges so the rules in the middle can be tested without them.
 - Outgoing HTTP calls and messages forward the correlation id or trace context of the request that caused them, where the codebase has one, so a call can be traced end to end.
@@ -186,6 +187,9 @@ pub const MAX_EVENTS_PER_FRAME: usize = 64;
 /// write over it. A buffer that holds a whole frame makes it one write.
 pub const FRAME_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 pub const BACKGROUND_FETCH_INTERVAL_SECS: u64 = 300;
+/// How often GitHub is asked what is waiting on the user. GitHub asks
+/// notification pollers to keep to at least a minute; this keeps well clear.
+pub const GITHUB_INBOX_INTERVAL_SECS: u64 = 300;
 /// How long the file watcher has to fall quiet before the changes it reported
 /// are refreshed. A save, a formatter run or a build arrives as a burst of
 /// events, and one refresh after the burst shows the same thing as one per

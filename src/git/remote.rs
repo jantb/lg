@@ -34,6 +34,21 @@ pub fn remote_url(name: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
+/// Where every remote of this repository points, each once.
+pub fn remote_urls() -> Result<Vec<String>> {
+    let out = run(&["remote", "-v"])?;
+    let mut urls: Vec<String> = Vec::new();
+    for url in String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+    {
+        if !urls.iter().any(|known| known == url) {
+            urls.push(url.to_owned());
+        }
+    }
+    Ok(urls)
+}
+
 /// Fetch before an operation that compares the branch with its remote.
 ///
 /// A fetch that fails does not stop the operation: the remote-tracking refs

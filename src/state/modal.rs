@@ -520,6 +520,12 @@ pub enum GitHubAction {
     OpenInBrowser {
         url: String,
     },
+    /// Point lg at `dir`, when it is not already, and open a guided review of
+    /// pull request `number` there.
+    ReviewInCheckout {
+        dir: std::path::PathBuf,
+        number: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

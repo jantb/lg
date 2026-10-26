@@ -11,6 +11,10 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+mod inbox;
+
+pub use inbox::{Inbox, InboxItem, Reason, Subject, mark_done, read_inbox};
+
 /// How many pull requests one list asks for. A list longer than this is
 /// searched on GitHub, not scrolled through in a terminal.
 const PR_LIMIT: &str = "50";
@@ -263,6 +267,15 @@ pub fn pull_requests(filter: PrFilter) -> Result<Vec<PullRequest>> {
     let mut args = vec!["pr", "list", "--limit", PR_LIMIT, "--json", PR_FIELDS];
     args.extend(filter.args());
     parse_pull_requests(&run(&args)?)
+}
+
+/// One pull request of the checkout lg is pointed at, whatever became of it.
+pub fn pull_request(number: u64) -> Result<PullRequest> {
+    let n = number.to_string();
+    let json = run(&["pr", "view", &n, "--json", PR_FIELDS])?;
+    parse_pull_requests(&format!("[{json}]"))?
+        .pop()
+        .with_context(|| format!("gh said nothing about #{number}"))
 }
 
 /// The repositories of `owner` — an organization, or the signed-in user when

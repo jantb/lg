@@ -72,6 +72,7 @@ fn modal_footer_title(state: &AppState, modal: Modal) -> Option<&'static str> {
             (GitHubMode::Create(_), _) => "GitHub new pull request",
             (GitHubMode::ConfirmClose, _) => "GitHub close",
             (GitHubMode::Browse, Tab::Repositories) => "GitHub repositories",
+            (GitHubMode::Browse, Tab::Inbox) => "GitHub inbox",
             (GitHubMode::Browse, Tab::PullRequests) => "GitHub",
         },
         Modal::GuidedReview => match state.guided.as_deref() {

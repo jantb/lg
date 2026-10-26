@@ -64,11 +64,35 @@ fn project_line(state: &AppState) -> Line<'static> {
         Span::styled("  ", Style::default().fg(Color::DarkGray)),
         Span::styled(root.to_string(), Style::default().fg(Color::DarkGray)),
     ];
-    if let Some(badge) = session_badge(state) {
+    for badge in [session_badge(state), inbox_badge(state)]
+        .into_iter()
+        .flatten()
+    {
         spans.push(Span::styled("  ", Style::default()));
         spans.push(badge);
     }
     Line::from(spans)
+}
+
+/// What is waiting on GitHub across the workspace, so it is seen without
+/// opening anything. Loud only for what asks something of the user.
+fn inbox_badge(state: &AppState) -> Option<Span<'static>> {
+    let (count, asking) = state.github.inbox.counts();
+    if count == 0 {
+        return None;
+    }
+    let (text, color) = if asking > 0 {
+        (
+            format!("{count} on GitHub \u{b7} {asking} for you \u{b7} H"),
+            Color::Yellow,
+        )
+    } else {
+        (format!("{count} on GitHub \u{b7} H"), Color::Cyan)
+    };
+    Some(Span::styled(
+        text,
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    ))
 }
 
 /// Sessions running elsewhere are easy to forget about, so the header says how

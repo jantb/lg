@@ -1,6 +1,7 @@
-//! GitHub from inside lg: the pull requests of the checkout on screen — check
-//! one out, review it, merge it, open a new one — and the repositories of the
-//! user or one of their organizations, to clone one.
+//! GitHub from inside lg: what is waiting on the user across the workspace,
+//! the pull requests of the checkout on screen — check one out, review it,
+//! merge it, open a new one — and the repositories of the user or one of their
+//! organizations, to clone one.
 //!
 //! Everything goes through `gh` (see [`crate::github`]). Lists are read on a
 //! thread of their own and picked up by [`poll`]; anything that changes
@@ -19,15 +20,32 @@ use crate::state::{AppState, GitHubAction, Modal, PendingAction};
 use work::{Pending, take_answer};
 
 mod draw;
+pub mod inbox;
 mod work;
 
 pub use draw::render;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
+    /// What is waiting on the user, in every repository of the workspace.
+    Inbox,
     #[default]
     PullRequests,
     Repositories,
+}
+
+impl Tab {
+    const ALL: [Self; 3] = [Self::Inbox, Self::PullRequests, Self::Repositories];
+
+    fn next(self, forward: bool) -> Self {
+        let idx = Self::ALL.iter().position(|tab| *tab == self).unwrap_or(0);
+        let len = Self::ALL.len();
+        Self::ALL[if forward {
+            (idx + 1) % len
+        } else {
+            (idx + len - 1) % len
+        }]
+    }
 }
 
 /// What the modal is doing with the selected pull request, if anything
@@ -129,6 +147,8 @@ pub struct GitHub {
     pub mode: Mode,
     pub filter: PrFilter,
 
+    pub inbox: inbox::Inbox,
+
     /// The repository the pull requests belong to, read once per checkout.
     pub repo: Option<RepoInfo>,
     pub prs: Vec<PullRequest>,
@@ -189,13 +209,14 @@ pub fn open(state: &mut AppState) {
     state.github.mode = Mode::Browse;
     // With no checkout there are no pull requests to show, and cloning one is
     // the likely reason lg was opened here.
-    state.github.tab = if state.repo_root.is_some() {
+    state.github.tab = inbox::opening_tab(state).unwrap_or(if state.repo_root.is_some() {
         Tab::PullRequests
     } else {
         Tab::Repositories
-    };
+    });
     state.modal = Modal::GitHub;
     match state.github.tab {
+        Tab::Inbox => {}
         Tab::PullRequests => load_pull_requests(state),
         Tab::Repositories => load_repositories(state),
     }
@@ -279,15 +300,18 @@ fn step_owner(state: &mut AppState, forward: bool) {
     load_repositories(state);
 }
 
-/// A GitHub action has finished: what the list shows may no longer be true.
+/// A GitHub action has finished: what the lists show may no longer be true.
+/// A review given, say, is a review request answered.
 pub fn after_action(state: &mut AppState) {
     if state.modal == Modal::GitHub {
         load_pull_requests(state);
     }
+    inbox::reload(state);
 }
 
 /// Take in whatever the lists being read have sent back.
 pub fn poll(state: &mut AppState) {
+    inbox::poll(state);
     let gh = &mut state.github;
     let mut create = false;
     if let Some(result) = take_answer(&mut gh.prs_loading) {
@@ -414,6 +438,7 @@ pub fn is_current_branch(state: &AppState, pr: &PullRequest) -> bool {
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     match state.github.mode {
         Mode::Browse => match state.github.tab {
+            Tab::Inbox => inbox::handle_key(state, key),
             Tab::PullRequests => browse_pull_requests(state, key),
             Tab::Repositories => browse_repositories(state, key),
         },
@@ -425,12 +450,14 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-fn switch_tab(state: &mut AppState) {
-    state.github.tab = match state.github.tab {
-        Tab::PullRequests => Tab::Repositories,
-        Tab::Repositories => Tab::PullRequests,
-    };
+fn switch_tab(state: &mut AppState, forward: bool) {
+    state.github.tab = state.github.tab.next(forward);
     match state.github.tab {
+        Tab::Inbox
+            if state.github.inbox.loading.is_none() && state.github.inbox.items().is_empty() =>
+        {
+            inbox::reload(state)
+        }
         Tab::PullRequests if state.github.prs_loading.is_none() && state.github.prs.is_empty() => {
             load_pull_requests(state)
         }
@@ -460,7 +487,7 @@ fn browse_pull_requests(state: &mut AppState, key: KeyEvent) {
             return;
         }
         KeyCode::Tab | KeyCode::BackTab => {
-            switch_tab(state);
+            switch_tab(state, key.code == KeyCode::Tab);
             return;
         }
         KeyCode::Char('j') | KeyCode::Down => {
@@ -843,7 +870,7 @@ fn browse_repositories(state: &mut AppState, key: KeyEvent) {
     let visible = visible_repos(&state.github).len();
     match key.code {
         KeyCode::Esc => state.modal = Modal::None,
-        KeyCode::Tab | KeyCode::BackTab => switch_tab(state),
+        KeyCode::Tab | KeyCode::BackTab => switch_tab(state, key.code == KeyCode::Tab),
         KeyCode::Down => {
             state.github.repo_idx = (state.github.repo_idx + 1).min(visible.saturating_sub(1))
         }
@@ -943,6 +970,8 @@ pub fn handle_mouse(state: &mut AppState, m: &MouseEvent) {
         _ => return,
     };
     match state.github.tab {
+        Tab::Inbox if down => inbox::select(state, state.github.inbox.idx + 1),
+        Tab::Inbox => inbox::select(state, state.github.inbox.idx.saturating_sub(1)),
         Tab::PullRequests if down => select_pr(state, state.github.pr_idx + 1),
         Tab::PullRequests => select_pr(state, state.github.pr_idx.saturating_sub(1)),
         Tab::Repositories => {

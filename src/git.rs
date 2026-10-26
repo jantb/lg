@@ -87,7 +87,7 @@ pub use release::{
 };
 pub use remote::{
     FetchOutcome, ForcePushPlan, fetch_updates, force_push_plan, merge_upstream, pull, push,
-    push_force_with_lease, push_with_upstream, remote_url, set_branch_upstream,
+    push_force_with_lease, push_with_upstream, remote_url, remote_urls, set_branch_upstream,
 };
 pub use review::{
     AssistedReview, BranchDiff, Language, REVIEW_AGENT_NODE_ID, REVIEW_PR_TEXT_NODE_ID, ReviewNode,
