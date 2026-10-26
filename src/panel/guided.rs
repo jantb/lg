@@ -86,8 +86,7 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
         }
         Some(_) => {}
         None if pointer::left_click(m) && browsing && pointer::inside(side, m.column, m.row) => {
-            // A drag from here selects text; whether it was a click on a
-            // finding is known once the button comes up.
+            // Ticking waits for the release: a drag selects text instead.
             let area = draw::selectable_areas(guided, side, state.diff_view_mode)
                 .into_iter()
                 .find(|area| pointer::inside(*area, m.column, m.row));
@@ -106,8 +105,6 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
     }
 }
 
-/// Tell the chat what is open in the file on screen when the walk has moved
-/// to another one since it was last told.
 fn follow_file_in_chat(guided: &mut Guided, sessions: &mut crate::session::Sessions) {
     let Some(session) = guided.chat.and_then(|id| sessions.get_mut(id)) else {
         return;
@@ -125,8 +122,6 @@ fn follow_file_in_chat(guided: &mut Guided, sessions: &mut crate::session::Sessi
     guided.chat_file = Some(path);
 }
 
-/// Once the read `r` asked for is in, tell the chat what it found: what the
-/// change fixed and what is still open.
 fn report_redo_to_chat(guided: &mut Guided, sessions: &mut crate::session::Sessions) {
     let settled: Vec<String> = guided
         .chat_update
@@ -146,10 +141,7 @@ fn report_redo_to_chat(guided: &mut Guided, sessions: &mut crate::session::Sessi
     }
 }
 
-/// A drag across the hunk or the commentary selects text, copied once the
-/// button comes up; a press and release that never moved is a click, which
-/// ticks off the finding under it. Returns whether the event was one of
-/// those.
+/// A press and release that never moved is a click, which ticks the finding under it.
 fn select_text(state: &mut AppState, side: ratatui::layout::Rect, m: &MouseEvent) -> bool {
     match m.kind {
         MouseEventKind::Drag(MouseButton::Left) => {
@@ -184,7 +176,6 @@ fn select_text(state: &mut AppState, side: ratatui::layout::Rect, m: &MouseEvent
             true
         }
         MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
-            // What was selected is about to move from under the selection.
             state.selection = None;
             false
         }
@@ -192,9 +183,7 @@ fn select_text(state: &mut AppState, side: ratatui::layout::Rect, m: &MouseEvent
     }
 }
 
-/// The wheel over the chat goes to it, and a click in it hands it the
-/// keyboard; a click anywhere else while it has the keyboard takes it back.
-/// Returns whether the event was the chat's.
+/// A click elsewhere while the chat has the keyboard takes it back.
 fn chat_mouse(state: &mut AppState, side: ratatui::layout::Rect, m: &MouseEvent) -> bool {
     use crate::panel::pointer;
     let Some(id) = chat_session(state) else {
@@ -353,7 +342,7 @@ impl Commentary {
     }
 }
 
-/// Ordered by how much it matters, so the worst of several is their `max`.
+/// Ordered so the worst of several is their `max`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Verdict {
     Ok,
@@ -393,13 +382,19 @@ pub enum Mode {
         editing: Option<usize>,
     },
     /// Asking the model about the step on screen.
-    Question { text: TextInput },
+    Question {
+        text: TextInput,
+    },
     /// Telling Claude what to change.
-    Fix { text: TextInput, all_notes: bool },
+    Fix {
+        text: TextInput,
+        all_notes: bool,
+    },
     /// Every note, and for a pull request the review they are submitted as.
-    Summary { event: usize, body: TextInput },
-    /// Typing into the Claude Code chat beside the hunk; Ctrl-] hands the
-    /// keyboard back to the walk.
+    Summary {
+        event: usize,
+        body: TextInput,
+    },
     Chat,
 }
 
@@ -410,10 +405,7 @@ pub struct Loaded {
     pub overview: Overview,
 }
 
-/// What the change says it is and what it touches, in the two forms a walk
-/// needs: `text` with each file's line counts, shown on the overview and sent
-/// with every question; `brief` without them, the shared opening of every
-/// step's prompt, which an edit then leaves as it was so it stays cached.
+/// `brief` leaves out the line counts, so an edit does not change the cached step prompt.
 pub struct Overview {
     pub text: String,
     pub brief: String,
@@ -424,10 +416,8 @@ pub struct Guided {
     pub source: Source,
     pub steps: Vec<GuidedHunk>,
     pub overview: String,
-    /// The overview without line counts, as the latest read has it.
     brief: String,
-    /// The brief every step's prompt opens with: the first of the walk, kept
-    /// so the prompt cache serves it to every step and every redo.
+    /// Pinned to the walk's first brief, so the cached step prompt never changes.
     shared_brief: Option<String>,
     /// Which step is on screen: [`OVERVIEW`], or a hunk counted from one.
     pub current: usize,
@@ -451,18 +441,13 @@ pub struct Guided {
     /// Steps whose commentary was asked for and failed, so they are not asked
     /// again every frame.
     failed: HashSet<String>,
-    /// What the model last said about each file `r` sent back to it, so its
-    /// next read can say what the reviewer's change fixed.
+    /// The model's last read of each file `r` sent back, for the next read to say what is fixed.
     earlier: HashMap<String, String>,
     /// The note `x` was pressed on once; pressing it again deletes it.
     pub(super) delete_armed: Option<usize>,
-    /// The Claude Code chat opened from this walk, to go back to.
     pub chat: Option<crate::session::SessionId>,
-    /// The file the chat was last told about, so moving to another one tells
-    /// it what is open there.
     pub chat_file: Option<String>,
-    /// The files `r` sent back to the model while the chat was open, whose
-    /// new read the chat is told about once it is in.
+    /// Files whose new read the chat is told about once it is in.
     chat_update: Vec<String>,
 }
 
@@ -559,16 +544,12 @@ impl Guided {
             .position(|note| note.path == step.path && (note.line, note.side) == anchor)
     }
 
-    /// The lines of the hunk on screen in the order the cursor visits them,
-    /// as `mode` lays them out.
     fn visit_order(&self, mode: DiffViewMode) -> Vec<usize> {
         self.step()
             .map(|step| layout::visit_order(&layout::rows(step, mode)))
             .unwrap_or_default()
     }
 
-    /// The lines of the hunk on screen with a finding not yet ticked off, in
-    /// visiting order.
     fn flagged_lines(&self, mode: DiffViewMode) -> Vec<usize> {
         let flagged: HashSet<usize> = self
             .placed_findings()
@@ -582,7 +563,6 @@ impl Guided {
             .collect()
     }
 
-    /// What the model flagged on the cursor line, one finding a line.
     pub(super) fn findings_at_cursor(&self) -> String {
         self.placed_findings()
             .into_iter()
@@ -607,7 +587,6 @@ impl Guided {
             .collect()
     }
 
-    /// The finding on the step on screen, as a tick names it.
     fn ticket(&self, finding: &findings::Finding) -> TickedFinding {
         ticket_in(
             self.step()
@@ -617,8 +596,6 @@ impl Guided {
         )
     }
 
-    /// What a chat about the file at `path` starts on: its findings not
-    /// ticked off yet, and the notes written on it.
     pub fn chat_brief(&self, path: &str) -> String {
         let mut out = format!("Open in {path}:\n");
         for step in self.steps.iter().filter(|step| step.path == path) {
@@ -647,9 +624,7 @@ impl Guided {
         out
     }
 
-    /// Where `step` stands once the model has read it: the worst finding not
-    /// yet ticked off, or ok when every one is. An answer that named no
-    /// findings keeps the verdict it gave.
+    /// The worst finding not yet ticked off; an answer that named none keeps its own verdict.
     pub fn verdict(&self, step: &GuidedHunk) -> Option<Verdict> {
         let commentary = self.commentary.get(&step.key())?;
         let given = commentary.verdict()?;
@@ -670,8 +645,7 @@ impl Guided {
         )
     }
 
-    /// The findings still open in the file at `path`: how many issues, and
-    /// how many nits.
+    /// (issues, nits) not yet ticked off.
     pub fn open_in_file(&self, path: &str) -> (usize, usize) {
         self.steps
             .iter()
@@ -689,8 +663,6 @@ impl Guided {
         self.progress.ticked.contains(finding)
     }
 
-    /// Whether the model has yet to finish its read of the step on screen,
-    /// or is about to start it.
     fn still_reading(&self, ai: bool) -> bool {
         let key = self.step_key();
         match self.commentary.get(&key) {
@@ -850,8 +822,6 @@ pub fn reload(state: &mut AppState) {
     });
 }
 
-/// What the change says it is, and every file it touches, with how much in
-/// the overview's text and without in its brief.
 fn overview_of(title: &str, body: &str, commits: &[String], steps: &[GuidedHunk]) -> Overview {
     let mut out = format!("{title}\n");
     if !body.trim().is_empty() {
@@ -1093,11 +1063,7 @@ fn concurrency() -> usize {
     }
 }
 
-/// The steps whose commentary the walk wants, most wanted first: the one on
-/// screen, the rest of its file after it and then before it, and every hunk
-/// of a file a redo still owes the chat. A file is otherwise read once the
-/// walk reaches it, not before, so on the overview only the overview and an
-/// owed redo are.
+/// Most wanted first. Another file is read only once the walk reaches it, or while the chat is owed its redo.
 fn steps_to_read(guided: &Guided) -> Vec<usize> {
     let path_of = |i: usize| guided.steps[i - 1].path.as_str();
     let here = guided.step().map(|step| step.path.as_str());
@@ -1111,8 +1077,6 @@ fn steps_to_read(guided: &Guided) -> Vec<usize> {
         .collect()
 }
 
-/// Ask for the commentary on the steps the walk wants now, as far as the
-/// provider allows at once.
 fn start_wanted_commentary(guided: &mut Guided) {
     if guided.loading.is_some() || (guided.steps.is_empty() && guided.overview.is_empty()) {
         return;
@@ -1144,9 +1108,7 @@ fn start_wanted_commentary(guided: &mut Guided) {
         let rx = if index == OVERVIEW {
             work::ask_overview(guided.overview.clone())
         } else {
-            // The opening every step shares is the first brief of the walk;
-            // a later one travels with the hunk instead, so that opening
-            // stays what the prompt cache already holds.
+            // The walk's first brief, so the cached prompt stays the same.
             let shared = guided
                 .shared_brief
                 .get_or_insert_with(|| guided.brief.clone())
@@ -1173,9 +1135,6 @@ fn step_context(guided: &Guided, index: usize) -> String {
     )
 }
 
-/// What the model is shown of step `index` alone: the hunk with every line
-/// numbered, the source around it when the files on disk are the ones being
-/// reviewed, and what it said about the file before `r` sent it back.
 fn hunk_context(guided: &Guided, index: usize) -> String {
     let step = &guided.steps[index - 1];
     let mut out = String::new();
@@ -1382,8 +1341,6 @@ pub(super) fn toggle_reviewed(state: &mut AppState) {
     }
 }
 
-/// The cursor to the next line, or the previous, in the order the hunk is
-/// laid out on screen; on the overview, the text scrolls instead.
 pub(super) fn move_cursor(state: &mut AppState, down: bool) {
     let mode = state.diff_view_mode;
     let Some(guided) = state.guided.as_mut() else {
@@ -1412,10 +1369,7 @@ pub(super) fn move_cursor(state: &mut AppState, down: bool) {
     }
 }
 
-/// Down the findings: the next line below the cursor the model flagged, or
-/// past the last one the next step, landing on its first. On the overview,
-/// or while the model is still reading the step, there is nothing to go by,
-/// so it moves a line instead.
+/// Until the model has read the step there is nothing to jump to, so it moves a line.
 pub(super) fn next_finding(state: &mut AppState) {
     let (ai, mode) = (state.ai_assist, state.diff_view_mode);
     let Some(guided) = state.guided.as_mut() else {
@@ -1437,8 +1391,6 @@ pub(super) fn next_finding(state: &mut AppState) {
     land_on_finding(state, left, true);
 }
 
-/// Up the findings: the previous flagged line above the cursor, or the
-/// previous step's last one.
 pub(super) fn previous_finding(state: &mut AppState) {
     let (ai, mode) = (state.ai_assist, state.diff_view_mode);
     let Some(guided) = state.guided.as_mut() else {
@@ -1460,8 +1412,6 @@ pub(super) fn previous_finding(state: &mut AppState) {
     land_on_finding(state, left, false);
 }
 
-/// Put the cursor on the first, or last, flagged line of the step just moved
-/// to from `left`; a step with none keeps the cursor where it opened.
 fn land_on_finding(state: &mut AppState, left: usize, first: bool) {
     let mode = state.diff_view_mode;
     let Some(guided) = state.guided.as_mut() else {
@@ -1480,8 +1430,6 @@ fn land_on_finding(state: &mut AppState, left: usize, first: bool) {
     }
 }
 
-/// Tick off the findings on the cursor line, or, when every one of them is
-/// ticked already, take the ticks back.
 pub(super) fn tick_at_cursor(state: &mut AppState) {
     let Some(guided) = state.guided.as_ref() else {
         return;
@@ -1499,8 +1447,6 @@ pub(super) fn tick_at_cursor(state: &mut AppState) {
     toggle_ticks(state, here);
 }
 
-/// Tick `findings` off, or all back on when every one is ticked already, and
-/// keep that with the walk's progress.
 fn toggle_ticks(state: &mut AppState, findings: Vec<TickedFinding>) {
     let Some(guided) = state.guided.as_mut() else {
         return;
@@ -1520,8 +1466,6 @@ fn toggle_ticks(state: &mut AppState, findings: Vec<TickedFinding>) {
     }
 }
 
-/// Put the keyboard in the Claude Code chat beside the hunk, starting the
-/// chat on the file on screen if the walk has none running yet.
 pub(super) fn open_chat(state: &mut AppState) {
     let running = chat_session(state);
     let Some(guided) = state.guided.as_mut() else {
@@ -1546,7 +1490,6 @@ pub(super) fn open_chat(state: &mut AppState) {
     state.pending_action = Some(PendingAction::GuidedChat);
 }
 
-/// The walk's chat, while its program is still running.
 pub(super) fn chat_session(state: &AppState) -> Option<crate::session::SessionId> {
     state
         .guided
@@ -1555,15 +1498,13 @@ pub(super) fn chat_session(state: &AppState) -> Option<crate::session::SessionId
         .filter(|id| state.sessions.get(*id).is_some())
 }
 
-/// The review's chat, while it is drawn beside the hunk.
 pub fn chat_on_screen(state: &AppState) -> Option<crate::session::SessionId> {
     (state.modal == Modal::GuidedReview)
         .then(|| chat_session(state))
         .flatten()
 }
 
-/// Whether the review's chat holds the keyboard, as a session does: then
-/// every key, Ctrl-C and Esc included, goes to Claude.
+/// Then every key, Ctrl-C and Esc included, goes to Claude.
 pub fn chat_has_keyboard(state: &AppState) -> bool {
     state.modal == Modal::GuidedReview
         && state
@@ -1572,7 +1513,6 @@ pub fn chat_has_keyboard(state: &AppState) -> bool {
             .is_some_and(|guided| guided.mode == Mode::Chat)
 }
 
-/// Keep the chat's program the size of the pane it is drawn in.
 pub fn fit_chat(state: &mut AppState, area: ratatui::layout::Rect) {
     if state.modal != Modal::GuidedReview {
         return;
@@ -1592,7 +1532,6 @@ pub fn fit_chat(state: &mut AppState, area: ratatui::layout::Rect) {
     }
 }
 
-/// A finding in the file at `path`, as a tick names it.
 fn ticket_in(path: &str, finding: &findings::Finding) -> TickedFinding {
     TickedFinding {
         path: path.to_string(),
@@ -1601,8 +1540,7 @@ fn ticket_in(path: &str, finding: &findings::Finding) -> TickedFinding {
     }
 }
 
-/// Lay hunks out side by side or one line a row: the setting the diff pane
-/// follows too, so both show a diff the same way.
+/// Shared with the diff pane.
 pub(super) fn toggle_layout(state: &mut AppState) {
     state.diff_view_mode = state.diff_view_mode.toggled();
     state.set_status(format!("showing {}", state.diff_view_mode.label()), false);
@@ -1722,10 +1660,7 @@ pub(super) fn ask_question(state: &mut AppState) {
     guided.side_scroll = u16::MAX;
 }
 
-/// Review the file on screen again: read the change from disk, so an edit
-/// made in the editor is in it, and ask about every hunk of the file anew,
-/// handing the model what it said last time so it can say what is fixed. On
-/// the overview, the change is read again and the overview asked for anew.
+/// Hands the model its earlier read of the file, so it can say what the edit fixed.
 pub(super) fn review_again(state: &mut AppState) {
     if !state.ai_assist {
         state.set_status(crate::panel::commit::AI_OFF_NOTICE, false);
@@ -1765,9 +1700,7 @@ pub(super) fn review_again(state: &mut AppState) {
     reload(state);
 }
 
-/// Whether the read `r` asked for of the file at `path` is in: the change is
-/// read again, and every hunk the file still has has its answer. A file the
-/// change no longer touches has nothing left to wait for.
+/// A file the change no longer touches has nothing left to wait for.
 fn redo_settled(guided: &Guided, path: &str) -> bool {
     guided.loading.is_none()
         && guided
@@ -1777,8 +1710,6 @@ fn redo_settled(guided: &Guided, path: &str) -> bool {
             .all(|step| guided.commentary.get(&step.key()).is_some_and(|c| c.done))
 }
 
-/// Drop what the model said, or is saying, about `keys`, so each is asked for
-/// again when the walk next wants it.
 fn forget(guided: &mut Guided, keys: &[String]) {
     guided.asks.retain(|ask| match &ask.target {
         Target::Commentary(key) => !keys.contains(key),
@@ -2322,15 +2253,11 @@ mod tests {
         assert!(text.contains("- abc fix it"));
         assert_eq!(text.matches("a.rs").count(), 1, "{text}");
         assert!(text.contains("+2 -1"), "{text}");
-        // The brief every step's prompt opens with leaves the counts out, so
-        // an edit does not change it.
         assert!(brief.contains("- a.rs\n"), "{brief}");
         assert!(!brief.contains("+2 -1"), "{brief}");
     }
 
-    /// A branch walk over two hunks of one file, both already looked at so
-    /// walking past them has nothing to save, the model having flagged two
-    /// lines of the first and nothing in the second.
+    /// Both hunks start reviewed, so walking past them saves nothing to disk.
     fn walk_with_findings() -> AppState {
         let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n\
                     @@ -1,3 +1,3 @@\n keep\n-old one\n+new one\n tail\n\
@@ -2378,9 +2305,6 @@ mod tests {
             .collect()
     }
 
-    /// ↓ goes from flagged line to flagged line and on into the next hunk,
-    /// ↑ back to the last one before it, and a note on a flagged line starts
-    /// as what the model said there.
     #[test]
     fn the_arrows_walk_the_flagged_lines_across_hunks() {
         use ratatui::crossterm::event::KeyCode::{Char, Down, Esc, Up};
@@ -2404,8 +2328,6 @@ mod tests {
         assert_eq!(cursor_line(&state), (1, " tail".into()));
     }
 
-    /// Until the model has read the hunk there is nothing to jump to, so the
-    /// arrow moves a line rather than skip the hunk unread.
     #[test]
     fn down_moves_a_line_while_the_model_is_still_reading() {
         let mut state = walk_with_findings();
@@ -2420,9 +2342,6 @@ mod tests {
         assert_eq!((guided.current, guided.cursor), (1, start + 1));
     }
 
-    /// `C` opens a chat about the file on screen that starts on what is
-    /// still open in it, and `Y` copies the same: not a finding ticked off,
-    /// nor another file's.
     #[test]
     fn the_chat_starts_on_what_is_open_in_the_file_on_screen() {
         let mut state = walk_with_findings();
@@ -2453,7 +2372,6 @@ mod tests {
         assert!(!brief.contains("tail could say"), "{brief}");
         assert!(!brief.contains("in another file"), "{brief}");
 
-        // `Y` copies the same, to carry into a chat of one's own.
         press(&mut state, ratatui::crossterm::event::KeyCode::Char('Y'));
         let Some(PendingAction::CopyToClipboard { text, .. }) = &state.pending_action else {
             panic!("Y copies");
@@ -2461,8 +2379,6 @@ mod tests {
         assert_eq!(*text, brief);
     }
 
-    /// The model reads the file on screen, and a file only once the walk
-    /// reaches it or a redo of it is owed; on the overview, only the overview.
     #[test]
     fn the_model_reads_ahead_only_in_the_file_on_screen() {
         let mut state = walk_with_findings();
@@ -2482,14 +2398,11 @@ mod tests {
         guided.current = OVERVIEW;
         assert_eq!(steps_to_read(guided), vec![OVERVIEW]);
 
-        // A file whose redo the chat is still owed goes on being read.
         guided.chat_update.push("a.rs".into());
         guided.current = 3;
         assert_eq!(steps_to_read(guided), vec![3, 1, 2]);
     }
 
-    /// A finding ticked off is dealt with: the hunk, the file and the walk's
-    /// count stand where the findings still open put them.
     #[test]
     fn ticking_findings_off_settles_the_hunk_and_its_file() {
         let mut state = walk_with_findings();
@@ -2515,14 +2428,11 @@ mod tests {
         assert_eq!(guided.open_in_file("a.rs"), (0, 0));
     }
 
-    /// After an edit in the editor, `r` sends the file back to the model:
-    /// what it said is dropped from the screen and handed to its next read,
-    /// which can then say what the edit fixed.
     #[test]
     fn r_reviews_the_file_again_with_what_was_said_before() {
         let mut state = walk_with_findings();
         state.ai_assist = true;
-        // A read of the change already under way, so the test starts none.
+        // Already loading, so the test starts no read of its own.
         let (_reading, rx) = std::sync::mpsc::channel();
         state.guided.as_mut().unwrap().loading = Some(rx);
 
@@ -2532,9 +2442,6 @@ mod tests {
         assert!(!guided.commentary.contains_key(&guided.steps[0].key()));
         assert!(hunk_context(guided, 1).contains("-1 stands in for missing"));
 
-        // The new read is in once the change is read again and the file's
-        // hunks have their answers; a chat open beside the walk then hears
-        // what was fixed.
         let guided = state.guided.as_mut().unwrap();
         assert!(!redo_settled(guided, "a.rs"));
         guided.loading = None;
@@ -2560,10 +2467,6 @@ mod tests {
         );
     }
 
-    /// Side by side, as the diff pane shows it by default, a removed line
-    /// sits beside its replacement and a finding sits under the new code; `v`
-    /// puts them one above the other. Either way the finding sits in the
-    /// hunk, under the line it is about.
     #[test]
     fn the_hunk_follows_the_diff_layout_with_findings_under_their_line() {
         let mut state = walk_with_findings();

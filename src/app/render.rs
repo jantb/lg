@@ -155,8 +155,7 @@ fn draw(frame: &mut Frame, state: &AppState) -> Option<String> {
         Modal::StatusDetails => panel::details::render(state, area, frame),
         Modal::ReviewChat => {}
     }
-    // Last, so a selection made inside a modal is read off what the modal
-    // drew rather than what lies under it.
+    // Last, so a selection inside a modal reads what the modal drew.
     state.selection.and_then(|selection| {
         selection.highlight(frame.buffer_mut());
         selection

@@ -102,11 +102,7 @@ pub fn review_style(settings: &RepoSettings, reviewed: &str) -> String {
     out
 }
 
-/// The system prompt for every step of a guided review: how to read a hunk,
-/// one finding a line and each pinned to the line it is about so lg can draw
-/// it there, the repo style, and the overview of the whole change. It is the
-/// same for every step of a walk, so the prompt cache serves it once and each
-/// step pays only for its own hunk, which comes as the user message.
+/// The same for every step of a walk, so the prompt cache serves it once and each step pays only for its hunk.
 pub fn build_guided_step_system_prompt(overview: &str, settings: &RepoSettings) -> String {
     format!(
         "You are walking a reviewer through a change one hunk at a time. The overview of the\n\
@@ -122,8 +118,9 @@ pub fn build_guided_step_system_prompt(overview: &str, settings: &RepoSettings) 
          shows for the line it is about. A finding is a bug, an unhandled case, a broken\n\
          contract, a missing test, a sentinel value (-1, 0, MAX, an empty string standing in for\n\
          \"none\") that can collide with a real value or leak into arithmetic, indexing or display,\n\
-         or a concrete violation of the repo style below. Leave out the `L` lines when there is\n\
-         nothing to flag and the Check line when there is nothing to check.\n\
+         or a concrete violation of the repo style below. A missing comment is never a finding.\n\
+         Leave out the `L` lines when there is nothing to flag and the Check line when there is\n\
+         nothing to check.\n\
          Keep each line under 25 words. Keep the words Summary, Fixed, Check, Verdict, issue and\n\
          nit in English. Do not restate the diff, use code fences, or invent code that is not shown.\n\n\
          {}\n\n\
@@ -134,8 +131,6 @@ pub fn build_guided_step_system_prompt(overview: &str, settings: &RepoSettings) 
     )
 }
 
-/// What a Claude Code chat opened from a guided review starts on: the change
-/// under review, what is still open in it, and to wait for the reviewer.
 pub fn build_guided_chat_prompt(title: &str, review: &str, settings: &RepoSettings) -> String {
     format!(
         "You are pairing with a reviewer on {title}, in this checkout. lg's guided review walks\n\
@@ -152,15 +147,12 @@ pub fn build_guided_chat_prompt(title: &str, review: &str, settings: &RepoSettin
     )
 }
 
-/// What the review's chat is told when the reviewer moves on to another file.
 pub fn build_guided_chat_next_file(brief: &str) -> String {
     format!(
         "The reviewer has moved on to another file. {brief}\n         Say in two or three lines what is open there, then wait."
     )
 }
 
-/// What the review's chat is told when the reviewer has changed a file and lg
-/// has reviewed it again.
 pub fn build_guided_chat_redo(brief: &str) -> String {
     format!(
         "The reviewer has changed the file and lg has reviewed it again. {brief}\n\

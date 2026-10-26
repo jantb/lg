@@ -44,8 +44,6 @@ pub(super) fn pace(state: &AppState, shown_live: bool, sessions_more: bool) -> P
     } else {
         None
     };
-    // A session in the main pane or the review's chat beside a hunk: either
-    // is on screen, and read at the rate of something being watched.
     let watched =
         state.session_view().is_some() || crate::panel::guided::chat_on_screen(state).is_some();
     let mut wake = if watched {

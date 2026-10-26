@@ -309,8 +309,6 @@ pub enum PendingAction {
     ReviewStyleFlags,
     /// Start a Claude Code session reviewing the whole branch.
     ReviewAgent,
-    /// Open the Claude Code chat for fixing what the guided review found, or
-    /// go back to it.
     GuidedChat,
     ReviewChat(String),
     CopyToClipboard {

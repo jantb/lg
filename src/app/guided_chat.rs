@@ -1,6 +1,4 @@
-//! A Claude Code chat inside a guided review, beside the hunk, to fix what
-//! the walk found with the whole checkout to hand. One per walk: it starts on
-//! the file on screen and is told about each file the walk moves on to.
+//! The Claude Code chat a guided review opens beside the hunk.
 
 use std::path::PathBuf;
 
@@ -13,7 +11,6 @@ use crate::state::AppState;
 use super::App;
 
 impl App {
-    /// Start the walk's chat on the file on screen and hand it the keyboard.
     pub(super) fn open_guided_chat(&mut self) {
         match start(&mut self.state) {
             Ok(path) => self.state.set_status(

@@ -209,8 +209,6 @@ fn draw_progress(state: &AppState, guided: &Guided, area: Rect, frame: &mut Fram
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// How many steps the model called an issue, a nit and ok, worst first, each
-/// in its colour, so how iffy the change is shows before walking it.
 fn verdict_tally(guided: &Guided) -> Vec<Span<'static>> {
     let verdicts: Vec<Verdict> = guided
         .steps
@@ -231,8 +229,6 @@ fn verdict_tally(guided: &Guided) -> Vec<Span<'static>> {
         .collect()
 }
 
-/// What the walk covers, in a colour of its own, so a review of the whole
-/// branch is never mistaken for one of only what is not committed yet.
 fn scope_badge(source: &Source) -> Span<'static> {
     let (text, color) = match source {
         Source::Branch { base_ref, .. } => (format!(" WHOLE BRANCH vs {base_ref} "), Color::Blue),
@@ -293,7 +289,6 @@ fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
             None => Span::raw("  "),
         };
         let notes = guided.notes_for(step).len();
-        // What is left to look at stands out; what is done steps back.
         let base = match (here, guided.is_reviewed(step)) {
             (true, _) => Style::default().bg(CURSOR_BG).add_modifier(Modifier::BOLD),
             (false, true) => LABEL,
@@ -326,8 +321,6 @@ fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
     frame.render_widget(list, area);
 }
 
-/// A file's row in the step list: its path, and what is still open in it,
-/// or a tick once every hunk of it is read and nothing is left open.
 fn file_row(guided: &Guided, path: &str, width: usize) -> Line<'static> {
     let (issues, nits) = guided.open_in_file(path);
     let read = guided
@@ -372,7 +365,6 @@ fn change_size(step: &GuidedHunk) -> String {
     }
 }
 
-/// How a verdict reads and the colour it is shown in, wherever it is shown.
 fn verdict_look(verdict: Verdict) -> (&'static str, Color) {
     match verdict {
         Verdict::Ok => ("ok", Color::Green),
@@ -431,9 +423,7 @@ fn draw_step(
     }
 }
 
-/// The regions of the pane beside the step list whose text the mouse can
-/// select: the hunk and the commentary under it, or the overview whole. The
-/// chat is a program's screen, and takes the mouse for itself.
+/// The chat is left out: it takes the mouse for itself.
 pub(super) fn selectable_areas(guided: &Guided, side: Rect, mode: DiffViewMode) -> Vec<Rect> {
     let Some(step) = guided.step() else {
         return vec![side];
@@ -447,11 +437,8 @@ pub(super) fn selectable_areas(guided: &Guided, side: Rect, mode: DiffViewMode) 
     vec![parts[0], commentary]
 }
 
-/// The commentary on the left under the hunk, the chat on the right.
 const CHAT_SPLIT: [Constraint; 2] = [Constraint::Percentage(40), Constraint::Percentage(60)];
 
-/// Where the chat's program draws, beside the commentary under the hunk and
-/// below its title row; `None` when there is no chat or no hunk on screen.
 pub(super) fn chat_screen_area(guided: &Guided, side: Rect, mode: DiffViewMode) -> Option<Rect> {
     guided.chat?;
     let step = guided.step()?;
@@ -465,8 +452,6 @@ pub(super) fn chat_screen_area(guided: &Guided, side: Rect, mode: DiffViewMode) 
     })
 }
 
-/// The chat: a title row saying which file it was last told about and how to
-/// reach it, and the program's screen under it.
 fn draw_chat(
     state: &AppState,
     guided: &Guided,
@@ -511,9 +496,7 @@ fn draw_chat(
     }
 }
 
-/// The hunk and the commentary under it, as [`draw_step`] splits `area`,
-/// with the divider between them. The findings sit in the hunk, so it gets
-/// most of the room and the commentary what is left.
+/// The findings sit in the hunk, so it gets most of the room.
 pub(super) fn step_areas(
     guided: &Guided,
     step: &GuidedHunk,
@@ -521,7 +504,6 @@ pub(super) fn step_areas(
     mode: DiffViewMode,
 ) -> (Vec<Rect>, Vec<Rect>) {
     let rows = hunk_lines(guided, step, mode, area.width).lines.len();
-    // A chat under the hunk wants room to be read and typed in.
     let most = if guided.chat.is_some() {
         area.height / 2
     } else {
@@ -546,8 +528,6 @@ fn draw_hunk(
     frame.render_widget(Paragraph::new(hunk.lines).scroll((scroll as u16, 0)), area);
 }
 
-/// The finding drawn at `column`, `row` of the pane beside the step list,
-/// named the way a tick names it; `None` off the hunk or off a finding.
 pub(super) fn finding_at(
     guided: &Guided,
     side: Rect,
@@ -569,8 +549,6 @@ pub(super) fn finding_at(
         .map(|(_, finding)| finding)
 }
 
-/// A hunk drawn for the pane: every row, which of them the cursor's line and
-/// what is pinned under it take up, and which each finding takes up.
 struct HunkLines {
     lines: Vec<Line<'static>>,
     cursor: std::ops::Range<usize>,
@@ -578,9 +556,7 @@ struct HunkLines {
 }
 
 impl HunkLines {
-    /// How far down a pane `height` rows tall starts: the cursor line and
-    /// what is pinned under it stay in view, with a little of what follows,
-    /// unless that would push the line itself off the top.
+    /// Keeps the cursor line and what is pinned under it in view.
     fn scroll(&self, height: u16) -> usize {
         (self.cursor.end + 2)
             .saturating_sub(usize::from(height))
@@ -588,8 +564,6 @@ impl HunkLines {
     }
 }
 
-/// The hunk `width` wide, laid out as `mode` says, with each line's notes and
-/// findings under the row it is on.
 fn hunk_lines(guided: &Guided, step: &GuidedHunk, mode: DiffViewMode, width: u16) -> HunkLines {
     let mut lines = vec![
         hunk_title(guided, step),
@@ -602,7 +576,6 @@ fn hunk_lines(guided: &Guided, step: &GuidedHunk, mode: DiffViewMode, width: u16
     let mut ticks = Vec::new();
     for row in layout::rows(step, mode) {
         let start = lines.len();
-        // A bar in the worst open flag's colour marks a row the model flagged.
         let worst = flagged
             .iter()
             .filter(|inline| !inline.ticked && row.lines().any(|line| line == inline.at))
@@ -675,7 +648,6 @@ fn hunk_lines(guided: &Guided, step: &GuidedHunk, mode: DiffViewMode, width: u16
     }
 }
 
-/// The file, where the hunk sits in it, and what has been said about it.
 fn hunk_title(guided: &Guided, step: &GuidedHunk) -> Line<'static> {
     let mut title = vec![Span::styled(
         step.path.clone(),
@@ -710,7 +682,6 @@ fn hunk_title(guided: &Guided, step: &GuidedHunk) -> Line<'static> {
     Line::from(title)
 }
 
-/// Line `at` across the whole row, both its numbers in the gutter.
 fn unified_line(step: &GuidedHunk, at: usize, here: bool) -> Line<'static> {
     let line = &step.lines[at];
     let number = |n: Option<usize>| n.map(|n| n.to_string()).unwrap_or_default();
@@ -731,7 +702,6 @@ fn unified_line(step: &GuidedHunk, at: usize, here: bool) -> Line<'static> {
     }
 }
 
-/// The old file's line beside the new file's, the cursor's side lit up.
 fn paired_lines(
     step: &GuidedHunk,
     left: Option<usize>,
@@ -768,7 +738,6 @@ fn paired_lines(
     }
 }
 
-/// `line` with the cursor's background on the spans that start in `columns`.
 fn light(line: Line<'static>, columns: &std::ops::Range<u16>) -> Line<'static> {
     let mut column = 0u16;
     let spans = line
@@ -788,7 +757,6 @@ fn light(line: Line<'static>, columns: &std::ops::Range<u16>) -> Line<'static> {
     Line::from(spans)
 }
 
-/// A note under the line it is pinned to.
 fn note_lines(body: &str, lead: &str) -> Vec<Line<'static>> {
     body.lines()
         .enumerate()
@@ -802,22 +770,17 @@ fn note_lines(body: &str, lead: &str) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// A finding drawn under the hunk line it is about.
 struct Inline {
-    /// The line it is about, by its index in the hunk.
     at: usize,
     finding: Finding,
     ticked: bool,
     lines: Vec<Line<'static>>,
 }
 
-/// Where the text pinned under a line starts, in a hunk `width` wide: past
-/// the line numbers, or side by side just right of the middle, under the new
-/// code it is nearly always about.
+/// Side by side, right of the middle: under the new code it is nearly always about.
 fn inline_lead(mode: DiffViewMode, width: u16) -> String {
     let column = match mode {
         DiffViewMode::Unified => 7,
-        // The bar's column, then the right side's start in what is left.
         DiffViewMode::SideBySide => {
             1 + usize::from(ui::side_by_side_columns(width.saturating_sub(1)).1)
         }
@@ -825,8 +788,6 @@ fn inline_lead(mode: DiffViewMode, width: u16) -> String {
     " ".repeat(column)
 }
 
-/// The findings drawn under each flagged line of the hunk, behind `lead` and
-/// wrapped to `width`.
 fn inline_findings(guided: &Guided, step: &GuidedHunk, lead: &str, width: u16) -> Vec<Inline> {
     let Some(commentary) = guided.commentary.get(&step.key()) else {
         return Vec::new();
@@ -847,8 +808,6 @@ fn inline_findings(guided: &Guided, step: &GuidedHunk, lead: &str, width: u16) -
         .collect()
 }
 
-/// One finding, marked by how much it matters, or as ticked off, and wrapped
-/// under its mark.
 fn finding_lines(finding: &Finding, ticked: bool, lead: &str, width: u16) -> Vec<Line<'static>> {
     let (mark, style) = match (ticked, finding.severity) {
         (true, _) => (
@@ -939,9 +898,6 @@ fn draw_commentary(
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
 }
 
-/// The model's read of a step less the findings drawn in the hunk: the
-/// verdict, what the hunk does, findings on lines it does not show, and
-/// anything else that was said.
 fn step_commentary_lines(
     state: &AppState,
     guided: &Guided,
@@ -1021,7 +977,6 @@ fn step_commentary_lines(
     lines
 }
 
-/// `text` behind `mark`, wrapped to `width` under itself, all in `color`.
 fn marked_lines(text: &str, mark: &str, color: Color, width: u16) -> Vec<Line<'static>> {
     let style = Style::default().fg(color);
     crate::panel::markdown::word_wrap(text, usize::from(width.saturating_sub(2)).max(10))

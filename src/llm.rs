@@ -165,8 +165,7 @@ pub fn stream_review_pr_text(context: String, tx: Sender<GenMsg>) {
     );
 }
 
-/// A reviewer's read of one step of a guided review: the walk's shared
-/// system prompt, built from `overview`, and the step's own `hunk` after it.
+/// The overview goes in the system prompt, which stays the same for the whole walk and so is cached.
 pub fn stream_guided_step(overview: String, hunk: String, tx: Sender<GenMsg>) {
     let messages = vec![
         ChatMessage {

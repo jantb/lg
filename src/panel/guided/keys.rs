@@ -109,7 +109,6 @@ fn browse(state: &mut AppState, key: KeyEvent) {
     }
 }
 
-/// Every key goes to the chat but the one that hands the keyboard back.
 fn chat_key(state: &mut AppState, key: KeyEvent) {
     if crate::app::session::is_release_key(&key) {
         set_mode(state, Mode::Browse);
@@ -146,8 +145,7 @@ pub(super) fn scroll_side(state: &mut AppState, by: i32) {
     }
 }
 
-/// Write a note on the cursor line, or change the one already there. On a
-/// line the model flagged, the note starts as what it said.
+/// On a line the model flagged, the note starts as what it said.
 fn start_note(state: &mut AppState) {
     let Some(guided) = state.guided.as_mut() else {
         return;
@@ -167,9 +165,7 @@ fn start_note(state: &mut AppState) {
     };
 }
 
-/// Ask Claude for a change: what the note on the cursor line says, else what
-/// the model flagged there, or what is typed; with `all_notes`, every note in
-/// the review.
+/// Starts from the note on the cursor line, else what the model flagged there; with `all_notes`, every note in the review.
 fn start_fix(state: &mut AppState, all_notes: bool) {
     let Some(guided) = state.guided.as_mut() else {
         return;
@@ -204,7 +200,6 @@ fn start_fix(state: &mut AppState, all_notes: bool) {
     };
 }
 
-/// Copy what is still open in the file on screen, to carry into a chat.
 fn copy_file_findings(state: &mut AppState) {
     let Some(guided) = state.guided.as_ref() else {
         return;

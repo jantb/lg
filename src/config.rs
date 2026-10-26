@@ -60,6 +60,7 @@ pub const REVIEW_STYLE_GUIDE: &str = "\
 Established repo style:
 - Immutable by default: prefer values that are set once, read-only collections, and copies over in-place mutation.
 - Names describe domain intent and behavior. Flag vague, misleading, or overly generic names and suggest a concrete replacement.
+- Code explains itself through names and structure. A comment is for the why the code cannot say; never ask for a comment or doc comment, and flag one that only restates the code.
 - Functions do one thing and stay short enough to read in one screen; extract helpers with names that say what they decide.
 - Functional and idiomatic: clear, condensed logic that reads top to bottom, built by composing small functions and types rather than by inheritance, in the language's current idioms rather than legacy patterns.
 - Dependencies are passed in (constructor or parameter injection), never reached for through globals, singletons, or service locators.

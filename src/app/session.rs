@@ -71,8 +71,7 @@ pub(crate) fn forward_paste(state: &mut AppState, text: &str) -> bool {
 /// draw, and what to say about one that ended.
 pub(crate) fn pump(state: &mut AppState) -> SessionPump {
     let shown = state.session_view();
-    // The review's chat is on screen too, beside the hunk, and wants drawing
-    // as soon as it says something just as much.
+    // The review's chat is on screen too.
     let chat = crate::panel::guided::chat_on_screen(state);
     let report = state.sessions.pump();
     let mut pumped = SessionPump {

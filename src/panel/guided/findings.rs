@@ -1,18 +1,15 @@
-//! The model's read of one step taken apart: the one-line summary, the
-//! findings it pins to lines of the hunk, and whatever else it said. Findings
-//! are drawn under the line they are about, so the pane beneath the hunk is
-//! left with only what has no line to sit on.
+//! A step's commentary taken apart into its summary and the findings it pins
+//! to lines of the hunk.
 
 use crate::git::guided::GuidedHunk;
 
-/// Ordered by how much it matters, so the worst on a line is its `max`.
+/// Ordered so the worst of several is their `max`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
     Nit,
     Issue,
 }
 
-/// One thing the model flagged, on the line it cited.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
     /// The line as the step prompt numbers it: the new file's number, or the
@@ -22,15 +19,12 @@ pub struct Finding {
     pub text: String,
 }
 
-/// A step's commentary, read in the shape the step prompt asks for. An
-/// answer that ignored the shape lands whole in `rest`, so nothing is lost.
+/// An answer that ignored the asked-for shape lands whole in `rest`.
 #[derive(Debug, Default)]
 pub struct Reading {
     pub summary: Option<String>,
     pub findings: Vec<Finding>,
-    /// Where to look next, when the answer depends on code not shown.
     pub check: Option<String>,
-    /// What an earlier read flagged that the code now fixes.
     pub fixed: Vec<String>,
     pub rest: Vec<String>,
 }
@@ -38,7 +32,7 @@ pub struct Reading {
 pub fn read(text: &str) -> Reading {
     let mut reading = Reading::default();
     for raw in text.lines() {
-        let line = bare(raw);
+        let line = without_markup(raw);
         if line.is_empty() {
             continue;
         }
@@ -49,8 +43,8 @@ pub fn read(text: &str) -> Reading {
         } else if let Some(check) = after_key(line, "check") {
             reading.check = Some(check.to_string());
         } else if after_key(line, "verdict").is_some() {
-            // The step list shows it; the pane does not need it again.
-        } else if let Some(finding) = finding(line) {
+            // Shown in the step list already.
+        } else if let Some(finding) = parse_finding(line) {
             reading.findings.push(finding);
         } else {
             reading.rest.push(raw.to_string());
@@ -59,8 +53,7 @@ pub fn read(text: &str) -> Reading {
     reading
 }
 
-/// The findings that sit on a line `step` shows, each with the index of that
-/// line in the hunk, top to bottom; and those that cite a line it does not.
+/// Findings on a line the hunk shows, with that line's index; then the rest.
 pub fn place<'a>(
     step: &GuidedHunk,
     findings: &'a [Finding],
@@ -90,8 +83,7 @@ fn index_of(step: &GuidedHunk, line: usize) -> Option<usize> {
         })
 }
 
-/// The line without list markers, emphasis or code ticks around it.
-fn bare(line: &str) -> &str {
+fn without_markup(line: &str) -> &str {
     let line = line.trim();
     let line = line
         .strip_prefix("- ")
@@ -101,7 +93,6 @@ fn bare(line: &str) -> &str {
     line.trim_start_matches(['*', '`']).trim()
 }
 
-/// What follows `key:` at the start of `line`, in any case.
 fn after_key<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let head = line.get(..key.len())?;
     if !head.eq_ignore_ascii_case(key) {
@@ -115,9 +106,8 @@ fn after_key<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     )
 }
 
-/// `L123 issue: text`, as the step prompt asks for it, with the separators a
-/// model is likely to vary.
-fn finding(line: &str) -> Option<Finding> {
+/// `L123 issue: text`, tolerating the separators a model tends to vary.
+fn parse_finding(line: &str) -> Option<Finding> {
     let rest = line.strip_prefix('L')?;
     let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
     let number = rest[..digits].parse().ok()?;
@@ -187,8 +177,6 @@ mod tests {
         }));
     }
 
-    /// The prompt numbers a removed line by the old file, everything else by
-    /// the new one; a line the hunk does not show has no row.
     #[test]
     fn a_finding_lands_on_the_line_the_prompt_numbered() {
         let step = crate::git::guided::parse_hunks(

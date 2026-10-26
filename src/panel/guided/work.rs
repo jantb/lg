@@ -95,8 +95,6 @@ pub(super) fn ask_overview(context: String) -> Receiver<GenMsg> {
     rx
 }
 
-/// The model's commentary on one step: its `hunk`, read against the walk's
-/// `overview`.
 pub(super) fn ask_step(overview: String, hunk: String) -> Receiver<GenMsg> {
     let (tx, rx) = std::sync::mpsc::channel();
     crate::git::spawn_pinned(move || crate::llm::stream_guided_step(overview, hunk, tx));

@@ -33,8 +33,7 @@ impl TextSelection {
         Self::within(pane.inner(Margin::new(1, 1)), column, row)
     }
 
-    /// Start a selection at a cell of `area`, every cell of which may be
-    /// selected: a region inside a modal, which draws no border of its own.
+    /// For a region inside a modal, which draws no border of its own.
     pub fn within(area: Rect, column: u16, row: u16) -> Option<Self> {
         if area.is_empty() {
             return None;
