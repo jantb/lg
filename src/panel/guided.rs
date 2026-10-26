@@ -45,6 +45,9 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
     if resize_list(state, list, m) {
         return;
     }
+    if chat_mouse(state, side, m) {
+        return;
+    }
     let Some(guided) = state.guided.as_deref() else {
         return;
     };
@@ -94,6 +97,63 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
             }
         }
         None => {}
+    }
+}
+
+/// Tell the chat what is open in the file on screen when the walk has moved
+/// to another one since it was last told.
+fn follow_file_in_chat(guided: &mut Guided, sessions: &mut crate::session::Sessions) {
+    let Some(session) = guided.chat.and_then(|id| sessions.get_mut(id)) else {
+        return;
+    };
+    let Some(path) = guided.step().map(|step| step.path.clone()) else {
+        return;
+    };
+    if guided.chat_file.as_deref() == Some(path.as_str()) {
+        return;
+    }
+    let message = crate::llm::build_guided_chat_next_file(&guided.chat_brief(&path));
+    let bracketed = session.bracketed_paste();
+    session.send(&crate::term::encode_paste(&message, bracketed));
+    session.send(b"\r");
+    guided.chat_file = Some(path);
+}
+
+/// The wheel over the chat goes to it, and a click in it hands it the
+/// keyboard; a click anywhere else while it has the keyboard takes it back.
+/// Returns whether the event was the chat's.
+fn chat_mouse(state: &mut AppState, side: ratatui::layout::Rect, m: &MouseEvent) -> bool {
+    use crate::panel::pointer;
+    let Some(id) = chat_session(state) else {
+        return false;
+    };
+    let mode = state.diff_view_mode;
+    let screen = state
+        .guided
+        .as_deref()
+        .and_then(|guided| draw::chat_screen_area(guided, side, mode));
+    let over = screen.filter(|area| pointer::inside(*area, m.column, m.row));
+    let Some(guided) = state.guided.as_mut() else {
+        return false;
+    };
+    match (pointer::wheel(m), over) {
+        (Some(down), Some(area)) => {
+            if let Some(session) = state.sessions.get_mut(id)
+                && !session.send_wheel(!down, m.column - area.x, m.row - area.y)
+            {
+                session.scroll(!down, 3);
+            }
+            true
+        }
+        (None, Some(_)) if pointer::left_click(m) => {
+            guided.mode = Mode::Chat;
+            true
+        }
+        (None, None) if pointer::left_click(m) && guided.mode == Mode::Chat => {
+            guided.mode = Mode::Browse;
+            false
+        }
+        _ => false,
     }
 }
 
@@ -264,6 +324,9 @@ pub enum Mode {
     Fix { text: TextInput, all_notes: bool },
     /// Every note, and for a pull request the review they are submitted as.
     Summary { event: usize, body: TextInput },
+    /// Typing into the Claude Code chat beside the hunk; Ctrl-] hands the
+    /// keyboard back to the walk.
+    Chat,
 }
 
 /// The loaded walk: everything but the receivers that feed it.
@@ -321,6 +384,9 @@ pub struct Guided {
     pub(super) delete_armed: Option<usize>,
     /// The Claude Code chat opened from this walk, to go back to.
     pub chat: Option<crate::session::SessionId>,
+    /// The file the chat was last told about, so moving to another one tells
+    /// it what is open there.
+    pub chat_file: Option<String>,
 }
 
 impl Guided {
@@ -348,6 +414,7 @@ impl Guided {
             earlier: HashMap::new(),
             delete_armed: None,
             chat: None,
+            chat_file: None,
         }
     }
 
@@ -472,27 +539,18 @@ impl Guided {
         )
     }
 
-    /// What a chat opened from the walk starts on: every finding not ticked
-    /// off yet, file by file, and every note.
-    pub fn chat_brief(&self) -> String {
-        let mut out = format!("Open findings: {}\n", self.source.title());
-        let mut path = "";
-        for step in &self.steps {
+    /// What a chat about the file at `path` starts on: its findings not
+    /// ticked off yet, and the notes written on it.
+    pub fn chat_brief(&self, path: &str) -> String {
+        let mut out = format!("Open in {path}:\n");
+        for step in self.steps.iter().filter(|step| step.path == path) {
             let Some(commentary) = self.commentary.get(&step.key()).filter(|c| c.done) else {
                 continue;
             };
-            let open: Vec<findings::Finding> = findings::read(&commentary.text)
+            let open = findings::read(&commentary.text)
                 .findings
                 .into_iter()
-                .filter(|finding| !self.is_ticked(&ticket_in(&step.path, finding)))
-                .collect();
-            if open.is_empty() {
-                continue;
-            }
-            if step.path != path {
-                path = &step.path;
-                out.push_str(&format!("\n## {path}\n"));
-            }
+                .filter(|finding| !self.is_ticked(&ticket_in(path, finding)));
             for finding in open {
                 let word = match finding.severity {
                     findings::Severity::Issue => "issue",
@@ -501,9 +559,8 @@ impl Guided {
                 out.push_str(&format!("- L{} {word}: {}\n", finding.line, finding.text));
             }
         }
-        if !self.progress.notes.is_empty() {
-            out.push('\n');
-            out.push_str(&notes_markdown(self));
+        for note in self.progress.notes.iter().filter(|note| note.path == path) {
+            out.push_str(&format!("- L{} note: {}\n", note.line, note.body));
         }
         out
     }
@@ -785,6 +842,17 @@ pub fn poll(state: &mut AppState) {
     if ai {
         start_wanted_commentary(guided);
     }
+    if guided
+        .chat
+        .is_some_and(|id| state.sessions.get(id).is_none())
+    {
+        guided.chat = None;
+        if guided.mode == Mode::Chat {
+            guided.mode = Mode::Browse;
+        }
+        notices.push(("the review chat ended".to_string(), false));
+    }
+    follow_file_in_chat(guided, &mut state.sessions);
 
     for (text, is_error) in notices {
         state.set_status(text, is_error);
@@ -1315,10 +1383,11 @@ fn toggle_ticks(state: &mut AppState, findings: Vec<TickedFinding>) {
     }
 }
 
-/// Open the Claude Code chat for fixing what the walk found, or go back to
-/// the one already open.
+/// Put the keyboard in the Claude Code chat beside the hunk, starting the
+/// chat on the file on screen if the walk has none running yet.
 pub(super) fn open_chat(state: &mut AppState) {
-    let Some(guided) = state.guided.as_ref() else {
+    let running = chat_session(state);
+    let Some(guided) = state.guided.as_mut() else {
         return;
     };
     if !guided.source.editable() {
@@ -1328,7 +1397,55 @@ pub(super) fn open_chat(state: &mut AppState) {
         );
         return;
     }
+    if guided.step().is_none() {
+        state.set_status("the chat is about a file: \u{2192} to a hunk first", false);
+        return;
+    }
+    if running.is_some() {
+        guided.mode = Mode::Chat;
+        state.set_status("chat \u{2014} Ctrl-] back to the review", false);
+        return;
+    }
     state.pending_action = Some(PendingAction::GuidedChat);
+}
+
+/// The walk's chat, while its program is still running.
+pub(super) fn chat_session(state: &AppState) -> Option<crate::session::SessionId> {
+    state
+        .guided
+        .as_ref()?
+        .chat
+        .filter(|id| state.sessions.get(*id).is_some())
+}
+
+/// Whether the review's chat holds the keyboard, as a session does: then
+/// every key, Ctrl-C and Esc included, goes to Claude.
+pub fn chat_has_keyboard(state: &AppState) -> bool {
+    state.modal == Modal::GuidedReview
+        && state
+            .guided
+            .as_ref()
+            .is_some_and(|guided| guided.mode == Mode::Chat)
+}
+
+/// Keep the chat's program the size of the pane it is drawn in.
+pub fn fit_chat(state: &mut AppState, area: ratatui::layout::Rect) {
+    if state.modal != Modal::GuidedReview {
+        return;
+    }
+    let Some(id) = chat_session(state) else {
+        return;
+    };
+    let mode = state.diff_view_mode;
+    let Some(screen) = state.guided.as_deref().and_then(|guided| {
+        let (_, side) = draw::pane_areas(guided, area, state.guided_list_width)?;
+        draw::chat_screen_area(guided, side, mode)
+    }) else {
+        return;
+    };
+    if let Some(session) = state.sessions.get_mut(id) {
+        session.resize(screen.height, screen.width);
+    }
 }
 
 /// A finding in the file at `path`, as a tick names it.
@@ -2144,10 +2261,10 @@ mod tests {
         assert_eq!((guided.current, guided.cursor), (1, start + 1));
     }
 
-    /// `C` opens a chat over the checkout that starts on what is still open:
-    /// a finding ticked off is not in it.
+    /// `C` opens a chat about the file on screen that starts on what is
+    /// still open in it: not a finding ticked off, nor another file's.
     #[test]
-    fn the_chat_starts_on_the_findings_not_yet_ticked_off() {
+    fn the_chat_starts_on_what_is_open_in_the_file_on_screen() {
         let mut state = walk_with_findings();
         let guided = state.guided.as_mut().unwrap();
         guided.progress.ticked.push(TickedFinding {
@@ -2155,16 +2272,26 @@ mod tests {
             line: 3,
             text: "tail could say what it ends.".into(),
         });
+        let other = crate::git::guided::parse_hunks(
+            "diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1,1 +1,1 @@\n-x\n+y\n",
+        )
+        .remove(0);
+        guided.commentary.insert(
+            other.key(),
+            commentary("L1 issue: in another file\nVerdict: issue"),
+        );
+        guided.steps.push(other);
 
         press(&mut state, ratatui::crossterm::event::KeyCode::Char('C'));
 
         assert_eq!(state.pending_action, Some(PendingAction::GuidedChat));
-        let brief = state.guided.as_ref().unwrap().chat_brief();
+        let brief = state.guided.as_ref().unwrap().chat_brief("a.rs");
         assert!(
             brief.contains("L2 issue: -1 stands in for missing"),
             "{brief}"
         );
         assert!(!brief.contains("tail could say"), "{brief}");
+        assert!(!brief.contains("in another file"), "{brief}");
     }
 
     /// After an edit in the editor, `r` sends the file back to the model:

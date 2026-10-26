@@ -20,7 +20,7 @@ use super::{App, HeadlessApp};
 /// so that byte arrives as Ctrl-5, not Ctrl-]. They are one keypress the
 /// terminal cannot tell apart, so both have to release; matching only on ']'
 /// left the keyboard stuck inside the session with no way out but the mouse.
-pub(super) fn is_release_key(key: &KeyEvent) -> bool {
+pub(crate) fn is_release_key(key: &KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char(']') | KeyCode::Char('5'))
 }

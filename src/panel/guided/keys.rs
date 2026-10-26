@@ -15,6 +15,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         Mode::Browse => browse(state, key),
         Mode::Note { .. } | Mode::Question { .. } | Mode::Fix { .. } => text_key(state, key),
         Mode::Summary { .. } => summary_key(state, key),
+        Mode::Chat => chat_key(state, key),
     }
     Ok(())
 }
@@ -23,6 +24,14 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
 pub fn handle_paste(state: &mut AppState, pasted: &str) -> bool {
     if state.modal != crate::state::Modal::GuidedReview {
         return false;
+    }
+    if super::chat_has_keyboard(state) {
+        if let Some(session) = super::chat_session(state).and_then(|id| state.sessions.get_mut(id))
+        {
+            let bracketed = session.bracketed_paste();
+            session.send(&crate::term::encode_paste(pasted, bracketed));
+        }
+        return true;
     }
     let Some(guided) = state.guided.as_mut() else {
         return false;
@@ -36,7 +45,7 @@ pub fn handle_paste(state: &mut AppState, pasted: &str) -> bool {
             body.insert_str(pasted);
             true
         }
-        Mode::Browse => false,
+        Mode::Browse | Mode::Chat => false,
     }
 }
 
@@ -96,6 +105,22 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('t') => super::tick_at_cursor(state),
         KeyCode::Char('C') => super::open_chat(state),
         _ => {}
+    }
+}
+
+/// Every key goes to the chat but the one that hands the keyboard back.
+fn chat_key(state: &mut AppState, key: KeyEvent) {
+    if crate::app::session::is_release_key(&key) {
+        set_mode(state, Mode::Browse);
+        return;
+    }
+    match super::chat_session(state).and_then(|id| state.sessions.get_mut(id)) {
+        Some(session) => {
+            if let Some(bytes) = crate::term::encode_key(key, session.application_cursor()) {
+                session.send(&bytes);
+            }
+        }
+        None => set_mode(state, Mode::Browse),
     }
 }
 

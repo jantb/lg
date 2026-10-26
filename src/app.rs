@@ -47,7 +47,7 @@ mod refresh;
 mod render;
 mod review_agent;
 mod review_assist;
-mod session;
+pub(crate) mod session;
 mod spawn;
 mod watch;
 mod workflow;

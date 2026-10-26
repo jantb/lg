@@ -149,6 +149,12 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
         crate::app::session::forward_key(host.state_mut(), k);
         return Ok(());
     }
+    // The review's chat holds the keyboard the way a session does, so Ctrl-C
+    // interrupts Claude there rather than quitting lg.
+    if panel::guided::chat_has_keyboard(host.state()) {
+        panel::guided::handle_key(host.state_mut(), k)?;
+        return Ok(());
+    }
     if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
         host.state_mut().request_quit();
         return Ok(());

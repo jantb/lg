@@ -389,7 +389,79 @@ fn draw_step(
     ui::draw_dividers(frame, &gaps);
     dividers.extend(gaps);
     draw_hunk(guided, step, mode, parts[0], frame);
-    draw_commentary(state, guided, step, parts[1], frame);
+    match super::chat_session(state) {
+        Some(id) => {
+            let (columns, gaps) = ui::modal_columns(frame, parts[1], &CHAT_SPLIT);
+            dividers.extend(gaps);
+            draw_commentary(state, guided, step, columns[0], frame);
+            draw_chat(state, guided, id, columns[1], frame);
+        }
+        None => draw_commentary(state, guided, step, parts[1], frame),
+    }
+}
+
+/// The commentary on the left under the hunk, the chat on the right.
+const CHAT_SPLIT: [Constraint; 2] = [Constraint::Percentage(40), Constraint::Percentage(60)];
+
+/// Where the chat's program draws, beside the commentary under the hunk and
+/// below its title row; `None` when there is no chat or no hunk on screen.
+pub(super) fn chat_screen_area(guided: &Guided, side: Rect, mode: DiffViewMode) -> Option<Rect> {
+    guided.chat?;
+    let step = guided.step()?;
+    let (parts, _) = step_areas(guided, step, side, mode);
+    let (columns, _) = ui::modal_column_areas(parts[1], &CHAT_SPLIT);
+    let chat = columns[1];
+    Some(Rect {
+        y: chat.y + 1,
+        height: chat.height.saturating_sub(1),
+        ..chat
+    })
+}
+
+/// The chat: a title row saying which file it was last told about and how to
+/// reach it, and the program's screen under it.
+fn draw_chat(
+    state: &AppState,
+    guided: &Guided,
+    id: crate::session::SessionId,
+    area: Rect,
+    frame: &mut Frame,
+) {
+    let Some(session) = state.sessions.get(id) else {
+        return;
+    };
+    let focused = guided.mode == Mode::Chat;
+    let (title, hint) = if focused {
+        (
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+            "  Ctrl-] back to the review",
+        )
+    } else {
+        (Style::default().fg(Color::Gray), "  C or click to type")
+    };
+    let file = guided.chat_file.as_deref().unwrap_or_default();
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!("Claude \u{b7} {file}"), title),
+            Span::styled(hint, LABEL),
+        ])),
+        Rect { height: 1, ..area },
+    );
+    let screen = Rect {
+        y: area.y + 1,
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+    crate::term::render_screen(session.screen(), screen, frame.buffer_mut());
+    if focused
+        && let Some((row, col)) = session.cursor_position()
+        && row < screen.height
+        && col < screen.width
+    {
+        frame.set_cursor_position((screen.x + col, screen.y + row));
+    }
 }
 
 /// The hunk and the commentary under it, as [`draw_step`] splits `area`,
@@ -402,9 +474,15 @@ pub(super) fn step_areas(
     mode: DiffViewMode,
 ) -> (Vec<Rect>, Vec<Rect>) {
     let rows = hunk_lines(guided, step, mode, area.width).lines.len();
+    // A chat under the hunk wants room to be read and typed in.
+    let most = if guided.chat.is_some() {
+        area.height / 2
+    } else {
+        area.height * 2 / 3
+    };
     let diff_height = u16::try_from(rows)
         .unwrap_or(u16::MAX)
-        .min(area.height * 2 / 3)
+        .min(most)
         .max(area.height.min(6));
     ui::modal_row_areas(area, &[Constraint::Length(diff_height), Constraint::Min(3)])
 }
@@ -1107,6 +1185,13 @@ fn draw_bottom(guided: &Guided, area: Rect, frame: &mut Frame) {
             },
             text,
         ),
+        Mode::Chat => {
+            frame.render_widget(
+                Paragraph::new(ui::key_hints(&keys::footer_pairs("Guided review: chat"))),
+                area,
+            );
+            return;
+        }
         Mode::Summary { .. } => {
             let section = if guided.source.is_pull_request() {
                 "Guided review: submit"

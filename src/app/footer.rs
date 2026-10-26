@@ -84,6 +84,7 @@ fn modal_footer_title(state: &AppState, modal: Modal) -> Option<&'static str> {
                     "Guided review: submit"
                 }
                 GuidedMode::Summary { .. } => "Guided review: notes",
+                GuidedMode::Chat => "Guided review: chat",
             },
             None => "Guided review",
         },

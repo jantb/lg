@@ -1605,6 +1605,24 @@ pub const SECTIONS: &[Section] = &[
         footer_order: &[],
     },
     Section {
+        title: "Guided review: chat",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "Ctrl-]",
+                help: "Back to the review; the chat stays open",
+                footer: Some(("Ctrl-]", "back to the review")),
+            },
+            Binding {
+                key: "any other key",
+                help: "Goes to Claude, Esc and Ctrl-C included",
+                footer: None,
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
         title: "Guided review: notes",
         pane: None,
         bindings: &[
@@ -2264,6 +2282,12 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         prefix: "Writing ",
         tone: Tone::Normal,
         order: &["Enter", "Alt-Enter", "Esc"],
+    },
+    ModalFooter {
+        section: "Guided review: chat",
+        prefix: "Chat ",
+        tone: Tone::Normal,
+        order: &["Ctrl-]"],
     },
     ModalFooter {
         section: "Guided review: notes",
