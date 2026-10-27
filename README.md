@@ -55,9 +55,13 @@ agents safely.
   a reading order, each file's risk and what is safe to skim. The mode badge
   in the header (or `M`) orders the files from that plan, with nothing lost
   in switching: by concern (the default, each file read with the rest of its
-  concern as context), as a map in the plan's reading order, or as triage,
-  riskiest first, with `S` marking the files to skim reviewed. Each file
-  comes with the model's read of all its hunks together. Move a line
+  concern as context), as a map numbered in the plan's reading order, as
+  triage in risk bands with `S` marking the files to skim reviewed, or as
+  issues: every open finding of what has been read, worst first, which the
+  arrows walk so the main issues come before the nits. A file is read when
+  the walk reaches it; a concern's `▶ read all` button (or `A`) reads all of
+  it at once, and a bar shows how far the plan has got. Each file comes
+  with the model's read of all its hunks together. Move a line
   cursor, pin notes to lines, ask follow-up questions, and fix things as you
   go: `e` opens `$EDITOR` at the line with lg suspended, and `f` has Claude
   Code make the change in place. Edits show up in the walk at once. After the

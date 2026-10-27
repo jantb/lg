@@ -14,7 +14,7 @@ use super::findings::{self, Finding, Severity};
 use super::layout::{self, Row};
 use super::plan::{Plan, Risk};
 use super::tree::{self, Entry};
-use super::{Commentary, Guided, Mode, OVERVIEW, Source, Verdict};
+use super::{Commentary, Guided, Mode, OVERVIEW, OpenFinding, Planning, Source, Verdict};
 use crate::git::guided::{GuidedFile, HunkLine, LineKind, Side, TickedFinding, WalkMode};
 use crate::panel::keys;
 use crate::state::{AppState, DiffViewMode, SPINNER_FRAMES};
@@ -124,6 +124,44 @@ pub(super) fn scope_badge_area(guided: &Guided, area: Rect) -> Option<Rect> {
     })
 }
 
+/// The plan's progress as a bar `width` wide and words: how long reading the
+/// diff has taken against how long it should, then how many files the plan
+/// has placed.
+fn planning_text(planning: Planning, width: usize) -> String {
+    match planning {
+        Planning::Reading {
+            elapsed: Some(elapsed),
+            expected: Some(expected),
+        } => {
+            let done = elapsed.as_millis().min(expected.as_millis());
+            format!(
+                "{} reading the diff, {}s of ~{}s",
+                bar(done as usize, expected.as_millis().max(1) as usize, width),
+                elapsed.as_secs(),
+                expected.as_secs().max(1)
+            )
+        }
+        Planning::Reading {
+            elapsed: Some(elapsed),
+            expected: None,
+        } => format!("reading the diff, {}s", elapsed.as_secs()),
+        Planning::Reading { elapsed: None, .. } => "waiting for the model".to_string(),
+        Planning::Writing { named, total } => format!(
+            "{} {named}/{total} files placed",
+            bar(named, total.max(1), width)
+        ),
+    }
+}
+
+fn bar(done: usize, total: usize, width: usize) -> String {
+    let filled = (done * width / total).min(width);
+    format!(
+        "{}{}",
+        "\u{2593}".repeat(filled),
+        "\u{2591}".repeat(width - filled)
+    )
+}
+
 /// Where the walk mode's badge is, after the scope badge; a click moves to
 /// the next mode.
 pub(super) fn walk_badge_area(guided: &Guided, area: Rect) -> Option<Rect> {
@@ -180,21 +218,56 @@ pub(super) fn list_width(inner_width: u16, requested: Option<u16>) -> u16 {
         .clamp(MIN_LIST_WIDTH, widest)
 }
 
+/// Triage's bands, by [`super::triage_rank`]: riskiest first, then the files
+/// the plan rated no risk for, then those safe to skim.
+const RISK_BANDS: [(&str, Color); 5] = [
+    ("\u{25cf} High risk", ISSUE),
+    ("\u{25cf} Medium risk", NIT),
+    ("\u{25cf} Low risk", Color::Green),
+    ("\u{b7} Not rated", Color::Gray),
+    (
+        "\u{25cb} Safe to skim (S marks them reviewed)",
+        Color::DarkGray,
+    ),
+];
+
 /// One row of the step list.
 enum ListRow {
     Overview,
-    /// A concern, or a directory of the file tree: stands for no step.
+    /// A directory of the file tree, or a word on what the list holds.
     Heading {
         text: String,
         depth: usize,
-        concern: bool,
+    },
+    /// A concern of the plan, by its place in the plan, with the button that
+    /// reads all of its files.
+    Concern {
+        index: usize,
+        title: String,
     },
     File {
         step: usize,
         name: String,
         depth: usize,
     },
+    /// A band of the list: the findings of one severity in issues mode, the
+    /// files of one risk in triage.
+    Band {
+        text: String,
+        color: Color,
+    },
+    Finding(OpenFinding),
     Final,
+}
+
+/// What a click on a row of the step list does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RowTarget {
+    Step(usize),
+    /// The file of a finding, with the cursor on its line.
+    Finding(OpenFinding),
+    /// A concern heading, whose button reads its files.
+    Concern(usize),
 }
 
 /// The step list as the walk mode lays it out: by concern, each concern's
@@ -216,7 +289,6 @@ fn list_rows(guided: &Guided, plan: Option<&Plan>) -> Vec<ListRow> {
                 Entry::Dir { name, depth: d } => ListRow::Heading {
                     text: name,
                     depth: depth + d,
-                    concern: false,
                 },
                 Entry::File {
                     step,
@@ -231,13 +303,37 @@ fn list_rows(guided: &Guided, plan: Option<&Plan>) -> Vec<ListRow> {
             .collect::<Vec<_>>()
     };
     let mut rows = vec![ListRow::Overview];
+    if guided.walk() == WalkMode::Issues {
+        rows.extend(issue_rows(guided));
+        rows.push(ListRow::Final);
+        return rows;
+    }
+    if let Some(plan) = plan.filter(|_| guided.walk() == WalkMode::Triage) {
+        for (rank, (text, color)) in RISK_BANDS.iter().enumerate() {
+            let paths: Vec<&str> = guided
+                .steps
+                .iter()
+                .map(|step| step.path.as_str())
+                .filter(|path| super::triage_rank(plan, path) == rank)
+                .collect();
+            if paths.is_empty() {
+                continue;
+            }
+            rows.push(ListRow::Band {
+                text: format!("{text} ({})", paths.len()),
+                color: *color,
+            });
+            rows.extend(tree_rows(&paths, 1));
+        }
+        rows.push(ListRow::Final);
+        return rows;
+    }
     match plan.filter(|_| guided.walk() == WalkMode::Concerns) {
         Some(plan) => {
-            for concern in &plan.concerns {
-                rows.push(ListRow::Heading {
-                    text: concern.title.clone(),
-                    depth: 0,
-                    concern: true,
+            for (index, concern) in plan.concerns.iter().enumerate() {
+                rows.push(ListRow::Concern {
+                    index,
+                    title: concern.title.clone(),
                 });
                 let paths: Vec<&str> = concern.paths.iter().map(String::as_str).collect();
                 rows.extend(tree_rows(&paths, 1));
@@ -255,22 +351,126 @@ fn list_rows(guided: &Guided, plan: Option<&Plan>) -> Vec<ListRow> {
 /// The step each row of the step list stands for, from its first row; a
 /// heading stands for none. With the first row shown, as [`draw_steps`]
 /// scrolls the list to keep the current step in the middle.
-pub(super) fn step_rows(guided: &Guided, height: u16) -> (Vec<Option<usize>>, usize) {
-    let rows: Vec<Option<usize>> = list_rows(guided, guided.plan().as_ref())
+/// Issues mode's list: the open findings of what has been read, grouped by
+/// severity, worst first.
+fn issue_rows(guided: &Guided) -> Vec<ListRow> {
+    let open = guided.open_findings();
+    let read = guided
+        .steps
+        .iter()
+        .filter(|step| guided.is_read(step))
+        .count();
+    let mut rows = Vec::new();
+    if read < guided.total() {
+        rows.push(ListRow::Heading {
+            text: format!(
+                "{read}/{} files read; \u{25b6} read a concern to add its findings",
+                guided.total()
+            ),
+            depth: 0,
+        });
+    }
+    for severity in Severity::ALL {
+        let group: Vec<&OpenFinding> = open
+            .iter()
+            .filter(|open| open.finding.severity == severity)
+            .collect();
+        if group.is_empty() {
+            continue;
+        }
+        rows.push(ListRow::Band {
+            text: format!(
+                "{}{} ({})",
+                severity_mark(severity),
+                group_name(severity),
+                group.len()
+            ),
+            color: severity_color(severity),
+        });
+        rows.extend(group.into_iter().cloned().map(ListRow::Finding));
+    }
+    if open.is_empty() && read > 0 {
+        rows.push(ListRow::Heading {
+            text: "nothing open in what is read".to_string(),
+            depth: 0,
+        });
+    }
+    rows
+}
+
+/// What a click on each row of the step list does, from its first row; a
+/// heading does nothing. With the first row shown, as [`draw_steps`] scrolls
+/// the list to keep the step or finding on screen in the middle.
+pub(super) fn row_targets(guided: &Guided, height: u16) -> (Vec<Option<RowTarget>>, usize) {
+    let rows: Vec<Option<RowTarget>> = list_rows(guided, guided.plan().as_ref())
         .into_iter()
         .map(|row| match row {
-            ListRow::Overview => Some(OVERVIEW),
-            ListRow::Heading { .. } => None,
-            ListRow::File { step, .. } => Some(step),
-            ListRow::Final => Some(guided.final_step()),
+            ListRow::Overview => Some(RowTarget::Step(OVERVIEW)),
+            ListRow::Heading { .. } | ListRow::Band { .. } => None,
+            ListRow::Concern { index, .. } => Some(RowTarget::Concern(index)),
+            ListRow::File { step, .. } => Some(RowTarget::Step(step)),
+            ListRow::Finding(open) => Some(RowTarget::Finding(open)),
+            ListRow::Final => Some(RowTarget::Step(guided.final_step())),
         })
         .collect();
     let selected = rows
         .iter()
-        .position(|row| *row == Some(guided.current))
+        .position(|row| match row {
+            Some(RowTarget::Step(step)) => *step == guided.current,
+            Some(RowTarget::Finding(open)) => is_here(guided, open),
+            _ => false,
+        })
         .unwrap_or(0);
     let offset = selected.saturating_sub(height as usize / 2);
     (rows, offset)
+}
+
+fn is_here(guided: &Guided, open: &OpenFinding) -> bool {
+    open.step == guided.current && open.at == Some(guided.cursor)
+}
+
+/// The button at the right end of a concern's heading: reads every file of
+/// it, then counts them in, then tallies what is open in them.
+fn concern_button(guided: &Guided, paths: &[String]) -> Span<'static> {
+    let (read, total) = guided.read_of(paths);
+    if read == total {
+        let open = |severity| {
+            paths
+                .iter()
+                .map(|path| guided.open_in_file(path, severity))
+                .sum::<usize>()
+        };
+        let (issues, nits) = (open(Severity::Issue), open(Severity::Nit));
+        return match (issues, nits) {
+            (0, 0) => Span::styled(" \u{2713} ", Style::default().fg(Color::Green)),
+            (0, nits) => Span::styled(format!(" \u{25cb}{nits} "), Style::default().fg(NIT)),
+            (issues, _) => Span::styled(format!(" \u{25cf}{issues} "), Style::default().fg(ISSUE)),
+        };
+    }
+    if guided.reading_ahead(paths) {
+        return Span::styled(
+            format!(" {read}/{total} "),
+            Style::default().fg(Color::Cyan),
+        );
+    }
+    Span::styled(
+        " \u{25b6} read all ",
+        Style::default().fg(Color::White).bg(Color::Rgb(50, 50, 50)),
+    )
+}
+
+/// Whether `column` is on the button of concern `index`'s heading in a list
+/// drawn in `list`.
+pub(super) fn on_concern_button(guided: &Guided, list: Rect, index: usize, column: u16) -> bool {
+    let Some(concern) = guided
+        .plan()
+        .and_then(|plan| plan.concerns.into_iter().nth(index))
+    else {
+        return false;
+    };
+    let width = u16::try_from(concern_button(guided, &concern.paths).width()).unwrap_or(0);
+    let end = list.x + list.width;
+    column >= end.saturating_sub(width) && column < end
 }
 
 fn bottom_height(guided: &Guided) -> u16 {
@@ -318,6 +518,25 @@ fn draw_progress(state: &AppState, guided: &Guided, area: Rect, frame: &mut Fram
     ];
     spans.extend(verdict_tally(guided));
     let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
+    if let Some(planning) = guided.planning() {
+        spans.push(Span::styled(
+            format!("  {spinner} planning {}", planning_text(planning, 10)),
+            Style::default().fg(Color::Cyan),
+        ));
+    }
+    let wanted: Vec<String> = guided
+        .steps
+        .iter()
+        .filter(|step| guided.wants_read(&step.path))
+        .map(|step| step.path.clone())
+        .collect();
+    let (read, total) = guided.read_of(&wanted);
+    if read < total {
+        spans.push(Span::styled(
+            format!("  {spinner} reading {read}/{total} file(s)"),
+            Style::default().fg(Color::Cyan),
+        ));
+    }
     if guided.loading.is_some() {
         spans.push(Span::styled(
             format!("  {spinner} reading the change"),
@@ -405,25 +624,45 @@ fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
                 "\u{2605} Overview",
                 selected(guided.current == OVERVIEW).fg(Color::LightCyan),
             ))),
-            ListRow::Heading {
-                text,
-                depth,
-                concern,
-            } => {
-                let style = if concern {
-                    Style::default()
-                        .fg(Color::LightYellow)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::Gray)
-                };
+            ListRow::Heading { text, depth } => {
                 let indent = "  ".repeat(depth);
                 let text = truncate_left(&text, width.saturating_sub(2 + indent.len()));
                 ListItem::new(Line::from(vec![
                     Span::raw("  "),
                     Span::raw(indent),
-                    Span::styled(text, style),
+                    Span::styled(text, Style::default().fg(Color::Gray)),
                 ]))
+            }
+            ListRow::Concern { index, title } => {
+                let paths = plan
+                    .as_ref()
+                    .and_then(|plan| plan.concerns.get(index))
+                    .map(|concern| concern.paths.clone())
+                    .unwrap_or_default();
+                let button = concern_button(guided, &paths);
+                // The button sits at the right edge, where the eye finds it
+                // in every heading's row alike.
+                let room = width.saturating_sub(2 + button.width());
+                let title = truncate_left(&title, room);
+                let pad = room.saturating_sub(title.chars().count());
+                ListItem::new(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        title,
+                        Style::default()
+                            .fg(Color::LightYellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" ".repeat(pad)),
+                    button,
+                ]))
+            }
+            ListRow::Band { text, color } => ListItem::new(Line::from(Span::styled(
+                format!("  {text}"),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ))),
+            ListRow::Finding(open) => {
+                finding_row(guided, &open, width, selected(is_here(guided, &open)))
             }
             ListRow::File { step, name, depth } => {
                 file_row(guided, plan.as_ref(), &order, step, &name, depth, width)
@@ -443,14 +682,55 @@ fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
             }
         })
         .collect();
-    let (_, offset) = step_rows(guided, area.height);
+    let (_, offset) = row_targets(guided, area.height);
     let list = List::new(items.into_iter().skip(offset).collect::<Vec<_>>());
     frame.render_widget(list, area);
 }
 
+fn group_name(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Issue => "Issues",
+        Severity::Nit => "Nits",
+        Severity::Question => "Questions",
+    }
+}
+
+/// An open finding's row: where it is, then what it says, cut to fit.
+fn finding_row(
+    guided: &Guided,
+    open: &OpenFinding,
+    width: usize,
+    style: Style,
+) -> ListItem<'static> {
+    let path = &guided.steps[open.step - 1].path;
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let whole = if open.whole { "\u{25c6}" } else { "" };
+    let place = format!("    {whole}{name}:{} ", open.finding.line);
+    let room = width.saturating_sub(place.chars().count());
+    let text: String = if open.finding.text.chars().count() > room {
+        let kept: String = open
+            .finding
+            .text
+            .chars()
+            .take(room.saturating_sub(1))
+            .collect();
+        format!("{kept}\u{2026}")
+    } else {
+        open.finding.text.clone()
+    };
+    ListItem::new(Line::from(vec![
+        Span::styled(
+            place,
+            Style::default().fg(severity_color(open.finding.severity)),
+        ),
+        Span::styled(text, Style::default().fg(Color::White)),
+    ]))
+    .style(style)
+}
+
 /// A file's row: its verdict in the first column, where a narrow list cannot
-/// cut it off; its place in the reading order on the map and in triage; its
-/// name; then its notes, open findings and, in triage, its risk.
+/// cut it off; its place in the reading order on the map; its name; then its
+/// notes and open findings.
 fn file_row(
     guided: &Guided,
     plan: Option<&Plan>,
@@ -478,7 +758,7 @@ fn file_row(
         (false, false) => Style::default().fg(Color::White),
     };
     let place = match (plan, guided.walk()) {
-        (Some(_), WalkMode::Map | WalkMode::Triage) => order
+        (Some(_), WalkMode::Map) => order
             .iter()
             .position(|&at| at == number)
             .map(|at| Span::styled(format!("{} ", at + 1), Style::default().fg(Color::Cyan))),
@@ -490,9 +770,6 @@ fn file_row(
         tail.push(Span::styled(format!(" \u{270e}{notes}"), NOTE));
     }
     tail.extend(file_tally(guided, step));
-    if triage && let Some(plan) = plan {
-        tail.extend(triage_tag(plan, &step.path));
-    }
     // The name first; what happened to a file with no text diff after
     // everything else, where a narrow list cuts it off first.
     let indent = "  ".repeat(depth);
@@ -509,17 +786,6 @@ fn file_row(
     spans.push(label);
     spans.extend(tail);
     ListItem::new(Line::from(spans)).style(base)
-}
-
-fn triage_tag(plan: &Plan, path: &str) -> Option<Span<'static>> {
-    if plan.skim.contains_key(path) {
-        return Some(Span::styled(" skim", LABEL));
-    }
-    let (risk, _) = plan.risk.get(path)?;
-    Some(Span::styled(
-        format!(" {}", risk.word()),
-        Style::default().fg(risk_color(*risk)),
-    ))
 }
 
 fn risk_color(risk: Risk) -> Color {
@@ -1174,9 +1440,19 @@ fn draw_overview(state: &AppState, guided: &Guided, area: Rect, frame: &mut Fram
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
     ))];
-    match guided.plan() {
-        Some(plan) => lines.extend(plan_lines(&plan, guided.walk())),
-        None => lines.extend(commentary_lines(
+    match (guided.plan(), guided.planning()) {
+        (Some(plan), _) => lines.extend(plan_lines(&plan, guided.walk())),
+        (None, Some(planning)) => {
+            let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {spinner} planning the walk: {}",
+                    planning_text(planning, 24)
+                ),
+                Style::default().fg(Color::Cyan),
+            )));
+        }
+        (None, None) => lines.extend(commentary_lines(
             state,
             guided.commentary.get(super::OVERVIEW_KEY),
             area.width,

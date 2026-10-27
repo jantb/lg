@@ -62,6 +62,8 @@ fn browse(state: &mut AppState, key: KeyEvent) {
     }
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => super::leave(state),
+        KeyCode::Right | KeyCode::Down if walking_issues(state) => super::next_issue(state),
+        KeyCode::Left | KeyCode::Up if walking_issues(state) => super::previous_issue(state),
         KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') | KeyCode::Tab => {
             super::next_step(state)
         }
@@ -70,6 +72,7 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('[') => super::previous_step(state),
         KeyCode::Char('M') => super::switch_walk(state),
         KeyCode::Char('S') => super::mark_skims_reviewed(state),
+        KeyCode::Char('A') => super::read_concern_on_screen(state),
         KeyCode::Char('d') if ctrl => scroll_side(state, 8),
         KeyCode::Char('u') if ctrl => scroll_side(state, -8),
         KeyCode::Char('u') => super::next_unreviewed(state),
@@ -110,6 +113,14 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('C') => super::open_chat(state),
         _ => {}
     }
+}
+
+/// In issues mode the arrows walk the open findings rather than the files.
+fn walking_issues(state: &AppState) -> bool {
+    state
+        .guided
+        .as_deref()
+        .is_some_and(|guided| guided.walk() == crate::git::guided::WalkMode::Issues)
 }
 
 fn chat_key(state: &mut AppState, key: KeyEvent) {

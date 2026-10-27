@@ -1424,12 +1424,17 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "M / badge",
-                help: "Walk by concern, map or triage",
+                help: "Walk by concern, map, triage or issues",
                 footer: Some(("M", "mode")),
             },
             Binding {
                 key: "S",
                 help: "Mark the files safe to skim reviewed",
+                footer: None,
+            },
+            Binding {
+                key: "A / \u{25b6} read all",
+                help: "Read every file of this concern now",
                 footer: None,
             },
             Binding {

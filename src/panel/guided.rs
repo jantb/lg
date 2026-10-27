@@ -100,11 +100,18 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
                 area.and_then(|area| crate::ui::TextSelection::within(area, m.column, m.row));
         }
         None if pointer::left_click(m) && browsing => {
-            let (rows, first) = draw::step_rows(guided, steps.height);
-            if let Some(at) = pointer::list_row(steps, first, rows.len(), m.column, m.row)
-                && let Some(step) = rows[at]
-            {
-                go_to(state, step, false);
+            let (rows, first) = draw::row_targets(guided, steps.height);
+            let target = pointer::list_row(steps, first, rows.len(), m.column, m.row)
+                .and_then(|at| rows[at].clone());
+            match target {
+                Some(draw::RowTarget::Step(step)) => go_to(state, step, false),
+                Some(draw::RowTarget::Finding(open)) => go_to_finding(state, &open),
+                Some(draw::RowTarget::Concern(index))
+                    if draw::on_concern_button(guided, steps, index, m.column) =>
+                {
+                    read_concern(state, index)
+                }
+                Some(draw::RowTarget::Concern(_)) | None => {}
             }
         }
         None => {}
@@ -288,6 +295,9 @@ const CONCURRENT_CLAUDE: usize = 3;
 const WHOLE_DIFF_BYTES: usize = 120_000;
 /// How much of the rest of a file's concern travels with it to the model.
 const CONCERN_CONTEXT_BYTES: usize = 40_000;
+/// How many reads may have their questions out with Claude at once, so
+/// reading a whole concern does not start a run per file.
+const CONCURRENT_CHECKS: usize = 2;
 
 /// What is being reviewed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -505,6 +515,10 @@ pub struct Guided {
     pull_request: Option<crate::github::PullRequest>,
     asks: Vec<Ask>,
     checks: Vec<Check>,
+    /// Steps whose questions wait for a check to free up, by key.
+    check_queue: Vec<String>,
+    /// Files the reviewer asked to have read ahead of the walk, by path.
+    read_wanted: Vec<String>,
     /// Steps whose commentary was asked for and failed, so they are not asked
     /// again every frame.
     failed: HashSet<String>,
@@ -553,6 +567,8 @@ impl Guided {
             pull_request: None,
             asks: Vec::new(),
             checks: Vec::new(),
+            check_queue: Vec::new(),
+            read_wanted: Vec::new(),
             failed: HashSet::new(),
             earlier: HashMap::new(),
             delete_armed: None,
@@ -615,7 +631,7 @@ impl Guided {
             return (1..=self.total()).collect();
         };
         let paths: Vec<String> = match self.walk() {
-            WalkMode::Concerns => plan
+            WalkMode::Concerns | WalkMode::Issues => plan
                 .concerns
                 .iter()
                 .flat_map(|concern| {
@@ -625,9 +641,14 @@ impl Guided {
                 })
                 .collect(),
             WalkMode::Map => plan.order.clone(),
+            // Band by band, each band's files as its tree lists them.
             WalkMode::Triage => {
                 let mut paths = plan.order.clone();
-                paths.sort_by_key(|path| triage_rank(&plan, path));
+                paths.sort_by(|a, b| {
+                    triage_rank(&plan, a)
+                        .cmp(&triage_rank(&plan, b))
+                        .then(a.cmp(b))
+                });
                 paths
             }
         };
@@ -636,6 +657,129 @@ impl Guided {
             .filter_map(|path| self.steps.iter().position(|step| step.path == *path))
             .map(|index| index + 1)
             .collect()
+    }
+
+    /// Whether the model has answered for `step`, its questions settled or not.
+    pub fn is_read(&self, step: &GuidedFile) -> bool {
+        self.commentary
+            .get(&step.key())
+            .is_some_and(|c| c.done || c.checking)
+    }
+
+    /// How many of `paths` the model has read, and how many there are.
+    pub fn read_of(&self, paths: &[String]) -> (usize, usize) {
+        let steps: Vec<&GuidedFile> = self
+            .steps
+            .iter()
+            .filter(|step| paths.contains(&step.path))
+            .collect();
+        let read = steps.iter().filter(|step| self.is_read(step)).count();
+        (read, steps.len())
+    }
+
+    /// Whether the reviewer asked for `path` to be read ahead of the walk.
+    pub fn wants_read(&self, path: &str) -> bool {
+        self.read_wanted.iter().any(|wanted| wanted == path)
+    }
+
+    /// Whether every file of `paths` was asked for ahead of the walk and not
+    /// all of them are in yet.
+    pub fn reading_ahead(&self, paths: &[String]) -> bool {
+        let (read, total) = self.read_of(paths);
+        read < total && paths.iter().all(|path| self.read_wanted.contains(path))
+    }
+
+    /// Every finding not yet ticked off in what has been read, the final
+    /// review's included: issues, then nits, then questions, each in the
+    /// walk's order and down the file.
+    pub fn open_findings(&self) -> Vec<OpenFinding> {
+        self.findings_in_order()
+            .into_iter()
+            .filter(|(_, ticked)| !ticked)
+            .map(|(open, _)| open)
+            .collect()
+    }
+
+    /// Every finding of what has been read in [`Guided::open_findings`]'
+    /// order, the ticked ones kept in their place and said to be ticked, so
+    /// ticking the one on screen does not lose the walk its place.
+    fn findings_in_order(&self) -> Vec<(OpenFinding, bool)> {
+        let mut out = Vec::new();
+        let mut push = |step: usize, finding: findings::Finding, whole: bool| {
+            let file = &self.steps[step - 1];
+            let ticked = self.is_ticked(&ticket_in(&file.path, &finding));
+            let at = findings::place(file, std::slice::from_ref(&finding))
+                .0
+                .first()
+                .map(|(at, _)| *at);
+            out.push((
+                OpenFinding {
+                    step,
+                    at,
+                    finding,
+                    whole,
+                },
+                ticked,
+            ));
+        };
+        for (index, step) in self.steps.iter().enumerate() {
+            let Some(commentary) = self
+                .commentary
+                .get(&step.key())
+                .filter(|c| c.done || c.checking)
+            else {
+                continue;
+            };
+            for finding in findings::read(&commentary.text).findings {
+                push(index + 1, finding, false);
+            }
+        }
+        if let Some(commentary) = self.commentary.get(&self.final_key()).filter(|c| c.done) {
+            for (path, finding) in findings::read(&commentary.text).cited {
+                if let Some(index) = self.steps.iter().position(|step| step.path == path) {
+                    push(index + 1, finding, true);
+                }
+            }
+        }
+        let order = self.walk_order();
+        let place = |step: usize| {
+            order
+                .iter()
+                .position(|&at| at == step)
+                .unwrap_or(order.len())
+        };
+        out.sort_by_key(|(open, _)| {
+            (
+                std::cmp::Reverse(open.finding.severity),
+                place(open.step),
+                open.finding.line,
+            )
+        });
+        out
+    }
+
+    /// How far the plan has got while it is being read: the diff being read,
+    /// then the files it has placed so far.
+    pub fn planning(&self) -> Option<Planning> {
+        let commentary = self.commentary.get(OVERVIEW_KEY).filter(|c| !c.done)?;
+        if commentary.text.trim().is_empty() {
+            let (elapsed, expected) = match crate::llm::phase() {
+                Some(crate::llm::LlmPhase::Prefill {
+                    elapsed, expected, ..
+                }) => (Some(elapsed), expected),
+                _ => (None, None),
+            };
+            return Some(Planning::Reading { elapsed, expected });
+        }
+        let named = self
+            .steps
+            .iter()
+            .filter(|step| commentary.text.contains(&step.path))
+            .count();
+        Some(Planning::Writing {
+            named,
+            total: self.total(),
+        })
     }
 
     /// The step after `current` in the walk: the overview leads to the first
@@ -688,6 +832,7 @@ impl Guided {
             || self.fixing.is_some()
             || !self.asks.is_empty()
             || !self.checks.is_empty()
+            || !self.check_queue.is_empty()
     }
 
     /// The notes that belong on `step`: those written on it, and those pinned
@@ -883,8 +1028,33 @@ impl Guided {
     }
 }
 
+/// A finding not yet ticked off, in the file it is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenFinding {
+    pub step: usize,
+    /// Its line's index in the file's diff, when the diff shows that line.
+    pub at: Option<usize>,
+    pub finding: findings::Finding,
+    /// Raised by the final review of the whole change, not the file's own read.
+    pub whole: bool,
+}
+
+/// The plan on its way: the model reading the diff, then writing the plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Planning {
+    Reading {
+        elapsed: Option<std::time::Duration>,
+        /// How long reading the diff should take, from the server's last speed.
+        expected: Option<std::time::Duration>,
+    },
+    Writing {
+        named: usize,
+        total: usize,
+    },
+}
+
 /// Riskiest first; files safe to skim after every other.
-fn triage_rank(plan: &plan::Plan, path: &str) -> u8 {
+pub(super) fn triage_rank(plan: &plan::Plan, path: &str) -> usize {
     if plan.skim.contains_key(path) {
         return 4;
     }
@@ -1158,8 +1328,12 @@ pub fn poll(state: &mut AppState) {
         }
     }
 
-    for key in drain_asks(guided) {
-        if let Some(root) = &root {
+    let answered = drain_asks(guided);
+    // Without a checkout there is no code to settle questions in.
+    if let Some(root) = &root {
+        guided.check_queue.extend(answered);
+        while guided.checks.len() < CONCURRENT_CHECKS && !guided.check_queue.is_empty() {
+            let key = guided.check_queue.remove(0);
             start_question_check(guided, root, &key, &mut state.sessions);
         }
     }
@@ -1421,16 +1595,18 @@ fn concurrency() -> usize {
 }
 
 /// Most wanted first: the plan, which orders the walk, then the step on
-/// screen. A file is read only once the walk reaches it, or while the chat is
-/// owed its redo.
+/// screen. A file is read only once the walk reaches it, the reviewer asks for
+/// its concern to be read, or the chat is owed its redo.
 fn steps_to_read(guided: &Guided) -> Vec<usize> {
     let owed = |i: usize| {
         let path = &guided.steps[i - 1].path;
         guided.chat_owed.iter().any(|(owed, _)| owed == path)
     };
+    let wanted = |i: usize| guided.read_wanted.contains(&guided.steps[i - 1].path);
     let mut seen = HashSet::new();
     std::iter::once(OVERVIEW)
         .chain(std::iter::once(guided.current))
+        .chain(guided.walk_order().into_iter().filter(|&i| wanted(i)))
         .chain((1..=guided.total()).filter(|&i| owed(i)))
         .filter(|&i| seen.insert(i))
         .collect()
@@ -1789,6 +1965,134 @@ pub(super) fn switch_walk(state: &mut AppState) {
     }
 }
 
+/// Have every file of concern `index` read now, ahead of the walk.
+pub(super) fn read_concern(state: &mut AppState, index: usize) {
+    if !state.ai_assist {
+        state.set_status(crate::panel::commit::AI_OFF_NOTICE, false);
+        return;
+    }
+    let Some(guided) = state.guided.as_mut() else {
+        return;
+    };
+    let Some(concern) = guided
+        .plan()
+        .and_then(|plan| plan.concerns.into_iter().nth(index))
+    else {
+        return;
+    };
+    let (read, total) = guided.read_of(&concern.paths);
+    for path in &concern.paths {
+        if !guided.read_wanted.contains(path) {
+            guided.read_wanted.push(path.clone());
+        }
+    }
+    let message = if read == total {
+        format!("every file of \"{}\" is read", concern.title)
+    } else {
+        format!(
+            "reading the {} file(s) of \"{}\" still unread\u{2026}",
+            total - read,
+            concern.title
+        )
+    };
+    state.set_status(message, false);
+}
+
+/// Have the concern of the file on screen read whole.
+pub(super) fn read_concern_on_screen(state: &mut AppState) {
+    let Some(guided) = state.guided.as_deref() else {
+        return;
+    };
+    let Some(path) = guided.step().map(|step| step.path.clone()) else {
+        state.set_status("the concern is a file's: \u{2192} to one first", false);
+        return;
+    };
+    let Some(plan) = guided.plan() else {
+        state.set_status("the plan is not read yet", false);
+        return;
+    };
+    match plan
+        .concerns
+        .iter()
+        .position(|concern| concern.paths.contains(&path))
+    {
+        Some(index) => read_concern(state, index),
+        None => state.set_status("this file is in no concern", false),
+    }
+}
+
+/// The next open finding, worst first: its file on screen, the cursor on its
+/// line. Past the last is the final review, and past that every note.
+pub(super) fn next_issue(state: &mut AppState) {
+    let Some(guided) = state.guided.as_deref() else {
+        return;
+    };
+    if guided.on_final() {
+        open_summary(state);
+        return;
+    }
+    let all = guided.findings_in_order();
+    let from = finding_here(guided, &all).map_or(0, |at| at + 1);
+    let next = all[from..]
+        .iter()
+        .find(|(_, ticked)| !ticked)
+        .map(|(open, _)| open.clone());
+    match next {
+        Some(finding) => go_to_finding(state, &finding),
+        None => {
+            go_final(state);
+            let read = state.guided.as_deref().map_or(0, |guided| {
+                guided
+                    .steps
+                    .iter()
+                    .filter(|step| guided.is_read(step))
+                    .count()
+            });
+            let total = state.guided.as_deref().map_or(0, Guided::total);
+            state.set_status(
+                format!("no more open findings in the {read} of {total} file(s) read"),
+                false,
+            );
+        }
+    }
+}
+
+pub(super) fn previous_issue(state: &mut AppState) {
+    let Some(guided) = state.guided.as_deref() else {
+        return;
+    };
+    let all = guided.findings_in_order();
+    let before = match finding_here(guided, &all) {
+        Some(at) => at,
+        None if guided.on_final() => all.len(),
+        None => 0,
+    };
+    let previous = all[..before]
+        .iter()
+        .rev()
+        .find(|(_, ticked)| !ticked)
+        .map(|(open, _)| open.clone());
+    match previous {
+        Some(finding) => go_to_finding(state, &finding),
+        None => go_to(state, OVERVIEW, false),
+    }
+}
+
+/// The finding the cursor is on, ticked or not.
+fn finding_here(guided: &Guided, all: &[(OpenFinding, bool)]) -> Option<usize> {
+    all.iter()
+        .position(|(open, _)| open.step == guided.current && open.at == Some(guided.cursor))
+}
+
+pub(super) fn go_to_finding(state: &mut AppState, finding: &OpenFinding) {
+    go_to(state, finding.step, false);
+    if let Some(guided) = state.guided.as_mut()
+        && let Some(at) = finding.at
+    {
+        guided.cursor = at;
+    }
+}
+
 /// Mark every file the plan says is safe to skim as reviewed.
 pub(super) fn mark_skims_reviewed(state: &mut AppState) {
     let Some(guided) = state.guided.as_mut() else {
@@ -1849,6 +2153,8 @@ pub(super) fn reset_review(state: &mut AppState) {
     guided.earlier.clear();
     guided.asks.clear();
     guided.checks.clear();
+    guided.check_queue.clear();
+    guided.read_wanted.clear();
     guided.chat_owed.clear();
     guided.shared_brief = None;
     guided.delete_armed = None;
@@ -2290,6 +2596,7 @@ fn forget(guided: &mut Guided, keys: &[String]) {
         Target::Answer(..) => true,
     });
     guided.checks.retain(|check| !keys.contains(&check.key));
+    guided.check_queue.retain(|key| !keys.contains(key));
     for key in keys {
         guided.commentary.remove(key);
         guided.failed.remove(key);
@@ -3655,6 +3962,8 @@ mod tests {
         click(&mut state);
         assert_eq!(state.guided.as_ref().unwrap().walk(), WalkMode::Triage);
         press(&mut state, ratatui::crossterm::event::KeyCode::Char('M'));
+        assert_eq!(state.guided.as_ref().unwrap().walk(), WalkMode::Issues);
+        press(&mut state, ratatui::crossterm::event::KeyCode::Char('M'));
         assert_eq!(state.guided.as_ref().unwrap().walk(), WalkMode::Concerns);
 
         let guided = state.guided.as_ref().unwrap();
@@ -3695,5 +4004,219 @@ mod tests {
 
         assert!(!guided.commentary.contains_key(&guided.steps[0].key()));
         assert!(guided.asks.is_empty());
+    }
+
+    /// The step list's rows as drawn, its own columns only.
+    fn list_text(state: &AppState) -> Vec<String> {
+        let (list, _) = panes(state);
+        screen(state)
+            .into_iter()
+            .skip(list.y as usize)
+            .take(list.height as usize)
+            .map(|row| {
+                row.chars()
+                    .skip(list.x as usize)
+                    .take(list.width as usize)
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn row_of(rows: &[String], text: &str) -> usize {
+        rows.iter()
+            .position(|row| row.contains(text))
+            .unwrap_or_else(|| panic!("{text} is not listed: {rows:#?}"))
+    }
+
+    #[test]
+    fn triage_lists_the_files_in_risk_bands_and_the_map_numbers_them() {
+        let mut state = walk_with_plan();
+        state.guided.as_mut().unwrap().progress.walk = WalkMode::Triage;
+        let rows = list_text(&state);
+        assert!(row_of(&rows, "High risk") < row_of(&rows, "lookup.rs"));
+        assert!(row_of(&rows, "lookup.rs") < row_of(&rows, "Medium risk"));
+        assert!(row_of(&rows, "Medium risk") < row_of(&rows, "cache.rs"));
+        assert!(row_of(&rows, "Safe to skim") < row_of(&rows, "Cargo.lock"));
+
+        state.guided.as_mut().unwrap().progress.walk = WalkMode::Map;
+        let rows = list_text(&state);
+        assert!(!rows.iter().any(|row| row.contains("risk")));
+        // Numbered in the plan's order: the tests first, the lockfile last.
+        assert!(row_of(&rows, "tests/") < row_of(&rows, "1 cache.rs"));
+        assert!(rows.iter().any(|row| row.contains("4 Cargo.lock")));
+    }
+
+    /// The button reads the whole concern; a click on the heading's title
+    /// does nothing, so reading is always chosen.
+    #[test]
+    fn a_concerns_button_reads_all_of_its_files_and_only_the_button_does() {
+        let mut state = walk_with_plan();
+        state.ai_assist = true;
+        let (list, _) = panes(&state);
+        let rows = list_text(&state);
+        let heading = list.y + row_of(&rows, "The cache") as u16;
+        assert!(rows[row_of(&rows, "The cache")].contains("read all"));
+        let click = |state: &mut AppState, column: u16| {
+            mouse(
+                state,
+                MouseEventKind::Down(MouseButton::Left),
+                column,
+                heading,
+            )
+        };
+
+        click(&mut state, list.x + 3);
+        assert!(!state.guided.as_ref().unwrap().wants_read("src/cache.rs"));
+
+        click(&mut state, list.x + list.width - 2);
+        let guided = state.guided.as_deref().unwrap();
+        assert!(guided.wants_read("src/cache.rs") && guided.wants_read("src/lookup.rs"));
+        assert!(!guided.wants_read("tests/cache.rs"));
+        let number = |path: &str| guided.steps.iter().position(|s| s.path == path).unwrap() + 1;
+        let wanted = steps_to_read(guided);
+        assert!(wanted.contains(&number("src/cache.rs")));
+        assert!(wanted.contains(&number("src/lookup.rs")));
+        assert!(!wanted.contains(&number("tests/cache.rs")));
+    }
+
+    #[test]
+    fn a_reads_the_concern_of_the_file_on_screen() {
+        let mut state = walk_with_plan();
+        state.ai_assist = true;
+        let guided = state.guided.as_mut().unwrap();
+        guided.current = guided
+            .steps
+            .iter()
+            .position(|s| s.path == "tests/cache.rs")
+            .unwrap()
+            + 1;
+
+        press(&mut state, ratatui::crossterm::event::KeyCode::Char('A'));
+
+        let guided = state.guided.as_deref().unwrap();
+        assert!(guided.wants_read("tests/cache.rs"));
+        assert!(!guided.wants_read("src/cache.rs"));
+    }
+
+    /// Reads of three files and the final review, each with findings of
+    /// their own, walked by issue.
+    fn walk_with_findings_read() -> AppState {
+        let mut state = walk_with_plan();
+        let guided = state.guided.as_mut().unwrap();
+        let key = |guided: &Guided, path: &str| {
+            guided.steps.iter().find(|s| s.path == path).unwrap().key()
+        };
+        let reads = [
+            (
+                key(guided, "src/cache.rs"),
+                "L1 nit: evict could say what it evicts.\nVerdict: nit",
+            ),
+            (
+                key(guided, "src/lookup.rs"),
+                "L1 question: is the cache warm here?\nVerdict: ok",
+            ),
+            (
+                key(guided, "tests/cache.rs"),
+                "L1 issue: the test never fills the cache.\nVerdict: issue",
+            ),
+        ];
+        for (key, text) in reads {
+            guided.commentary.insert(key, commentary(text));
+        }
+        let final_key = guided.final_key();
+        guided.commentary.insert(
+            final_key,
+            commentary(
+                "src/lookup.rs:L1 issue: lookup and evict take the lock in opposite order.\n\
+                 Verdict: issue",
+            ),
+        );
+        guided.progress.walk = WalkMode::Issues;
+        state
+    }
+
+    #[test]
+    fn issues_lists_every_open_finding_worst_first_and_the_arrows_walk_them() {
+        use ratatui::crossterm::event::KeyCode::{Char, Right};
+        let mut state = walk_with_findings_read();
+
+        let rows = list_text(&state);
+        // The list is narrow: a finding shows where it is and how it starts.
+        assert!(row_of(&rows, "Issues (2)") < row_of(&rows, "cache.rs:1 the test"));
+        assert!(row_of(&rows, "Issues (2)") < row_of(&rows, "lookup.rs:1 lookup and"));
+        assert!(row_of(&rows, "cache.rs:1 the test") < row_of(&rows, "Nits (1)"));
+        assert!(row_of(&rows, "Nits (1)") < row_of(&rows, "Questions (1)"));
+
+        let on = |state: &AppState| {
+            let guided = state.guided.as_deref().unwrap();
+            let step = guided.step().unwrap();
+            (step.path.clone(), step.lines[guided.cursor].text.clone())
+        };
+        // The cache concern, lookup.rs in it, comes before the tests.
+        press(&mut state, Right);
+        assert_eq!(
+            on(&state),
+            ("src/lookup.rs".into(), "+lookup calls the cache".into())
+        );
+        press(&mut state, Right);
+        assert_eq!(on(&state).0, "tests/cache.rs");
+
+        press(&mut state, Char('t'));
+        let guided = state.guided.as_deref().unwrap();
+        assert!(
+            guided
+                .open_findings()
+                .iter()
+                .all(|open| open.finding.text != "the test never fills the cache.")
+        );
+        press(&mut state, Right);
+        assert_eq!(
+            on(&state).0,
+            "src/cache.rs",
+            "the nit, once the issues are done"
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_finding_opens_its_file_on_its_line() {
+        let mut state = walk_with_findings_read();
+        let (list, _) = panes(&state);
+        let rows = list_text(&state);
+        let row = list.y + row_of(&rows, "cache.rs:1 the test") as u16;
+
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            list.x + 6,
+            row,
+        );
+
+        let guided = state.guided.as_deref().unwrap();
+        let step = guided.step().unwrap();
+        assert_eq!(step.path, "tests/cache.rs");
+        assert_eq!(step.lines[guided.cursor].text, "+evicts the oldest");
+    }
+
+    #[test]
+    fn the_plan_shows_how_far_it_has_got() {
+        let mut state = walk_with_plan();
+        let guided = state.guided.as_mut().unwrap();
+        guided
+            .commentary
+            .insert(OVERVIEW_KEY.to_string(), Commentary::default());
+        assert!(matches!(guided.planning(), Some(Planning::Reading { .. })));
+
+        guided.commentary.get_mut(OVERVIEW_KEY).unwrap().text =
+            "Summary: Adds a cache.\nConcern: The cache\nFiles: src/cache.rs, src/lookup.rs\n"
+                .into();
+        assert_eq!(
+            guided.planning(),
+            Some(Planning::Writing { named: 2, total: 4 })
+        );
+        assert!(
+            screen(&state)
+                .iter()
+                .any(|row| row.contains("2/4 files placed"))
+        );
     }
 }

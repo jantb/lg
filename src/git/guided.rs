@@ -246,6 +246,8 @@ pub enum WalkMode {
     Map,
     /// Riskiest first, files safe to skim last.
     Triage,
+    /// Every open finding of what has been read, worst first.
+    Issues,
 }
 
 impl WalkMode {
@@ -253,7 +255,8 @@ impl WalkMode {
         match self {
             Self::Concerns => Self::Map,
             Self::Map => Self::Triage,
-            Self::Triage => Self::Concerns,
+            Self::Triage => Self::Issues,
+            Self::Issues => Self::Concerns,
         }
     }
 
@@ -262,6 +265,7 @@ impl WalkMode {
             Self::Concerns => "CONCERNS",
             Self::Map => "MAP",
             Self::Triage => "TRIAGE",
+            Self::Issues => "ISSUES",
         }
     }
 
@@ -270,6 +274,7 @@ impl WalkMode {
             Self::Concerns => "grouped by concern, each file read with the rest of its concern",
             Self::Map => "the file tree, in the plan's reading order",
             Self::Triage => "riskiest first, files safe to skim last",
+            Self::Issues => "the open findings of every file read, worst first",
         }
     }
 }
