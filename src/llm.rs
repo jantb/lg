@@ -31,7 +31,9 @@ pub use provider::{
 /// a person will act on says so in the text itself rather than only in a status
 /// line that has since expired.
 pub const TRUNCATED_NOTE: &str = "\u{2026} [cut off at the token budget]";
-pub use stats::{GenStats, LlmPhase, forget_last_stats, last_stats, phase, progress};
+pub use stats::{
+    GenStats, LlmPhase, expected_prefill_for, forget_last_stats, last_stats, phase, progress,
+};
 pub use stream::error_means_unreachable;
 
 use prompt::{

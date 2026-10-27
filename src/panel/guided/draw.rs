@@ -14,7 +14,7 @@ use super::findings::{self, Finding, Severity};
 use super::layout::{self, Row};
 use super::plan::{Plan, Risk};
 use super::tree::{self, Entry};
-use super::{Commentary, Guided, Mode, OVERVIEW, OpenFinding, Planning, Source, Verdict};
+use super::{Commentary, Guided, Mode, OVERVIEW, OpenFinding, Progress, Source, Verdict};
 use crate::git::guided::{GuidedFile, HunkLine, LineKind, Side, TickedFinding, WalkMode};
 use crate::panel::keys;
 use crate::state::{AppState, DiffViewMode, SPINNER_FRAMES};
@@ -124,32 +124,35 @@ pub(super) fn scope_badge_area(guided: &Guided, area: Rect) -> Option<Rect> {
     })
 }
 
-/// The plan's progress as a bar `width` wide and words: how long reading the
-/// diff has taken against how long it should, then how many files the plan
-/// has placed.
-fn planning_text(planning: Planning, width: usize) -> String {
-    match planning {
-        Planning::Reading {
-            elapsed: Some(elapsed),
+/// A long read's progress as words, with a bar `width` wide where there is a
+/// measure: how long reading the prompt has taken against how long it
+/// should, then how many files the plan has placed.
+fn progress_text(progress: Progress, width: usize) -> String {
+    match progress {
+        Progress::Queued { ahead: 0 } => "starting".to_string(),
+        Progress::Queued { ahead } => format!("queued behind {ahead} read(s) already running"),
+        Progress::Reading {
+            elapsed,
             expected: Some(expected),
         } => {
             let done = elapsed.as_millis().min(expected.as_millis());
             format!(
-                "{} reading the diff, {}s of ~{}s",
+                "{} reading, {}s of ~{}s",
                 bar(done as usize, expected.as_millis().max(1) as usize, width),
                 elapsed.as_secs(),
                 expected.as_secs().max(1)
             )
         }
-        Planning::Reading {
-            elapsed: Some(elapsed),
+        Progress::Reading {
+            elapsed,
             expected: None,
-        } => format!("reading the diff, {}s", elapsed.as_secs()),
-        Planning::Reading { elapsed: None, .. } => "waiting for the model".to_string(),
-        Planning::Writing { named, total } => format!(
+        } => format!("reading, {}s", elapsed.as_secs()),
+        Progress::Thinking { elapsed } => format!("thinking, {}s", elapsed.as_secs()),
+        Progress::Placing { named, total } => format!(
             "{} {named}/{total} files placed",
             bar(named, total.max(1), width)
         ),
+        Progress::Finding { so_far } => format!("writing, {so_far} finding(s) so far"),
     }
 }
 
@@ -399,8 +402,9 @@ fn issue_rows(guided: &Guided) -> Vec<ListRow> {
 }
 
 /// What a click on each row of the step list does, from its first row; a
-/// heading does nothing. With the first row shown, as [`draw_steps`] scrolls
-/// the list to keep the step or finding on screen in the middle.
+/// heading does nothing. With the first row shown: where the wheel scrolled
+/// the list, else as [`draw_steps`] keeps the step or finding on screen in
+/// the middle.
 pub(super) fn row_targets(guided: &Guided, height: u16) -> (Vec<Option<RowTarget>>, usize) {
     let rows: Vec<Option<RowTarget>> = list_rows(guided, guided.plan().as_ref())
         .into_iter()
@@ -421,7 +425,11 @@ pub(super) fn row_targets(guided: &Guided, height: u16) -> (Vec<Option<RowTarget
             _ => false,
         })
         .unwrap_or(0);
-    let offset = selected.saturating_sub(height as usize / 2);
+    let last = rows.len().saturating_sub(usize::from(height));
+    let offset = guided
+        .list_scroll
+        .unwrap_or_else(|| selected.saturating_sub(height as usize / 2))
+        .min(last);
     (rows, offset)
 }
 
@@ -520,7 +528,13 @@ fn draw_progress(state: &AppState, guided: &Guided, area: Rect, frame: &mut Fram
     let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
     if let Some(planning) = guided.planning() {
         spans.push(Span::styled(
-            format!("  {spinner} planning {}", planning_text(planning, 10)),
+            format!("  {spinner} planning {}", progress_text(planning, 10)),
+            Style::default().fg(Color::Cyan),
+        ));
+    }
+    if let Some(progress) = guided.final_progress().filter(|_| state.ai_assist) {
+        spans.push(Span::styled(
+            format!("  {spinner} final review {}", progress_text(progress, 10)),
             Style::default().fg(Color::Cyan),
         ));
     }
@@ -1447,7 +1461,7 @@ fn draw_overview(state: &AppState, guided: &Guided, area: Rect, frame: &mut Fram
             lines.push(Line::from(Span::styled(
                 format!(
                     "  {spinner} planning the walk: {}",
-                    planning_text(planning, 24)
+                    progress_text(planning, 24)
                 ),
                 Style::default().fg(Color::Cyan),
             )));
@@ -1651,8 +1665,27 @@ fn final_commentary_lines(state: &AppState, guided: &Guided, width: u16) -> Diff
         cursor: 0..0,
         findings: Vec::new(),
     };
+    let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
+    let progress = guided.final_progress().filter(|_| state.ai_assist);
+    let working = |progress: Progress| {
+        Line::from(Span::styled(
+            format!("  {spinner} {}", progress_text(progress, 24)),
+            Style::default().fg(Color::Cyan),
+        ))
+    };
     match commentary.filter(|c| c.error.is_none() && !c.text.is_empty()) {
-        None => out.lines.extend(commentary_lines(state, commentary, width)),
+        None => match progress {
+            Some(progress) => {
+                out.lines.push(Line::from(Span::styled(
+                    "AI \u{b7} reading the whole change",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                out.lines.push(working(progress));
+            }
+            None => out.lines.extend(commentary_lines(state, commentary, width)),
+        },
         Some(c) => {
             let reading = findings::read(&c.text);
             let mut header = vec![Span::styled(
@@ -1710,12 +1743,8 @@ fn final_commentary_lines(state: &AppState, guided: &Guided, width: u16) -> Diff
                 out.lines
                     .extend(crate::panel::markdown::render(&rest, "  ", wrap));
             }
-            if !c.done {
-                let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
-                out.lines.push(Line::from(Span::styled(
-                    format!("  {spinner}"),
-                    Style::default().fg(Color::Cyan),
-                )));
+            if let Some(progress) = progress {
+                out.lines.push(working(progress));
             }
         }
     }

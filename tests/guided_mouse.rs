@@ -1,5 +1,5 @@
-//! The mouse in a guided review: the wheel over the step list moves between
-//! steps, over the pane beside it scrolls the commentary, a click on a step
+//! The mouse in a guided review: the wheel over the step list scrolls it
+//! without opening anything, over the pane beside it scrolls the commentary, a click on a step
 //! goes to it, a click on a finding ticks it off, and a drag selects text to
 //! copy. None of it marks a step reviewed.
 
@@ -101,22 +101,22 @@ fn the_wheel_and_clicks_move_through_a_guided_review() {
         |app: &HeadlessApp<TestBackend>| app.state.guided.as_ref().unwrap().reviewed_count();
     assert_eq!(current(&app), 0, "the walk opens on the overview");
 
-    // The wheel over the step list steps through the walk.
+    // The wheel over the step list only scrolls it: nothing is opened, so
+    // nothing is read.
     let overview = row_with(&app, "Overview", 40).expect("the overview row");
     app.send_mouse(mouse(MouseEventKind::ScrollDown, 4, overview))
         .unwrap();
-    assert_eq!(current(&app), 1);
-    app.send_mouse(mouse(MouseEventKind::ScrollDown, 4, overview))
-        .unwrap();
-    assert_eq!(current(&app), 2);
     app.send_mouse(mouse(MouseEventKind::ScrollUp, 4, overview))
         .unwrap();
-    assert_eq!(current(&app), 1);
-    assert_eq!(
-        reviewed(&app),
-        0,
-        "scrolling past a step is not reviewing it"
-    );
+    assert_eq!(current(&app), 0, "the wheel opens no step");
+
+    // A click opens one.
+    app.render().unwrap();
+    let a_row = row_with(&app, "a.txt", 40).expect("the first file's row");
+    app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 4, a_row))
+        .unwrap();
+    assert_eq!(current(&app), 1, "the step of a.txt");
+    assert_eq!(reviewed(&app), 0, "opening a step is not reviewing it");
 
     // The wheel beside the list scrolls the pane there, not the steps.
     let before = app.state.guided.as_ref().unwrap().side_scroll;
@@ -127,7 +127,6 @@ fn the_wheel_and_clicks_move_through_a_guided_review() {
 
     // A click on a step in the list goes to it.
     app.render().unwrap();
-    // b.txt is one hunk, so its step shares the row with its name.
     let b_row = row_with(&app, "b.txt", 40).expect("the second file's row");
     app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 4, b_row))
         .unwrap();

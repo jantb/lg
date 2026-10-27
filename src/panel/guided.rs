@@ -30,10 +30,10 @@ mod work;
 pub use draw::render;
 pub use keys::{handle_key, handle_paste};
 
-/// The wheel over the step list moves between steps, over the diff moves its
-/// cursor (or on the final step scrolls the whole changeset), and over the
-/// commentary scrolls it (or the notes, in the summary). A click on a step in
-/// the list goes to it, the divider beside the list drags to resize it, the
+/// The wheel over the step list scrolls it, over the diff moves its cursor
+/// (or on the final step scrolls the whole changeset), and over the
+/// commentary scrolls it (or the notes, in the summary). Only a click on a
+/// step in the list goes to it, which is what has the model read it; the divider beside the list drags to resize it, the
 /// scope badge switches scope, and the reset button under the list resets the
 /// review on a second click. None of it marks a step reviewed: that stays with
 /// the keys that say so.
@@ -64,15 +64,20 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
     if guided.typing() && !matches!(guided.mode, Mode::Summary { .. }) {
         return;
     }
-    let (after, before) = (
-        guided.step_after(guided.current),
-        guided.step_before(guided.current),
-    );
     let browsing = matches!(guided.mode, Mode::Browse);
     let steps = draw::steps_area(list);
     match pointer::wheel(m) {
         Some(down) if pointer::inside(list, m.column, m.row) && browsing => {
-            go_to(state, if down { after } else { before }, false);
+            let (rows, first) = draw::row_targets(guided, steps.height);
+            let last = rows.len().saturating_sub(usize::from(steps.height));
+            let first = if down {
+                (first + 3).min(last)
+            } else {
+                first.saturating_sub(3)
+            };
+            if let Some(guided) = state.guided.as_mut() {
+                guided.list_scroll = Some(first);
+            }
         }
         Some(down) if pointer::inside(side, m.column, m.row) => {
             let mode = state.diff_view_mode;
@@ -103,6 +108,8 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
             let (rows, first) = draw::row_targets(guided, steps.height);
             let target = pointer::list_row(steps, first, rows.len(), m.column, m.row)
                 .and_then(|at| rows[at].clone());
+            // The list stays where it was scrolled, under the mouse.
+            let scrolled = Some(first);
             match target {
                 Some(draw::RowTarget::Step(step)) => go_to(state, step, false),
                 Some(draw::RowTarget::Finding(open)) => go_to_finding(state, &open),
@@ -112,6 +119,9 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
                     read_concern(state, index)
                 }
                 Some(draw::RowTarget::Concern(_)) | None => {}
+            }
+            if let Some(guided) = state.guided.as_mut() {
+                guided.list_scroll = scrolled;
             }
         }
         None => {}
@@ -378,6 +388,10 @@ pub struct Commentary {
     /// raised, which are held back until it has.
     pub checking: bool,
     pub error: Option<String>,
+    /// When it was asked for, and how long the prompt was, to tell how far
+    /// the model has got reading it.
+    pub started: Option<std::time::Instant>,
+    pub prompt_bytes: usize,
 }
 
 impl Commentary {
@@ -528,6 +542,9 @@ pub struct Guided {
     pub(super) delete_armed: Option<usize>,
     /// Reset was asked for once; asking again resets the review.
     pub reset_armed: bool,
+    /// The step list's first row shown, once the wheel has scrolled it; until
+    /// then, and after any move by key, the list follows the step on screen.
+    pub list_scroll: Option<usize>,
     /// How far the whole changeset is scrolled on the final step.
     pub final_scroll: u16,
     /// How far it could scroll when it was last drawn, as [`Guided::side_max`].
@@ -573,6 +590,7 @@ impl Guided {
             earlier: HashMap::new(),
             delete_armed: None,
             reset_armed: false,
+            list_scroll: None,
             final_scroll: 0,
             final_max: std::cell::Cell::new(0),
             chat: None,
@@ -760,26 +778,39 @@ impl Guided {
 
     /// How far the plan has got while it is being read: the diff being read,
     /// then the files it has placed so far.
-    pub fn planning(&self) -> Option<Planning> {
+    pub fn planning(&self) -> Option<Progress> {
         let commentary = self.commentary.get(OVERVIEW_KEY).filter(|c| !c.done)?;
-        if commentary.text.trim().is_empty() {
-            let (elapsed, expected) = match crate::llm::phase() {
-                Some(crate::llm::LlmPhase::Prefill {
-                    elapsed, expected, ..
-                }) => (Some(elapsed), expected),
-                _ => (None, None),
-            };
-            return Some(Planning::Reading { elapsed, expected });
-        }
         let named = self
             .steps
             .iter()
             .filter(|step| commentary.text.contains(&step.path))
             .count();
-        Some(Planning::Writing {
+        Some(before_writing(commentary).unwrap_or(Progress::Placing {
             named,
             total: self.total(),
-        })
+        }))
+    }
+
+    /// How far the final review has got: waiting its turn while the walk is
+    /// on it, the change being read, then the findings written so far.
+    pub fn final_progress(&self) -> Option<Progress> {
+        let key = self.final_key();
+        match self.commentary.get(&key) {
+            None if self.on_final() && !self.failed.contains(&key) => Some(Progress::Queued {
+                ahead: self
+                    .asks
+                    .iter()
+                    .filter(|ask| matches!(ask.target, Target::Commentary(_)))
+                    .count(),
+            }),
+            Some(commentary) if !commentary.done => {
+                let reading = findings::read(&commentary.text);
+                Some(before_writing(commentary).unwrap_or(Progress::Finding {
+                    so_far: reading.cited.len() + reading.findings.len(),
+                }))
+            }
+            _ => None,
+        }
     }
 
     /// The step after `current` in the walk: the overview leads to the first
@@ -1039,18 +1070,50 @@ pub struct OpenFinding {
     pub whole: bool,
 }
 
-/// The plan on its way: the model reading the diff, then writing the plan.
+/// A long read on its way: the plan, or the final review of the whole change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Planning {
+pub enum Progress {
+    /// Not sent yet: this many reads have the model's turns ahead of it.
+    Queued {
+        ahead: usize,
+    },
+    /// Sent, and the model is reading the prompt, which should take
+    /// `expected` at the speed it read the last one.
     Reading {
-        elapsed: Option<std::time::Duration>,
-        /// How long reading the diff should take, from the server's last speed.
+        elapsed: std::time::Duration,
         expected: Option<std::time::Duration>,
     },
-    Writing {
+    Thinking {
+        elapsed: std::time::Duration,
+    },
+    /// The plan being written: how many of the files it has placed.
+    Placing {
         named: usize,
         total: usize,
     },
+    /// The final review being written: its findings so far.
+    Finding {
+        so_far: usize,
+    },
+}
+
+/// Where a read is before the model writes any of its answer.
+fn before_writing(commentary: &Commentary) -> Option<Progress> {
+    if !commentary.text.trim().is_empty() {
+        return None;
+    }
+    let elapsed = commentary
+        .started
+        .map(|started| started.elapsed())
+        .unwrap_or_default();
+    Some(if commentary.thinking {
+        Progress::Thinking { elapsed }
+    } else {
+        Progress::Reading {
+            elapsed,
+            expected: crate::llm::expected_prefill_for(commentary.prompt_bytes),
+        }
+    })
 }
 
 /// Riskiest first; files safe to skim after every other.
@@ -1650,23 +1713,36 @@ fn start_wanted_commentary(guided: &mut Guided) {
         if asked {
             continue;
         }
-        let rx = if index == OVERVIEW {
-            work::ask_overview(format!(
+        let (rx, prompt_bytes) = if index == OVERVIEW {
+            let context = format!(
                 "{}\nThe whole diff, file by file:\n{}",
                 guided.overview,
                 whole_diff(guided)
-            ))
+            );
+            let bytes = context.len();
+            (work::ask_overview(context), bytes)
         } else if index == guided.final_step() {
-            work::ask_final(final_context(guided))
+            let context = final_context(guided);
+            let bytes = context.len();
+            (work::ask_final(context), bytes)
         } else {
             // The walk's first brief, so the cached prompt stays the same.
             let shared = guided
                 .shared_brief
                 .get_or_insert_with(|| guided.brief.clone())
                 .clone();
-            work::ask_step(shared, file_context(guided, index))
+            let context = file_context(guided, index);
+            let bytes = shared.len() + context.len();
+            (work::ask_step(shared, context), bytes)
         };
-        guided.commentary.insert(key.clone(), Commentary::default());
+        guided.commentary.insert(
+            key.clone(),
+            Commentary {
+                started: Some(std::time::Instant::now()),
+                prompt_bytes,
+                ..Commentary::default()
+            },
+        );
         guided.asks.push(Ask {
             target: Target::Commentary(key),
             rx,
@@ -1912,6 +1988,7 @@ fn go_to(state: &mut AppState, index: usize, mark_left: bool) {
     guided.cursor = guided.step().map(GuidedFile::first_changed).unwrap_or(0);
     guided.side_scroll = 0;
     guided.final_scroll = 0;
+    guided.list_scroll = None;
     if guided.on_final() {
         let noun = if guided.source.is_pull_request() {
             "s submits the review"
@@ -4204,19 +4281,123 @@ mod tests {
         guided
             .commentary
             .insert(OVERVIEW_KEY.to_string(), Commentary::default());
-        assert!(matches!(guided.planning(), Some(Planning::Reading { .. })));
+        assert!(matches!(guided.planning(), Some(Progress::Reading { .. })));
 
         guided.commentary.get_mut(OVERVIEW_KEY).unwrap().text =
             "Summary: Adds a cache.\nConcern: The cache\nFiles: src/cache.rs, src/lookup.rs\n"
                 .into();
         assert_eq!(
             guided.planning(),
-            Some(Planning::Writing { named: 2, total: 4 })
+            Some(Progress::Placing { named: 2, total: 4 })
         );
         assert!(
             screen(&state)
                 .iter()
                 .any(|row| row.contains("2/4 files placed"))
         );
+    }
+
+    /// Scrolling the list opens nothing, so nothing is read; a click opens
+    /// the row under it, and the list stays where it was scrolled.
+    #[test]
+    fn the_wheel_scrolls_the_step_list_and_only_a_click_opens_a_step() {
+        let mut state = walk_on_a_long_hunk();
+        let diff: String = (0..60)
+            .map(|n| {
+                format!("diff --git a/f{n:02}.rs b/f{n:02}.rs\n--- a/f{n:02}.rs\n+++ b/f{n:02}.rs\n@@ -1 +1 @@\n-a\n+b\n")
+            })
+            .collect();
+        let guided = state.guided.as_mut().unwrap();
+        guided.steps = crate::git::guided::parse_files(&diff);
+        guided.current = OVERVIEW;
+        let (list, _) = panes(&state);
+        let wheel =
+            |state: &mut AppState| mouse(state, MouseEventKind::ScrollDown, list.x + 2, list.y + 2);
+
+        for _ in 0..4 {
+            wheel(&mut state);
+        }
+        assert_eq!(state.guided.as_ref().unwrap().current, OVERVIEW);
+        assert!(state.guided.as_ref().unwrap().asks.is_empty());
+        let rows = list_text(&state);
+        assert!(
+            !rows[0].contains("Overview"),
+            "the list scrolled: {rows:#?}"
+        );
+        let row = row_of(&rows, "f20.rs");
+
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            list.x + 4,
+            list.y + row as u16,
+        );
+
+        let guided = state.guided.as_deref().unwrap();
+        assert_eq!(guided.step().map(|s| s.path.as_str()), Some("f20.rs"));
+        assert_eq!(
+            row_of(&list_text(&state), "f20.rs"),
+            row,
+            "the list stays put"
+        );
+    }
+
+    /// Going to the final review shows it working from the first moment: in
+    /// line behind the reads already running, then reading the change, then
+    /// how many findings it has written.
+    #[test]
+    fn the_final_review_shows_how_far_it_has_got() {
+        let mut state = walk_with_plan();
+        state.ai_assist = true;
+        let guided = state.guided.as_mut().unwrap();
+        guided.current = guided.final_step();
+        let (_busy, rx) = std::sync::mpsc::channel();
+        guided.asks.push(Ask {
+            target: Target::Commentary(guided.steps[0].key()),
+            rx,
+        });
+        assert_eq!(guided.final_progress(), Some(Progress::Queued { ahead: 1 }));
+        assert!(
+            screen(&state)
+                .iter()
+                .any(|row| row.contains("queued behind 1 read"))
+        );
+
+        let guided = state.guided.as_mut().unwrap();
+        let key = guided.final_key();
+        guided.commentary.insert(
+            key.clone(),
+            Commentary {
+                started: Some(std::time::Instant::now()),
+                prompt_bytes: 50_000,
+                ..Default::default()
+            },
+        );
+        assert!(matches!(
+            guided.final_progress(),
+            Some(Progress::Reading { .. })
+        ));
+        assert!(
+            screen(&state)
+                .iter()
+                .any(|row| row.contains("reading the whole change"))
+        );
+
+        let guided = state.guided.as_mut().unwrap();
+        guided.commentary.get_mut(&key).unwrap().text =
+            "Summary: Two parts.\nsrc/cache.rs:L1 issue: evict is never called.\n".into();
+        assert_eq!(
+            guided.final_progress(),
+            Some(Progress::Finding { so_far: 1 })
+        );
+        assert!(
+            screen(&state)
+                .iter()
+                .any(|row| row.contains("1 finding(s) so far"))
+        );
+
+        let guided = state.guided.as_mut().unwrap();
+        guided.commentary.get_mut(&key).unwrap().done = true;
+        assert_eq!(guided.final_progress(), None);
     }
 }
