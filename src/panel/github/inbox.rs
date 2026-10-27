@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use super::work::{Pending, spawn_read, take_answer};
 use super::{Tab, dispatch, switch_tab};
 use crate::config::GITHUB_INBOX_INTERVAL_SECS;
-use crate::github::{InboxItem, PullRequest, Reason, Subject};
+use crate::github::{InboxItem, PullRequest, Reason, Section, Subject};
 use crate::state::{AppState, GitHubAction, Modal, Poll, poll_once};
 
 #[derive(Debug, Default)]
@@ -26,8 +26,8 @@ pub struct Inbox {
     /// Review requests marked done here. GitHub keeps asking for the review
     /// until it is given, so lg is the one that remembers to stop showing it.
     done: HashSet<String>,
-    /// Threads being marked done on GitHub, each with the call doing it.
-    marking: Vec<(String, Pending<()>)>,
+    /// Threads being marked done on GitHub, with the call doing it.
+    marking: Vec<(Vec<String>, Pending<()>)>,
     /// The pull request a guided review is waiting on.
     reviewing: Option<Pending<PullRequest>>,
 }
@@ -49,15 +49,19 @@ impl Inbox {
             .flatten()
     }
 
-    /// How many items there are, and how many of them wait on the user.
-    pub fn counts(&self) -> (usize, usize) {
-        let asking = self
-            .read
+    /// How many items fall in `section`.
+    pub fn section_len(&self, section: Section) -> usize {
+        self.read
             .items
             .iter()
-            .filter(|item| item.reason.asks_for_action())
-            .count();
-        (self.read.items.len(), asking)
+            .filter(|item| item.reason.section() == section)
+            .count()
+    }
+
+    /// How many items there are, and how many of them wait on the user by
+    /// name.
+    pub fn counts(&self) -> (usize, usize) {
+        (self.read.items.len(), self.section_len(Section::You))
     }
 
     /// Whether the inbox has been read at least once, so an empty one means
@@ -142,7 +146,7 @@ fn take_read(state: &mut AppState, mut read: crate::github::Inbox) {
     let in_flight: HashSet<&str> = inbox
         .marking
         .iter()
-        .map(|(thread, _)| thread.as_str())
+        .flat_map(|(threads, _)| threads.iter().map(String::as_str))
         .collect();
     read.items.retain(|item| match &item.thread {
         Some(thread) => !in_flight.contains(thread.as_str()),
@@ -225,16 +229,48 @@ fn mark_done(state: &mut AppState) {
     }
     let item = inbox.read.items.remove(inbox.idx);
     inbox.idx = inbox.idx.min(inbox.read.items.len().saturating_sub(1));
-    if item.reason == Reason::ReviewRequested {
+    if matches!(
+        item.reason,
+        Reason::ReviewRequested | Reason::TeamReviewRequested
+    ) {
         inbox.done.insert(item.key());
     }
     if let Some(thread) = item.thread.clone() {
         let call = thread.clone();
-        inbox
-            .marking
-            .push((thread, spawn_read(move || crate::github::mark_done(&call))));
+        inbox.marking.push((
+            vec![thread],
+            spawn_read(move || crate::github::mark_done(&call)),
+        ));
     }
     state.set_status(format!("done with {}", item.place()), false);
+}
+
+/// Take every update — what only tells the user something happened — out of
+/// the inbox at once, here and on GitHub, leaving what waits on them.
+fn clear_updates(state: &mut AppState) {
+    let inbox = &mut state.github.inbox;
+    let selected = inbox.selected().map(InboxItem::key);
+    let (asking, updates): (Vec<InboxItem>, Vec<InboxItem>) = std::mem::take(&mut inbox.read.items)
+        .into_iter()
+        .partition(|item| item.reason.section() != Section::Updates);
+    inbox.read.items = asking;
+    inbox.idx = selected
+        .and_then(|key| inbox.read.items.iter().position(|item| item.key() == key))
+        .unwrap_or(0);
+    if updates.is_empty() {
+        state.set_status("no updates to clear", false);
+        return;
+    }
+    let threads: Vec<String> = updates
+        .iter()
+        .filter_map(|item| item.thread.clone())
+        .collect();
+    let call = threads.clone();
+    inbox.marking.push((
+        threads,
+        spawn_read(move || crate::github::mark_all_done(&call)),
+    ));
+    state.set_status(format!("cleared {} updates", updates.len()), false);
 }
 
 /// Review the selected pull request in its checkout, or open anything else in
@@ -287,6 +323,7 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('G') | KeyCode::End => select(state, usize::MAX),
         KeyCode::Enter | KeyCode::Char('v') => open(state),
         KeyCode::Char('d') => mark_done(state),
+        KeyCode::Char('D') => clear_updates(state),
         KeyCode::Char('o') => match state.github.inbox.selected() {
             Some(item) => {
                 let url = item.url.clone();
@@ -326,6 +363,7 @@ mod tests {
             reason: Reason::ReviewRequested,
             url: format!("https://github.com/{repo}/pull/{number}"),
             thread: None,
+            updated_at: String::new(),
         }
     }
 
@@ -404,6 +442,29 @@ mod tests {
         take_read(&mut state, read(vec![review_request("acme/app", 7)]));
 
         assert!(state.github.inbox.items().is_empty());
+    }
+
+    #[test]
+    fn clearing_updates_keeps_what_waits_on_the_user() {
+        let comment = InboxItem {
+            reason: Reason::Commented,
+            thread: Some("t9".into()),
+            ..review_request("acme/app", 9)
+        };
+        let mut state = inbox_open_on(vec![review_request("acme/app", 7), comment.clone()]);
+
+        press(&mut state, 'D');
+
+        assert_eq!(state.github.inbox.items(), &[review_request("acme/app", 7)]);
+        take_read(
+            &mut state,
+            read(vec![review_request("acme/app", 7), comment]),
+        );
+        assert_eq!(
+            state.github.inbox.items().len(),
+            1,
+            "a thread still being marked done stays hidden"
+        );
     }
 
     #[test]

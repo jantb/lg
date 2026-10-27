@@ -138,7 +138,7 @@ impl ThinkSplit {
         if self.hold.is_empty() {
             return Ok((0, 0));
         }
-        let tail: String = self.hold.drain(..).collect();
+        let tail = std::mem::take(&mut self.hold);
         let len = tail.len();
         if self.in_think {
             if tx.send(GenMsg::Thinking(tail)).is_err() {

@@ -980,7 +980,8 @@ fn toggle_drafts(state: &mut AppState) {
 }
 
 /// The wheel moves through whichever list is on screen; a click on the header
-/// picks a tab, steps the filter or shows and hides drafts.
+/// picks a tab, steps the filter or shows and hides drafts, and a click in the
+/// list selects what it lands on.
 pub fn handle_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) {
     if state.github.mode != Mode::Browse {
         return;
@@ -994,7 +995,15 @@ pub fn handle_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) {
                 Some(draw::HeaderClick::Filter(filter)) => show_filter(state, filter),
                 Some(draw::HeaderClick::NextFilter) => next_filter(state),
                 Some(draw::HeaderClick::Drafts) => toggle_drafts(state),
-                None => {}
+                None => {
+                    if let Some(idx) = draw::list_click(state, area, m.column, m.row) {
+                        match state.github.tab {
+                            Tab::Inbox => inbox::select(state, idx),
+                            Tab::PullRequests => select_pr(state, idx),
+                            Tab::Repositories => state.github.repo_idx = idx,
+                        }
+                    }
+                }
             }
             return;
         }
@@ -1680,6 +1689,34 @@ mod tests {
         assert_eq!(click("h hides drafts"), Some(draw::HeaderClick::Drafts));
         let (column, row) = at("h hides drafts");
         assert_eq!(draw::header_click(&state, area, column, row + 1), None);
+    }
+
+    #[test]
+    fn a_click_in_the_list_selects_the_row_it_lands_on() {
+        let mut state = with_prs(vec![pr(4, "a"), pr(5, "b"), pr(6, "c")]);
+        state.github.tab = Tab::PullRequests;
+        let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| render(&state, area, frame)).unwrap();
+        let buf = terminal.backend().buffer();
+        let (column, row) = (0..buf.area.height)
+            .find_map(|y| {
+                let line: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+                let byte = line.find("#6")?;
+                Some((line[..byte].chars().count() as u16, y))
+            })
+            .expect("#6 is on screen");
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        handle_mouse(&mut state, area, &click);
+
+        assert_eq!(selected_pr(&state).map(|pr| pr.number), Some(6));
     }
 
     #[test]

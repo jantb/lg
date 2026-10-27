@@ -1701,6 +1701,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("d", "done")),
             },
             Binding {
+                key: "D",
+                help: "Clear all updates; keep what waits on you",
+                footer: Some(("D", "clear updates")),
+            },
+            Binding {
                 key: "o",
                 help: "Open it in the browser",
                 footer: Some(("o", "browser")),
@@ -2191,7 +2196,7 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         prefix: "GitHub ",
         tone: Tone::Normal,
         order: &[
-            "j/k", "Tab", "Enter", "w", "v", "a", "x", "c", "m", "D", "X", "n", "o", "Esc",
+            "j/k", "Tab", "Enter", "o", "w", "v", "a", "x", "c", "m", "D", "X", "n", "Esc",
         ],
     },
     ModalFooter {
@@ -2245,7 +2250,7 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         section: "GitHub inbox",
         prefix: "Inbox ",
         tone: Tone::Normal,
-        order: &["j/k", "Enter / v", "d", "o", "r", "Tab", "Esc"],
+        order: &["j/k", "Enter / v", "o", "d", "D", "r", "Tab", "Esc"],
     },
     ModalFooter {
         section: "GitHub repositories",

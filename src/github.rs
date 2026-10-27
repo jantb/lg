@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 
 mod inbox;
 
-pub use inbox::{Inbox, InboxItem, Reason, Subject, mark_done, read_inbox};
+pub use inbox::{Inbox, InboxItem, Reason, Section, Subject, mark_all_done, mark_done, read_inbox};
 
 /// How many pull requests one list asks for. A list longer than this is
 /// searched on GitHub, not scrolled through in a terminal.
@@ -45,20 +45,17 @@ pub enum PrFilter {
     /// Open pull requests by anyone but the user: everything they could
     /// review, asked or not.
     ToReview,
-    /// The user's own, whatever became of them.
+    /// The user's own that are still open.
     Mine,
-    /// Everything, merged and closed included.
-    All,
 }
 
 impl PrFilter {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::Open,
         Self::ReviewRequested,
         Self::TeamReviewRequested,
         Self::ToReview,
         Self::Mine,
-        Self::All,
     ];
 
     pub fn next(self) -> Self {
@@ -73,17 +70,15 @@ impl PrFilter {
             Self::TeamReviewRequested => "my teams",
             Self::ToReview => "to review",
             Self::Mine => "mine",
-            Self::All => "all",
         }
     }
 
+    /// Merged and closed pull requests are never asked for: every list is of
+    /// the open ones.
     fn args(self) -> &'static [&'static str] {
         match self {
-            Self::Open | Self::ReviewRequested | Self::TeamReviewRequested | Self::ToReview => {
-                &["--state", "open"]
-            }
-            Self::Mine => &["--state", "all", "--author", "@me"],
-            Self::All => &["--state", "all"],
+            Self::Mine => &["--state", "open", "--author", "@me"],
+            _ => &["--state", "open"],
         }
     }
 

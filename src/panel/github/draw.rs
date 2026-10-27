@@ -30,13 +30,14 @@ const ROWS: [Constraint; 3] = [
     Constraint::Length(1),
 ];
 
-/// Tall enough to read a description, and clear of the footer, where the
-/// status line reports what the last action did.
+/// Nearly the whole screen, so long titles and descriptions fit, but clear of
+/// the footer, where the status line reports what the last action did, and
+/// no wider than a line is still comfortable to read across.
 fn modal_area(area: Rect) -> Rect {
     ui::centered(
         area,
-        area.width.saturating_sub(4).min(140),
-        area.height.saturating_sub(2).min(44),
+        area.width.saturating_sub(4).min(220),
+        area.height.saturating_sub(2),
     )
 }
 
@@ -83,6 +84,46 @@ pub(super) fn header_click(
     None
 }
 
+/// How a tab splits its body between the list and the details.
+fn columns(tab: Tab) -> &'static [Constraint] {
+    match tab {
+        Tab::PullRequests => &[Constraint::Percentage(42), Constraint::Min(20)],
+        Tab::Inbox | Tab::Repositories => &[Constraint::Percentage(50), Constraint::Min(20)],
+    }
+}
+
+/// The search line above the repository list, and the list under it.
+fn repo_list_areas(area: Rect) -> [Rect; 2] {
+    ratatui::layout::Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(area)
+}
+
+/// The index, in the tab's list, of the entry drawn at `column`, `row`,
+/// measured the way [`render`] lays the list out and scrolls it.
+pub(super) fn list_click(state: &AppState, area: Rect, column: u16, row: u16) -> Option<usize> {
+    let inner = ui::modal_inner(modal_area(area));
+    if too_small(inner) {
+        return None;
+    }
+    let body = ui::modal_row_areas(inner, &ROWS).0[1];
+    let gh = &state.github;
+    let pane = ui::modal_column_areas(body, columns(gh.tab)).0[0];
+    let pane = match gh.tab {
+        Tab::Repositories => repo_list_areas(pane)[1],
+        _ => pane,
+    };
+    if !pane.contains(Position::new(column, row)) {
+        return None;
+    }
+    let visible = pane.height as usize;
+    let line = (row - pane.y) as usize;
+    let at = |selected: usize| selected.saturating_sub(visible.saturating_sub(1)) + line;
+    match gh.tab {
+        Tab::Inbox => inbox::item_at(state, at(inbox::selected_row(state))),
+        Tab::PullRequests => Some(at(gh.pr_idx)).filter(|&idx| idx < gh.prs.len()),
+        Tab::Repositories => Some(at(gh.repo_idx)).filter(|&idx| idx < visible_repos(gh).len()),
+    }
+}
+
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     let modal = modal_area(area);
     let title = match &state.github.repo {
@@ -99,21 +140,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     match (&state.github.mode, state.github.tab) {
         (Mode::Create(form), _) => draw_create(form, rows[1], frame),
         (_, Tab::Inbox) => {
-            let (panes, gaps) = ui::modal_columns(
-                frame,
-                rows[1],
-                &[Constraint::Percentage(50), Constraint::Min(20)],
-            );
+            let (panes, gaps) = ui::modal_columns(frame, rows[1], columns(Tab::Inbox));
             dividers.extend(gaps);
             inbox::draw_list(state, panes[0], frame);
             inbox::draw_detail(state, panes[1], frame);
         }
         (_, Tab::PullRequests) => {
-            let (panes, gaps) = ui::modal_columns(
-                frame,
-                rows[1],
-                &[Constraint::Percentage(42), Constraint::Min(20)],
-            );
+            let (panes, gaps) = ui::modal_columns(frame, rows[1], columns(Tab::PullRequests));
             dividers.extend(gaps);
             draw_pr_list(state, panes[0], frame);
             match &state.github.mode {
@@ -122,11 +155,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
             }
         }
         (_, Tab::Repositories) => {
-            let (panes, gaps) = ui::modal_columns(
-                frame,
-                rows[1],
-                &[Constraint::Percentage(50), Constraint::Min(20)],
-            );
+            let (panes, gaps) = ui::modal_columns(frame, rows[1], columns(Tab::Repositories));
             dividers.extend(gaps);
             draw_repo_list(state, panes[0], frame);
             draw_repo_detail(state, panes[1], frame);
@@ -168,9 +197,10 @@ fn header_spans(state: &AppState, width: u16) -> Vec<(Span<'static>, Option<Head
     };
     let plain = |span: Span<'static>| (span, None);
     let gh = &state.github;
-    let inbox_label = match gh.inbox.items().len() {
-        0 => "Inbox".to_string(),
-        count => format!("Inbox {count}"),
+    let inbox_label = match gh.inbox.counts() {
+        (0, _) => "Inbox".to_string(),
+        (count, 0) => format!("Inbox {count}"),
+        (count, asking) => format!("Inbox {count} ({asking} for you)"),
     };
     let mut spans = vec![
         tab(&inbox_label, Tab::Inbox),
@@ -448,7 +478,7 @@ fn draw_pr_list(state: &AppState, area: Rect, frame: &mut Frame) {
                     .map(|s| s.content.chars().count())
                     .sum::<usize>();
             let room = width.saturating_sub(used + 1);
-            let title_style = if pr.draft {
+            let title_style = if pr.draft || !pr.is_open() {
                 Style::default().fg(palette::TEXT_IDLE)
             } else if mine {
                 Style::default()
@@ -457,9 +487,16 @@ fn draw_pr_list(state: &AppState, area: Rect, frame: &mut Frame) {
             } else {
                 Style::default().fg(Color::White)
             };
-            if pr.draft {
-                let label = "draft \u{b7} ";
-                spans.push(Span::styled(label, Style::default().fg(palette::LANE_TEST)));
+            // A merged or closed one says so in words; the colour of its
+            // number alone is easy to miss.
+            let tag = match pr.state {
+                PrState::Open if pr.draft => Some(("draft \u{b7} ", palette::LANE_TEST)),
+                PrState::Open => None,
+                PrState::Merged => Some(("merged \u{b7} ", Color::Magenta)),
+                PrState::Closed => Some(("closed \u{b7} ", Color::Red)),
+            };
+            if let Some((label, color)) = tag {
+                spans.push(Span::styled(label, Style::default().fg(color)));
                 let room = room.saturating_sub(label.chars().count());
                 spans.push(Span::styled(
                     format!("{:<room$}", truncate(&pr.title, room)),
@@ -846,8 +883,7 @@ fn window(input: &TextInput, width: usize) -> (String, usize) {
 
 fn draw_repo_list(state: &AppState, area: Rect, frame: &mut Frame) {
     let gh = &state.github;
-    let [search, list_area] =
-        ratatui::layout::Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(area);
+    let [search, list_area] = repo_list_areas(area);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" Search ", LABEL),
@@ -973,6 +1009,28 @@ fn draw_repo_detail(state: &AppState, area: Rect, frame: &mut Frame) {
     );
 }
 
+/// The pull request tab's keys, without the ones the selected pull request
+/// cannot take: a merged or closed one is past reviewing and merging, and a
+/// merged one cannot be reopened either.
+fn pr_hints(state: &AppState) -> Vec<(&'static str, &'static str)> {
+    let pairs = keys::footer_pairs("GitHub");
+    let Some(pr) = selected_pr(state).filter(|pr| !pr.is_open()) else {
+        return pairs;
+    };
+    let dropped: &[&str] = match pr.state {
+        PrState::Merged => &["a", "x", "m", "D", "X"],
+        _ => &["a", "x", "m", "D"],
+    };
+    pairs
+        .into_iter()
+        .filter(|(key, _)| !dropped.contains(key))
+        .map(|(key, label)| match (key, pr.state) {
+            ("X", PrState::Closed) => (key, "reopen"),
+            _ => (key, label),
+        })
+        .collect()
+}
+
 fn draw_bottom(state: &AppState, area: Rect, frame: &mut Frame) {
     let hints = |section: &str| ui::key_hints(&keys::footer_pairs(section));
     let line = match (&state.github.mode, state.github.tab) {
@@ -1012,7 +1070,7 @@ fn draw_bottom(state: &AppState, area: Rect, frame: &mut Frame) {
         (Mode::Merge(_), _) => hints("GitHub merge"),
         (Mode::Create(_), _) => hints("GitHub new pull request"),
         (Mode::Browse, Tab::Inbox) => hints("GitHub inbox"),
-        (Mode::Browse, Tab::PullRequests) => hints("GitHub"),
+        (Mode::Browse, Tab::PullRequests) => ui::key_hints(&pr_hints(state)),
         (Mode::Browse, Tab::Repositories) => hints("GitHub repositories"),
     };
     frame.render_widget(Paragraph::new(line), area);
