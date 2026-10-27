@@ -36,8 +36,15 @@ const OWNERS_QUERY: &str =
 pub enum PrFilter {
     #[default]
     Open,
-    /// Open pull requests waiting on the user's review.
+    /// Open pull requests whose review is asked of the user by name, not
+    /// merely of a team they are on.
     ReviewRequested,
+    /// Open pull requests whose review is asked of a team the user is on, or
+    /// of the user.
+    TeamReviewRequested,
+    /// Open pull requests by anyone but the user: everything they could
+    /// review, asked or not.
+    ToReview,
     /// The user's own, whatever became of them.
     Mine,
     /// Everything, merged and closed included.
@@ -45,7 +52,14 @@ pub enum PrFilter {
 }
 
 impl PrFilter {
-    pub const ALL: [Self; 4] = [Self::Open, Self::ReviewRequested, Self::Mine, Self::All];
+    pub const ALL: [Self; 6] = [
+        Self::Open,
+        Self::ReviewRequested,
+        Self::TeamReviewRequested,
+        Self::ToReview,
+        Self::Mine,
+        Self::All,
+    ];
 
     pub fn next(self) -> Self {
         let idx = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
@@ -55,7 +69,9 @@ impl PrFilter {
     pub fn label(self) -> &'static str {
         match self {
             Self::Open => "open",
-            Self::ReviewRequested => "review requested",
+            Self::ReviewRequested => "for me",
+            Self::TeamReviewRequested => "my teams",
+            Self::ToReview => "to review",
             Self::Mine => "mine",
             Self::All => "all",
         }
@@ -63,10 +79,21 @@ impl PrFilter {
 
     fn args(self) -> &'static [&'static str] {
         match self {
-            Self::Open => &["--state", "open"],
-            Self::ReviewRequested => &["--state", "open", "--search", "review-requested:@me"],
+            Self::Open | Self::ReviewRequested | Self::TeamReviewRequested | Self::ToReview => {
+                &["--state", "open"]
+            }
             Self::Mine => &["--state", "all", "--author", "@me"],
             Self::All => &["--state", "all"],
+        }
+    }
+
+    /// What the filter adds to a GitHub search, if it needs one.
+    fn search(self) -> Option<&'static str> {
+        match self {
+            Self::ReviewRequested => Some("user-review-requested:@me"),
+            Self::TeamReviewRequested => Some("review-requested:@me"),
+            Self::ToReview => Some("-author:@me"),
+            _ => None,
         }
     }
 }
@@ -263,10 +290,31 @@ pub fn repo_info() -> Result<RepoInfo> {
     parse_repo_info(&run(&["repo", "view", "--json", REPO_INFO_FIELDS])?)
 }
 
-pub fn pull_requests(filter: PrFilter) -> Result<Vec<PullRequest>> {
+/// The pull requests `filter` selects, newest first, drafts left out when
+/// `hide_drafts` says so.
+pub fn pull_requests(filter: PrFilter, hide_drafts: bool) -> Result<Vec<PullRequest>> {
     let mut args = vec!["pr", "list", "--limit", PR_LIMIT, "--json", PR_FIELDS];
     args.extend(filter.args());
+    let search = search_terms(filter, hide_drafts);
+    if let Some(search) = &search {
+        args.extend(["--search", search]);
+    }
     parse_pull_requests(&run(&args)?)
+}
+
+/// The search a pull request list needs, if any. A search is ordered by
+/// relevance unless told otherwise, so it is told to put the newest first, as
+/// a plain list does.
+fn search_terms(filter: PrFilter, hide_drafts: bool) -> Option<String> {
+    let mut terms: Vec<&str> = filter.search().into_iter().collect();
+    if hide_drafts {
+        terms.push("draft:false");
+    }
+    if terms.is_empty() {
+        return None;
+    }
+    terms.push("sort:created-desc");
+    Some(terms.join(" "))
 }
 
 /// One pull request of the checkout lg is pointed at, whatever became of it.
@@ -1049,6 +1097,39 @@ fn run_combined(dir: Option<&Path>, args: &[&str]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_requested_asks_only_for_requests_made_of_the_user_by_name() {
+        assert_eq!(
+            search_terms(PrFilter::ReviewRequested, false).as_deref(),
+            Some("user-review-requested:@me sort:created-desc")
+        );
+    }
+
+    #[test]
+    fn the_wider_review_lists_take_in_teams_and_then_everyone_else() {
+        assert_eq!(
+            search_terms(PrFilter::TeamReviewRequested, false).as_deref(),
+            Some("review-requested:@me sort:created-desc")
+        );
+        assert_eq!(
+            search_terms(PrFilter::ToReview, false).as_deref(),
+            Some("-author:@me sort:created-desc")
+        );
+    }
+
+    #[test]
+    fn hiding_drafts_searches_any_list_newest_first() {
+        assert_eq!(search_terms(PrFilter::Open, false), None);
+        assert_eq!(
+            search_terms(PrFilter::Mine, true).as_deref(),
+            Some("draft:false sort:created-desc")
+        );
+        assert_eq!(
+            search_terms(PrFilter::ReviewRequested, true).as_deref(),
+            Some("user-review-requested:@me draft:false sort:created-desc")
+        );
+    }
 
     #[test]
     fn a_review_carries_every_inline_comment_and_always_a_body() {

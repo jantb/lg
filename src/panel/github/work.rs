@@ -24,10 +24,11 @@ where
     rx
 }
 
-/// The pull requests `filter` selects, with the repository's details when
-/// `need_info` asks for them.
+/// The pull requests `filter` selects, drafts left out when `hide_drafts`
+/// says so, with the repository's details when `need_info` asks for them.
 pub(super) fn pull_requests(
     filter: PrFilter,
+    hide_drafts: bool,
     need_info: bool,
 ) -> Pending<(Option<RepoInfo>, Vec<PullRequest>)> {
     spawn_read(move || {
@@ -36,7 +37,7 @@ pub(super) fn pull_requests(
         } else {
             None
         };
-        Ok((info, crate::github::pull_requests(filter)?))
+        Ok((info, crate::github::pull_requests(filter, hide_drafts)?))
     })
 }
 

@@ -15,7 +15,7 @@ use super::{
     Compose, CreateField, CreateForm, MergeForm, MergeRow, Mode, Tab, clone_destination,
     clone_request, is_current_branch, is_mine, selected_pr, visible_repos,
 };
-use crate::github::{Mergeable, PrState, PullRequest, ReviewDecision};
+use crate::github::{Mergeable, PrFilter, PrState, PullRequest, ReviewDecision};
 use crate::panel::keys;
 use crate::panel::text_input::TextInput;
 use crate::state::{AppState, SPINNER_FRAMES};
@@ -23,32 +23,78 @@ use crate::ui::{self, palette};
 
 pub(super) const LABEL: Style = Style::new().fg(Color::DarkGray);
 
-pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
-    // Tall enough to read a description, and clear of the footer, where the
-    // status line reports what the last action did.
-    let modal = ui::centered(
+/// The header, the tab's panes, and the bottom line.
+const ROWS: [Constraint; 3] = [
+    Constraint::Length(1),
+    Constraint::Min(3),
+    Constraint::Length(1),
+];
+
+/// Tall enough to read a description, and clear of the footer, where the
+/// status line reports what the last action did.
+fn modal_area(area: Rect) -> Rect {
+    ui::centered(
         area,
         area.width.saturating_sub(4).min(140),
         area.height.saturating_sub(2).min(44),
-    );
+    )
+}
+
+fn too_small(inner: Rect) -> bool {
+    inner.width < 40 || inner.height < 8
+}
+
+/// What a click on the header asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HeaderClick {
+    Tab(Tab),
+    /// A pull request filter to show.
+    Filter(PrFilter),
+    /// The filter shown when there is no room for every choice, which steps
+    /// to the next one.
+    NextFilter,
+    /// Whether drafts are shown, which flips.
+    Drafts,
+}
+
+/// What the header holds at `column`, `row`, measured the way [`render`]
+/// lays it out.
+pub(super) fn header_click(
+    state: &AppState,
+    area: Rect,
+    column: u16,
+    row: u16,
+) -> Option<HeaderClick> {
+    let inner = ui::modal_inner(modal_area(area));
+    if too_small(inner) {
+        return None;
+    }
+    let header = ui::modal_row_areas(inner, &ROWS).0[0];
+    if row != header.y || column < header.x {
+        return None;
+    }
+    let mut x = header.x as usize;
+    for (span, click) in header_spans(state, header.width) {
+        x += span.width();
+        if (column as usize) < x {
+            return click;
+        }
+    }
+    None
+}
+
+pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
+    let modal = modal_area(area);
     let title = match &state.github.repo {
         Some(repo) => format!("GitHub \u{b7} {}", repo.name),
         None => "GitHub".to_string(),
     };
     let inner = ui::modal_frame(frame, modal, &title);
-    if inner.width < 40 || inner.height < 8 {
+    if too_small(inner) {
         frame.render_widget(Paragraph::new("Terminal too small for GitHub"), inner);
         return;
     }
-    let (rows, mut dividers) = ui::modal_rows(
-        frame,
-        inner,
-        &[
-            Constraint::Length(1),
-            Constraint::Min(3),
-            Constraint::Length(1),
-        ],
-    );
+    let (rows, mut dividers) = ui::modal_rows(frame, inner, &ROWS);
     draw_tabs(state, rows[0], frame);
     match (&state.github.mode, state.github.tab) {
         (Mode::Create(form), _) => draw_create(form, rows[1], frame),
@@ -97,79 +143,127 @@ pub(super) fn spinner(state: &AppState) -> &'static str {
 }
 
 fn draw_tabs(state: &AppState, area: Rect, frame: &mut Frame) {
-    let tab = |label: &str, active: bool| {
-        if active {
-            Span::styled(
-                format!(" {label} "),
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(palette::ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            )
+    let spans: Vec<Span> = header_spans(state, area.width)
+        .into_iter()
+        .map(|(span, _)| span)
+        .collect();
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The header's spans, each with what a click on it does.
+fn header_spans(state: &AppState, width: u16) -> Vec<(Span<'static>, Option<HeaderClick>)> {
+    let tab = |label: &str, tab: Tab| {
+        let style = if state.github.tab == tab {
+            Style::default()
+                .fg(Color::Black)
+                .bg(palette::ACCENT)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Span::styled(
-                format!(" {label} "),
-                Style::default().fg(palette::TEXT_IDLE),
-            )
-        }
+            Style::default().fg(palette::TEXT_IDLE)
+        };
+        (
+            Span::styled(format!(" {label} "), style),
+            Some(HeaderClick::Tab(tab)),
+        )
     };
+    let plain = |span: Span<'static>| (span, None);
     let gh = &state.github;
     let inbox_label = match gh.inbox.items().len() {
         0 => "Inbox".to_string(),
         count => format!("Inbox {count}"),
     };
     let mut spans = vec![
-        tab(&inbox_label, gh.tab == Tab::Inbox),
-        Span::raw(" "),
-        tab("Pull requests", gh.tab == Tab::PullRequests),
-        Span::raw(" "),
-        tab("Repositories", gh.tab == Tab::Repositories),
-        Span::raw("   "),
+        tab(&inbox_label, Tab::Inbox),
+        plain(Span::raw(" ")),
+        tab("Pull requests", Tab::PullRequests),
+        plain(Span::raw(" ")),
+        tab("Repositories", Tab::Repositories),
+        plain(Span::raw("   ")),
     ];
     match gh.tab {
         Tab::Inbox => {
-            spans.push(Span::styled("across this workspace", LABEL));
+            spans.push(plain(Span::styled("across this workspace", LABEL)));
             if gh.inbox.loading.is_some() {
-                spans.push(Span::styled(
+                spans.push(plain(Span::styled(
                     format!("   {} reading GitHub", spinner(state)),
                     Style::default().fg(Color::Yellow),
-                ));
+                )));
             }
         }
         Tab::PullRequests => {
-            spans.push(Span::styled("showing ", LABEL));
-            spans.push(Span::styled(
-                gh.filter.label(),
-                Style::default().fg(Color::Cyan),
-            ));
-            spans.push(Span::styled("  (s changes)", LABEL));
+            let drafts = if gh.hide_drafts {
+                "drafts hidden (h shows)"
+            } else {
+                "h hides drafts"
+            };
+            let used: usize = spans.iter().map(|(span, _)| span.width()).sum();
+            let room = (width as usize).saturating_sub(used + 3 + drafts.chars().count());
+            spans.extend(filter_spans(gh.filter, room));
+            spans.push(plain(Span::raw("   ")));
+            spans.push((Span::styled(drafts, LABEL), Some(HeaderClick::Drafts)));
             if gh.prs_loading.is_some() {
-                spans.push(Span::styled(
+                spans.push(plain(Span::styled(
                     format!("   {} reading pull requests", spinner(state)),
                     Style::default().fg(Color::Yellow),
-                ));
+                )));
             }
         }
         Tab::Repositories => {
-            let used: usize = spans.iter().map(|span| span.width()).sum();
-            spans.extend(owner_spans(
-                state,
-                (area.width as usize).saturating_sub(used),
-            ));
+            let used: usize = spans.iter().map(|(span, _)| span.width()).sum();
+            spans.extend(
+                owner_spans(state, (width as usize).saturating_sub(used))
+                    .into_iter()
+                    .map(plain),
+            );
             if gh.repos_loading.is_some() {
-                spans.push(Span::styled(
+                spans.push(plain(Span::styled(
                     format!("   {} reading repositories", spinner(state)),
                     Style::default().fg(Color::Yellow),
-                ));
+                )));
             }
         }
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    spans
 }
 
 /// Whose repositories are listed, among everyone whose could be: every owner
 /// by name when they fit in `room`, otherwise the chosen one and where it
 /// stands among them.
+/// Every filter, the one shown picked out, each a click away; or, with no
+/// room for them all, the one shown and a click that steps on from it.
+fn filter_spans(chosen: PrFilter, room: usize) -> Vec<(Span<'static>, Option<HeaderClick>)> {
+    let picked = Style::default().fg(Color::Cyan);
+    let hint = "  (s)";
+    let all: usize = PrFilter::ALL
+        .iter()
+        .map(|filter| filter.label().chars().count() + 2)
+        .sum();
+    if all + hint.chars().count() > room {
+        let next = Some(HeaderClick::NextFilter);
+        return vec![
+            (Span::styled("showing ", LABEL), next),
+            (Span::styled(chosen.label(), picked), next),
+            (Span::styled("  (s changes)", LABEL), next),
+        ];
+    }
+    let mut spans: Vec<_> = PrFilter::ALL
+        .iter()
+        .map(|&filter| {
+            let style = if filter == chosen {
+                picked.add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette::TEXT_IDLE)
+            };
+            (
+                Span::styled(format!(" {} ", filter.label()), style),
+                Some(HeaderClick::Filter(filter)),
+            )
+        })
+        .collect();
+    spans.push((Span::styled(hint, LABEL), Some(HeaderClick::NextFilter)));
+    spans
+}
+
 fn owner_spans(state: &AppState, room: usize) -> Vec<Span<'static>> {
     let gh = &state.github;
     let name = |owner: &Option<String>| match (owner, &gh.owners) {
@@ -274,7 +368,7 @@ fn draw_pr_list(state: &AppState, area: Rect, frame: &mut Frame) {
             (None, true) => ("reading pull requests\u{2026}".to_string(), false),
             (None, false) => (
                 format!(
-                    "no {} pull requests \u{2014} n opens one for this branch",
+                    "no pull requests under {} \u{2014} n opens one for this branch",
                     gh.filter.label()
                 ),
                 false,

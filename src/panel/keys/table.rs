@@ -1649,7 +1649,12 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "s",
-                help: "Show open / review requested / mine / all",
+                help: "Next filter (or click one in the header)",
+                footer: None,
+            },
+            Binding {
+                key: "h",
+                help: "Hide or show drafts",
                 footer: None,
             },
             Binding {

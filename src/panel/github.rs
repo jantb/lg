@@ -9,7 +9,10 @@
 //! and reports like every other operation.
 
 use anyhow::Result;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::Rect;
 use std::path::{Path, PathBuf};
 
 use crate::github::{
@@ -146,6 +149,8 @@ pub struct GitHub {
     pub tab: Tab,
     pub mode: Mode,
     pub filter: PrFilter,
+    /// Whether draft pull requests are left out of the list.
+    pub hide_drafts: bool,
 
     pub inbox: inbox::Inbox,
 
@@ -242,8 +247,9 @@ pub fn load_pull_requests(state: &mut AppState) {
         return;
     }
     let filter = state.github.filter;
+    let hide_drafts = state.github.hide_drafts;
     let need_info = state.github.repo.is_none();
-    state.github.prs_loading = Some(work::pull_requests(filter, need_info));
+    state.github.prs_loading = Some(work::pull_requests(filter, hide_drafts, need_info));
     state.github.prs_dir = crate::git::active_repo();
     state.github.prs_error = None;
     // Who the user is, so their own pull requests can be told apart.
@@ -451,8 +457,13 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
 }
 
 fn switch_tab(state: &mut AppState, forward: bool) {
-    state.github.tab = state.github.tab.next(forward);
-    match state.github.tab {
+    show_tab(state, state.github.tab.next(forward));
+}
+
+/// Move to `tab`, reading its list if there is none yet.
+fn show_tab(state: &mut AppState, tab: Tab) {
+    state.github.tab = tab;
+    match tab {
         Tab::Inbox
             if state.github.inbox.loading.is_none() && state.github.inbox.items().is_empty() =>
         {
@@ -519,9 +530,11 @@ fn browse_pull_requests(state: &mut AppState, key: KeyEvent) {
             return;
         }
         KeyCode::Char('s') => {
-            state.github.filter = state.github.filter.next();
-            select_pr(state, 0);
-            load_pull_requests(state);
+            next_filter(state);
+            return;
+        }
+        KeyCode::Char('h') => {
+            toggle_drafts(state);
             return;
         }
         KeyCode::Char('n') => {
@@ -950,14 +963,41 @@ pub fn handle_paste(state: &mut AppState, text: &str) -> bool {
     true
 }
 
-/// The wheel moves through whichever list is on screen.
-pub fn handle_mouse(state: &mut AppState, m: &MouseEvent) {
+fn next_filter(state: &mut AppState) {
+    show_filter(state, state.github.filter.next());
+}
+
+fn show_filter(state: &mut AppState, filter: PrFilter) {
+    state.github.filter = filter;
+    select_pr(state, 0);
+    load_pull_requests(state);
+}
+
+fn toggle_drafts(state: &mut AppState) {
+    state.github.hide_drafts = !state.github.hide_drafts;
+    select_pr(state, 0);
+    load_pull_requests(state);
+}
+
+/// The wheel moves through whichever list is on screen; a click on the header
+/// picks a tab, steps the filter or shows and hides drafts.
+pub fn handle_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) {
     if state.github.mode != Mode::Browse {
         return;
     }
     let down = match m.kind {
         MouseEventKind::ScrollDown => true,
         MouseEventKind::ScrollUp => false,
+        MouseEventKind::Down(MouseButton::Left) => {
+            match draw::header_click(state, area, m.column, m.row) {
+                Some(draw::HeaderClick::Tab(tab)) => show_tab(state, tab),
+                Some(draw::HeaderClick::Filter(filter)) => show_filter(state, filter),
+                Some(draw::HeaderClick::NextFilter) => next_filter(state),
+                Some(draw::HeaderClick::Drafts) => toggle_drafts(state),
+                None => {}
+            }
+            return;
+        }
         _ => return,
     };
     match state.github.tab {
@@ -1573,6 +1613,73 @@ mod tests {
 
         assert_eq!(state.github.mode, Mode::Browse);
         assert_eq!(selected_pr(&state).map(|pr| pr.number), Some(8));
+    }
+
+    #[test]
+    fn a_narrow_header_steps_through_the_filters_from_the_one_shown() {
+        let state = with_prs(Vec::new());
+        let area = ratatui::layout::Rect::new(0, 0, 90, 30);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 30)).unwrap();
+        terminal.draw(|frame| render(&state, area, frame)).unwrap();
+        let buf = terminal.backend().buffer();
+        let (column, row) = (0..buf.area.height)
+            .find_map(|y| {
+                let line: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+                let byte = line.find("showing")?;
+                Some((line[..byte].chars().count() as u16, y))
+            })
+            .expect("only the filter shown fits");
+
+        assert_eq!(
+            draw::header_click(&state, area, column, row),
+            Some(draw::HeaderClick::NextFilter)
+        );
+    }
+
+    #[test]
+    fn the_header_takes_clicks_on_its_tabs_filter_and_drafts() {
+        let state = with_prs(Vec::new());
+        let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| render(&state, area, frame)).unwrap();
+        let buf = terminal.backend().buffer();
+        // Where `text` starts on screen, as the user would aim at it.
+        let at = |text: &str| {
+            (0..buf.area.height)
+                .find_map(|y| {
+                    let row: Vec<&str> =
+                        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+                    let line = row.concat();
+                    let byte = line.find(text)?;
+                    let column = line[..byte].chars().count();
+                    Some((column as u16, y))
+                })
+                .unwrap_or_else(|| panic!("{text} is on screen"))
+        };
+        let click = |text: &str| {
+            let (column, row) = at(text);
+            draw::header_click(&state, area, column + 1, row)
+        };
+
+        assert_eq!(
+            click("Repositories"),
+            Some(draw::HeaderClick::Tab(Tab::Repositories))
+        );
+        assert_eq!(click("Inbox"), Some(draw::HeaderClick::Tab(Tab::Inbox)));
+        assert_eq!(
+            click("my teams"),
+            Some(draw::HeaderClick::Filter(PrFilter::TeamReviewRequested))
+        );
+        assert_eq!(
+            click("to review"),
+            Some(draw::HeaderClick::Filter(PrFilter::ToReview))
+        );
+        assert_eq!(click("(s)"), Some(draw::HeaderClick::NextFilter));
+        assert_eq!(click("h hides drafts"), Some(draw::HeaderClick::Drafts));
+        let (column, row) = at("h hides drafts");
+        assert_eq!(draw::header_click(&state, area, column, row + 1), None);
     }
 
     #[test]
