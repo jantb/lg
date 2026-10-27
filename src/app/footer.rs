@@ -35,7 +35,6 @@ fn modal_section(modal: Modal) -> Option<&'static str> {
         Modal::Conflict => "Conflict",
         Modal::DeleteBranch => "Delete branch",
         Modal::Worktree => "New worktree",
-        Modal::ReviewChat => "Review chat",
         Modal::ConfirmDestructive => "Confirm prompts",
         Modal::GitHub => "GitHub",
         Modal::GuidedReview => "Guided review",
@@ -280,7 +279,7 @@ fn default_spans(state: &AppState) -> Vec<Span<'static>> {
         if !shortcut_visible(state, key, label) {
             continue;
         }
-        spans.push(Span::styled(*key, shortcut_style(state, key)));
+        spans.push(Span::styled(*key, Style::default().fg(Color::Yellow)));
         spans.push(Span::raw(" "));
         spans.push(Span::raw(*label));
         if pairs
@@ -299,7 +298,7 @@ fn shortcut_visible(state: &AppState, key: &str, label: &str) -> bool {
     match (key, label) {
         ("F", _) => state.branch_actions_available(),
         // A guided review needs a checkout to read the change from.
-        ("V", _) => state.repo_root.is_some(),
+        ("R", _) => state.repo_root.is_some(),
         ("p", _) => state.pull_available(),
         ("v", _) => diff_view_toggle_available(state),
         // Only a session row has a session to close.
@@ -314,36 +313,8 @@ fn shortcut_visible(state: &AppState, key: &str, label: &str) -> bool {
     }
 }
 
-fn shortcut_style(state: &AppState, key: &str) -> Style {
-    if key == "d" && review_drill_available(state) {
-        Style::default()
-            .fg(Color::LightGreen)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Yellow)
-    }
-}
-
-fn review_drill_available(state: &AppState) -> bool {
-    if !matches!(state.focus, Pane::Main) || !matches!(state.diff_source, DiffSource::Review) {
-        return false;
-    }
-    let Some(review) = &state.review.assisted else {
-        return false;
-    };
-    let Some(node) = review.nodes.get(state.review.idx) else {
-        return false;
-    };
-    review.nodes.iter().any(|candidate| {
-        candidate.parent.as_deref() == Some(node.id.as_str())
-            && (candidate.id.contains(":file:") || candidate.id.contains(":entry:"))
-    })
-}
-
 fn diff_view_toggle_available(state: &AppState) -> bool {
-    matches!(state.focus, Pane::Main)
-        && !matches!(state.diff_source, DiffSource::Branch(_))
-        && (!matches!(state.diff_source, DiffSource::Review) || state.review.assisted.is_some())
+    matches!(state.focus, Pane::Main) && !matches!(state.diff_source, DiffSource::Branch(_))
 }
 
 fn modal_spans(
@@ -495,7 +466,6 @@ mod tests {
             Modal::Conflict,
             Modal::DeleteBranch,
             Modal::Worktree,
-            Modal::ReviewChat,
             Modal::ConfirmDestructive,
             Modal::GitHub,
             Modal::Stash,
@@ -588,8 +558,9 @@ mod tests {
         let pr = footer_text(&state);
         assert!(pr.contains("O browser"), "{pr}");
 
-        state.guided = Some(Box::new(Guided::new(Source::Changes {
+        state.guided = Some(Box::new(Guided::new(Source::Unpushed {
             branch: "feature".into(),
+            base_ref: String::new(),
         })));
         let local = footer_text(&state);
         assert!(!local.contains("browser"), "{local}");
@@ -695,7 +666,7 @@ mod tests {
         assert!(!text(&state).contains("guided review"), "{}", text(&state));
 
         state.repo_root = Some("/repo".into());
-        assert!(text(&state).contains("V guided review"), "{}", text(&state));
+        assert!(text(&state).contains("R guided review"), "{}", text(&state));
     }
 
     #[test]

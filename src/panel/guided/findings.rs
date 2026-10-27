@@ -1,7 +1,7 @@
 //! A step's commentary taken apart into its summary and the findings it pins
-//! to lines of the hunk.
+//! to lines of the file, or for the final review, to lines of any file.
 
-use crate::git::guided::GuidedHunk;
+use crate::git::guided::GuidedFile;
 
 /// Ordered so the worst of several is their `max`. A question is not a
 /// defect, so it ranks below a nit.
@@ -38,6 +38,8 @@ pub struct Finding {
 pub struct Reading {
     pub summary: Option<String>,
     pub findings: Vec<Finding>,
+    /// Findings that name their file, as the final review across files gives them.
+    pub cited: Vec<(String, Finding)>,
     pub check: Option<String>,
     pub fixed: Vec<String>,
     pub rest: Vec<String>,
@@ -60,6 +62,8 @@ pub fn read(text: &str) -> Reading {
             // Shown in the step list already.
         } else if let Some(finding) = parse_finding(line) {
             reading.findings.push(finding);
+        } else if let Some(cited) = parse_cited(line) {
+            reading.cited.push(cited);
         } else {
             reading.rest.push(raw.to_string());
         }
@@ -98,9 +102,9 @@ pub fn with_settled(text: &str, settled: &str) -> String {
     lines.join("\n")
 }
 
-/// Findings on a line the hunk shows, with that line's index; then the rest.
+/// Findings on a line the file's diff shows, with that line's index; then the rest.
 pub fn place<'a>(
-    step: &GuidedHunk,
+    step: &GuidedFile,
     findings: &'a [Finding],
 ) -> (Vec<(usize, &'a Finding)>, Vec<&'a Finding>) {
     let mut placed = Vec::new();
@@ -117,7 +121,7 @@ pub fn place<'a>(
 
 /// The index in `step` of the line the prompt labelled `L{line}`: a line the
 /// new file has with that number, else a removed line the old file had it on.
-fn index_of(step: &GuidedHunk, line: usize) -> Option<usize> {
+fn index_of(step: &GuidedFile, line: usize) -> Option<usize> {
     step.lines
         .iter()
         .position(|l| l.new == Some(line))
@@ -149,6 +153,19 @@ fn after_key<'a>(line: &'a str, key: &str) -> Option<&'a str> {
             .trim_start_matches(['*', '`'])
             .trim(),
     )
+}
+
+/// `src/a.rs:L123 issue: text`: a finding that names its file.
+fn parse_cited(line: &str) -> Option<(String, Finding)> {
+    let at = line
+        .match_indices(":L")
+        .map(|(at, _)| at)
+        .find(|&at| line[at + 2..].starts_with(|c: char| c.is_ascii_digit()))?;
+    let path = line[..at].trim_matches(['`', '*']).trim();
+    if path.is_empty() || path.contains(char::is_whitespace) {
+        return None;
+    }
+    Some((path.to_string(), parse_finding(&line[at + 1..])?))
 }
 
 /// `L123 issue: text`, tolerating the separators a model tends to vary.
@@ -228,6 +245,32 @@ mod tests {
     }
 
     #[test]
+    fn a_finding_across_files_keeps_the_file_it_names() {
+        let reading = read(
+            "Summary: Renames the cache.\n\
+             src/a.rs:L12 issue: the caller still passes the old name.\n\
+             - `src/b.rs:L3` nit: tests repeat the setup.\n\
+             Verdict: issue",
+        );
+
+        assert!(reading.cited.contains(&(
+            "src/a.rs".to_string(),
+            Finding {
+                line: 12,
+                severity: Severity::Issue,
+                text: "the caller still passes the old name.".into(),
+            }
+        )));
+        assert!(
+            reading
+                .cited
+                .iter()
+                .any(|(path, finding)| path == "src/b.rs" && finding.line == 3)
+        );
+        assert!(reading.rest.is_empty(), "{:?}", reading.rest);
+    }
+
+    #[test]
     fn settled_questions_take_the_place_of_the_ones_asked() {
         let (text, questions) = split_questions(
             "Summary: Caches the lookup.\n\
@@ -262,7 +305,7 @@ mod tests {
 
     #[test]
     fn a_finding_lands_on_the_line_the_prompt_numbered() {
-        let step = crate::git::guided::parse_hunks(
+        let step = crate::git::guided::parse_files(
             "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n\
              @@ -10,3 +10,2 @@\n keep\n-gone\n-also\n+came\n",
         )

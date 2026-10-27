@@ -238,10 +238,6 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
             panel::details::handle_key(host.state_mut(), k, area)?;
             return Ok(());
         }
-        Modal::ReviewChat => {
-            panel::review_chat::handle_key(host.state_mut(), k)?;
-            return Ok(());
-        }
         Modal::GitHub => {
             panel::github::handle_key(host.state_mut(), k)?;
             return Ok(());
@@ -425,7 +421,7 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
             panel::github::open(host.state_mut());
             return Ok(());
         }
-        KeyCode::Char('N') if !focused_review_panel(host.state()) => {
+        KeyCode::Char('N') => {
             panel::github::open_create(host.state_mut());
             return Ok(());
         }
@@ -441,10 +437,6 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
             host.start_pull();
             return Ok(());
         }
-        KeyCode::Char('f') if focused_review_panel(host.state()) => {
-            panel::main::handle_key(host.state_mut(), k)?;
-            return Ok(());
-        }
         KeyCode::Char('f') => {
             host.start_fetch();
             return Ok(());
@@ -458,10 +450,6 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
             return Ok(());
         }
         KeyCode::Char('R') => {
-            spawn_assisted_review(host.state_mut());
-            return Ok(());
-        }
-        KeyCode::Char('V') => {
             panel::guided::open_branch(host.state_mut());
             return Ok(());
         }

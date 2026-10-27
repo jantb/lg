@@ -102,7 +102,7 @@ pub(super) fn load_diff_text(source: &DiffSource, checkout: bool) -> String {
         return load_new_file_text(source);
     }
     match source {
-        DiffSource::None | DiffSource::Review => String::new(),
+        DiffSource::None => String::new(),
         DiffSource::All => crate::git::all_diffs().unwrap_or_else(|e| format!("error: {e}")),
         DiffSource::File(path) => {
             crate::git::file_diff(path).unwrap_or_else(|e| format!("error: {e}"))
@@ -123,9 +123,7 @@ fn load_new_file_text(source: &DiffSource) -> String {
         return String::new();
     };
     match source {
-        DiffSource::None | DiffSource::Review | DiffSource::Commit(_) | DiffSource::Branch(_) => {
-            String::new()
-        }
+        DiffSource::None | DiffSource::Commit(_) | DiffSource::Branch(_) => String::new(),
         DiffSource::All => {
             crate::git::new_files_diff(&dir, "").unwrap_or_else(|e| format!("error: {e}"))
         }

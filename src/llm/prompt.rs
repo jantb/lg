@@ -16,79 +16,6 @@ pub fn build_commit_prompt(diff: &str, settings: &RepoSettings) -> String {
     )
 }
 
-pub fn build_review_assist_prompt(context: &str, settings: &RepoSettings) -> String {
-    format!(
-        "Assess this selected subtree from a full diff against main as a patch review.\n\
-         Use the branch overview first: commit subjects/bodies and changed file lists are evidence\n\
-         of intended behavior and test coverage. Be factual and specific.\n\
-         Before calling something a regression, compare it with the stated patch intent and the\n\
-         changed tests. Treat an intentional behavior change as a bug only when it contradicts an\n\
-         invariant, API contract, data contract, or caller expectation shown in the context.\n\
-         When tests are changed, say what they cover and name any precise uncovered case; do not\n\
-         claim tests are missing merely because the selected production subtree is in focus.\n\
-         If the evidence is incomplete, say what is missing instead of inventing consumers or behavior.\n\
-         Focus on behavior, call flow, tests, regression risks, and maintainability concerns.\n\
-         Say whether the patch appears minimal; flag unnecessary scope, simpler alternatives,\n\
-         or refactors that would reduce complexity without changing intended behavior.\n\
-         Review the change against the established repo style below and call out concrete violations.\n\
-         Output 6-12 substantive bullets or short sections. Avoid padding. Do not invent files\n\
-         or behavior not shown. Do not use code fences.\n\n\
-         {}\n\n\
-         {}\n\
-         Selected review subtree:\n{context}",
-        review_style(settings, context),
-        crate::settings::language_instruction(settings)
-    )
-}
-
-/// What a Claude Code session is asked when it reviews the branch. Unlike the
-/// local model it has the checkout in front of it, so the assisted review is
-/// its starting point rather than its whole evidence, and it is told where to
-/// write so lg can read the findings back under the review tree.
-pub fn build_review_agent_prompt(
-    context: &str,
-    base_ref: &str,
-    findings_path: &Path,
-    settings: &RepoSettings,
-) -> String {
-    format!(
-        "Review this branch against {base_ref} as a senior engineer would before approving a pull request.\n\
-         Start from the assisted review below, then read the actual code: run `git diff {base_ref}...HEAD`\n\
-         and open the changed files and their callers and tests. Do not change any file in the checkout.\n\n\
-         Look for: behavior that contradicts the stated intent or an existing invariant, error paths that\n\
-         are swallowed or unreachable, concurrency and lifecycle problems, missing or misleading tests,\n\
-         compatibility risks for callers and stored data, and concrete violations of the repo style below.\n\
-         Think about sentinel values: a magic number, -1, 0, MAX, an empty string or a placeholder date\n\
-         standing in for \"none\" or \"unknown\". Follow each one to where it is read and check whether it\n\
-         can collide with a real value or leak into arithmetic, indexing, comparison, storage or display,\n\
-         and whether an optional or a sum type would say the same thing safely.\n\
-         Name the invariants the changed code relies on or maintains: ordering, uniqueness, fields\n\
-         kept in step, bounds, allowed state transitions, paired acquire and release. Check that each\n\
-         holds on every path the change adds or touches, including early returns, error paths and new\n\
-         callers, and that nothing outside the change can now break it.\n\
-         Prefer a few findings you have verified in the code over many you suspect. For each finding give\n\
-         the file and line, what is wrong, why it matters, and what to do instead.\n\n\
-         When you are done, write your findings as Markdown to this file and nothing else:\n\
-         {findings}\n\
-         Use this structure:\n\
-         ## Verdict\n\
-         - One line: approve, approve with nits, or request changes, and why.\n\
-         ## Findings\n\
-         - One bullet per finding, most severe first, starting with `path:line`.\n\
-         ## Tests\n\
-         - What the changed tests cover and the precise cases they miss, or that none changed.\n\
-         ## Questions\n\
-         - Only what you could not settle from the code; omit the section if there is nothing.\n\n\
-         Write the file even when you find nothing wrong, saying so. Then stop.\n\n\
-         {style}\n\n\
-         {language}\
-         Assisted review:\n{context}",
-        findings = findings_path.display(),
-        style = review_style(settings, context),
-        language = crate::settings::language_instruction(settings),
-    )
-}
-
 /// The style guide a review prompt carries: the checkout's own, verbatim, or
 /// the built-in one followed by notes for every language the reviewed text
 /// names a file of. A checkout that wrote its own guide said what it wants
@@ -106,21 +33,22 @@ pub fn review_style(settings: &RepoSettings, reviewed: &str) -> String {
     out
 }
 
-/// The same for every step of a walk, so the prompt cache serves it once and each step pays only for its hunk.
+/// The same for every step of a walk, so the prompt cache serves it once and each step pays only for its file.
 pub fn build_guided_step_system_prompt(overview: &str, settings: &RepoSettings) -> String {
     format!(
-        "You are walking a reviewer through a change one hunk at a time. The overview of the\n\
-         whole change is below; each message then gives one hunk with the source around it.\n\
+        "You are walking a reviewer through a change one file at a time. The overview of the\n\
+         whole change is below; each message then gives every hunk of one file with the source\n\
+         around them. Review the file's change as a whole, not each hunk on its own.\n\
          Reply in exactly this shape, one item a line, and nothing else:\n\
-         Summary: <what the hunk does, in one sentence, in terms of behavior rather than lines>\n\
+         Summary: <what the change to the file does, in one or two sentences, in terms of behavior rather than lines>\n\
          Fixed: <a finding from your earlier read that the code now fixes, only when one is given>\n\
          L<n> issue: <what is wrong and why it matters>\n\
          L<n> nit: <a smaller point>\n\
          L<n> question: <what the code shown cannot settle, asked as a question>\n\
          Verdict: ok|nit|issue\n\
-         Write one `L<n>` line per finding, most severe first, where <n> is the number the hunk\n\
+         Write one `L<n>` line per finding, most severe first, where <n> is the number the diff\n\
          shows for the line it is about. A finding is a bug, an unhandled case, a broken\n\
-         contract, an invariant the hunk can break on some path, a missing test, a sentinel\n\
+         contract, an invariant the change can break on some path, a missing test, a sentinel\n\
          value (-1, 0, MAX, an empty string standing in for \"none\") that can collide with a\n\
          real value or leak into arithmetic, indexing or display, or a concrete violation of\n\
          the repo style below. A missing comment is never a finding.\n\
@@ -166,17 +94,60 @@ pub fn build_guided_chat_redo(brief: &str) -> String {
     )
 }
 
-/// The opening of a guided review: what the change is for and the order its
-/// files are best read in.
+/// The opening of a guided review: the plan every walk mode orders the files
+/// by, from the whole diff — its concerns, reading order, risk and what to skim.
 pub fn build_guided_overview_prompt(context: &str, settings: &RepoSettings) -> String {
     format!(
-        "You are about to walk a reviewer through this change one hunk at a time.\n\
-         From the commits and the file list below, write:\n\
-         - One short paragraph on what the change is for.\n\
-         - The two or three things most worth the reviewer's attention, each with its file.\n\
-         Keep it under 12 lines. No code fences. Do not invent behavior that is not shown.\n\n\
+        "You are about to walk a reviewer through this change one file at a time. Read the whole\n\
+         diff below and plan the walk. Reply in exactly this shape, one item a line, and nothing else:\n\
+         Summary: <what the change is for, in two or three sentences>\n\
+         Concern: <a short title for one part of the change, such as one feature, fix or refactor>\n\
+         Why: <what that part does and why, in one sentence>\n\
+         Files: <its files, comma separated, as the diff names them>\n\
+         (one Concern, Why and Files group per part of the change, the part to read first first)\n\
+         Order: <every file, comma separated, in the order best read: what explains the rest first>\n\
+         Risk: <file> high|medium|low: <why, in a few words>\n\
+         Skim: <file>: <why it is safe to skim: generated, a lockfile, a pure rename, formatting>\n\
+         Watch: <one thing most worth the reviewer's attention, naming its file>\n\
+         Put every file in exactly one concern; a file that serves several goes in the one it\n\
+         serves most. Give one Risk line per file that is not skimmed, and up to three Watch lines.\n\
+         Keep the words Summary, Concern, Why, Files, Order, Risk, Skim and Watch, and high, medium\n\
+         and low, in English. No code fences. Do not invent behavior that is not shown.\n\n\
          {}\n\
          {context}",
+        crate::settings::language_instruction(settings)
+    )
+}
+
+/// The last step of a guided review: the whole changeset read as one change,
+/// in context, for what reading it file by file misses.
+pub fn build_guided_final_prompt(context: &str, settings: &RepoSettings) -> String {
+    format!(
+        "You have walked a reviewer through this change one file at a time. Now step back and\n\
+         review the whole changeset below as one change, the way a reviewer reads it before\n\
+         approving: read every file's diff together and judge it in context, not file by file.\n\
+         Ask whether the pieces hang together and do what the overview says and no more; whether\n\
+         the design is sound or a simpler shape would do; and what no single file shows: a caller\n\
+         or test not updated for a changed signature or contract, a value one file produces and\n\
+         another reads differently, the same thing handled inconsistently in two places,\n\
+         duplicated logic, an invariant that spans files and is broken on some path, leftover\n\
+         debugging or dead code, and whether the tests cover the change as a whole.\n\
+         What the file-by-file reads raised is listed after the diff. Repeat one only when the\n\
+         wider context changes it: makes it worse, settles it, or shows it is part of a pattern.\n\
+         Reply in exactly this shape, one item a line, and nothing else:\n\
+         Summary: <the change as a whole and whether it hangs together, in two to four sentences>\n\
+         <path>:L<n> issue: <what is wrong, seen in the whole change, and why it matters>\n\
+         <path>:L<n> nit: <a smaller point>\n\
+         <path>:L<n> question: <what the diff cannot settle, asked as a question>\n\
+         Verdict: ok|nit|issue\n\
+         <path> is the file as the diff names it and <n> the number the diff shows for the line.\n\
+         Leave out the finding lines when there is nothing to flag. Keep each line under 30 words.\n\
+         Keep the words Summary, Verdict, issue, nit and question in English. A missing comment is\n\
+         never a finding. Do not restate the diff, use code fences, or invent code that is not shown.\n\n\
+         {}\n\n\
+         {}\n\
+         {context}",
+        review_style(settings, context),
         crate::settings::language_instruction(settings)
     )
 }
@@ -184,7 +155,7 @@ pub fn build_guided_overview_prompt(context: &str, settings: &RepoSettings) -> S
 /// The system prompt for a question asked about the step on screen.
 pub fn build_guided_question_system_prompt(context: &str, settings: &RepoSettings) -> String {
     format!(
-        "You are helping a reviewer understand one hunk of a change they are reviewing. Answer\n\
+        "You are helping a reviewer understand one file of a change they are reviewing. Answer\n\
          their question from the context below; say what is missing rather than guessing. Be\n\
          brief and concrete, cite lines as `L123`, and do not use code fences unless asked for\n\
          replacement code.\n\n\
@@ -199,7 +170,7 @@ pub fn build_guided_question_system_prompt(context: &str, settings: &RepoSetting
 pub fn build_guided_fix_prompt(context: &str, instruction: &str) -> String {
     format!(
         "You are making one small change requested during a code review of this checkout.\n\
-         Apply exactly what the reviewer asks below, in the hunk shown, editing the file in place.\n\
+         Apply exactly what the reviewer asks below, in the file shown, editing it in place.\n\
          Read what you need to get it right, keep the change minimal, match the surrounding style,\n\
          and do not touch unrelated code, commit, or run anything that changes git state.\n\
          When done, reply with one line saying what you changed.\n\n\
@@ -217,8 +188,8 @@ pub fn build_guided_question_check_prompt(
     settings: &RepoSettings,
 ) -> String {
     format!(
-        "A reviewer is walking through a change in this checkout one hunk at a time. A model that\n\
-         saw only the hunk below raised the questions below it. Settle each one by reading the code:\n\
+        "A reviewer is walking through a change in this checkout one file at a time. A model that\n\
+         saw only the file's diff below raised the questions below it. Settle each one by reading the code:\n\
          open the files, follow the callers and the tests. Do not change any file.\n\
          Then reply with one line per question that still matters, in exactly this shape, and nothing else:\n\
          L<n> issue: <what is wrong and why it matters>\n\
@@ -235,16 +206,11 @@ pub fn build_guided_question_check_prompt(
     )
 }
 
-/// What the review chat is told when lg's read of a hunk raised questions:
+/// What the review chat is told when lg's read of a file raised questions:
 /// settle them in the code and write what still matters where lg reads it.
-pub fn build_guided_chat_questions(
-    path: &str,
-    header: &str,
-    questions: &str,
-    answer: &Path,
-) -> String {
+pub fn build_guided_chat_questions(path: &str, questions: &str, answer: &Path) -> String {
     format!(
-        "lg's read of {path} ({header}) raised the questions below. Settle each one by reading\n\
+        "lg's read of {path} raised the questions below. Settle each one by reading\n\
          the code: open the file, follow the callers and the tests. Change nothing.\n\
          Then write one line per question that still matters to {answer}, in exactly this shape:\n\
          L<n> issue: <what is wrong and why it matters>\n\
@@ -258,123 +224,6 @@ pub fn build_guided_chat_questions(
     )
 }
 
-pub fn build_review_chat_system_prompt(context: &str, settings: &RepoSettings) -> String {
-    format!(
-        "You are a senior code reviewer helping inspect a full branch review against main.\n\
-         Use only the supplied review context and the conversation. Treat commit subjects/bodies,\n\
-         changed file lists, and changed tests as evidence of patch intent and coverage. Be concrete\n\
-         about weaknesses, missed tests, risky flows, compatibility concerns, and follow-up checks.\n\
-         Before calling an intentional behavior change a regression, point to a shown invariant,\n\
-         contract, caller, or test expectation it violates. When useful, cite file paths, function\n\
-         names, and line numbers from the context. If the context is insufficient, say what is\n\
-         missing instead of guessing. Review answers against the\n\
-         established repo style below and call out concrete violations.\n\n\
-         {}\n\n\
-         {}\n\
-         Review context:\n{context}",
-        review_style(settings, context),
-        crate::settings::language_instruction(settings)
-    )
-}
-
-pub fn build_review_pr_text_prompt(context: &str, settings: &RepoSettings) -> String {
-    format!(
-        "Write a copy-ready pull request description for this branch review against main.\n\
-         Use only the supplied review context. Treat commit subjects/bodies, changed files,\n\
-         entry points, diffstat, and changed tests as evidence of the patch intent.\n\
-         Do not invent tickets, reviewers, deployment steps, commands, tests, behavior, or files.\n\
-         If testing evidence is not shown, say that explicitly instead of making up a command.\n\
-         Mention user-visible behavior and compatibility risks when the context supports them.\n\
-         Keep the writing concise and useful for a reviewer who has not read the diff yet.\n\n\
-         Output Markdown only, with this exact structure:\n\
-         ## Summary\n\
-         - 2-4 bullets describing what changed and why.\n\n\
-         ## Testing\n\
-         - Bullets naming changed tests or saying what testing is not shown.\n\n\
-         ## Review Notes\n\
-         - 2-5 bullets with the highest-risk review areas, invariants, compatibility points,\n\
-           or operational checks. Omit generic advice.\n\n\
-         ## Follow-up\n\
-         - Include only if the context shows a real follow-up or uncertainty; otherwise omit.\n\n\
-         Do not include code fences, preamble, sign-off, or placeholder text.\n\n\
-         {}\n\
-         Review context:\n{context}",
-        crate::settings::language_instruction(settings)
-    )
-}
-
-pub fn build_review_style_flag_prompt(
-    path: &str,
-    context: &str,
-    settings: &RepoSettings,
-) -> String {
-    let file_role = review_style_file_role(path);
-    format!(
-        "Review this single changed source file for concrete violations of the established repo style.\n\
-         Apply only the style rules that are relevant to this file's language, framework, and role.\n\
-         Return exactly three lines. Keep the three line keys and the severity words in English:\n\
-         severity: OK|WARN|FAIL\n\
-         line: <new-file line number, or unknown>\n\
-         reason: <one concise reason, or \"No style issue found.\">\n\n\
-         Use OK for files that look consistent or where there is insufficient evidence.\n\
-         Use WARN for likely style issues that deserve manual attention, including vague or misleading names.\n\
-         Use FAIL for clear violations of a rule stated in the style guide below, such as business rules\n\
-         in a controller or handler, swallowed errors, shared mutable state, or edits to generated code.\n\n\
-         Treat the File role below as authoritative. A service-layer or persistence-layer file may call\n\
-         repositories and hold business rules by its placement; do not flag that. Return OK for that\n\
-         concern unless another concrete style rule is violated.\n\
-         A role of unclassified means lg could not read a layer from the path: never flag layer\n\
-         placement for such a file, and apply only rules that are about the code itself.\n\n\
-         For naming issues, include a concrete rename suggestion in the reason.\n\n\
-         {}\n\n\
-         {}\n\
-         File: {path}\n\
-         File role: {file_role}\n\
-         Review context:\n{context}",
-        review_style(settings, &format!("{path}\n{context}")),
-        crate::settings::language_instruction(settings)
-    )
-}
-
-/// Where a file sits in a layered codebase, as far as its path gives that away.
-///
-/// Only languages that are written in layers get one, and only when the path
-/// names the layer. Anything else is unclassified: reporting a Rust or Go file
-/// as being in the wrong layer told the model that business logic in it was a
-/// violation by placement, and that is a verdict about a convention the
-/// checkout does not use.
-pub fn review_style_file_role(path: &str) -> &'static str {
-    if !Language::from_path(path).is_some_and(Language::is_layered) {
-        return "unclassified";
-    }
-    let lower = path.to_ascii_lowercase();
-    let has = |words: &[&str]| words.iter().any(|w| lower.contains(w));
-    if has(&[
-        "controller",
-        "endpoint",
-        "handler",
-        "resource",
-        "router",
-        "routes",
-    ]) {
-        "controller"
-    } else if has(&["service", "usecase", "use_case", "flow", "domain"]) {
-        "service-layer"
-    } else if has(&["repository", "repositories", "dao", "persistence", "store"]) {
-        "persistence-layer"
-    } else {
-        "unclassified"
-    }
-}
-
-/// What the local model is asked to do about one conflict: write the merged
-/// lines for that region and nothing else.
-///
-/// The hunk goes in as labelled sides rather than as the markers git wrote,
-/// because the answer has to come back without markers in it and showing the
-/// model a set is the surest way to get one echoed. `GIVE_UP_PHRASE` is offered
-/// on purpose: a model that says it cannot do this is worth far more than one
-/// that guesses, because saying so is what hands the conflict to claude.
 pub fn build_conflict_hunk_prompt(
     path: &str,
     hunk: &crate::git::ConflictHunk,
@@ -472,51 +321,20 @@ pub fn build_conventions_prompt(history: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn review_assist_prompt_includes_repo_style() {
-        let prompt = build_review_assist_prompt("src/main/kotlin/App.kt", &RepoSettings::default());
-
-        assert!(prompt.contains("Assess this selected subtree"));
-        assert!(prompt.contains("commit subjects/bodies"));
-        assert!(prompt.contains("stated patch intent"));
-        assert!(prompt.contains("changed tests"));
-        assert!(prompt.contains("claim tests are missing"));
-        assert!(prompt.contains("instead of inventing consumers or behavior"));
-        assert!(prompt.contains("6-12 substantive bullets"));
-        assert!(prompt.contains("whether the patch appears minimal"));
-        assert!(prompt.contains("simpler alternatives"));
-        assert!(prompt.contains("refactors that would reduce complexity"));
-        assert!(prompt.contains("Established repo style:"));
-        assert!(prompt.contains("Layers stay honest"));
-        assert!(prompt.contains("Selected review subtree:\nsrc/main/kotlin/App.kt"));
-    }
-
     /// The built-in guide is about code in general; what a Kotlin reviewer
     /// checks that a TypeScript reviewer does not is appended per language,
     /// and only for the languages the reviewed text names files of.
     #[test]
     fn the_built_in_guide_gains_notes_for_each_language_under_review() {
-        let prompt = build_review_assist_prompt(
-            "Files changed:\n- src/main/kotlin/App.kt\n- web/src/App.tsx",
+        let prompt = review_style(
             &RepoSettings::default(),
+            "Files changed:\n- src/main/kotlin/App.kt\n- web/src/App.tsx",
         );
 
         assert!(prompt.contains("\nKotlin:\n"), "{prompt}");
         assert!(prompt.contains("\nTypeScript:\n"), "{prompt}");
         assert!(!prompt.contains("\nRust:\n"), "{prompt}");
         assert!(!prompt.contains("\nC# / .NET:\n"), "{prompt}");
-    }
-
-    #[test]
-    fn the_review_agent_is_asked_to_think_about_sentinel_values() {
-        let prompt = build_review_agent_prompt(
-            "assisted review",
-            "main",
-            Path::new("/tmp/findings.md"),
-            &RepoSettings::default(),
-        );
-
-        assert!(prompt.contains("sentinel values"), "{prompt}");
     }
 
     #[test]
@@ -533,70 +351,6 @@ mod tests {
         assert!(style.contains("No parameterized tests"), "{style}");
     }
 
-    #[test]
-    fn the_review_agent_is_asked_to_check_the_invariants_the_change_relies_on() {
-        let prompt = build_review_agent_prompt(
-            "assisted review",
-            "main",
-            Path::new("/tmp/findings.md"),
-            &RepoSettings::default(),
-        );
-
-        assert!(
-            prompt.contains("invariants the changed code relies on"),
-            "{prompt}"
-        );
-    }
-
-    #[test]
-    fn review_chat_system_prompt_includes_repo_style() {
-        let prompt =
-            build_review_chat_system_prompt("full review context", &RepoSettings::default());
-
-        assert!(prompt.contains("commit subjects/bodies"));
-        assert!(prompt.contains("patch intent"));
-        assert!(prompt.contains("intentional behavior change"));
-        assert!(prompt.contains("Established repo style:"));
-        assert!(prompt.contains("Review context:\nfull review context"));
-    }
-
-    #[test]
-    fn review_pr_text_prompt_is_copy_ready_and_grounded() {
-        let prompt = build_review_pr_text_prompt("full review context", &RepoSettings::default());
-
-        assert!(prompt.contains("copy-ready pull request description"));
-        assert!(prompt.contains("commit subjects/bodies"));
-        assert!(prompt.contains("changed tests"));
-        assert!(prompt.contains("Do not invent"));
-        assert!(prompt.contains("## Summary"));
-        assert!(prompt.contains("## Testing"));
-        assert!(prompt.contains("## Review Notes"));
-        assert!(prompt.contains("Review context:\nfull review context"));
-    }
-
-    #[test]
-    fn review_style_flag_prompt_is_single_file() {
-        let prompt = build_review_style_flag_prompt(
-            "src/main/kotlin/App.kt",
-            "updates controller logic",
-            &RepoSettings::default(),
-        );
-
-        assert!(prompt.contains("single changed source file"));
-        assert!(prompt.contains("severity: OK|WARN|FAIL"));
-        assert!(prompt.contains("line: <new-file line number, or unknown>"));
-        assert!(prompt.contains("relevant to this file's language"));
-        assert!(prompt.contains("concrete rename suggestion"));
-        assert!(prompt.contains("never flag layer\nplacement"));
-        assert!(prompt.contains("File: src/main/kotlin/App.kt"));
-        assert!(prompt.contains("File role: unclassified"));
-        assert!(
-            prompt.contains("\nKotlin:\n"),
-            "notes for the file's language"
-        );
-        assert!(prompt.contains("updates controller logic"));
-    }
-
     /// The style guide travels with the checkout, so a repo that wrote its own
     /// is measured against that and never against the built-in one.
     #[test]
@@ -607,9 +361,8 @@ mod tests {
         };
 
         for prompt in [
-            build_review_assist_prompt("ctx", &settings),
-            build_review_chat_system_prompt("ctx", &settings),
-            build_review_style_flag_prompt("src/lib.rs", "ctx", &settings),
+            build_guided_step_system_prompt("src/lib.rs", &settings),
+            build_guided_final_prompt("src/lib.rs", &settings),
         ] {
             assert!(prompt.contains("no unwrap outside tests"), "{prompt}");
             assert!(
@@ -621,50 +374,6 @@ mod tests {
                 "language notes are part of the built-in guide, not of the checkout's"
             );
         }
-    }
-
-    /// A layer is read from the path, and only for languages written in
-    /// layers. Telling the model that a Rust file is in the wrong layer reads
-    /// as a verdict about where its logic lives, under a convention the
-    /// checkout does not use.
-    #[test]
-    fn a_file_role_is_read_from_the_path_of_a_layered_language() {
-        assert_eq!(review_style_file_role("src/app/actions.rs"), "unclassified");
-        assert_eq!(review_style_file_role("cmd/server/main.go"), "unclassified");
-        assert_eq!(
-            review_style_file_role("src/main/kotlin/App.kt"),
-            "unclassified"
-        );
-        assert_eq!(
-            review_style_file_role("src/main/kotlin/BalanceService.kt"),
-            "service-layer"
-        );
-        assert_eq!(
-            review_style_file_role("src/main/java/OrderController.java"),
-            "controller"
-        );
-        assert_eq!(
-            review_style_file_role("Api/Controllers/OrdersController.cs"),
-            "controller"
-        );
-        assert_eq!(
-            review_style_file_role("src/orders/orders.repository.ts"),
-            "persistence-layer"
-        );
-        assert_eq!(review_style_file_role("src/routes/orders.js"), "controller");
-    }
-
-    #[test]
-    fn review_style_flag_prompt_classifies_service_file_names() {
-        let prompt = build_review_style_flag_prompt(
-            "src/main/kotlin/CompletePendingTransactionService.kt",
-            "pendingTransactionsRepository.fetchTransaction(...)",
-            &RepoSettings::default(),
-        );
-
-        assert!(prompt.contains("File role: service-layer"));
-        assert!(prompt.contains("Treat the File role below as authoritative"));
-        assert!(prompt.contains("hold business rules by its placement"));
     }
 
     fn no_sides() -> crate::git::ConflictSides {

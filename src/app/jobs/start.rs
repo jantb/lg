@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use crate::{
     config::{BACKGROUND_FETCH_INTERVAL_SECS, COMMIT_LIST_LIMIT, is_protected_branch_name},
     state::{
-        CommitLogJob, CommitLogMsg, DiffJob, DiffMsg, DiffSource, FetchJob, FetchMsg, Pane,
-        RefreshJob, RefreshMsg, RefreshScope, ReleaseStatusJob, ReleaseStatusMsg,
+        CommitLogJob, CommitLogMsg, DiffJob, DiffMsg, DiffSource, FetchJob, FetchMsg, RefreshJob,
+        RefreshMsg, RefreshScope, ReleaseStatusJob, ReleaseStatusMsg,
     },
 };
 
@@ -153,9 +153,6 @@ impl App {
     }
 
     pub(in crate::app) fn start_diff_job(&mut self, force: bool) {
-        if self.state.focus == Pane::Main && matches!(self.state.diff_source, DiffSource::Review) {
-            return;
-        }
         let source = selected_diff_source(&self.state);
         let same_source = source == self.state.diff_source;
         if !force && same_source {

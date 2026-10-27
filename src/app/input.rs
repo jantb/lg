@@ -14,8 +14,8 @@ use crate::{
 };
 
 use super::{
-    App, HeadlessApp, mouse, open_author_modal, open_model_modal, selected_commit_ref,
-    spawn_assisted_review, spawn_pull, spawn_push,
+    App, HeadlessApp, mouse, open_author_modal, open_model_modal, selected_commit_ref, spawn_pull,
+    spawn_push,
 };
 
 mod host;

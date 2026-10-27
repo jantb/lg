@@ -172,7 +172,7 @@ fn help_flag_prints_usage_and_exits_cleanly() {
         assert!(out.status.success(), "{flag} should exit 0");
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.contains("Usage:"), "{flag} printed: {stdout}");
-        assert!(stdout.contains("lg review"), "{flag} printed: {stdout}");
+        assert!(stdout.contains("lg config"), "{flag} printed: {stdout}");
     }
 }
 

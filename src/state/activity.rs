@@ -66,11 +66,6 @@ impl AppState {
             settings_suggest_job,
             commit_log_job,
             diff_job,
-            review_job,
-            review_assist_job,
-            review_pr_job,
-            review_flag_job,
-            review_chat_job,
             conflict_resolve_job,
             workflow_job,
         );
@@ -91,11 +86,6 @@ impl AppState {
             || self.settings_suggest_job.is_some()
             || self.commit_log_job.is_some()
             || self.diff_job.is_some()
-            || self.review_job.is_some()
-            || self.review_assist_job.is_some()
-            || self.review_pr_job.is_some()
-            || self.review_flag_job.is_some()
-            || self.review_chat_job.is_some()
             || self.conflict_resolve_job.is_some()
             || self.workflow_job.is_some()
             || self.github.loading()
@@ -116,14 +106,7 @@ impl AppState {
         self.activity_label().is_some_and(|label| {
             matches!(
                 label,
-                "generating"
-                    | "reading conventions"
-                    | "reviewing"
-                    | "explaining"
-                    | "flagging style"
-                    | "writing PR text"
-                    | "chatting"
-                    | "resolving conflicts"
+                "generating" | "reading conventions" | "resolving conflicts"
             )
         })
     }
@@ -149,16 +132,6 @@ impl AppState {
             Some("loading diff")
         } else if self.settings_suggest_job.is_some() {
             Some("reading conventions")
-        } else if self.review_job.is_some() {
-            Some("reviewing")
-        } else if self.review_assist_job.is_some() {
-            Some("explaining")
-        } else if self.review_flag_job.is_some() {
-            Some("flagging style")
-        } else if self.review_pr_job.is_some() {
-            Some("writing PR text")
-        } else if self.review_chat_job.is_some() {
-            Some("chatting")
         } else if self.conflict_resolve_job.is_some() {
             Some("resolving conflicts")
         } else if self.workflow_job.is_some() {
@@ -168,12 +141,7 @@ impl AppState {
         } else {
             match &self.pending_action {
                 Some(PendingAction::GenerateMessage) => Some("starting generator"),
-                Some(PendingAction::ReviewAssist(_)) => Some("starting explanation"),
-                Some(PendingAction::ReviewPrText) => Some("starting PR text"),
-                Some(PendingAction::ReviewStyleFlags) => Some("starting style flag pass"),
-                Some(PendingAction::ReviewAgent) => Some("starting agent review"),
                 Some(PendingAction::GuidedChat) => Some("opening the review chat"),
-                Some(PendingAction::ReviewChat(_)) => Some("starting chat"),
                 Some(PendingAction::CopyToClipboard { .. }) => Some("copying"),
                 Some(PendingAction::EditFile { .. }) => Some("opening the editor"),
                 Some(PendingAction::Commit) => Some("committing"),
@@ -324,8 +292,7 @@ impl AppState {
     ///
     /// Dropping a job drops its receiver; the streaming loop in `llm` bails out
     /// as soon as a send fails, so this really does stop the work rather than
-    /// just hiding it. The assisted-review builder is not a stream, so it is
-    /// detached and its result discarded.
+    /// just hiding it.
     pub fn cancel_llm_jobs(&mut self) -> Option<&'static str> {
         let mut cancelled = None;
 
@@ -333,31 +300,8 @@ impl AppState {
             self.defer_thread_join(job.handle.take());
             cancelled = Some("local conflict resolution cancelled");
         }
-        if let Some(mut job) = self.review_chat_job.take() {
-            self.defer_thread_join(job.handle.take());
-            cancelled = Some("review chat cancelled");
-        }
-        if let Some(mut job) = self.review_flag_job.take() {
-            self.defer_thread_join(job.handle.take());
-            self.review.flag_active_path = None;
-            cancelled = Some("style flag pass cancelled");
-        }
-        if let Some(mut job) = self.review_pr_job.take() {
-            self.defer_thread_join(job.handle.take());
-            cancelled = Some("PR text cancelled");
-        }
-        if let Some(mut job) = self.review_assist_job.take() {
-            self.defer_thread_join(job.handle.take());
-            cancelled = Some("explanation cancelled");
-        }
         if let Some(message) = self.cancel_settings_suggest() {
             cancelled = Some(message);
-        }
-        if let Some(mut job) = self.review_job.take() {
-            self.defer_thread_join(job.handle.take());
-            // Otherwise the pane keeps claiming it is still building the review.
-            self.set_diff_text("review cancelled".to_string());
-            cancelled = Some("review cancelled");
         }
         if self.any_generating() {
             self.cancel_all_generations();
@@ -378,11 +322,6 @@ impl AppState {
     /// True when [`cancel_llm_jobs`] would stop something.
     pub fn llm_job_running(&self) -> bool {
         self.settings_suggest_job.is_some()
-            || self.review_job.is_some()
-            || self.review_assist_job.is_some()
-            || self.review_pr_job.is_some()
-            || self.review_flag_job.is_some()
-            || self.review_chat_job.is_some()
             || self.conflict_resolve_job.is_some()
             || self.any_generating()
     }
@@ -560,7 +499,6 @@ impl AppState {
 mod tests {
     use std::time::Duration;
 
-    use super::super::ReviewJob;
     use super::*;
 
     /// With no server running, every commit modal opened on the same red
@@ -714,24 +652,6 @@ mod tests {
 
         state.cancel_all_generations();
         assert!(state.commit_drafts.is_empty());
-    }
-
-    #[test]
-    fn cancelling_a_review_resizes_the_pane_to_its_notice() {
-        let mut state = AppState::new();
-        state.set_diff_text("a long review\n".repeat(50));
-        let (_tx, rx) = std::sync::mpsc::channel();
-        state.review_job = Some(ReviewJob {
-            rx,
-            handle: None,
-            spinner: 0,
-        });
-
-        assert_eq!(state.cancel_llm_jobs(), Some("review cancelled"));
-        assert_eq!(
-            state.diff_line_count, 1,
-            "the notice is one line, so scrolling must stop there"
-        );
     }
 
     #[test]

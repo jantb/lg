@@ -184,9 +184,7 @@ pub(super) fn select_mouse_row(
                 }
             }
         }
-        Pane::Main => {
-            crate::panel::main::select_mouse_row(state, rects.main, row);
-        }
+        Pane::Main => {}
         Pane::Status => {
             if let Some(idx) = list_row_at(
                 rects.environments,

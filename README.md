@@ -43,24 +43,31 @@ agents safely.
   with their checks and reviews, check one out in place or in a new worktree,
   approve, request changes, comment, merge (method, branch cleanup,
   auto-merge), close or reopen, and open a new pull request for the current
-  branch — prefilled from its commits, or from the PR text review mode wrote.
+  branch, prefilled from its commits.
   A second tab lists your repositories, or those of any organization you
   belong to, to clone into the workspace. Needs `gh auth login` once.
-- **Assisted review.** Review the current branch against `main` in a
-  finding-by-finding tree, either from the local model or from a Claude Code
-  session that reads the checkout itself. `lg review` prints the same review
-  and exits.
-- **Guided review.** Walk the branch against `main` (`V`; on `main` itself,
-  your uncommitted changes), or a pull request (`v` in GitHub), one hunk at a
-  time; `b` switches between the whole branch and only what is uncommitted.
-  `?` inside it lists every key. Each step comes with the model's read of
-  it, and the next steps are read ahead so the walk does not wait. Move a line
+- **Guided review.** Walk the branch against `main` (`R`; on `main` itself,
+  what is not pushed yet), or a pull request (`v` in GitHub), one file at a
+  time, its files listed as their directory tree; `b` or a click on the scope
+  badge switches between the whole branch and only what is not pushed
+  (unpushed commits and uncommitted edits). `?` inside it lists every key.
+  The walk opens with the model's plan of the whole diff: its concerns,
+  a reading order, each file's risk and what is safe to skim. The mode badge
+  in the header (or `M`) orders the files from that plan, with nothing lost
+  in switching: by concern (the default, each file read with the rest of its
+  concern as context), as a map in the plan's reading order, or as triage,
+  riskiest first, with `S` marking the files to skim reviewed. Each file
+  comes with the model's read of all its hunks together. Move a line
   cursor, pin notes to lines, ask follow-up questions, and fix things as you
   go: `e` opens `$EDITOR` at the line with lg suspended, and `f` has Claude
-  Code make the change in place. Edits show up in the walk at once. For a pull
-  request, `s` submits every note as inline comments in one review (comment,
-  approve or request changes). Progress and notes live in the git directory,
-  so leaving and coming back resumes where you stopped.
+  Code make the change in place. Edits show up in the walk at once. After the
+  last file comes the final review (`w`): the whole changeset in one view,
+  with the model reading it as one change for what file-by-file reading
+  misses, its findings pinned under their lines. `X` twice, or the reset
+  button under the file list, starts the review over. For a pull request, `s`
+  submits every note as inline comments in one review (comment, approve or
+  request changes). Progress and notes live in the git directory, so leaving
+  and coming back resumes where you stopped.
 - **Conflict assistance.** An in-app conflict editor with model-suggested
   resolutions.
 - **Embedded sessions.** Run a coding agent (claude, codex or pi) or your own
@@ -80,14 +87,13 @@ agents safely.
 lg              Start the interactive TUI in the current repository
 lg config ...   Show, edit, export or import scoped configuration
 lg sandbox ...  Run the bundled Terrarium sandbox tools
-lg review       Print an assisted review of this branch against main, then exit
 lg --help       Show this message
 lg --version    Show the version
 ```
 
 Press `?` inside the TUI for the full key reference. `1`–`4` switch panes,
 `0` focuses the diff, `c` commits, `p`/`P` pull and push, `E` opens the
-environments pipeline, `H` opens GitHub, `V` starts a guided review, `w` opens
+environments pipeline, `H` opens GitHub, `R` starts a guided review, `w` opens
 worktrees and `,` opens settings. In the diff pane `]`/`[`, `space` and `d`
 work on hunks; in Files `s`/`S` stash; in Commits `y`, `t` and `A` copy,
 revert and amend. `/` filters Files, Branches and Commits as you type (`Esc`

@@ -51,11 +51,14 @@ pub fn handle_paste(state: &mut AppState, pasted: &str) -> bool {
 
 fn browse(state: &mut AppState, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    // Only the very next key can confirm deleting a note.
-    if key.code != KeyCode::Char('x')
-        && let Some(guided) = state.guided.as_mut()
-    {
-        guided.delete_armed = None;
+    // Only the very next key can confirm deleting a note or resetting.
+    if let Some(guided) = state.guided.as_mut() {
+        if key.code != KeyCode::Char('x') {
+            guided.delete_armed = None;
+        }
+        if key.code != KeyCode::Char('X') {
+            guided.reset_armed = false;
+        }
     }
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => super::leave(state),
@@ -63,8 +66,10 @@ fn browse(state: &mut AppState, key: KeyEvent) {
             super::next_step(state)
         }
         KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab => super::previous_step(state),
-        KeyCode::Char(']') => super::step_file(state, true),
-        KeyCode::Char('[') => super::step_file(state, false),
+        KeyCode::Char(']') => super::next_step(state),
+        KeyCode::Char('[') => super::previous_step(state),
+        KeyCode::Char('M') => super::switch_walk(state),
+        KeyCode::Char('S') => super::mark_skims_reviewed(state),
         KeyCode::Char('d') if ctrl => scroll_side(state, 8),
         KeyCode::Char('u') if ctrl => scroll_side(state, -8),
         KeyCode::Char('u') => super::next_unreviewed(state),
@@ -76,10 +81,8 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         KeyCode::PageDown | KeyCode::Char('J') => scroll_side(state, 8),
         KeyCode::PageUp | KeyCode::Char('K') => scroll_side(state, -8),
         KeyCode::Char('g') | KeyCode::Home => go_overview(state),
-        KeyCode::Char('G') | KeyCode::End => {
-            let last = state.guided.as_ref().map(|g| g.total()).unwrap_or(0);
-            super::go_to(state, last, false);
-        }
+        KeyCode::Char('G') | KeyCode::End | KeyCode::Char('w') => super::go_final(state),
+        KeyCode::Char('X') => super::reset_review(state),
         KeyCode::Char('c') | KeyCode::Enter => start_note(state),
         KeyCode::Char('x') => super::delete_note_at_cursor(state),
         KeyCode::Char('a') => set_mode(
@@ -151,7 +154,7 @@ fn start_note(state: &mut AppState) {
         return;
     };
     if guided.step().is_none() {
-        state.set_status("notes go on a hunk: \u{2192} to the first one", false);
+        state.set_status("notes go on a file's lines: \u{2192} to one first", false);
         return;
     }
     let editing = guided.note_at_cursor();
@@ -182,7 +185,7 @@ fn start_fix(state: &mut AppState, all_notes: bool) {
         return;
     }
     if !all_notes && guided.step().is_none() {
-        state.set_status("pick a hunk to change", false);
+        state.set_status("pick a file to change", false);
         return;
     }
     let text = if all_notes {
@@ -205,7 +208,7 @@ fn copy_file_findings(state: &mut AppState) {
         return;
     };
     let Some(path) = guided.step().map(|step| step.path.clone()) else {
-        state.set_status("the findings are a file's: \u{2192} to a hunk first", false);
+        state.set_status("the findings are a file's: \u{2192} to one first", false);
         return;
     };
     state.pending_action = Some(PendingAction::CopyToClipboard {

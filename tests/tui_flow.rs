@@ -14,8 +14,6 @@ mod hunks_stash_history;
 mod navigation;
 #[path = "tui_flow/rendering_status_tree_push_layout.rs"]
 mod rendering_status_tree_push_layout;
-#[path = "tui_flow/review_agent.rs"]
-mod review_agent;
 #[path = "tui_flow/review_diff_author.rs"]
 mod review_diff_author;
 #[path = "tui_flow/sessions.rs"]

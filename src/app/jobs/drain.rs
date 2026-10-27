@@ -87,7 +87,6 @@ impl App {
             }
         }
         self.state.files = files;
-        self.state.files_generation = self.state.files_generation.wrapping_add(1);
         self.state.clamp();
         if refresh_diff {
             self.start_diff_job(true);
@@ -123,7 +122,6 @@ impl App {
         self.state.workspace_root = snapshot.workspace_root;
         if let Some(files) = snapshot.files {
             self.state.files = files;
-            self.state.files_generation = self.state.files_generation.wrapping_add(1);
         }
         if let Some(branches) = snapshot.branches {
             self.state.branches = branches;

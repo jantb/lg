@@ -81,7 +81,6 @@ pub fn active_section(pane: Pane, keys: MainKeys) -> Option<&'static Section> {
         Pane::Commits => "Commits",
         Pane::Main => match keys {
             MainKeys::Session => "Session",
-            MainKeys::Review => "Review mode",
             MainKeys::Diff => "Diff pane",
         },
     })
@@ -192,12 +191,11 @@ mod tests {
         }
     }
 
-    /// The main pane is three panes wearing one name, and each has its own keys.
+    /// The main pane is two panes wearing one name, and each has its own keys.
     #[test]
     fn the_main_pane_reports_the_key_set_that_is_live() {
         let title = |keys| active_section(Pane::Main, keys).map(|section| section.title);
         assert_eq!(title(MainKeys::Diff), Some("Diff pane"));
-        assert_eq!(title(MainKeys::Review), Some("Review mode"));
         assert_eq!(title(MainKeys::Session), Some("Session"));
     }
 
@@ -231,7 +229,7 @@ mod tests {
                     ("D", "remove worktree"),
                     ("o", "open IDE"),
                     ("w", "workspace"),
-                    ("V", "guided review"),
+                    ("R", "guided review"),
                     ("?", "help"),
                     ("q", "quit"),
                 ][..],
@@ -255,7 +253,7 @@ mod tests {
                     ("p", "pull"),
                     ("P", "push"),
                     ("f", "fetch"),
-                    ("V", "guided review"),
+                    ("R", "guided review"),
                     ("?", "help"),
                 ][..],
             ),
@@ -278,7 +276,7 @@ mod tests {
                     ("L", "model"),
                     ("f", "fetch"),
                     ("F", "actions"),
-                    ("V", "guided review"),
+                    ("R", "guided review"),
                     ("?", "help"),
                 ][..],
             ),
@@ -296,32 +294,7 @@ mod tests {
                     ("a", "author"),
                     ("L", "model"),
                     ("f", "fetch"),
-                    ("V", "guided review"),
-                    ("?", "help"),
-                ][..],
-            ),
-            (
-                "Review mode",
-                0,
-                "Review",
-                &[
-                    ("j/k", "move"),
-                    ("Enter/s", "source"),
-                    ("space", "expand"),
-                    ("d", "drill"),
-                    ("n/N", "notes"),
-                    ("o", "open IDE"),
-                    ("l", "explain"),
-                    ("C", "chat"),
-                    ("A", "agent"),
-                    ("g/G", "top/bot"),
-                    ("v", "view"),
-                    ("f", "flag"),
-                    ("a", "author"),
-                    ("L", "model"),
-                    ("R", "refresh"),
-                    ("Esc", "cancel"),
-                    ("V", "guided review"),
+                    ("R", "guided review"),
                     ("?", "help"),
                 ][..],
             ),
@@ -330,7 +303,7 @@ mod tests {
                 0,
                 "Diff",
                 &[
-                    ("R", "review mode"),
+                    ("R", "guided review"),
                     ("space", "stage hunk"),
                     ("d", "discard"),
                     ("]/[", "hunk"),
@@ -343,7 +316,6 @@ mod tests {
                     ("a", "author"),
                     ("L", "model"),
                     ("f", "fetch"),
-                    ("V", "guided review"),
                     ("?", "help"),
                 ][..],
             ),

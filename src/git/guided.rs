@@ -1,4 +1,4 @@
-//! A diff cut into the steps a guided review walks: one hunk at a time, every
+//! A diff cut into the steps a guided review walks: one file at a time, every
 //! line numbered on the side it belongs to, so a note can be pinned to a line
 //! that GitHub will accept a comment on.
 
@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// What one line of a hunk is.
+/// What one line of a file's diff is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
     Context,
@@ -15,9 +15,11 @@ pub enum LineKind {
     Removed,
     /// `\ No newline at end of file` and the like: shown, never commented on.
     Meta,
+    /// The `@@ … @@` line a hunk opens on, function context included.
+    Header,
 }
 
-/// One line of a hunk, with its number in the old file, the new one, or both.
+/// One line of a file's diff, with its number in the old file, the new one, or both.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HunkLine {
     pub kind: LineKind,
@@ -34,7 +36,7 @@ impl HunkLine {
         match self.kind {
             LineKind::Removed => self.old.map(|line| (line, Side::Left)),
             LineKind::Added | LineKind::Context => self.new.map(|line| (line, Side::Right)),
-            LineKind::Meta => None,
+            LineKind::Meta | LineKind::Header => None,
         }
     }
 }
@@ -58,30 +60,28 @@ impl Side {
     }
 }
 
-/// One step of the walk: a single hunk of one file.
+/// One step of the walk: every hunk of one file, each opened by its header line.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GuidedHunk {
+pub struct GuidedFile {
     pub path: String,
-    /// The `@@ … @@` line, function context included.
-    pub header: String,
     pub lines: Vec<HunkLine>,
     /// Which file of the diff this is, counting from zero.
     pub file_index: usize,
-    /// Which hunk of its file this is, counting from zero.
-    pub hunk_index: usize,
-    /// How many hunks its file has.
-    pub hunks_in_file: usize,
-    /// The file is new, deleted or binary: said once, on its first hunk.
+    /// The file is new, deleted, renamed or binary.
     pub file_note: Option<String>,
 }
 
-impl GuidedHunk {
+impl GuidedFile {
     pub fn added(&self) -> usize {
         self.count(LineKind::Added)
     }
 
     pub fn removed(&self) -> usize {
         self.count(LineKind::Removed)
+    }
+
+    pub fn hunks(&self) -> usize {
+        self.count(LineKind::Header)
     }
 
     fn count(&self, kind: LineKind) -> usize {
@@ -97,9 +97,9 @@ impl GuidedHunk {
             .unwrap_or(0)
     }
 
-    /// The new-file line an editor should open on for line `index` of the hunk:
-    /// the line itself when it survives, else the nearest surviving one before
-    /// it, else the hunk's start.
+    /// The new-file line an editor should open on for line `index`: the line
+    /// itself when it survives, else the nearest surviving one before it, else
+    /// the first hunk's start.
     pub fn editor_line(&self, index: usize) -> usize {
         self.lines[..=index.min(self.lines.len().saturating_sub(1))]
             .iter()
@@ -109,21 +109,9 @@ impl GuidedHunk {
             .unwrap_or(1)
     }
 
-    /// The hunk as diff text, header first, for a prompt or a clipboard.
-    pub fn patch(&self) -> String {
-        let mut out = String::with_capacity(self.header.len() + 1);
-        out.push_str(&self.header);
-        out.push('\n');
-        for line in &self.lines {
-            out.push_str(&line.text);
-            out.push('\n');
-        }
-        out
-    }
-
-    /// What identifies this hunk across rebuilds: the file and the text of
-    /// what changed, not its position, so editing one hunk does not make the
-    /// others look new.
+    /// What identifies this file's change across rebuilds: the file and the
+    /// text of what changed, not its position, so editing one file does not
+    /// make the others look new.
     pub fn key(&self) -> String {
         let mut hash = 0xcbf2_9ce4_8422_2325u64;
         for line in self
@@ -142,41 +130,49 @@ impl GuidedHunk {
     }
 }
 
-/// Cut a unified diff into hunks, numbering every line.
+/// Cut a unified diff into one step per file, in path order, numbering every line.
 ///
 /// A file that changed with no hunk to show — a binary, a pure rename, a mode
-/// change — still becomes one step, so the walk passes over every file the
-/// diff names.
-pub fn parse_hunks(diff: &str) -> Vec<GuidedHunk> {
+/// change — still becomes a step, so the walk passes over every file the diff
+/// names.
+pub fn parse_files(diff: &str) -> Vec<GuidedFile> {
     let files = super::patch::parse_patch(diff).into_iter().filter(|file| {
         file.header
             .first()
             .is_some_and(|line| line.starts_with("diff --git "))
     });
-    let mut steps = Vec::new();
-    for (file_index, file) in files.enumerate() {
-        let note = file_note(&file);
-        let path = file.path().to_string();
-        let mut hunks: Vec<(String, Vec<HunkLine>)> = file
-            .hunks
-            .into_iter()
-            .map(|hunk| (hunk.header, hunk.lines.iter().map(hunk_line).collect()))
-            .collect();
-        if hunks.is_empty() {
-            hunks.push((String::new(), Vec::new()));
-        }
-        let count = hunks.len();
-        for (hunk_index, (header, lines)) in hunks.into_iter().enumerate() {
-            steps.push(GuidedHunk {
-                path: path.clone(),
-                header,
+    let mut steps: Vec<GuidedFile> = files
+        .enumerate()
+        .map(|(file_index, file)| {
+            let file_note = file_note(&file);
+            let path = file.path().to_string();
+            let lines = file
+                .hunks
+                .into_iter()
+                .flat_map(|hunk| {
+                    let header = HunkLine {
+                        kind: LineKind::Header,
+                        text: hunk.header,
+                        old: None,
+                        new: None,
+                    };
+                    std::iter::once(header)
+                        .chain(hunk.lines.iter().map(hunk_line).collect::<Vec<_>>())
+                })
+                .collect();
+            GuidedFile {
+                path,
                 lines,
                 file_index,
-                hunk_index,
-                hunks_in_file: count,
-                file_note: if hunk_index == 0 { note.clone() } else { None },
-            });
-        }
+                file_note,
+            }
+        })
+        .collect();
+    // Sorted by path, every directory's files are next to each other, so the
+    // walk goes through the tree the step list shows one directory at a time.
+    steps.sort_by(|a, b| a.path.cmp(&b.path));
+    for (file_index, step) in steps.iter_mut().enumerate() {
+        step.file_index = file_index;
     }
     steps
 }
@@ -214,7 +210,7 @@ fn hunk_line(line: &super::patch::PatchLine) -> HunkLine {
     }
 }
 
-/// A note written during a guided review, pinned to one line of one hunk.
+/// A note written during a guided review, pinned to one line of one file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuidedNote {
     pub path: String,
@@ -222,7 +218,7 @@ pub struct GuidedNote {
     #[serde(default)]
     pub side: Side,
     pub body: String,
-    /// The hunk the note was written on, by [`GuidedHunk::key`].
+    /// The step the note was written on, by [`GuidedFile::key`].
     pub step: String,
     /// The line it is pinned to, as the diff showed it, so a note whose code
     /// has since moved still says what it was about.
@@ -239,8 +235,48 @@ pub struct TickedFinding {
     pub text: String,
 }
 
+/// How a guided review orders its files, all from the same plan the model
+/// reads at the start: switching between them loses nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum WalkMode {
+    /// Grouped by what each part of the change is for.
+    #[default]
+    Concerns,
+    /// The file tree, read in the order the plan suggests.
+    Map,
+    /// Riskiest first, files safe to skim last.
+    Triage,
+}
+
+impl WalkMode {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Concerns => Self::Map,
+            Self::Map => Self::Triage,
+            Self::Triage => Self::Concerns,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Concerns => "CONCERNS",
+            Self::Map => "MAP",
+            Self::Triage => "TRIAGE",
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::Concerns => "grouped by concern, each file read with the rest of its concern",
+            Self::Map => "the file tree, in the plan's reading order",
+            Self::Triage => "riskiest first, files safe to skim last",
+        }
+    }
+}
+
 /// What a guided review remembers between visits: which steps were looked at,
-/// the notes written along the way, and the findings ticked off.
+/// the notes written along the way, the findings ticked off, and how the walk
+/// is ordered.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuidedProgress {
     #[serde(default)]
@@ -249,6 +285,8 @@ pub struct GuidedProgress {
     pub notes: Vec<GuidedNote>,
     #[serde(default)]
     pub ticked: Vec<TickedFinding>,
+    #[serde(default)]
+    pub walk: WalkMode,
 }
 
 /// Where the progress of the review named `key` is kept: inside the git
@@ -318,36 +356,48 @@ new file mode 100644
 ";
 
     #[test]
-    fn every_hunk_and_every_file_becomes_a_step() {
-        let steps = parse_hunks(DIFF);
+    fn every_file_becomes_one_step_holding_all_its_hunks_in_path_order() {
+        let steps = parse_files(DIFF);
 
         let paths: Vec<&str> = steps.iter().map(|s| s.path.as_str()).collect();
-        assert_eq!(paths, ["src/a.rs", "src/a.rs", "img.png", "src/new.rs"]);
-        assert_eq!(steps[1].hunk_index, 1);
-        assert_eq!(steps[1].hunks_in_file, 2);
-        assert_eq!(steps[2].file_note.as_deref(), Some("binary file"));
-        assert_eq!(steps[3].file_note.as_deref(), Some("new file"));
+        assert_eq!(paths, ["img.png", "src/a.rs", "src/new.rs"]);
+        let a = file(&steps, "src/a.rs");
+        assert_eq!(a.hunks(), 2);
+        assert!(a.lines.iter().any(|l| l.text == "+y"));
+        assert_eq!(
+            file(&steps, "img.png").file_note.as_deref(),
+            Some("binary file")
+        );
+        assert_eq!(
+            file(&steps, "src/new.rs").file_note.as_deref(),
+            Some("new file")
+        );
+    }
+
+    fn file<'a>(steps: &'a [GuidedFile], path: &str) -> &'a GuidedFile {
+        steps.iter().find(|step| step.path == path).unwrap()
     }
 
     #[test]
     fn lines_are_numbered_on_the_side_they_belong_to() {
-        let steps = parse_hunks(DIFF);
-        let hunk = &steps[0];
-        let find = |text: &str| hunk.lines.iter().find(|l| l.text == text).unwrap();
+        let steps = parse_files(DIFF);
+        let file = file(&steps, "src/a.rs");
+        let find = |text: &str| file.lines.iter().find(|l| l.text == text).unwrap();
 
         assert_eq!(find(" keep").anchor(), Some((10, Side::Right)));
         assert_eq!(find("-old line").anchor(), Some((11, Side::Left)));
         assert_eq!(find("+new line").anchor(), Some((11, Side::Right)));
         assert_eq!(find("+another").anchor(), Some((12, Side::Right)));
         assert_eq!(find(" tail").anchor(), Some((13, Side::Right)));
-        assert_eq!(hunk.added(), 2);
-        assert_eq!(hunk.removed(), 1);
+        // Both hunks of the file: +new line, +another, +y; -old line, -x.
+        assert_eq!(file.added(), 3);
+        assert_eq!(file.removed(), 2);
     }
 
     #[test]
     fn an_editor_opens_on_a_line_that_still_exists() {
-        let steps = parse_hunks(DIFF);
-        let hunk = &steps[0];
+        let steps = parse_files(DIFF);
+        let hunk = file(&steps, "src/a.rs");
         let removed = hunk
             .lines
             .iter()
@@ -359,13 +409,19 @@ new file mode 100644
     }
 
     #[test]
-    fn a_hunk_keeps_its_key_when_another_hunk_changes() {
-        let before = parse_hunks(DIFF);
-        let edited = DIFF.replace("+y", "+y2");
-        let after = parse_hunks(&edited);
+    fn a_file_keeps_its_key_when_another_file_changes() {
+        let before = parse_files(DIFF);
+        let edited = DIFF.replace("+// end", "+// the end");
+        let after = parse_files(&edited);
 
-        assert_eq!(before[0].key(), after[0].key());
-        assert_ne!(before[1].key(), after[1].key());
+        assert_eq!(
+            file(&before, "src/a.rs").key(),
+            file(&after, "src/a.rs").key()
+        );
+        assert_ne!(
+            file(&before, "src/new.rs").key(),
+            file(&after, "src/new.rs").key()
+        );
     }
 
     #[test]
@@ -385,6 +441,7 @@ new file mode 100644
                 line: 12,
                 text: "-1 is used as an index".into(),
             }],
+            walk: WalkMode::Triage,
         };
         let text = serde_json::to_string(&progress).unwrap();
 

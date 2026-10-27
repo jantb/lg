@@ -20,14 +20,12 @@ pub enum Pane {
     Main,
 }
 
-/// Which of the main pane's three key sets is live. [`MainView`] says whether a
-/// session is up; this folds in review mode, which the diff source decides. The
+/// Which of the main pane's key sets is live, as [`MainView`] decides it. The
 /// footer, the help overlay and the unbound-key hint all read it, so they cannot
 /// end up describing different keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainKeys {
     Diff,
-    Review,
     /// A terminal session, which has its own keys and its own way out.
     Session,
 }
@@ -40,7 +38,6 @@ pub enum DiffSource {
     Folder(String), // folder prefix (no trailing slash)
     Commit(String), // sha
     Branch(String), // branch name
-    Review,
 }
 
 /// What the main pane is showing. The diff sources say *what* is diffed; this
@@ -373,10 +370,9 @@ impl AppState {
     /// than a slow pulse: a modal's orbiting frame and a settling status line.
     pub fn decorative_motion(&self) -> bool {
         // Every modal carries the orbiting frame, so an open one keeps the
-        // screen repainting. The review chat is docked into the main pane
-        // rather than drawn as a box, so it has no frame to move.
+        // screen repainting.
         self.decorative_animations
-            && (!matches!(self.modal, Modal::None | Modal::ReviewChat)
+            && (self.modal != Modal::None
                 || self.status.as_ref().is_some_and(|status| {
                     crate::ui::palette::status_animating(status.age_ms(), status.is_error)
                 }))
@@ -386,8 +382,6 @@ impl AppState {
     pub fn main_keys(&self) -> MainKeys {
         if self.session_view().is_some() {
             MainKeys::Session
-        } else if matches!(self.diff_source, DiffSource::Review) && self.review.assisted.is_some() {
-            MainKeys::Review
         } else {
             MainKeys::Diff
         }

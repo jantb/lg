@@ -66,8 +66,8 @@ const SPECIAL: &[(&str, &str, bool)] = &[
     ),
     ("Create a pull request for the current branch", "N", true),
     (
-        "Guided review \u{2014} walk the branch (or, on main, uncommitted changes) hunk by hunk",
-        "V",
+        "Guided review \u{2014} walk the branch (or, on main, what is not pushed) file by file",
+        "R",
         true,
     ),
     ("Commit staged changes", "c", true),
@@ -88,10 +88,9 @@ fn focus_key(section: &Section, state: &AppState) -> Option<Option<char>> {
         "Files" => Some(Some('2')),
         "Branches" => Some(Some('3')),
         "Commits" => Some(Some('4')),
-        // The main pane listens for one of three sets of keys, and only the
+        // The main pane listens for one of its sets of keys, and only the
         // set it is showing can be pressed there.
         "Diff pane" if state.main_keys() == MainKeys::Diff => Some(Some('0')),
-        "Review mode" if state.main_keys() == MainKeys::Review => Some(Some('0')),
         _ => None,
     }
 }

@@ -6,7 +6,7 @@ use std::path::Path;
 use crate::git::attrs::suppress_generated_diff;
 use crate::git::{git_command, run};
 
-use super::{ReviewFile, truncate_review_text};
+use super::truncate_review_text;
 
 pub(super) fn branch_review_commits(base_ref: &str) -> Result<Vec<String>> {
     let range = format!("{base_ref}..HEAD");
@@ -49,64 +49,6 @@ fn compact_commit_body(body: &str) -> String {
         .join(" ")
 }
 
-pub(super) fn worktree_review_files(base: &str) -> Result<Vec<ReviewFile>> {
-    let out = run(&[
-        "diff",
-        "--ignore-all-space",
-        "--name-status",
-        "--find-renames",
-        base,
-    ])?;
-    let mut files = parse_review_files(&String::from_utf8_lossy(&out.stdout));
-    for path in untracked_paths(".")? {
-        if !files.iter().any(|file| file.path == path) {
-            files.push(ReviewFile {
-                status: "A".to_string(),
-                path,
-                old_path: None,
-            });
-        }
-    }
-    Ok(files)
-}
-
-fn parse_review_files(text: &str) -> Vec<ReviewFile> {
-    let mut files = Vec::new();
-    for line in text.lines() {
-        let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() >= 3 && parts[0].starts_with('R') {
-            files.push(ReviewFile {
-                status: parts[0].to_string(),
-                path: parts[2].to_string(),
-                old_path: Some(parts[1].to_string()),
-            });
-        } else if parts.len() >= 2 {
-            files.push(ReviewFile {
-                status: parts[0].to_string(),
-                path: parts[1].to_string(),
-                old_path: None,
-            });
-        }
-    }
-    files
-}
-
-pub(super) fn worktree_review_stat(base: &str) -> Result<String> {
-    let out = run(&[
-        "diff",
-        "--ignore-all-space",
-        "--stat",
-        "--find-renames",
-        base,
-    ])?;
-    let mut stat = String::from_utf8_lossy(&out.stdout).into_owned();
-    for path in untracked_paths(".")? {
-        let untracked = untracked_file_stat(&path)?;
-        append_review_diff_part(&mut stat, &untracked);
-    }
-    Ok(stat)
-}
-
 pub(super) fn worktree_review_diff(base: &str) -> Result<String> {
     let out = run(&["diff", "--ignore-all-space", "--find-renames", base])?;
     let mut diff = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -145,13 +87,6 @@ fn untracked_paths(pathspec: &str) -> Result<Vec<String>> {
         .filter(|entry| !entry.is_empty())
         .map(|entry| String::from_utf8_lossy(entry).into_owned())
         .collect())
-}
-
-fn untracked_file_stat(path: &str) -> Result<String> {
-    untracked_no_index_diff(
-        path,
-        &["diff", "--no-index", "--stat", "--", "/dev/null", path],
-    )
 }
 
 fn untracked_file_diff(path: &str) -> Result<String> {

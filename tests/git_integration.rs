@@ -907,103 +907,7 @@ fn head_branch_returns_unborn_branch_before_first_commit() {
 }
 
 #[test]
-fn assisted_review_reports_diff_and_entry_points_against_main() {
-    let dir = init_repo();
-    fs::create_dir(dir.path().join("src")).unwrap();
-    fs::write(
-        dir.path().join("src/lib.rs"),
-        "pub fn greet() -> &'static str {\n    \"hello\"\n}\n",
-    )
-    .unwrap();
-    stage_in(dir.path(), "src/lib.rs");
-    commit_in(dir.path(), "initial commit");
-
-    git_ok(dir.path(), &["checkout", "-b", "feature/review"]);
-    fs::write(
-        dir.path().join("src/lib.rs"),
-        "pub fn greet() -> &'static str {\n    \"hello review\"\n}\n",
-    )
-    .unwrap();
-    stage_in(dir.path(), "src/lib.rs");
-    commit_in(dir.path(), "update greeting");
-
-    let _cwd = CwdGuard::new(dir.path());
-    let report = lg::git::assisted_review_against_main().unwrap();
-
-    assert!(report.contains("Assisted review against main"), "{report}");
-    assert!(report.contains("Base: main"), "{report}");
-    assert!(report.contains("Full diff against main"), "{report}");
-    assert!(report.contains("src/lib.rs"), "{report}");
-    assert!(report.contains("fn greet"), "{report}");
-    assert!(report.contains("\"hello review\""), "{report}");
-
-    let review = lg::git::build_assisted_review_against_main().unwrap();
-    let entry_pos = review
-        .nodes
-        .iter()
-        .position(|node| node.title.contains("fn greet"))
-        .expect("entry node");
-    let file_pos = review
-        .nodes
-        .iter()
-        .position(|node| node.id.starts_with("branch:file:") && node.title.contains("src/lib.rs"))
-        .expect("file node");
-    let production_pos = review
-        .nodes
-        .iter()
-        .position(|node| node.id == "branch:category:production")
-        .expect("production category node");
-    assert_eq!(review.nodes[0].title, "Full diff against main");
-    assert_eq!(
-        review.nodes[production_pos].parent.as_deref(),
-        Some("branch"),
-        "production category should be directly under the full diff root"
-    );
-    assert_eq!(review.nodes[production_pos].depth, 1);
-    assert_eq!(
-        review.nodes[file_pos].parent.as_deref(),
-        Some("branch:category:production"),
-        "file should be nested under its review category"
-    );
-    assert_eq!(review.nodes[file_pos].depth, 2);
-    assert_eq!(
-        review.nodes[entry_pos].parent.as_deref(),
-        Some(review.nodes[file_pos].id.as_str()),
-        "entry point should be nested under its file"
-    );
-    assert_eq!(review.nodes[entry_pos].depth, 3);
-    assert!(file_pos < 3, "file node should appear before metadata");
-    assert!(
-        review.nodes.iter().all(|node| node.id != "full-diff"),
-        "interactive review should not have a flat full-diff lump"
-    );
-    assert!(
-        review.nodes[entry_pos]
-            .title
-            .contains(":2 in fn greet - updates "),
-        "entry title should include line and description: {}",
-        review.nodes[entry_pos].title
-    );
-    assert!(
-        review.nodes[entry_pos]
-            .body
-            .iter()
-            .any(|line| line.contains("+    \"hello review\"")),
-        "entry node should carry the patch for source view: {:?}",
-        review.nodes[entry_pos].body
-    );
-    assert!(
-        review
-            .nodes
-            .iter()
-            .all(|node| !node.id.starts_with("branch:hunk:")),
-        "entry point tree should not include leaf hunk nodes: {:?}",
-        review.nodes
-    );
-}
-
-#[test]
-fn assisted_review_includes_worktree_and_untracked_changes() {
+fn the_branch_diff_reads_the_working_tree_untracked_files_included() {
     let dir = init_repo();
     fs::create_dir_all(dir.path().join("src/main/kotlin")).unwrap();
     fs::write(
@@ -1027,198 +931,15 @@ fn assisted_review_includes_worktree_and_untracked_changes() {
     .unwrap();
 
     let _cwd = CwdGuard::new(dir.path());
-    let review = lg::git::build_assisted_review_against_main().unwrap();
+    let diff = lg::git::branch_diff_against_main().unwrap().diff;
 
-    assert!(
-        review
-            .report
-            .contains("including staged, unstaged, and untracked files"),
-        "{}",
-        review.report
-    );
-    assert!(
-        review.report.contains("\"hello worktree\""),
-        "{}",
-        review.report
-    );
-    assert!(
-        review.report.contains("src/main/kotlin/NewFlow.kt"),
-        "{}",
-        review.report
-    );
-    assert!(review.report.contains("fun newFlow"), "{}", review.report);
-    assert!(
-        review.nodes.iter().any(|node| {
-            node.id.starts_with("branch:file:") && node.title.contains("src/main/kotlin/NewFlow.kt")
-        }),
-        "{:?}",
-        review.nodes
-    );
+    assert!(diff.contains("\"hello worktree\""), "{diff}");
+    assert!(diff.contains("b/src/main/kotlin/NewFlow.kt"), "{diff}");
+    assert!(diff.contains("fun newFlow"), "{diff}");
 }
 
 #[test]
-fn assisted_review_groups_multiple_hunks_under_same_entry_point() {
-    let dir = init_repo();
-    fs::create_dir(dir.path().join("src")).unwrap();
-    let filler = (0..20)
-        .map(|i| format!("    out.push_str(\"{i}\");"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(
-        dir.path().join("src/lib.rs"),
-        format!(
-            "pub fn greet() -> String {{\n    let mut out = String::new();\n    out.push_str(\"hello\");\n{filler}\n    out.push_str(\"world\");\n    out\n}}\n"
-        ),
-    )
-    .unwrap();
-    stage_in(dir.path(), "src/lib.rs");
-    commit_in(dir.path(), "initial commit");
-
-    git_ok(dir.path(), &["checkout", "-b", "feature/review-group"]);
-    fs::write(
-        dir.path().join("src/lib.rs"),
-        format!(
-            "pub fn greet() -> String {{\n    let mut out = String::new();\n    out.push_str(\"hello review\");\n{filler}\n    out.push_str(\"world review\");\n    out\n}}\n"
-        ),
-    )
-    .unwrap();
-    stage_in(dir.path(), "src/lib.rs");
-    commit_in(dir.path(), "update greeting parts");
-
-    let _cwd = CwdGuard::new(dir.path());
-    let review = lg::git::build_assisted_review_against_main().unwrap();
-    let entry_nodes: Vec<_> = review
-        .nodes
-        .iter()
-        .filter(|node| node.title.contains("fn greet"))
-        .collect();
-    assert_eq!(entry_nodes.len(), 1, "same entry point should be grouped");
-    let file_nodes: Vec<_> = review
-        .nodes
-        .iter()
-        .filter(|node| node.id.starts_with("branch:file:") && node.title.contains("src/lib.rs"))
-        .collect();
-    assert_eq!(file_nodes.len(), 1, "same file should be listed once");
-    let hunk_header_count = entry_nodes[0]
-        .body
-        .iter()
-        .filter(|line| line.starts_with("@@"))
-        .count();
-    assert_eq!(
-        hunk_header_count, 2,
-        "separate hunks should be carried by the shared entry point"
-    );
-}
-
-#[test]
-fn assisted_review_nests_entry_points_when_hunk_calls_changed_function() {
-    let dir = init_repo();
-    fs::create_dir_all(dir.path().join("src/main/kotlin")).unwrap();
-    let spacer = (0..12)
-        .map(|idx| format!("    fun spacer{idx}() = {idx}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(
-        dir.path().join("src/main/kotlin/App.kt"),
-        format!(
-            "class App {{\n    fun nextStep(): String {{\n        return \"done\"\n    }}\n\n{spacer}\n\n    fun maybeTransferPointsToHousehold(): String {{\n        return \"skip\"\n    }}\n}}\n"
-        ),
-    )
-    .unwrap();
-    stage_in(dir.path(), "src/main/kotlin/App.kt");
-    commit_in(dir.path(), "initial commit");
-
-    git_ok(dir.path(), &["checkout", "-b", "feature/nested-review"]);
-    fs::write(
-        dir.path().join("src/main/kotlin/App.kt"),
-        format!(
-            "class App {{\n    fun nextStep(): String {{\n        return maybeTransferPointsToHousehold()\n    }}\n\n{spacer}\n\n    fun maybeTransferPointsToHousehold(): String {{\n        return \"transfer\"\n    }}\n}}\n"
-        ),
-    )
-    .unwrap();
-    stage_in(dir.path(), "src/main/kotlin/App.kt");
-    commit_in(dir.path(), "wire nested flow");
-
-    let _cwd = CwdGuard::new(dir.path());
-    let review = lg::git::build_assisted_review_against_main().unwrap();
-    let next_step = review
-        .nodes
-        .iter()
-        .position(|node| node.title.contains("fun nextStep"))
-        .expect("nextStep entry");
-    let maybe_transfer = review
-        .nodes
-        .iter()
-        .position(|node| node.title.contains("fun maybeTransferPointsToHousehold"))
-        .expect("callee entry");
-    let file_nodes: Vec<_> = review
-        .nodes
-        .iter()
-        .filter(|node| {
-            node.id.starts_with("branch:file:") && node.title.contains("src/main/kotlin/App.kt")
-        })
-        .collect();
-
-    assert_eq!(file_nodes.len(), 1, "same file should be listed once");
-    assert_eq!(
-        review.nodes[next_step].parent.as_deref(),
-        Some(file_nodes[0].id.as_str()),
-        "caller entry should be nested under its file"
-    );
-    assert_eq!(
-        review.nodes[maybe_transfer].parent.as_deref(),
-        Some(review.nodes[next_step].id.as_str()),
-        "callee entry should be nested under caller entry: {:?}",
-        review.nodes
-    );
-    assert_eq!(
-        file_nodes[0].parent.as_deref(),
-        Some("branch:category:production")
-    );
-    assert_eq!(file_nodes[0].depth, 2);
-    assert_eq!(review.nodes[next_step].depth, 3);
-    assert_eq!(review.nodes[maybe_transfer].depth, 4);
-}
-
-#[test]
-fn assisted_review_filters_import_only_hunks_from_entrypoints() {
-    let dir = init_repo();
-    fs::create_dir(dir.path().join("src")).unwrap();
-    fs::write(dir.path().join("src/lib.rs"), "pub fn greet() {}\n").unwrap();
-    stage_in(dir.path(), "src/lib.rs");
-    commit_in(dir.path(), "initial commit");
-
-    git_ok(dir.path(), &["checkout", "-b", "feature/import-only"]);
-    fs::write(
-        dir.path().join("src/lib.rs"),
-        "use std::fmt;\n\npub fn greet() {}\n",
-    )
-    .unwrap();
-    stage_in(dir.path(), "src/lib.rs");
-    commit_in(dir.path(), "add import");
-
-    let _cwd = CwdGuard::new(dir.path());
-    let review = lg::git::build_assisted_review_against_main().unwrap();
-    assert!(
-        review
-            .nodes
-            .iter()
-            .all(|node| !node.id.starts_with("branch:hunk:")),
-        "import-only hunks should not become entry points: {:?}",
-        review.nodes
-    );
-    assert!(
-        review.nodes[0]
-            .body
-            .iter()
-            .any(|line| line.contains("import changes hidden")),
-        "root should explain hidden import-only changes: {:?}",
-        review.nodes[0].body
-    );
-}
-
-#[test]
-fn assisted_review_ignores_whitespace_only_changes() {
+fn the_branch_diff_leaves_out_whitespace_only_changes() {
     let dir = init_repo();
     fs::create_dir(dir.path().join("src")).unwrap();
     fs::write(
@@ -1239,54 +960,22 @@ fn assisted_review_ignores_whitespace_only_changes() {
     commit_in(dir.path(), "format greeting");
 
     let _cwd = CwdGuard::new(dir.path());
-    let review = lg::git::build_assisted_review_against_main().unwrap();
+    let branch = lg::git::branch_diff_against_main().unwrap();
 
     assert!(
-        review.report.contains("(empty)"),
+        branch.diff.trim().is_empty(),
         "whitespace-only branch diff should be empty: {}",
-        review.report
+        branch.diff
     );
     assert!(
-        review
-            .nodes
-            .iter()
-            .all(|node| !node.id.starts_with("branch:hunk:")),
-        "whitespace-only hunks should not become entry points: {:?}",
-        review.nodes
+        branch.commits.iter().any(|c| c.contains("format greeting")),
+        "{:?}",
+        branch.commits
     );
 }
 
 #[test]
-fn assisted_review_reports_kotlin_entry_points() {
-    let dir = init_repo();
-    fs::create_dir_all(dir.path().join("src/main/kotlin")).unwrap();
-    fs::write(
-        dir.path().join("src/main/kotlin/App.kt"),
-        "class App {\n    fun greeting(): String = \"hello\"\n}\n",
-    )
-    .unwrap();
-    stage_in(dir.path(), "src/main/kotlin/App.kt");
-    commit_in(dir.path(), "initial kotlin");
-
-    git_ok(dir.path(), &["checkout", "-b", "feature/kotlin-review"]);
-    fs::write(
-        dir.path().join("src/main/kotlin/App.kt"),
-        "class App {\n    fun greeting(): String = \"hello review\"\n}\n",
-    )
-    .unwrap();
-    stage_in(dir.path(), "src/main/kotlin/App.kt");
-    commit_in(dir.path(), "update kotlin greeting");
-
-    let _cwd = CwdGuard::new(dir.path());
-    let report = lg::git::assisted_review_against_main().unwrap();
-
-    assert!(report.contains("src/main/kotlin/App.kt"), "{report}");
-    assert!(report.contains("fun greeting"), "{report}");
-    assert!(report.contains("\"hello review\""), "{report}");
-}
-
-#[test]
-fn assisted_review_includes_uncommitted_local_changes() {
+fn the_branch_diff_on_main_holds_its_uncommitted_local_changes() {
     let dir = init_repo();
     fs::write(dir.path().join("tracked.txt"), "main\n").unwrap();
     stage_in(dir.path(), "tracked.txt");
@@ -1296,40 +985,50 @@ fn assisted_review_includes_uncommitted_local_changes() {
     fs::write(dir.path().join("scratch.txt"), "untracked local\n").unwrap();
 
     let _cwd = CwdGuard::new(dir.path());
-    let review = lg::git::build_assisted_review_against_main().unwrap();
+    let diff = lg::git::branch_diff_against_main().unwrap().diff;
 
     assert!(
-        review.report.contains("Full diff against main"),
-        "{}",
-        review.report
+        diff.contains("local only") && diff.contains("scratch.txt"),
+        "local changes should be included: {diff}"
     );
-    assert!(
-        review.report.contains("local only") && review.report.contains("scratch.txt"),
-        "local changes should be included: {}",
-        review.report
+}
+
+/// What is not pushed is read against where the branch was pushed: the
+/// commits and edits since, and nothing the remote already has.
+#[test]
+fn the_unpushed_diff_holds_only_what_the_upstream_lacks() {
+    let dir = init_repo();
+    let remote = tempfile::tempdir().expect("tempdir");
+    git_ok(remote.path(), &["init", "--bare", "-b", "main"]);
+    fs::write(dir.path().join("a.txt"), "base\n").unwrap();
+    stage_in(dir.path(), "a.txt");
+    commit_in(dir.path(), "base");
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", remote.path().to_str().unwrap()],
     );
+    git_ok(dir.path(), &["checkout", "-b", "feature/push"]);
+    fs::write(dir.path().join("a.txt"), "pushed\n").unwrap();
+    stage_in(dir.path(), "a.txt");
+    commit_in(dir.path(), "pushed change");
+    git_ok(dir.path(), &["push", "-u", "origin", "feature/push"]);
+    fs::write(dir.path().join("b.txt"), "committed, not pushed\n").unwrap();
+    stage_in(dir.path(), "b.txt");
+    commit_in(dir.path(), "local commit");
+    fs::write(dir.path().join("c.txt"), "not committed\n").unwrap();
+
+    let _cwd = CwdGuard::new(dir.path());
+    let unpushed = lg::git::unpushed_diff().unwrap();
+
+    assert_eq!(unpushed.base_ref, "origin/feature/push");
+    assert!(unpushed.diff.contains("b/b.txt"), "{}", unpushed.diff);
+    assert!(unpushed.diff.contains("b/c.txt"), "{}", unpushed.diff);
+    assert!(!unpushed.diff.contains("b/a.txt"), "{}", unpushed.diff);
     assert!(
-        review
-            .nodes
-            .iter()
-            .any(|node| node.title.contains("tracked.txt")),
-        "tracked local node should exist: {:?}",
-        review.nodes
-    );
-    assert!(
-        review
-            .nodes
-            .iter()
-            .any(|node| node.title.contains("scratch.txt")),
-        "untracked local node should exist: {:?}",
-        review.nodes
-    );
-    assert!(
-        review
-            .report
-            .contains("including staged, unstaged, and untracked files"),
-        "{}",
-        review.report
+        unpushed.commits.iter().any(|c| c.contains("local commit"))
+            && !unpushed.commits.iter().any(|c| c.contains("pushed change")),
+        "{:?}",
+        unpushed.commits
     );
 }
 

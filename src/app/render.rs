@@ -93,13 +93,7 @@ fn prepare(state: &mut AppState, area: Rect) {
     let rects = layout_for(state, area);
     state.advance_animation();
     super::prepare_conflict_editor(state);
-    state.diff_viewport_height = if state.modal == Modal::ReviewChat {
-        panel::main::review_chat_layout(state, rects.main)[0]
-            .height
-            .saturating_sub(2)
-    } else {
-        rects.main.height.saturating_sub(2)
-    };
+    state.diff_viewport_height = rects.main.height.saturating_sub(2);
     state.diff_viewport_width = rects.main.width.saturating_sub(2);
     state.diff_offset = state.diff_offset.min(panel::main::max_scroll_offset(state));
     sync_selection_scroll_offsets(state, &rects, area);
@@ -153,7 +147,6 @@ fn draw(frame: &mut Frame, state: &AppState) -> Option<String> {
         Modal::GuidedReview => panel::guided::render(state, area, frame),
         Modal::Stash => panel::stash::render(state, area, frame),
         Modal::StatusDetails => panel::details::render(state, area, frame),
-        Modal::ReviewChat => {}
     }
     // Last, so a selection inside a modal reads what the modal drew.
     state.selection.and_then(|selection| {

@@ -45,8 +45,6 @@ mod jobs;
 mod mouse;
 mod refresh;
 mod render;
-mod review_agent;
-mod review_assist;
 pub(crate) mod session;
 mod spawn;
 mod watch;
@@ -64,10 +62,6 @@ pub(crate) use workflow::{
 };
 
 use refresh::{prime_roots, refresh_snapshot, startup_roots, watch_repo};
-use review_assist::{
-    spawn_assisted_review, spawn_review_assist, spawn_review_chat, spawn_review_pr_text,
-    spawn_review_style_flags,
-};
 pub(crate) use spawn::{derive_repo_settings, open_model_modal};
 use spawn::{
     git_job_running, load_diff_text, open_author_modal, selected_commit_ref, selected_diff_source,
@@ -312,12 +306,7 @@ impl App {
             let activity = self.state.sessions.activity_signature();
             let status = self.status_mark();
             self.drain_generation();
-            self.drain_review_assist();
-            self.drain_review_pr_text();
-            self.drain_review_agent();
-            self.drain_review_flag_job();
             self.drain_conflict_resolve_job();
-            self.drain_review_chat();
             self.drain_push_job()?;
             self.drain_checkout_job()?;
             self.drain_operation_job()?;
@@ -327,7 +316,6 @@ impl App {
             self.drain_settings_suggest_job();
             self.drain_commit_log_job();
             self.drain_diff_job();
-            self.drain_review_job();
             self.drain_workflow_job()?;
             render::poll_panels(&mut self.state);
             let sessions = self.drain_sessions();

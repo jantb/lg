@@ -1,5 +1,6 @@
-//! Drawing a guided review: the steps down the left, the hunk on screen with
-//! its notes, and the model's read of it beneath.
+//! Drawing a guided review: the steps down the left, the file on screen with
+//! its notes, and the model's read of it beneath; on the final step, the whole
+//! changeset with the model's read of it as one change.
 
 use ratatui::{
     Frame,
@@ -11,8 +12,10 @@ use ratatui::{
 
 use super::findings::{self, Finding, Severity};
 use super::layout::{self, Row};
+use super::plan::{Plan, Risk};
+use super::tree::{self, Entry};
 use super::{Commentary, Guided, Mode, OVERVIEW, Source, Verdict};
-use crate::git::guided::{GuidedHunk, HunkLine, LineKind, Side, TickedFinding};
+use crate::git::guided::{GuidedFile, HunkLine, LineKind, Side, TickedFinding, WalkMode};
 use crate::panel::keys;
 use crate::state::{AppState, DiffViewMode, SPINNER_FRAMES};
 use crate::ui::{self, DiffContentKind};
@@ -62,6 +65,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     );
     dividers.extend(gaps);
     draw_steps(guided, panes[0], frame);
+    draw_reset_button(guided, reset_button_area(panes[0]), frame);
     match &guided.mode {
         Mode::Summary { event, body } => draw_summary(guided, *event, body, panes[1], frame),
         _ => draw_step(state, guided, panes[1], frame, &mut dividers),
@@ -80,6 +84,17 @@ pub(super) fn pane_areas(
     area: Rect,
     requested_list_width: Option<u16>,
 ) -> Option<(Rect, Rect)> {
+    let (inner, rows) = modal_rows(guided, area)?;
+    let list_width = list_width(inner.width, requested_list_width);
+    let (panes, _) = ui::modal_column_areas(
+        rows[1],
+        &[Constraint::Length(list_width), Constraint::Min(30)],
+    );
+    Some((panes[0], panes[1]))
+}
+
+/// The modal's inside and its rows: progress, panes, the bottom line.
+fn modal_rows(guided: &Guided, area: Rect) -> Option<(Rect, Vec<Rect>)> {
     let modal = Rect {
         height: area.height.saturating_sub(1),
         ..area
@@ -96,12 +111,57 @@ pub(super) fn pane_areas(
             Constraint::Length(bottom_height(guided)),
         ],
     );
-    let list_width = list_width(inner.width, requested_list_width);
-    let (panes, _) = ui::modal_column_areas(
-        rows[1],
-        &[Constraint::Length(list_width), Constraint::Min(30)],
-    );
-    Some((panes[0], panes[1]))
+    Some((inner, rows.to_vec()))
+}
+
+/// Where the scope badge opening the progress line is, which a click switches.
+pub(super) fn scope_badge_area(guided: &Guided, area: Rect) -> Option<Rect> {
+    let (_, rows) = modal_rows(guided, area)?;
+    let width = u16::try_from(scope_badge(&guided.source).width()).unwrap_or(u16::MAX);
+    Some(Rect {
+        width: width.min(rows[0].width),
+        ..rows[0]
+    })
+}
+
+/// Where the walk mode's badge is, after the scope badge; a click moves to
+/// the next mode.
+pub(super) fn walk_badge_area(guided: &Guided, area: Rect) -> Option<Rect> {
+    let scope = scope_badge_area(guided, area)?;
+    let x = scope.x + scope.width + 1;
+    let width = u16::try_from(walk_badge(guided.walk()).width()).unwrap_or(u16::MAX);
+    Some(Rect {
+        x,
+        width: width.min((scope.x + area.width).saturating_sub(x)),
+        ..scope
+    })
+}
+
+fn walk_badge(walk: WalkMode) -> Span<'static> {
+    Span::styled(
+        format!(" {} \u{25b8} ", walk.label()),
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightYellow)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+/// The step list without the reset button under it.
+pub(super) fn steps_area(list: Rect) -> Rect {
+    Rect {
+        height: list.height.saturating_sub(1),
+        ..list
+    }
+}
+
+/// The last row of the step list.
+pub(super) fn reset_button_area(list: Rect) -> Rect {
+    Rect {
+        y: list.y + list.height.saturating_sub(1),
+        height: list.height.min(1),
+        ..list
+    }
 }
 
 /// The narrowest the step list is dragged to, and the least the hunk beside
@@ -120,25 +180,95 @@ pub(super) fn list_width(inner_width: u16, requested: Option<u16>) -> u16 {
         .clamp(MIN_LIST_WIDTH, widest)
 }
 
-/// The step each row of the step list stands for, from its first row: the
-/// overview, then each step under the name of its file, which has a row of
-/// its own and stands for none — unless the file is that one step, which is
-/// then named on the step's own row. With the first row shown, as
-/// [`draw_steps`] scrolls the list to keep the current step in the middle.
-pub(super) fn step_rows(guided: &Guided, height: u16) -> (Vec<Option<usize>>, usize) {
-    let mut rows = vec![Some(OVERVIEW)];
-    let mut selected = 0usize;
-    let mut last_file = None;
-    for (index, step) in guided.steps.iter().enumerate() {
-        if has_file_row(step) && last_file != Some(step.file_index) {
-            last_file = Some(step.file_index);
-            rows.push(None);
+/// One row of the step list.
+enum ListRow {
+    Overview,
+    /// A concern, or a directory of the file tree: stands for no step.
+    Heading {
+        text: String,
+        depth: usize,
+        concern: bool,
+    },
+    File {
+        step: usize,
+        name: String,
+        depth: usize,
+    },
+    Final,
+}
+
+/// The step list as the walk mode lays it out: by concern, each concern's
+/// files as their tree under it, or the whole file tree. Without a plan yet,
+/// the file tree.
+fn list_rows(guided: &Guided, plan: Option<&Plan>) -> Vec<ListRow> {
+    let tree_rows = |paths: &[&str], depth: usize| {
+        let mut files: Vec<(usize, &str)> = paths
+            .iter()
+            .filter_map(|path| {
+                let at = guided.steps.iter().position(|step| step.path == *path)?;
+                Some((at + 1, guided.steps[at].path.as_str()))
+            })
+            .collect();
+        files.sort_by_key(|(_, path)| *path);
+        tree::entries(&files)
+            .into_iter()
+            .map(move |entry| match entry {
+                Entry::Dir { name, depth: d } => ListRow::Heading {
+                    text: name,
+                    depth: depth + d,
+                    concern: false,
+                },
+                Entry::File {
+                    step,
+                    name,
+                    depth: d,
+                } => ListRow::File {
+                    step,
+                    name,
+                    depth: depth + d,
+                },
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut rows = vec![ListRow::Overview];
+    match plan.filter(|_| guided.walk() == WalkMode::Concerns) {
+        Some(plan) => {
+            for concern in &plan.concerns {
+                rows.push(ListRow::Heading {
+                    text: concern.title.clone(),
+                    depth: 0,
+                    concern: true,
+                });
+                let paths: Vec<&str> = concern.paths.iter().map(String::as_str).collect();
+                rows.extend(tree_rows(&paths, 1));
+            }
         }
-        if guided.current == index + 1 {
-            selected = rows.len();
+        None => {
+            let paths: Vec<&str> = guided.steps.iter().map(|step| step.path.as_str()).collect();
+            rows.extend(tree_rows(&paths, 0));
         }
-        rows.push(Some(index + 1));
     }
+    rows.push(ListRow::Final);
+    rows
+}
+
+/// The step each row of the step list stands for, from its first row; a
+/// heading stands for none. With the first row shown, as [`draw_steps`]
+/// scrolls the list to keep the current step in the middle.
+pub(super) fn step_rows(guided: &Guided, height: u16) -> (Vec<Option<usize>>, usize) {
+    let rows: Vec<Option<usize>> = list_rows(guided, guided.plan().as_ref())
+        .into_iter()
+        .map(|row| match row {
+            ListRow::Overview => Some(OVERVIEW),
+            ListRow::Heading { .. } => None,
+            ListRow::File { step, .. } => Some(step),
+            ListRow::Final => Some(guided.final_step()),
+        })
+        .collect();
+    let selected = rows
+        .iter()
+        .position(|row| *row == Some(guided.current))
+        .unwrap_or(0);
     let offset = selected.saturating_sub(height as usize / 2);
     (rows, offset)
 }
@@ -161,11 +291,15 @@ fn draw_progress(state: &AppState, guided: &Guided, area: Rect, frame: &mut Fram
     let mut spans = vec![
         scope_badge(&guided.source),
         Span::raw(" "),
+        walk_badge(guided.walk()),
+        Span::raw(" "),
         Span::styled(
             if guided.current == OVERVIEW {
-                format!("overview \u{b7} {total} steps ")
+                format!("overview \u{b7} {total} files ")
+            } else if guided.on_final() {
+                format!("final review \u{b7} {total} files ")
             } else {
-                format!("step {}/{total} ", guided.current)
+                format!("file {}/{total} ", guided.current)
             },
             Style::default()
                 .fg(Color::LightCyan)
@@ -234,7 +368,12 @@ fn verdict_tally(guided: &Guided) -> Vec<Span<'static>> {
 fn scope_badge(source: &Source) -> Span<'static> {
     let (text, color) = match source {
         Source::Branch { base_ref, .. } => (format!(" WHOLE BRANCH vs {base_ref} "), Color::Blue),
-        Source::Changes { .. } => (" UNCOMMITTED ONLY ".to_string(), Color::Magenta),
+        Source::Unpushed { base_ref, .. } if base_ref.is_empty() => {
+            (" NOT PUSHED ".to_string(), Color::Magenta)
+        }
+        Source::Unpushed { base_ref, .. } => {
+            (format!(" NOT PUSHED vs {base_ref} "), Color::Magenta)
+        }
         Source::PullRequest { number, .. } => (format!(" PR #{number} "), Color::Cyan),
     };
     Span::styled(
@@ -246,109 +385,192 @@ fn scope_badge(source: &Source) -> Span<'static> {
     )
 }
 
-/// A file of several steps is named on a row above them; a file of one is
-/// named on the step's row.
-fn has_file_row(step: &GuidedHunk) -> bool {
-    step.hunks_in_file > 1
-}
-
-/// The steps, one row each, grouped under their file.
+/// The steps, one row each: the overview, each file, the final review.
 fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
+    let area = steps_area(area);
     let width = area.width as usize;
-    let mut items = Vec::with_capacity(guided.steps.len() + 1);
-    let mut selected = 0usize;
-    let overview_style = if guided.current == OVERVIEW {
-        Style::default().bg(CURSOR_BG).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    items.push(ListItem::new(Line::from(Span::styled(
-        "\u{2605} Overview",
-        overview_style.fg(Color::LightCyan),
-    ))));
-    let mut last_file = None;
-    for (index, step) in guided.steps.iter().enumerate() {
-        if has_file_row(step) && last_file != Some(step.file_index) {
-            last_file = Some(step.file_index);
-            items.push(ListItem::new(file_row(guided, &step.path, width)));
-        }
-        let number = index + 1;
-        let here = guided.current == number;
+    let plan = guided.plan();
+    let order = guided.walk_order();
+    let selected = |here: bool| {
         if here {
-            selected = items.len();
-        }
-        let mark = if guided.is_reviewed(step) {
-            Span::styled("\u{2713} ", Style::default().fg(Color::Green))
-        } else if here {
-            Span::styled("\u{25b6} ", Style::default().fg(Color::LightCyan))
+            Style::default().bg(CURSOR_BG).add_modifier(Modifier::BOLD)
         } else {
-            Span::styled("\u{b7} ", LABEL)
-        };
-        // In the first column, where a narrow list cannot cut it off.
-        let verdict = match guided.commentary.get(&step.key()) {
-            Some(c) if c.error.is_some() => Span::styled("\u{26a0} ", LABEL),
-            Some(c) => match guided.verdict(step) {
-                Some(verdict) => {
-                    Span::styled("\u{25cf} ", Style::default().fg(verdict_look(verdict).1))
-                }
-                None if !c.done => Span::styled("\u{2026} ", LABEL),
-                None => Span::raw("  "),
-            },
-            None => Span::raw("  "),
-        };
-        let notes = guided.notes_for(step).len();
-        let base = match (here, guided.is_reviewed(step)) {
-            (true, _) => Style::default().bg(CURSOR_BG).add_modifier(Modifier::BOLD),
-            (false, true) => LABEL,
-            (false, false) => Style::default().fg(Color::White),
-        };
-        let mut tail = Vec::new();
-        if notes > 0 {
-            tail.push(Span::styled(format!(" \u{270e}{notes}"), NOTE));
+            Style::default()
         }
-        // A file of one step shares its row: the path, with the step's name
-        // after everything else, where a narrow list cuts it off first.
-        let label = if has_file_row(step) {
-            Span::styled(step_label(step), base)
-        } else {
-            tail.extend(file_tally(guided, &step.path));
-            let used = 4 + tail.iter().map(Span::width).sum::<usize>();
-            if let Some(name) = step_name(step) {
-                tail.push(Span::styled(format!(" {name}"), LABEL));
+    };
+    let items: Vec<ListItem> = list_rows(guided, plan.as_ref())
+        .into_iter()
+        .map(|row| match row {
+            ListRow::Overview => ListItem::new(Line::from(Span::styled(
+                "\u{2605} Overview",
+                selected(guided.current == OVERVIEW).fg(Color::LightCyan),
+            ))),
+            ListRow::Heading {
+                text,
+                depth,
+                concern,
+            } => {
+                let style = if concern {
+                    Style::default()
+                        .fg(Color::LightYellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+                let indent = "  ".repeat(depth);
+                let text = truncate_left(&text, width.saturating_sub(2 + indent.len()));
+                ListItem::new(Line::from(vec![
+                    Span::raw("  "),
+                    Span::raw(indent),
+                    Span::styled(text, style),
+                ]))
             }
-            Span::styled(truncate_left(&step.path, width.saturating_sub(used)), base)
-        };
-        let mut spans = vec![verdict, mark, label];
-        spans.extend(tail);
-        items.push(ListItem::new(Line::from(spans)).style(base));
-    }
-    let offset = selected.saturating_sub(area.height as usize / 2);
+            ListRow::File { step, name, depth } => {
+                file_row(guided, plan.as_ref(), &order, step, &name, depth, width)
+            }
+            ListRow::Final => {
+                let style = selected(guided.on_final());
+                let verdict = verdict_mark(
+                    guided.commentary.get(&guided.final_key()),
+                    guided.final_verdict(),
+                );
+                ListItem::new(Line::from(vec![
+                    verdict,
+                    Span::styled("\u{25c6} Final review", style.fg(Color::LightCyan)),
+                    Span::styled(" whole change", LABEL),
+                ]))
+                .style(style)
+            }
+        })
+        .collect();
+    let (_, offset) = step_rows(guided, area.height);
     let list = List::new(items.into_iter().skip(offset).collect::<Vec<_>>());
     frame.render_widget(list, area);
 }
 
-fn file_row(guided: &Guided, path: &str, width: usize) -> Line<'static> {
-    let tally = file_tally(guided, path);
-    let used: usize = tally.iter().map(Span::width).sum();
-    let mut spans = vec![Span::styled(
-        truncate_left(path, width.saturating_sub(used)),
-        Style::default().fg(Color::Gray),
-    )];
-    spans.extend(tally);
-    Line::from(spans)
+/// A file's row: its verdict in the first column, where a narrow list cannot
+/// cut it off; its place in the reading order on the map and in triage; its
+/// name; then its notes, open findings and, in triage, its risk.
+fn file_row(
+    guided: &Guided,
+    plan: Option<&Plan>,
+    order: &[usize],
+    number: usize,
+    name: &str,
+    depth: usize,
+    width: usize,
+) -> ListItem<'static> {
+    let step = &guided.steps[number - 1];
+    let here = guided.current == number;
+    let triage = guided.walk() == WalkMode::Triage;
+    let skim = plan.is_some_and(|plan| plan.skim.contains_key(&step.path));
+    let mark = if guided.is_reviewed(step) {
+        Span::styled("\u{2713} ", Style::default().fg(Color::Green))
+    } else if here {
+        Span::styled("\u{25b6} ", Style::default().fg(Color::LightCyan))
+    } else {
+        Span::styled("\u{b7} ", LABEL)
+    };
+    let verdict = verdict_mark(guided.commentary.get(&step.key()), guided.verdict(step));
+    let base = match (here, guided.is_reviewed(step) || (triage && skim)) {
+        (true, _) => Style::default().bg(CURSOR_BG).add_modifier(Modifier::BOLD),
+        (false, true) => LABEL,
+        (false, false) => Style::default().fg(Color::White),
+    };
+    let place = match (plan, guided.walk()) {
+        (Some(_), WalkMode::Map | WalkMode::Triage) => order
+            .iter()
+            .position(|&at| at == number)
+            .map(|at| Span::styled(format!("{} ", at + 1), Style::default().fg(Color::Cyan))),
+        _ => None,
+    };
+    let mut tail = Vec::new();
+    let notes = guided.notes_for(step).len();
+    if notes > 0 {
+        tail.push(Span::styled(format!(" \u{270e}{notes}"), NOTE));
+    }
+    tail.extend(file_tally(guided, step));
+    if triage && let Some(plan) = plan {
+        tail.extend(triage_tag(plan, &step.path));
+    }
+    // The name first; what happened to a file with no text diff after
+    // everything else, where a narrow list cuts it off first.
+    let indent = "  ".repeat(depth);
+    let used = 4
+        + indent.len()
+        + place.as_ref().map_or(0, Span::width)
+        + tail.iter().map(Span::width).sum::<usize>();
+    if let Some(what) = no_text_diff(step) {
+        tail.push(Span::styled(format!(" {what}"), LABEL));
+    }
+    let label = Span::styled(truncate_left(name, width.saturating_sub(used)), base);
+    let mut spans = vec![verdict, Span::raw(indent), mark];
+    spans.extend(place);
+    spans.push(label);
+    spans.extend(tail);
+    ListItem::new(Line::from(spans)).style(base)
 }
 
-/// The findings still open in a file by severity, or a tick once every step
-/// of it has been read and nothing is open.
-fn file_tally(guided: &Guided, path: &str) -> Vec<Span<'static>> {
-    let read = guided
-        .steps
-        .iter()
-        .filter(|step| step.path == path)
-        .all(|step| guided.verdict(step).is_some());
+fn triage_tag(plan: &Plan, path: &str) -> Option<Span<'static>> {
+    if plan.skim.contains_key(path) {
+        return Some(Span::styled(" skim", LABEL));
+    }
+    let (risk, _) = plan.risk.get(path)?;
+    Some(Span::styled(
+        format!(" {}", risk.word()),
+        Style::default().fg(risk_color(*risk)),
+    ))
+}
+
+fn risk_color(risk: Risk) -> Color {
+    match risk {
+        Risk::High => ISSUE,
+        Risk::Medium => NIT,
+        Risk::Low => Color::Green,
+    }
+}
+
+/// A step's verdict as the list's first column shows it.
+fn verdict_mark(commentary: Option<&Commentary>, verdict: Option<Verdict>) -> Span<'static> {
+    match commentary {
+        Some(c) if c.error.is_some() => Span::styled("\u{26a0} ", LABEL),
+        Some(c) => match verdict {
+            Some(verdict) => {
+                Span::styled("\u{25cf} ", Style::default().fg(verdict_look(verdict).1))
+            }
+            None if !c.done => Span::styled("\u{2026} ", LABEL),
+            None => Span::raw("  "),
+        },
+        None => Span::raw("  "),
+    }
+}
+
+/// Starts the review over; armed by the first click, it asks for a second.
+fn draw_reset_button(guided: &Guided, area: Rect, frame: &mut Frame) {
+    let (text, style) = if guided.reset_armed {
+        (
+            " \u{27f2} click again to reset ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightRed)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (
+            " \u{27f2} Reset review ",
+            Style::default().fg(Color::Gray).bg(Color::Rgb(50, 50, 50)),
+        )
+    };
+    frame.render_widget(Paragraph::new(Line::from(Span::styled(text, style))), area);
+}
+
+/// The findings still open in a file by severity, or a tick once it has been
+/// read and nothing is open.
+fn file_tally(guided: &Guided, step: &GuidedFile) -> Vec<Span<'static>> {
+    let read = guided.verdict(step).is_some();
     let mut tally: Vec<Span<'static>> = Severity::ALL
         .into_iter()
-        .map(|severity| (severity, guided.open_in_file(path, severity)))
+        .map(|severity| (severity, guided.open_in_file(&step.path, severity)))
         .filter(|(_, open)| *open > 0)
         .map(|(severity, open)| {
             Span::styled(
@@ -363,27 +585,13 @@ fn file_tally(guided: &Guided, path: &str) -> Vec<Span<'static>> {
     tally
 }
 
-/// A step as the step list names it under its file.
-fn step_label(step: &GuidedHunk) -> String {
-    step_name(step).unwrap_or_else(|| format!("hunk {}", step.hunk_index + 1))
-}
-
-/// What happened to the file when there is no text diff, otherwise the
-/// function the hunk is in, when the hunk header names one.
-fn step_name(step: &GuidedHunk) -> Option<String> {
-    if step.lines.is_empty() {
-        return Some(
-            step.file_note
-                .clone()
-                .unwrap_or_else(|| "no text diff".into()),
-        );
-    }
-    step.header
-        .rsplit("@@")
-        .next()
-        .map(str::trim)
-        .filter(|context| !context.is_empty())
-        .map(str::to_string)
+/// What happened to a file the diff has no text for.
+fn no_text_diff(step: &GuidedFile) -> Option<String> {
+    step.lines.is_empty().then(|| {
+        step.file_note
+            .clone()
+            .unwrap_or_else(|| "no text diff".into())
+    })
 }
 
 fn verdict_look(verdict: Verdict) -> (&'static str, Color) {
@@ -410,22 +618,15 @@ fn severity_color(severity: Severity) -> Color {
     }
 }
 
-fn hunk_label(step: &GuidedHunk) -> String {
+fn file_label(step: &GuidedFile) -> String {
     let (added, removed) = (step.added(), step.removed());
-    if step.lines.is_empty() {
-        step.file_note
-            .clone()
-            .unwrap_or_else(|| "no text diff".into())
-    } else {
-        format!(
-            "{}/{} +{added} -{removed}",
-            step.hunk_index + 1,
-            step.hunks_in_file
-        )
+    match no_text_diff(step) {
+        Some(name) => name,
+        None => format!("+{added} -{removed} \u{b7} {} hunk(s)", step.hunks()),
     }
 }
 
-/// The step on screen: its hunk above, the model's read of it below.
+/// The step on screen: its file's diff above, the model's read of it below.
 fn draw_step(
     state: &AppState,
     guided: &Guided,
@@ -434,14 +635,18 @@ fn draw_step(
     dividers: &mut Vec<Rect>,
 ) {
     let Some(step) = guided.step() else {
-        draw_overview(state, guided, area, frame);
+        if guided.on_final() {
+            draw_final(state, guided, area, frame, dividers);
+        } else {
+            draw_overview(state, guided, area, frame);
+        }
         return;
     };
     let mode = state.diff_view_mode;
     let (parts, gaps) = step_areas(guided, step, area, mode);
     ui::draw_dividers(frame, &gaps);
     dividers.extend(gaps);
-    draw_hunk(guided, step, mode, parts[0], frame);
+    draw_diff(guided, step, mode, parts[0], frame);
     match super::chat_session(state) {
         Some(id) => {
             let (columns, gaps) = ui::modal_columns(frame, parts[1], &CHAT_SPLIT);
@@ -455,6 +660,9 @@ fn draw_step(
 
 /// The chat is left out: it takes the mouse for itself.
 pub(super) fn selectable_areas(guided: &Guided, side: Rect, mode: DiffViewMode) -> Vec<Rect> {
+    if guided.on_final() {
+        return final_areas(guided, side, mode).0;
+    }
     let Some(step) = guided.step() else {
         return vec![side];
     };
@@ -526,19 +734,32 @@ fn draw_chat(
     }
 }
 
-/// The findings sit in the hunk, so it gets most of the room.
+/// Where the diff is drawn: the file's, or on the final step the whole changeset.
+pub(super) fn diff_area(guided: &Guided, side: Rect, mode: DiffViewMode) -> Option<Rect> {
+    if guided.on_final() {
+        return Some(final_areas(guided, side, mode).0[0]);
+    }
+    let step = guided.step()?;
+    Some(step_areas(guided, step, side, mode).0[0])
+}
+
+/// The findings sit in the diff, so it gets most of the room.
 pub(super) fn step_areas(
     guided: &Guided,
-    step: &GuidedHunk,
+    step: &GuidedFile,
     area: Rect,
     mode: DiffViewMode,
 ) -> (Vec<Rect>, Vec<Rect>) {
-    let rows = hunk_lines(guided, step, mode, area.width).lines.len();
+    let rows = diff_lines(guided, step, mode, area.width).lines.len();
     let most = if guided.chat.is_some() {
         area.height / 2
     } else {
         area.height * 2 / 3
     };
+    split_for_diff(area, rows, most)
+}
+
+fn split_for_diff(area: Rect, rows: usize, most: u16) -> (Vec<Rect>, Vec<Rect>) {
     let diff_height = u16::try_from(rows)
         .unwrap_or(u16::MAX)
         .min(most)
@@ -546,46 +767,66 @@ pub(super) fn step_areas(
     ui::modal_row_areas(area, &[Constraint::Length(diff_height), Constraint::Min(3)])
 }
 
-fn draw_hunk(
+fn draw_diff(
     guided: &Guided,
-    step: &GuidedHunk,
+    step: &GuidedFile,
     mode: DiffViewMode,
     area: Rect,
     frame: &mut Frame,
 ) {
-    let hunk = hunk_lines(guided, step, mode, area.width);
-    let scroll = hunk.scroll(area.height);
-    frame.render_widget(Paragraph::new(hunk.lines).scroll((scroll as u16, 0)), area);
+    let diff = diff_lines(guided, step, mode, area.width);
+    let scroll = diff.scroll(area.height);
+    frame.render_widget(Paragraph::new(diff.lines).scroll((scroll as u16, 0)), area);
 }
 
 pub(super) fn finding_at(
-    guided: &Guided,
+    state: &AppState,
     side: Rect,
-    mode: DiffViewMode,
     column: u16,
     row: u16,
 ) -> Option<TickedFinding> {
+    let guided = state.guided.as_deref()?;
+    let mode = state.diff_view_mode;
+    use crate::panel::pointer::inside;
+    let ticked_at = |findings: Vec<(std::ops::Range<usize>, TickedFinding)>, at: usize| {
+        findings
+            .into_iter()
+            .find(|(rows, _)| rows.contains(&at))
+            .map(|(_, finding)| finding)
+    };
+    if guided.on_final() {
+        let (parts, _) = final_areas(guided, side, mode);
+        let (diff, commentary) = (parts[0], parts[1]);
+        if inside(diff, column, row) {
+            let lines = final_diff_lines(guided, mode, diff.width);
+            let scroll = guided.final_scroll.min(guided.final_max.get());
+            return ticked_at(lines.findings, usize::from(scroll + row - diff.y));
+        }
+        if inside(commentary, column, row) {
+            let lines = final_commentary_lines(state, guided, commentary.width);
+            let scroll = guided.side_scroll.min(guided.side_max.get());
+            return ticked_at(lines.findings, usize::from(scroll + row - commentary.y));
+        }
+        return None;
+    }
     let step = guided.step()?;
     let (parts, _) = step_areas(guided, step, side, mode);
     let area = parts[0];
-    if !crate::panel::pointer::inside(area, column, row) {
+    if !inside(area, column, row) {
         return None;
     }
-    let hunk = hunk_lines(guided, step, mode, area.width);
-    let at = hunk.scroll(area.height) + usize::from(row - area.y);
-    hunk.findings
-        .into_iter()
-        .find(|(rows, _)| rows.contains(&at))
-        .map(|(_, finding)| finding)
+    let diff = diff_lines(guided, step, mode, area.width);
+    let at = diff.scroll(area.height) + usize::from(row - area.y);
+    ticked_at(diff.findings, at)
 }
 
-struct HunkLines {
+struct DiffLines {
     lines: Vec<Line<'static>>,
     cursor: std::ops::Range<usize>,
     findings: Vec<(std::ops::Range<usize>, TickedFinding)>,
 }
 
-impl HunkLines {
+impl DiffLines {
     /// Keeps the cursor line and what is pinned under it in view.
     fn scroll(&self, height: u16) -> usize {
         (self.cursor.end + 2)
@@ -594,16 +835,40 @@ impl HunkLines {
     }
 }
 
-fn hunk_lines(guided: &Guided, step: &GuidedHunk, mode: DiffViewMode, width: u16) -> HunkLines {
-    let mut lines = vec![
-        hunk_title(guided, step),
-        Line::from(Span::styled(step.header.clone(), LABEL)),
-    ];
-    let notes = guided.notes_for(step);
+fn diff_lines(guided: &Guided, step: &GuidedFile, mode: DiffViewMode, width: u16) -> DiffLines {
+    let mut out = DiffLines {
+        lines: vec![file_title(guided, step)],
+        cursor: 0..0,
+        findings: Vec::new(),
+    };
     let lead = inline_lead(mode, width);
     let flagged = inline_findings(guided, step, &lead, width);
-    let mut cursor = 0..0;
-    let mut ticks = Vec::new();
+    push_diff(
+        guided,
+        step,
+        mode,
+        width,
+        &flagged,
+        Some(guided.cursor),
+        &mut out,
+    );
+    out
+}
+
+/// A file's rows, with its notes and `flagged` findings under their lines,
+/// added to `out`; the rows of line `cursor` become `out.cursor`.
+fn push_diff(
+    guided: &Guided,
+    step: &GuidedFile,
+    mode: DiffViewMode,
+    width: u16,
+    flagged: &[Inline],
+    cursor: Option<usize>,
+    out: &mut DiffLines,
+) {
+    let lines = &mut out.lines;
+    let notes = guided.notes_for(step);
+    let lead = inline_lead(mode, width);
     for row in layout::rows(step, mode) {
         let start = lines.len();
         let worst = flagged
@@ -618,9 +883,9 @@ fn hunk_lines(guided: &Guided, step: &GuidedHunk, mode: DiffViewMode, width: u16
             None => Span::raw(" "),
         };
         let body = match row {
-            Row::Whole(at) => vec![unified_line(step, at, at == guided.cursor)],
+            Row::Whole(at) => vec![unified_line(step, at, Some(at) == cursor)],
             Row::Pair(left, right) => {
-                paired_lines(step, left, right, guided.cursor, width.saturating_sub(1))
+                paired_lines(step, left, right, cursor, width.saturating_sub(1))
             }
         };
         lines.extend(body.into_iter().enumerate().map(|(i, line)| {
@@ -629,7 +894,7 @@ fn hunk_lines(guided: &Guided, step: &GuidedHunk, mode: DiffViewMode, width: u16
                 .style(line.style)
         }));
         for at in row.lines() {
-            let here = at == guided.cursor;
+            let here = Some(at) == cursor;
             if let Some(anchor) = step.lines[at].anchor() {
                 for (_, note) in notes
                     .iter()
@@ -647,14 +912,15 @@ fn hunk_lines(guided: &Guided, step: &GuidedHunk, mode: DiffViewMode, width: u16
                         line
                     }
                 }));
-                ticks.push((first..lines.len(), guided.ticket(&inline.finding)));
+                out.findings
+                    .push((first..lines.len(), inline.ticket.clone()));
             }
         }
-        if row.lines().any(|at| at == guided.cursor) {
-            cursor = start..lines.len();
+        if row.lines().any(|at| Some(at) == cursor) {
+            out.cursor = start..lines.len();
         }
     }
-    // Notes pinned to lines this hunk no longer shows, said once at the end.
+    // Notes pinned to lines this diff no longer shows, said once at the end.
     let shown: Vec<(usize, Side)> = step.lines.iter().filter_map(|l| l.anchor()).collect();
     for (_, note) in notes
         .iter()
@@ -671,22 +937,17 @@ fn hunk_lines(guided: &Guided, step: &GuidedHunk, mode: DiffViewMode, width: u16
             LABEL,
         )));
     }
-    HunkLines {
-        lines,
-        cursor,
-        findings: ticks,
-    }
 }
 
-fn hunk_title(guided: &Guided, step: &GuidedHunk) -> Line<'static> {
+fn file_title(guided: &Guided, step: &GuidedFile) -> Line<'static> {
     let mut title = vec![Span::styled(
         step.path.clone(),
         Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
     )];
-    title.push(Span::styled(format!("  {}", hunk_label(step)), LABEL));
-    if let Some(note) = &step.file_note {
+    title.push(Span::styled(format!("  {}", file_label(step)), LABEL));
+    if let Some(note) = step.file_note.as_ref().filter(|_| !step.lines.is_empty()) {
         title.push(Span::styled(
             format!("  [{note}]"),
             Style::default().fg(Color::Yellow),
@@ -712,8 +973,14 @@ fn hunk_title(guided: &Guided, step: &GuidedHunk) -> Line<'static> {
     Line::from(title)
 }
 
-fn unified_line(step: &GuidedHunk, at: usize, here: bool) -> Line<'static> {
+fn unified_line(step: &GuidedFile, at: usize, here: bool) -> Line<'static> {
     let line = &step.lines[at];
+    if line.kind == LineKind::Header {
+        return Line::from(vec![
+            Span::styled(format!("{:>12}", "\u{22ef} "), LABEL),
+            Span::styled(line.text.clone(), Style::default().fg(Color::Cyan)),
+        ]);
+    }
     let number = |n: Option<usize>| n.map(|n| n.to_string()).unwrap_or_default();
     let gutter = format!("{:>5} {:>5} ", number(line.old), number(line.new));
     let spans: Vec<Span<'static>> = std::iter::once(Span::styled(gutter, LABEL))
@@ -733,10 +1000,10 @@ fn unified_line(step: &GuidedHunk, at: usize, here: bool) -> Line<'static> {
 }
 
 fn paired_lines(
-    step: &GuidedHunk,
+    step: &GuidedFile,
     left: Option<usize>,
     right: Option<usize>,
-    cursor: usize,
+    cursor: Option<usize>,
     width: u16,
 ) -> Vec<Line<'static>> {
     let cell = |at: Option<usize>, number: fn(&HunkLine) -> Option<usize>| {
@@ -745,7 +1012,7 @@ fn paired_lines(
             LineKind::Context => DiffContentKind::Context,
             LineKind::Added => DiffContentKind::Added,
             LineKind::Removed => DiffContentKind::Removed,
-            LineKind::Meta => return None,
+            LineKind::Meta | LineKind::Header => return None,
         };
         Some((number(line)?, line.text.get(1..).unwrap_or_default(), kind))
     };
@@ -756,7 +1023,8 @@ fn paired_lines(
         &step.path,
     );
     let (left_width, right_start) = ui::side_by_side_columns(width);
-    let lit = match (left == Some(cursor), right == Some(cursor)) {
+    let at_cursor = |at: Option<usize>| at.is_some() && at == cursor;
+    let lit = match (at_cursor(left), at_cursor(right)) {
         (true, true) => Some(0..width),
         (true, false) => Some(0..left_width),
         (false, true) => Some(right_start..width),
@@ -803,6 +1071,7 @@ fn note_lines(body: &str, lead: &str) -> Vec<Line<'static>> {
 struct Inline {
     at: usize,
     finding: Finding,
+    ticket: TickedFinding,
     ticked: bool,
     lines: Vec<Line<'static>>,
 }
@@ -818,19 +1087,50 @@ fn inline_lead(mode: DiffViewMode, width: u16) -> String {
     " ".repeat(column)
 }
 
-fn inline_findings(guided: &Guided, step: &GuidedHunk, lead: &str, width: u16) -> Vec<Inline> {
+fn inline_findings(guided: &Guided, step: &GuidedFile, lead: &str, width: u16) -> Vec<Inline> {
     let Some(commentary) = guided.commentary.get(&step.key()) else {
         return Vec::new();
     };
-    let reading = findings::read(&commentary.text);
-    findings::place(step, &reading.findings)
+    placed_inline(
+        guided,
+        step,
+        &findings::read(&commentary.text).findings,
+        lead,
+        width,
+    )
+}
+
+/// The final review's findings that cite `step`'s file, under their lines.
+fn final_inline(guided: &Guided, step: &GuidedFile, lead: &str, width: u16) -> Vec<Inline> {
+    let Some(commentary) = guided.commentary.get(&guided.final_key()) else {
+        return Vec::new();
+    };
+    let cited: Vec<Finding> = findings::read(&commentary.text)
+        .cited
+        .into_iter()
+        .filter(|(path, _)| *path == step.path)
+        .map(|(_, finding)| finding)
+        .collect();
+    placed_inline(guided, step, &cited, lead, width)
+}
+
+fn placed_inline(
+    guided: &Guided,
+    step: &GuidedFile,
+    found: &[Finding],
+    lead: &str,
+    width: u16,
+) -> Vec<Inline> {
+    findings::place(step, found)
         .0
         .into_iter()
         .map(|(at, finding)| {
-            let ticked = guided.is_ticked(&guided.ticket(finding));
+            let ticket = super::ticket_in(&step.path, finding);
+            let ticked = guided.is_ticked(&ticket);
             Inline {
                 at,
                 finding: finding.clone(),
+                ticket,
                 ticked,
                 lines: finding_lines(finding, ticked, lead, width),
             }
@@ -874,11 +1174,14 @@ fn draw_overview(state: &AppState, guided: &Guided, area: Rect, frame: &mut Fram
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
     ))];
-    lines.extend(commentary_lines(
-        state,
-        guided.commentary.get(super::OVERVIEW_KEY),
-        area.width,
-    ));
+    match guided.plan() {
+        Some(plan) => lines.extend(plan_lines(&plan, guided.walk())),
+        None => lines.extend(commentary_lines(
+            state,
+            guided.commentary.get(super::OVERVIEW_KEY),
+            area.width,
+        )),
+    }
     lines.push(Line::from(""));
     for text in guided.overview.lines() {
         lines.push(Line::from(Span::styled(text.to_string(), LABEL)));
@@ -892,7 +1195,7 @@ fn draw_overview(state: &AppState, guided: &Guided, area: Rect, frame: &mut Fram
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("\u{2192}", KEY),
-        Span::raw(" starts the walk at the first hunk"),
+        Span::raw(" starts the walk at the first file"),
     ]));
     let max = wrapped_rows(&lines, area.width).saturating_sub(area.height as usize) as u16;
     guided.side_max.set(max);
@@ -902,6 +1205,256 @@ fn draw_overview(state: &AppState, guided: &Guided, area: Rect, frame: &mut Fram
             .scroll((guided.side_scroll.min(max), 0)),
         area,
     );
+}
+
+/// The plan the walk modes order the files by, as the overview shows it.
+fn plan_lines(plan: &Plan, walk: WalkMode) -> Vec<Line<'static>> {
+    let heading = |text: &str| {
+        Line::from(Span::styled(
+            text.to_string(),
+            Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::BOLD),
+        ))
+    };
+    let mut lines = Vec::new();
+    if let Some(summary) = &plan.summary {
+        lines.push(Line::from(Span::styled(
+            format!("  {summary}"),
+            Style::default().fg(Color::White),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(heading("Concerns"));
+    for (at, concern) in plan.concerns.iter().enumerate() {
+        lines.push(Line::from(Span::styled(
+            format!("  {}. {}", at + 1, concern.title),
+            Style::default()
+                .fg(Color::LightYellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+        if let Some(why) = &concern.why {
+            lines.push(Line::from(Span::raw(format!("     {why}"))));
+        }
+        lines.push(Line::from(Span::styled(
+            format!("     {}", concern.paths.join(", ")),
+            LABEL,
+        )));
+    }
+    if !plan.watch.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(heading("Worth your attention"));
+        for watch in &plan.watch {
+            lines.push(Line::from(vec![
+                Span::styled("  \u{2192} ", Style::default().fg(Color::Cyan)),
+                Span::raw(watch.clone()),
+            ]));
+        }
+    }
+    let mut risky: Vec<(&String, &(Risk, String))> = plan
+        .risk
+        .iter()
+        .filter(|(_, (risk, _))| *risk != Risk::Low)
+        .collect();
+    risky.sort_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(b.0)));
+    if !risky.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(heading("Risk"));
+        for (path, (risk, why)) in risky {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  \u{25cf} {} ", risk.word()),
+                    Style::default().fg(risk_color(*risk)),
+                ),
+                Span::styled(path.clone(), Style::default().fg(Color::White)),
+                Span::styled(format!(" \u{2014} {why}"), LABEL),
+            ]));
+        }
+    }
+    if !plan.skim.is_empty() {
+        let mut skim: Vec<(&String, &String)> = plan.skim.iter().collect();
+        skim.sort();
+        lines.push(Line::from(""));
+        lines.push(heading("Safe to skim (S marks them reviewed)"));
+        for (path, why) in skim {
+            lines.push(Line::from(Span::styled(
+                format!("  {path} \u{2014} {why}"),
+                LABEL,
+            )));
+        }
+    }
+    for rest in plan.rest.iter().filter(|rest| !rest.trim().is_empty()) {
+        lines.push(Line::from(Span::styled(
+            format!("  {}", rest.trim()),
+            LABEL,
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(format!("Walk by {}", walk.label().to_lowercase()), KEY),
+        Span::styled(
+            format!(": {} \u{b7} M or the badge switches", walk.describe()),
+            LABEL,
+        ),
+    ]));
+    lines
+}
+
+/// The final step: the whole changeset above, every file one after another
+/// with the final review's findings under their lines, and the model's read
+/// of it as one change below.
+fn draw_final(
+    state: &AppState,
+    guided: &Guided,
+    area: Rect,
+    frame: &mut Frame,
+    dividers: &mut Vec<Rect>,
+) {
+    let mode = state.diff_view_mode;
+    let (parts, gaps) = final_areas(guided, area, mode);
+    ui::draw_dividers(frame, &gaps);
+    dividers.extend(gaps);
+    let (diff, below) = (parts[0], parts[1]);
+    let lines = final_diff_lines(guided, mode, diff.width).lines;
+    let max = (lines.len() as u16).saturating_sub(diff.height);
+    guided.final_max.set(max);
+    let scroll = guided.final_scroll.min(max);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), diff);
+
+    let lines = final_commentary_lines(state, guided, below.width).lines;
+    let max = (lines.len() as u16).saturating_sub(below.height);
+    guided.side_max.set(max);
+    let scroll = guided.side_scroll.min(max);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), below);
+}
+
+pub(super) fn final_areas(
+    guided: &Guided,
+    area: Rect,
+    mode: DiffViewMode,
+) -> (Vec<Rect>, Vec<Rect>) {
+    let rows = final_diff_lines(guided, mode, area.width).lines.len();
+    split_for_diff(area, rows, area.height * 2 / 3)
+}
+
+/// Every file's diff in turn, each under its title.
+fn final_diff_lines(guided: &Guided, mode: DiffViewMode, width: u16) -> DiffLines {
+    let mut out = DiffLines {
+        lines: vec![Line::from(vec![
+            Span::styled(
+                "The whole change",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {} file(s) \u{b7} j/k scroll", guided.total()),
+                LABEL,
+            ),
+        ])],
+        cursor: 0..0,
+        findings: Vec::new(),
+    };
+    let lead = inline_lead(mode, width);
+    for step in &guided.steps {
+        out.lines.push(Line::from(""));
+        out.lines.push(file_title(guided, step));
+        let flagged = final_inline(guided, step, &lead, width);
+        push_diff(guided, step, mode, width, &flagged, None, &mut out);
+    }
+    out
+}
+
+/// The model's read of the whole change: its summary, then the findings it
+/// cites by file, each ticked off by a click.
+fn final_commentary_lines(state: &AppState, guided: &Guided, width: u16) -> DiffLines {
+    let key = guided.final_key();
+    let commentary = guided.commentary.get(&key);
+    let mut out = DiffLines {
+        lines: Vec::new(),
+        cursor: 0..0,
+        findings: Vec::new(),
+    };
+    match commentary.filter(|c| c.error.is_none() && !c.text.is_empty()) {
+        None => out.lines.extend(commentary_lines(state, commentary, width)),
+        Some(c) => {
+            let reading = findings::read(&c.text);
+            let mut header = vec![Span::styled(
+                "AI \u{b7} the whole change",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )];
+            if let Some(verdict) = guided.final_verdict() {
+                let (word, color) = verdict_look(verdict);
+                header.push(Span::styled(
+                    format!(" \u{b7} {word}"),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ));
+            }
+            if !reading.cited.is_empty() {
+                header.push(Span::styled(
+                    " \u{b7} click a finding to tick it off",
+                    LABEL,
+                ));
+            }
+            out.lines.push(Line::from(header));
+            let wrap = width.saturating_sub(2);
+            if let Some(summary) = &reading.summary {
+                out.lines.extend(
+                    crate::panel::markdown::render(summary, "  ", wrap)
+                        .into_iter()
+                        .map(|line| line.style(Style::default().fg(Color::White))),
+                );
+            }
+            for (path, finding) in &reading.cited {
+                let ticket = super::ticket_in(path, finding);
+                let shown = Finding {
+                    text: format!("{path}:L{} {}", finding.line, finding.text),
+                    ..finding.clone()
+                };
+                let first = out.lines.len();
+                out.lines.extend(finding_lines(
+                    &shown,
+                    guided.is_ticked(&ticket),
+                    "  ",
+                    width,
+                ));
+                out.findings.push((first..out.lines.len(), ticket));
+            }
+            for finding in &reading.findings {
+                let shown = Finding {
+                    text: format!("L{} {}", finding.line, finding.text),
+                    ..finding.clone()
+                };
+                out.lines.extend(finding_lines(&shown, false, "  ", width));
+            }
+            let rest = reading.rest.join("\n");
+            if !rest.trim().is_empty() {
+                out.lines
+                    .extend(crate::panel::markdown::render(&rest, "  ", wrap));
+            }
+            if !c.done {
+                let spinner = SPINNER_FRAMES[state.animation_tick % SPINNER_FRAMES.len()];
+                out.lines.push(Line::from(Span::styled(
+                    format!("  {spinner}"),
+                    Style::default().fg(Color::Cyan),
+                )));
+            }
+        }
+    }
+    out.lines.extend(exchange_lines(state, guided, &key, width));
+    out.lines.push(Line::from(""));
+    out.lines.push(Line::from(vec![
+        Span::styled("\u{2192}", KEY),
+        Span::raw(if guided.source.is_pull_request() {
+            " submits the review"
+        } else {
+            " shows every note"
+        }),
+        Span::styled(" \u{b7} r reads the whole change again", LABEL),
+    ]));
+    out
 }
 
 /// How many rows `lines` take wrapped to `width`, near enough to bound a
@@ -917,7 +1470,7 @@ fn wrapped_rows(lines: &[Line<'_>], width: u16) -> usize {
 fn draw_commentary(
     state: &AppState,
     guided: &Guided,
-    step: &GuidedHunk,
+    step: &GuidedFile,
     area: Rect,
     frame: &mut Frame,
 ) {
@@ -933,7 +1486,7 @@ fn draw_commentary(
 fn step_commentary_lines(
     state: &AppState,
     guided: &Guided,
-    step: &GuidedHunk,
+    step: &GuidedFile,
     width: u16,
 ) -> Vec<Line<'static>> {
     let commentary = guided.commentary.get(&step.key());
@@ -962,7 +1515,7 @@ fn step_commentary_lines(
     let open = placed.len() - ticked;
     if open > 0 {
         header.push(Span::styled(
-            format!(" \u{b7} {open} in the hunk, \u{2193} walks them"),
+            format!(" \u{b7} {open} in the diff, \u{2193} walks them"),
             LABEL,
         ));
     }
@@ -1068,7 +1621,7 @@ fn commentary_lines(
             if c.thinking {
                 format!("  {spinner} thinking\u{2026}")
             } else {
-                format!("  {spinner} reading this hunk\u{2026}")
+                format!("  {spinner} reading\u{2026}")
             },
             Style::default().fg(Color::Cyan),
         )));
@@ -1181,7 +1734,7 @@ fn draw_summary(
     if unreviewed > 0 {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            format!("{unreviewed} step(s) not reviewed yet (u jumps to the next one)"),
+            format!("{unreviewed} file(s) not reviewed yet (u jumps to the next one)"),
             Style::default().fg(Color::Yellow),
         )));
     }

@@ -7,25 +7,29 @@ use std::sync::mpsc::Receiver;
 use super::{Loaded, Source};
 use crate::state::GenMsg;
 
-/// Read a walk over the checkout itself: the branch against main, or the
-/// uncommitted changes.
+/// Read a walk over the checkout itself: the branch against main, or what is
+/// not pushed yet.
 pub(super) fn load_local(source: &Source) -> Receiver<Result<Loaded, String>> {
-    let changes = matches!(source, Source::Changes { .. });
+    let unpushed = matches!(source, Source::Unpushed { .. });
     let (tx, rx) = std::sync::mpsc::channel();
     crate::git::spawn_pinned(move || {
-        let diff = if changes {
-            crate::git::uncommitted_diff()
+        let diff = if unpushed {
+            crate::git::unpushed_diff()
         } else {
             crate::git::branch_diff_against_main()
         };
         let result = diff
             .map(|diff| {
-                let steps = crate::git::guided::parse_hunks(&diff.diff);
-                let (title, source) = if changes {
+                let steps = crate::git::guided::parse_files(&diff.diff);
+                let (title, source) = if unpushed {
                     (
-                        format!("Uncommitted changes on {}", diff.branch),
-                        Source::Changes {
+                        format!(
+                            "What is not pushed on {} (against {})",
+                            diff.branch, diff.base_ref
+                        ),
+                        Source::Unpushed {
                             branch: diff.branch,
+                            base_ref: diff.base_ref,
                         },
                     )
                 } else {
@@ -59,7 +63,7 @@ pub(super) fn load_pull_request(
         let result = (|| -> anyhow::Result<Loaded> {
             let diff = crate::github::pr_diff(pr.number)?;
             let commit = crate::github::pr_head(pr.number)?;
-            let steps = crate::git::guided::parse_hunks(&diff);
+            let steps = crate::git::guided::parse_files(&diff);
             let overview = super::overview_of(
                 &format!(
                     "Pull request #{} {} ({} into {})",
@@ -95,9 +99,16 @@ pub(super) fn ask_overview(context: String) -> Receiver<GenMsg> {
     rx
 }
 
-pub(super) fn ask_step(overview: String, hunk: String) -> Receiver<GenMsg> {
+pub(super) fn ask_step(overview: String, file: String) -> Receiver<GenMsg> {
     let (tx, rx) = std::sync::mpsc::channel();
-    crate::git::spawn_pinned(move || crate::llm::stream_guided_step(overview, hunk, tx));
+    crate::git::spawn_pinned(move || crate::llm::stream_guided_step(overview, file, tx));
+    rx
+}
+
+/// The model's read of the whole change across files, once the walk is through them.
+pub(super) fn ask_final(context: String) -> Receiver<GenMsg> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    crate::git::spawn_pinned(move || crate::llm::stream_guided_final(context, tx));
     rx
 }
 

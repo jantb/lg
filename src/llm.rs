@@ -1,8 +1,8 @@
-//! Asking the local model for a commit message, a review, or a PR description.
+//! Asking the model for a commit message, a guided review, or a conflict resolution.
 
 use std::sync::mpsc::Sender;
 
-use crate::state::{GenMsg, ReviewChatMessage};
+use crate::state::GenMsg;
 
 mod claude;
 mod diff;
@@ -23,7 +23,6 @@ pub use provider::{
     current_claude_model, current_endpoint, current_model, current_provider, endpoint_for_provider,
     env_model_active, env_provider_active, prime_models_async, save_llm_settings,
 };
-pub use reply::parse_review_style_finding;
 
 /// What an answer says when the server stopped it at the budget rather than at
 /// the end.
@@ -36,20 +35,15 @@ pub use stats::{GenStats, LlmPhase, forget_last_stats, last_stats, phase, progre
 pub use stream::error_means_unreachable;
 
 use prompt::{
-    build_commit_prompt, build_conventions_prompt, build_guided_overview_prompt,
-    build_guided_question_system_prompt, build_guided_step_system_prompt,
-    build_review_assist_prompt, build_review_chat_system_prompt, build_review_pr_text_prompt,
-    build_review_style_flag_prompt,
+    build_commit_prompt, build_conventions_prompt, build_guided_final_prompt,
+    build_guided_overview_prompt, build_guided_question_system_prompt,
+    build_guided_step_system_prompt,
 };
 pub use prompt::{
     build_guided_chat_file_read, build_guided_chat_prompt, build_guided_chat_questions,
     build_guided_chat_redo, build_guided_fix_prompt, build_guided_question_check_prompt,
-    build_review_agent_prompt,
 };
-use reply::{
-    finalize, finalize_conflict_hunk, finalize_review_assist, finalize_review_chat,
-    finalize_review_pr_text, finalize_review_style_flag_for_path, parse_conventions,
-};
+use reply::{finalize, finalize_conflict_hunk, finalize_review_chat, parse_conventions};
 use stream::{ChatMessage, ChatTask, stream_messages, stream_prompt};
 use think::strip_think_tags;
 
@@ -62,17 +56,9 @@ use think::strip_think_tags;
 /// request.
 const COMMIT_NUM_PREDICT: i32 = 0;
 const CONVENTIONS_NUM_PREDICT: i32 = 300;
-const REVIEW_ASSIST_NUM_PREDICT: i32 = 16_000;
-/// The one task worth waiting for reasoning on: the whole point of the
-/// assisted review is the model's analysis, not a formatted answer.
-const REVIEW_ASSIST_THINKING: bool = true;
-const REVIEW_PR_NUM_PREDICT: i32 = 4_096;
-const REVIEW_CHAT_NUM_PREDICT: i32 = 768;
-/// How many of the most recent chat turns travel with a follow-up question.
-const REVIEW_CHAT_HISTORY_TURNS: usize = 8;
-const REVIEW_STYLE_FLAG_NUM_PREDICT: i32 = 96;
 const GUIDED_STEP_NUM_PREDICT: i32 = 2_048;
-const GUIDED_OVERVIEW_NUM_PREDICT: i32 = 1_024;
+const GUIDED_OVERVIEW_NUM_PREDICT: i32 = 2_048;
+const GUIDED_FINAL_NUM_PREDICT: i32 = 2_048;
 const GUIDED_QUESTION_NUM_PREDICT: i32 = 1_024;
 /// Enough for a conflict the local model is allowed to try at all: both sides
 /// of one hunk and a little joining. A budget large enough for a whole file
@@ -135,40 +121,8 @@ pub fn suggest_repo_conventions(history: String, tx: Sender<crate::state::Settin
     });
 }
 
-pub fn stream_review_assist(context: String, tx: Sender<GenMsg>) {
-    stream_prompt(
-        build_review_assist_prompt(&context, &crate::settings::load()),
-        ChatTask::new(
-            "lg-review-assist",
-            REVIEW_ASSIST_NUM_PREDICT,
-            REVIEW_ASSIST_THINKING,
-        ),
-        finalize_review_assist,
-        tx,
-    );
-}
-
-pub fn stream_review_style_flag(path: String, context: String, tx: Sender<GenMsg>) {
-    let finalizer_path = path.clone();
-    stream_prompt(
-        build_review_style_flag_prompt(&path, &context, &crate::settings::load()),
-        ChatTask::new("lg-review-flags", REVIEW_STYLE_FLAG_NUM_PREDICT, false),
-        move |raw| finalize_review_style_flag_for_path(&finalizer_path, raw),
-        tx,
-    );
-}
-
-pub fn stream_review_pr_text(context: String, tx: Sender<GenMsg>) {
-    stream_prompt(
-        build_review_pr_text_prompt(&context, &crate::settings::load()),
-        ChatTask::new("lg-review-pr", REVIEW_PR_NUM_PREDICT, false),
-        finalize_review_pr_text,
-        tx,
-    );
-}
-
 /// The overview goes in the system prompt, which stays the same for the whole walk and so is cached.
-pub fn stream_guided_step(overview: String, hunk: String, tx: Sender<GenMsg>) {
+pub fn stream_guided_step(overview: String, file: String, tx: Sender<GenMsg>) {
     let messages = vec![
         ChatMessage {
             role: "system",
@@ -176,7 +130,7 @@ pub fn stream_guided_step(overview: String, hunk: String, tx: Sender<GenMsg>) {
         },
         ChatMessage {
             role: "user",
-            content: hunk,
+            content: file,
         },
     ];
     stream_messages(
@@ -187,11 +141,21 @@ pub fn stream_guided_step(overview: String, hunk: String, tx: Sender<GenMsg>) {
     );
 }
 
-/// What a guided review opens on: the point of the change and where to look.
+/// What a guided review opens on: the plan its walk modes order the files by.
 pub fn stream_guided_overview(context: String, tx: Sender<GenMsg>) {
     stream_prompt(
         build_guided_overview_prompt(&context, &crate::settings::load()),
         ChatTask::new("lg-guided-overview", GUIDED_OVERVIEW_NUM_PREDICT, false),
+        finalize_review_chat,
+        tx,
+    );
+}
+
+/// The whole change read across its files, after the walk through them.
+pub fn stream_guided_final(context: String, tx: Sender<GenMsg>) {
+    stream_prompt(
+        build_guided_final_prompt(&context, &crate::settings::load()),
+        ChatTask::new("lg-guided-final", GUIDED_FINAL_NUM_PREDICT, false),
         finalize_review_chat,
         tx,
     );
@@ -211,7 +175,7 @@ pub fn stream_guided_question(
     if !commentary.trim().is_empty() {
         messages.push(ChatMessage {
             role: "user",
-            content: "What do you make of this hunk?".to_string(),
+            content: "What do you make of this?".to_string(),
         });
         messages.push(ChatMessage {
             role: "assistant",
@@ -248,41 +212,6 @@ pub fn stream_conflict_hunk(prompt: String, tx: Sender<GenMsg>) {
     );
 }
 
-pub fn stream_review_chat(
-    context: String,
-    history: Vec<ReviewChatMessage>,
-    prompt: String,
-    tx: Sender<GenMsg>,
-) {
-    let mut messages = vec![ChatMessage {
-        role: "system",
-        content: build_review_chat_system_prompt(&context, &crate::settings::load()),
-    }];
-    let window = history.len().saturating_sub(REVIEW_CHAT_HISTORY_TURNS);
-    // A turn with nothing said — a failed request, shown in the chat as a
-    // note — is not part of the conversation the model had.
-    for message in history
-        .into_iter()
-        .skip(window)
-        .filter(|message| !message.content.trim().is_empty())
-    {
-        messages.push(ChatMessage {
-            role: message.role.as_chat_role(),
-            content: message.content,
-        });
-    }
-    messages.push(ChatMessage {
-        role: "user",
-        content: prompt,
-    });
-    stream_messages(
-        messages,
-        ChatTask::new("lg-review-chat", REVIEW_CHAT_NUM_PREDICT, false),
-        finalize_review_chat,
-        tx,
-    );
-}
-
 pub(crate) use provider::{legacy_model, legacy_model_file};
 
 #[cfg(test)]
@@ -307,17 +236,5 @@ mod tests {
         let task = ChatTask::new("lg-commit", COMMIT_NUM_PREDICT, false);
 
         assert_eq!(task.num_predict, 0, "the commit message has no cap");
-    }
-
-    #[test]
-    fn the_assisted_review_still_reasons_before_answering() {
-        assert!(
-            ChatTask::new(
-                "lg-review-assist",
-                REVIEW_ASSIST_NUM_PREDICT,
-                REVIEW_ASSIST_THINKING
-            )
-            .thinking
-        );
     }
 }

@@ -18,7 +18,6 @@ mod forms;
 mod jobs;
 mod merge_editor;
 mod modal;
-mod review;
 mod tree;
 mod view;
 
@@ -31,7 +30,6 @@ pub use forms::{AuthorForm, DeleteBranchForm, StashForm, WorktreeForm};
 pub use jobs::*;
 pub use merge_editor::*;
 pub use modal::*;
-pub use review::{ReviewRenderCache, ReviewState};
 pub use tree::{TreeKind, TreeRow, build_tree_rows};
 pub use view::*;
 
@@ -120,11 +118,6 @@ pub struct AppState {
     pub tree_rows_cache: std::cell::RefCell<Option<crate::state::TreeRowsCache>>,
     /// The commit graph's lanes with the commits they were drawn for.
     pub pipe_sets_cache: std::cell::RefCell<Option<crate::state::PipeSetsCache>>,
-    /// The review pane's drawn nodes.
-    pub review_render_cache: std::cell::RefCell<crate::state::ReviewRenderCache>,
-    /// Bumped each time the checkout's files are read again, so whatever was
-    /// read off disk for them — the review's source context — is read afresh.
-    pub files_generation: u64,
     pub diff_offset: u16,
     pub diff_source: DiffSource,
     pub diff_view_mode: DiffViewMode,
@@ -139,7 +132,6 @@ pub struct AppState {
     /// The hunks of `diff_text`, read once per text.
     pub diff_hunks_cache:
         std::cell::RefCell<Option<(u64, std::sync::Arc<Vec<crate::git::hunk::ShownHunk>>)>>,
-    pub review: ReviewState,
 
     pub commit_message: String,
     pub commit_cursor: usize,
@@ -251,12 +243,6 @@ pub struct AppState {
     pub settings_suggest_job: Option<SettingsSuggestJob>,
     pub commit_log_job: Option<CommitLogJob>,
     pub diff_job: Option<DiffJob>,
-    pub review_job: Option<ReviewJob>,
-    pub review_assist_job: Option<ReviewAssistJob>,
-    pub review_pr_job: Option<ReviewAssistJob>,
-    pub review_agent_job: Option<ReviewAgentJob>,
-    pub review_flag_job: Option<ReviewFlagJob>,
-    pub review_chat_job: Option<ReviewChatJob>,
     pub conflict_resolve_job: Option<ConflictResolveJob>,
     pub workflow_job: Option<WorkflowJob>,
     pub deferred_threads: Vec<JoinHandle<()>>,
@@ -354,8 +340,6 @@ impl AppState {
             diff_render_cache: Default::default(),
             tree_rows_cache: Default::default(),
             pipe_sets_cache: Default::default(),
-            review_render_cache: Default::default(),
-            files_generation: 0,
             diff_offset: 0,
             diff_source: DiffSource::None,
             diff_view_mode: DiffViewMode::SideBySide,
@@ -365,7 +349,6 @@ impl AppState {
             diff_hunk: HunkCursor::default(),
             log_commit: 0,
             diff_hunks_cache: Default::default(),
-            review: ReviewState::default(),
 
             commit_message: String::new(),
             commit_cursor: 0,
@@ -439,12 +422,6 @@ impl AppState {
             settings_suggest_job: None,
             commit_log_job: None,
             diff_job: None,
-            review_job: None,
-            review_assist_job: None,
-            review_pr_job: None,
-            review_agent_job: None,
-            review_flag_job: None,
-            review_chat_job: None,
             conflict_resolve_job: None,
             workflow_job: None,
             deferred_threads: Vec::new(),

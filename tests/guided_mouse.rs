@@ -81,7 +81,7 @@ fn the_wheel_and_clicks_move_through_a_guided_review() {
     app.state.ai_assist = false;
     app.state.repo_root = Some(repo.to_string_lossy().into_owned());
     app.state.branch = Some("feat/x".into());
-    app.send_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::NONE))
+    app.send_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE))
         .unwrap();
     assert_eq!(app.state.modal, Modal::GuidedReview);
     let deadline = Instant::now() + Duration::from_secs(20);

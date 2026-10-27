@@ -3,35 +3,11 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::thread::JoinHandle;
 
 use crate::git::{
-    AssistedReview, Branch, BranchReleaseStatus, Commit, FileEntry, NestedRepo, ReleaseBranches,
-    RemoteBranch, Worktree,
+    Branch, BranchReleaseStatus, Commit, FileEntry, NestedRepo, ReleaseBranches, RemoteBranch,
+    Worktree,
 };
 
 use super::{DiffSource, FlowRun};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ReviewStyleSeverity {
-    Ok,
-    Warn,
-    Fail,
-}
-
-impl ReviewStyleSeverity {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Ok => "OK",
-            Self::Warn => "WARN",
-            Self::Fail => "FAIL",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ReviewStyleFinding {
-    pub severity: ReviewStyleSeverity,
-    pub line: Option<usize>,
-    pub reason: String,
-}
 
 /// What a worker's channel held when it was looked at once.
 #[derive(Debug, PartialEq, Eq)]
@@ -152,10 +128,6 @@ impl_background_job! {
     SettingsSuggestJob => SettingsSuggestMsg, "convention scan",
     CommitLogJob => CommitLogMsg, "commit log",
     DiffJob => DiffMsg, "diff",
-    ReviewJob => ReviewMsg, "review",
-    ReviewAssistJob => GenMsg, "review assist",
-    ReviewFlagJob => ReviewFlagMsg, "style pass",
-    ReviewChatJob => GenMsg, "review chat",
     ConflictResolveJob => ConflictResolveMsg, "conflict resolution",
     WorkflowJob => WorkflowMsg, "branch action",
 }
@@ -678,75 +650,6 @@ pub struct DiffJob {
     pub handle: Option<JoinHandle<()>>,
     pub spinner: usize,
     pub source: DiffSource,
-}
-
-#[derive(Debug)]
-pub enum ReviewMsg {
-    Done(Box<AssistedReview>),
-    Error(String),
-}
-
-#[derive(Debug)]
-pub struct ReviewJob {
-    pub rx: Receiver<ReviewMsg>,
-    pub handle: Option<JoinHandle<()>>,
-    pub spinner: usize,
-}
-
-/// A Claude Code session reviewing the branch. It reports by writing a file,
-/// which is read back each frame until the session goes away.
-#[derive(Debug)]
-pub struct ReviewAgentJob {
-    pub session: crate::session::SessionId,
-    pub findings: std::path::PathBuf,
-    /// What the file said when last read, so the tree is only touched when it
-    /// has changed.
-    pub seen: String,
-}
-
-#[derive(Debug)]
-pub struct ReviewAssistJob {
-    pub rx: Receiver<GenMsg>,
-    pub handle: Option<JoinHandle<()>>,
-    pub node_id: String,
-    pub output: String,
-    pub spinner: usize,
-}
-
-#[derive(Debug)]
-pub enum ReviewFlagMsg {
-    Started {
-        path: String,
-        index: usize,
-        total: usize,
-    },
-    Done {
-        path: String,
-        finding: ReviewStyleFinding,
-    },
-    Error {
-        path: String,
-        message: String,
-    },
-    Finished,
-}
-
-#[derive(Debug)]
-pub struct ReviewFlagJob {
-    pub rx: Receiver<ReviewFlagMsg>,
-    pub handle: Option<JoinHandle<()>>,
-    pub active_path: Option<String>,
-    pub completed: usize,
-    pub total: usize,
-    pub spinner: usize,
-}
-
-#[derive(Debug)]
-pub struct ReviewChatJob {
-    pub rx: Receiver<GenMsg>,
-    pub handle: Option<JoinHandle<()>>,
-    pub output: String,
-    pub spinner: usize,
 }
 
 /// How one pass of the local model over the conflicted files is going.

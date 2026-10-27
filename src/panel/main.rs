@@ -2,19 +2,17 @@ use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     widgets::{Paragraph, Wrap},
 };
 
 use crate::{
     config::DIFF_PAGE,
-    state::{AppState, DiffSource, DiffViewMode, Modal, PendingAction},
+    state::{AppState, DiffSource, DiffViewMode, PendingAction},
     ui,
 };
 
 mod hunks;
-mod review;
-mod source;
 
 pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     if let Some(id) = state.session_view() {
@@ -24,13 +22,6 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
 
     if !state.git_panes_visible() {
         render_no_session(state, area, frame, focused);
-        return;
-    }
-
-    if state.modal == Modal::ReviewChat {
-        let chunks = review_chat_layout(state, area);
-        render_main_content(state, chunks[0], frame, false);
-        crate::panel::review_chat::render_docked(state, chunks[1], frame);
         return;
     }
 
@@ -92,14 +83,7 @@ fn render_session(
 }
 
 fn render_main_content(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
-    if matches!(state.diff_source, DiffSource::Review) && state.review.assisted.is_some() {
-        review::render(state, area, frame, focused);
-        return;
-    }
-
-    let title = if matches!(state.diff_source, DiffSource::Review) {
-        "Review"
-    } else if matches!(state.diff_source, DiffSource::Branch(_)) {
+    let title = if matches!(state.diff_source, DiffSource::Branch(_)) {
         "Log"
     } else if side_by_side_diff_enabled(state) {
         "Diff: side-by-side"
@@ -194,25 +178,9 @@ fn session_handle_key(
     Ok(true)
 }
 
-pub fn review_chat_layout(state: &AppState, area: Rect) -> std::rc::Rc<[Rect]> {
-    let min_review_height = 6.min(area.height);
-    let desired_chat_height = state
-        .review
-        .chat_height
-        .unwrap_or_else(|| (area.height / 3).clamp(8, 18));
-    let chat_height = desired_chat_height.min(area.height.saturating_sub(min_review_height));
-    Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(chat_height)])
-        .split(area)
-}
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     if let Some(id) = state.session_view() {
         return session_handle_key(state, id, key);
-    }
-
-    if matches!(state.diff_source, DiffSource::Review) && state.review.assisted.is_some() {
-        return review::handle_key(state, key);
     }
 
     let max_offset = max_scroll_offset(state);
@@ -300,9 +268,7 @@ pub fn scroll(state: &mut AppState, scroll_down: bool, amount: u16) {
     } else {
         offset.saturating_sub(amount)
     };
-    if !matches!(state.diff_source, DiffSource::Review) {
-        hunks::follow_scroll(state);
-    }
+    hunks::follow_scroll(state);
 }
 
 /// Bring the hunk cursor and the scroll position back together after the
@@ -310,12 +276,6 @@ pub fn scroll(state: &mut AppState, scroll_down: bool, amount: u16) {
 pub fn settle_cursor(state: &mut AppState) {
     if hunks::hunks_shown(state) || hunks::log_shown(state) {
         hunks::settle(state);
-    }
-}
-
-pub fn select_mouse_row(state: &mut AppState, area: Rect, row: u16) {
-    if matches!(state.diff_source, DiffSource::Review) && state.review.assisted.is_some() {
-        review::select_mouse_row(state, area, row);
     }
 }
 
@@ -393,9 +353,6 @@ fn owned_line(line: ratatui::text::Line<'_>) -> ratatui::text::Line<'static> {
 }
 
 pub fn max_scroll_offset(state: &AppState) -> u16 {
-    if matches!(state.diff_source, DiffSource::Review) && state.review.assisted.is_some() {
-        return scroll_bound(review::render_line_count(state), state.diff_viewport_height);
-    }
     scroll_bound(rendered_line_count(state), state.diff_viewport_height)
 }
 
@@ -441,10 +398,7 @@ fn side_by_side_diff_enabled(state: &AppState) -> bool {
 }
 
 fn diff_view_toggle_available(state: &AppState) -> bool {
-    !matches!(
-        state.diff_source,
-        DiffSource::Branch(_) | DiffSource::Review
-    )
+    !matches!(state.diff_source, DiffSource::Branch(_))
 }
 
 fn wrapped_line_count<'a>(lines: impl IntoIterator<Item = &'a str>, viewport_width: u16) -> usize {
@@ -470,7 +424,6 @@ fn log_render_lines(text: &str) -> Vec<&str> {
 fn selected_diff_open_path(state: &AppState) -> Option<String> {
     match &state.diff_source {
         DiffSource::File(path) => Some(path.clone()),
-        DiffSource::Review => review::selected_open_path(state),
         DiffSource::All | DiffSource::Folder(_) | DiffSource::Commit(_) => {
             diff_path_at_offset(&state.diff_text, state.diff_offset)
         }

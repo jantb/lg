@@ -20,7 +20,6 @@ pub(crate) mod markdown;
 pub mod model;
 pub(crate) mod pointer;
 pub mod push;
-pub mod review_chat;
 pub(crate) mod scroll;
 pub mod settings;
 pub mod solid;

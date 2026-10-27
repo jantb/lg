@@ -2,13 +2,10 @@
 
 use std::thread::JoinHandle;
 
-use crate::state::{
-    BackgroundJob, Drained, GenMsg, Modal, ReviewAssistJob, drain_receiver, stopped_unexpectedly,
-};
+use crate::state::{BackgroundJob, Drained, Modal, drain_receiver, stopped_unexpectedly};
 
 mod conflict;
 mod drain;
-mod review;
 mod start;
 
 /// Take a finished single-shot job out of `slot`, with the last message it sent.
@@ -97,90 +94,6 @@ fn tick_spinner<J: BackgroundJob>(slot: &mut Option<J>) {
     }
 }
 
-/// Stream an LLM answer for a review node into the pane. Review explanations and
-/// PR text differ only in what they are called when they finish. Returns the
-/// status to show, if the stream reached an end. A finished worker goes into
-/// `deferred` to be joined once it exits, rather than waited on here.
-fn drain_review_stream(
-    slot: &mut Option<ReviewAssistJob>,
-    assists: &mut std::collections::HashMap<String, String>,
-    deferred: &mut Vec<JoinHandle<()>>,
-    ready: &'static str,
-) -> Option<(String, bool)> {
-    let mut status = None;
-    let mut handle = None;
-    // The answer so far is copied into the review once per batch rather than
-    // once per chunk: a long answer arrives in thousands of chunks, and copying
-    // all of it each time made streaming it quadratic.
-    let mut grew = false;
-    let drained = drain_messages(slot);
-    for msg in drained.messages {
-        match msg {
-            GenMsg::Thinking(_) => {}
-            GenMsg::Output(output) => {
-                if let Some(job) = slot.as_mut() {
-                    job.output.push_str(&output);
-                    grew = true;
-                }
-            }
-            GenMsg::Reset => {
-                if let Some(job) = slot.as_mut() {
-                    job.output.clear();
-                    grew = true;
-                }
-            }
-            GenMsg::Done {
-                text: final_msg,
-                stats,
-            } => {
-                let truncated = stats.truncated;
-                let final_msg = mark_if_truncated(final_msg, truncated);
-                if let Some(mut job) = slot.take() {
-                    handle = job.handle.take();
-                    assists.insert(job.node_id, final_msg);
-                }
-                status = Some((
-                    if truncated {
-                        format!("{ready} \u{2014} cut off at the token budget")
-                    } else {
-                        ready.to_string()
-                    },
-                    truncated,
-                ));
-            }
-            GenMsg::Error(error) => {
-                if let Some(mut job) = slot.take() {
-                    handle = job.handle.take();
-                    assists.insert(job.node_id, format!("llm error: {error}"));
-                }
-                status = Some((error, true));
-            }
-        }
-    }
-    if grew && let Some(job) = slot.as_ref() {
-        assists.insert(job.node_id.clone(), job.output.clone());
-    }
-    if let Some((job, stopped)) = reap_stopped(slot, drained.disconnected) {
-        assists.insert(job.node_id, format!("llm error: {stopped}"));
-        status = Some((stopped, true));
-    }
-    deferred.extend(handle);
-    tick_spinner(slot);
-    status
-}
-
-/// Say in the text itself that an answer was cut off.
-///
-/// The status line that says so expires; the answer stays on screen and gets
-/// copied into a PR description, so the one place the notice cannot be missed
-/// is the answer.
-pub(super) fn mark_if_truncated(text: String, truncated: bool) -> String {
-    if !truncated || text.trim().is_empty() {
-        return text;
-    }
-    format!("{}\n\n{}", text.trim_end(), crate::llm::TRUNCATED_NOTE)
-}
-
 /// Wait for a worker to exit. Only for shutdown: a worker can outlive the
 /// message it sent by seconds — the Claude CLI does — and waiting on the UI
 /// thread freezes the screen for that long. Use
@@ -215,7 +128,7 @@ fn open_conflict_modal_if_needed(state: &mut crate::state::AppState, log: String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{FetchJob, FetchMsg, ReviewChatJob};
+    use crate::state::{FetchJob, FetchMsg};
     use std::sync::mpsc::Receiver;
 
     /// A worker that panics before it reports, the way a bug in one does.
@@ -277,88 +190,5 @@ mod tests {
 
         assert!(take_finished(&mut slot).is_none());
         assert!(slot.is_some());
-    }
-
-    #[test]
-    fn a_stream_whose_worker_died_mid_answer_is_ended() {
-        let (rx, handle) = dying_worker::<GenMsg>();
-        let mut slot = Some(ReviewChatJob {
-            rx,
-            handle: Some(handle),
-            output: String::new(),
-            spinner: 0,
-        });
-
-        let drained = drain_messages(&slot);
-        let (_, status) =
-            reap_stopped(&mut slot, drained.disconnected).expect("the stream is over");
-
-        assert!(slot.is_none());
-        assert!(
-            status.contains("review chat stopped unexpectedly"),
-            "{status}"
-        );
-    }
-
-    /// The Claude CLI sends its answer and then takes seconds to exit. The
-    /// answer is shown as it arrives; the screen does not wait for the exit.
-    #[test]
-    fn an_answer_is_taken_without_waiting_for_its_worker_to_exit() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let handle = std::thread::spawn(move || {
-            tx.send(GenMsg::Done {
-                text: "the explanation".into(),
-                stats: crate::llm::GenStats::default(),
-            })
-            .unwrap();
-            std::thread::sleep(std::time::Duration::from_secs(2));
-        });
-        let mut slot = Some(ReviewAssistJob {
-            rx,
-            handle: Some(handle),
-            node_id: "node".into(),
-            output: String::new(),
-            spinner: 0,
-        });
-        let mut assists = std::collections::HashMap::new();
-        let mut deferred = Vec::new();
-        let started = std::time::Instant::now();
-        let mut status = None;
-        while status.is_none() && started.elapsed() < std::time::Duration::from_secs(1) {
-            status = drain_review_stream(&mut slot, &mut assists, &mut deferred, "ready");
-        }
-
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
-            "the drain waited for the worker to exit"
-        );
-        assert_eq!(status, Some(("ready".to_string(), false)));
-        assert_eq!(
-            assists.get("node").map(String::as_str),
-            Some("the explanation")
-        );
-    }
-
-    /// A status line expires; an answer stays on screen and gets pasted into a
-    /// pull request. An answer the server stopped at the budget reads exactly
-    /// like one that finished, so the notice belongs in the answer itself.
-    #[test]
-    fn a_cut_off_answer_says_so_in_its_own_text() {
-        let marked = mark_if_truncated("## Summary\n- did a thing".to_string(), true);
-
-        assert!(marked.starts_with("## Summary\n- did a thing"));
-        assert!(marked.contains(crate::llm::TRUNCATED_NOTE), "{marked}");
-    }
-
-    #[test]
-    fn a_complete_answer_is_left_exactly_as_it_came() {
-        let text = "## Summary\n- did a thing".to_string();
-
-        assert_eq!(mark_if_truncated(text.clone(), false), text);
-    }
-
-    #[test]
-    fn there_is_nothing_to_mark_on_an_empty_answer() {
-        assert_eq!(mark_if_truncated(String::new(), true), "");
     }
 }

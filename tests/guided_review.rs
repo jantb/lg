@@ -103,7 +103,7 @@ fn a_guided_review_keeps_its_notes_sees_edits_and_on_main_walks_the_changes() {
     app.state.repo_root = Some(repo.to_string_lossy().into_owned());
     app.state.branch = Some("feat/sub".into());
 
-    app.send_key(key(KeyCode::Char('V'))).unwrap();
+    app.send_key(key(KeyCode::Char('R'))).unwrap();
     assert_eq!(app.state.modal, Modal::GuidedReview);
     wait_loaded(&mut app);
     assert!(screen(&app).contains("calc.rs"), "{}", screen(&app));
@@ -155,7 +155,7 @@ fn a_guided_review_keeps_its_notes_sees_edits_and_on_main_walks_the_changes() {
     app.send_key(key(KeyCode::Esc)).unwrap();
     assert_eq!(app.state.modal, Modal::None);
     app.state.guided = None;
-    app.send_key(key(KeyCode::Char('V'))).unwrap();
+    app.send_key(key(KeyCode::Char('R'))).unwrap();
     wait_loaded(&mut app);
     app.send_key(key(KeyCode::Char('s'))).unwrap();
     app.render().unwrap();
@@ -179,15 +179,15 @@ fn a_guided_review_keeps_its_notes_sees_edits_and_on_main_walks_the_changes() {
     assert_eq!(app.state.modal, Modal::GuidedReview);
 
     // On main there is no branch to review, so the walk is over what has not
-    // been committed yet.
+    // been pushed yet.
     app.send_key(key(KeyCode::Esc)).unwrap();
     git(&repo, &["checkout", "-f", "main"]);
     std::fs::write(repo.join("notes.md"), "remember to test overflow\n").unwrap();
     app.state.branch = Some("main".into());
-    app.send_key(key(KeyCode::Char('V'))).unwrap();
+    app.send_key(key(KeyCode::Char('R'))).unwrap();
     wait_loaded(&mut app);
     let text = screen(&app);
-    assert!(text.contains("uncommitted changes on main"), "{text}");
+    assert!(text.contains("what is not pushed on main"), "{text}");
     assert!(
         text.contains("notes.md"),
         "the untracked file is in the walk: {text}"

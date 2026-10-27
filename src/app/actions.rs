@@ -9,7 +9,6 @@ use crate::state::{AppState, Modal, OperationKind, PendingAction};
 
 use super::{
     App, spawn_force_push, spawn_operation, spawn_operation_with_progress, spawn_pull, spawn_push,
-    spawn_review_assist, spawn_review_chat, spawn_review_pr_text, spawn_review_style_flags,
 };
 
 /// Saves the LLM choice and this checkout's settings together, so the settings
@@ -56,14 +55,7 @@ fn refresh_llm_settings_state(state: &mut AppState) {
 
 /// The actions that send a request to the model server.
 fn asks_the_model(action: &PendingAction) -> bool {
-    matches!(
-        action,
-        PendingAction::GenerateMessage
-            | PendingAction::ReviewAssist(_)
-            | PendingAction::ReviewPrText
-            | PendingAction::ReviewStyleFlags
-            | PendingAction::ReviewChat(_)
-    )
+    matches!(action, PendingAction::GenerateMessage)
 }
 
 impl App {
@@ -75,12 +67,7 @@ impl App {
         }
         match action {
             PendingAction::GenerateMessage => self.generate_message(),
-            PendingAction::ReviewAssist(node_id) => spawn_review_assist(&mut self.state, node_id),
-            PendingAction::ReviewPrText => spawn_review_pr_text(&mut self.state),
-            PendingAction::ReviewStyleFlags => spawn_review_style_flags(&mut self.state),
-            PendingAction::ReviewAgent => self.start_review_agent(),
             PendingAction::GuidedChat => self.open_guided_chat(),
-            PendingAction::ReviewChat(prompt) => spawn_review_chat(&mut self.state, prompt),
 
             PendingAction::Commit => self.commit(),
             PendingAction::AmendCommit => self.amend(),

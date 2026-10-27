@@ -205,30 +205,15 @@ fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
 
 // ── Cancelling in-flight LLM work ─────────────────────────────────────────────
 
-#[test]
-fn esc_cancels_a_running_review_and_says_so() {
-    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 40)).unwrap();
-    let (_tx, rx) = mpsc::channel();
-    app.state.review_job = Some(lg::state::ReviewJob {
+fn conflict_resolve_job(rx: mpsc::Receiver<lg::state::ConflictResolveMsg>) -> ConflictResolveJob {
+    ConflictResolveJob {
         rx,
         handle: None,
         spinner: 0,
-    });
-    app.state.diff_text = "building assisted review against main...".into();
-    assert!(app.state.llm_job_running());
-
-    app.send_key(key(KeyCode::Esc)).unwrap();
-
-    assert!(app.state.review_job.is_none());
-    assert!(!app.state.llm_job_running());
-    assert_eq!(
-        app.state.status.as_ref().map(|s| s.text.as_str()),
-        Some("review cancelled")
-    );
-    assert_eq!(
-        app.state.diff_text, "review cancelled",
-        "the pane must stop claiming the review is still building"
-    );
+        active_path: None,
+        completed: 0,
+        total: 1,
+    }
 }
 
 #[test]
@@ -236,12 +221,17 @@ fn cancelling_actually_stops_the_worker_not_just_the_display() {
     // The whole cancellation design rests on this: dropping the job drops the
     // receiver, and the llm stream loop returns as soon as a send fails.
     let mut state = AppState::new();
-    let (tx, rx) = mpsc::channel::<lg::state::GenMsg>();
+    let (tx, rx) = mpsc::channel::<lg::state::ConflictResolveMsg>();
     let (observed_tx, observed_rx) = mpsc::channel();
 
     let worker = std::thread::spawn(move || {
-        for _ in 0..10_000 {
-            if tx.send(lg::state::GenMsg::Output("chunk".into())).is_err() {
+        for index in 0..10_000 {
+            let started = lg::state::ConflictResolveMsg::Started {
+                path: "a.rs".into(),
+                index,
+                total: 10_000,
+            };
+            if tx.send(started).is_err() {
                 let _ = observed_tx.send("disconnected");
                 return;
             }
@@ -250,14 +240,12 @@ fn cancelling_actually_stops_the_worker_not_just_the_display() {
         let _ = observed_tx.send("ran to completion");
     });
 
-    state.review_chat_job = Some(lg::state::ReviewChatJob {
-        rx,
-        handle: None,
-        output: String::new(),
-        spinner: 0,
-    });
+    state.conflict_resolve_job = Some(conflict_resolve_job(rx));
 
-    assert_eq!(state.cancel_llm_jobs(), Some("review chat cancelled"));
+    assert_eq!(
+        state.cancel_llm_jobs(),
+        Some("local conflict resolution cancelled")
+    );
 
     worker.join().unwrap();
     assert_eq!(
@@ -271,23 +259,22 @@ fn cancelling_actually_stops_the_worker_not_just_the_display() {
 fn esc_dismisses_an_error_before_it_cancels_anything() {
     let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 40)).unwrap();
     let (_tx, rx) = mpsc::channel();
-    app.state.review_job = Some(lg::state::ReviewJob {
-        rx,
-        handle: None,
-        spinner: 0,
-    });
+    app.state.conflict_resolve_job = Some(conflict_resolve_job(rx));
     app.state.set_status("something failed", true);
 
     app.send_key(key(KeyCode::Esc)).unwrap();
 
     assert!(app.state.status.is_none(), "first Esc clears the error");
     assert!(
-        app.state.review_job.is_some(),
+        app.state.conflict_resolve_job.is_some(),
         "and must not also cancel the job in the same keypress"
     );
 
     app.send_key(key(KeyCode::Esc)).unwrap();
-    assert!(app.state.review_job.is_none(), "second Esc cancels");
+    assert!(
+        app.state.conflict_resolve_job.is_none(),
+        "second Esc cancels"
+    );
 }
 
 #[test]
@@ -299,53 +286,6 @@ fn esc_with_nothing_running_leaves_state_alone() {
 
     assert_eq!(app.state.focus, Pane::Commits);
     assert!(app.state.status.is_none());
-}
-
-#[test]
-fn starting_a_second_review_reports_instead_of_doing_nothing() {
-    let mut app = lg::app::HeadlessApp::new(TestBackend::new(120, 40)).unwrap();
-    let (_tx, rx) = mpsc::channel();
-    app.state.review_job = Some(lg::state::ReviewJob {
-        rx,
-        handle: None,
-        spinner: 0,
-    });
-
-    app.send_key(key(KeyCode::Char('R'))).unwrap();
-
-    let status = app.state.status.as_ref().expect("a status message");
-    assert!(
-        status.text.contains("already running"),
-        "got {:?}",
-        status.text
-    );
-}
-
-#[test]
-fn esc_in_review_chat_cancels_the_answer_before_closing() {
-    let mut state = AppState::new();
-    state.modal = Modal::ReviewChat;
-    let (_tx, rx) = mpsc::channel();
-    state.review_chat_job = Some(lg::state::ReviewChatJob {
-        rx,
-        handle: None,
-        output: String::new(),
-        spinner: 0,
-    });
-
-    panel::review_chat::handle_key(&mut state, key(KeyCode::Esc)).unwrap();
-    assert!(
-        state.review_chat_job.is_none(),
-        "first Esc stops the answer"
-    );
-    assert_eq!(
-        state.modal,
-        Modal::ReviewChat,
-        "and leaves the chat open so the user sees what they have"
-    );
-
-    panel::review_chat::handle_key(&mut state, key(KeyCode::Esc)).unwrap();
-    assert_eq!(state.modal, Modal::None, "second Esc closes the chat");
 }
 
 /// The prompt is the last thing standing between a keypress and a deleted

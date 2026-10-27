@@ -100,13 +100,8 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "R",
-                help: "Enter review mode against main",
-                footer: None,
-            },
-            Binding {
-                key: "V",
-                help: "Guided review (on main: uncommitted)",
-                footer: Some(("V", "guided review")),
+                help: "Guided review (on main: what is not pushed)",
+                footer: Some(("R", "guided review")),
             },
             Binding {
                 key: "Ctrl-n / Ctrl-p",
@@ -228,7 +223,7 @@ pub const SECTIONS: &[Section] = &[
             "p",
             "P",
             "f",
-            "V",
+            "R",
             "?",
         ],
     },
@@ -320,7 +315,7 @@ pub const SECTIONS: &[Section] = &[
             "D",
             "o",
             "w",
-            "V",
+            "R",
             "?",
             "Ctrl-C / q",
         ],
@@ -407,7 +402,7 @@ pub const SECTIONS: &[Section] = &[
         ],
         footer_meta: Some((3, "Branches")),
         footer_order: &[
-            "Enter", "r", "m", "M", "d", "D", "o", "u", "y", "p", "a", "L", "f", "F", "V", "?",
+            "Enter", "r", "m", "M", "d", "D", "o", "u", "y", "p", "a", "L", "f", "F", "R", "?",
         ],
     },
     Section {
@@ -461,7 +456,7 @@ pub const SECTIONS: &[Section] = &[
             },
         ],
         footer_meta: Some((4, "Commits")),
-        footer_order: &["j/k", "Enter", "y", "t", "A", "p", "a", "L", "f", "V", "?"],
+        footer_order: &["j/k", "Enter", "y", "t", "A", "p", "a", "L", "f", "R", "?"],
     },
     Section {
         title: "List filter",
@@ -520,108 +515,6 @@ pub const SECTIONS: &[Section] = &[
         footer_order: &[],
     },
     Section {
-        title: "Review mode",
-        pane: Some(Pane::Main),
-        bindings: &[
-            Binding {
-                key: "j/k",
-                help: "Move selected review item",
-                footer: Some(("j/k", "move")),
-            },
-            Binding {
-                key: "Enter / s",
-                help: "Toggle source for selected item",
-                footer: Some(("Enter/s", "source")),
-            },
-            Binding {
-                key: "space",
-                help: "Expand or collapse selected item",
-                footer: Some(("space", "expand")),
-            },
-            Binding {
-                key: "d",
-                help: "Drill into first child item",
-                footer: Some(("d", "drill")),
-            },
-            Binding {
-                key: "n / N",
-                help: "Jump next or previous inline review note",
-                footer: Some(("n/N", "notes")),
-            },
-            Binding {
-                key: "o",
-                help: "Open selected source file in IDE",
-                footer: Some(("o", "open IDE")),
-            },
-            Binding {
-                key: "f",
-                help: "Run style flag pass",
-                footer: Some(("f", "flag")),
-            },
-            Binding {
-                key: "l",
-                help: "Explain or generate PR text",
-                footer: Some(("l", "explain")),
-            },
-            Binding {
-                key: "y",
-                help: "Copy LLM/PR text",
-                footer: None,
-            },
-            Binding {
-                key: "C",
-                help: "Chat with LLM about the full review",
-                footer: Some(("C", "chat")),
-            },
-            Binding {
-                key: "A",
-                help: "Review branch in a Claude Code session",
-                footer: Some(("A", "agent")),
-            },
-            Binding {
-                key: "v",
-                help: "Toggle unified or side-by-side diff",
-                footer: Some(("v", "view")),
-            },
-            Binding {
-                key: "R",
-                help: "Rebuild assisted review",
-                footer: Some(("R", "refresh")),
-            },
-            Binding {
-                key: "Esc",
-                help: "Cancel running LLM work",
-                footer: Some(("Esc", "cancel")),
-            },
-            Binding {
-                key: "g/G",
-                help: "Jump to top or bottom",
-                footer: Some(("g/G", "top/bot")),
-            },
-        ],
-        footer_meta: Some((0, "Review")),
-        footer_order: &[
-            "j/k",
-            "Enter / s",
-            "space",
-            "d",
-            "n / N",
-            "o",
-            "l",
-            "C",
-            "A",
-            "g/G",
-            "v",
-            "f",
-            "a",
-            "L",
-            "R",
-            "Esc",
-            "V",
-            "?",
-        ],
-    },
-    Section {
         title: "Diff pane",
         pane: Some(Pane::Main),
         bindings: &[
@@ -634,11 +527,6 @@ pub const SECTIONS: &[Section] = &[
                 key: "Ctrl-d/Ctrl-u",
                 help: "Scroll half page",
                 footer: None,
-            },
-            Binding {
-                key: "R",
-                help: "Enter review mode against main",
-                footer: Some(("R", "review mode")),
             },
             Binding {
                 key: "v",
@@ -698,36 +586,8 @@ pub const SECTIONS: &[Section] = &[
         ],
         footer_meta: Some((0, "Diff")),
         footer_order: &[
-            "R", "space", "d", "] / [", "v", "o", "j/k", "C", "g/G", "p", "a", "L", "f", "V", "?",
+            "R", "space", "d", "] / [", "v", "o", "j/k", "C", "g/G", "p", "a", "L", "f", "?",
         ],
-    },
-    Section {
-        title: "Review chat",
-        pane: None,
-        bindings: &[
-            Binding {
-                key: "Enter",
-                help: "Send prompt",
-                footer: Some(("Enter", "send")),
-            },
-            Binding {
-                key: "Esc",
-                help: "Cancel the running answer, then close chat",
-                footer: Some(("Esc", "close")),
-            },
-            Binding {
-                key: "Ctrl+A / Ctrl+E",
-                help: "Start / end of prompt",
-                footer: None,
-            },
-            Binding {
-                key: "Up / Down",
-                help: "Scroll conversation",
-                footer: None,
-            },
-        ],
-        footer_meta: None,
-        footer_order: &[],
     },
     Section {
         title: "Commit modal",
@@ -1444,22 +1304,22 @@ pub const SECTIONS: &[Section] = &[
         bindings: &[
             Binding {
                 key: "\u{2192} / \u{2190}",
-                help: "Next step (marks reviewed) / previous",
+                help: "Next file (marks reviewed) / previous",
                 footer: Some(("\u{2192}/\u{2190}", "step")),
             },
             Binding {
                 key: "] / [",
-                help: "First hunk of the next / previous file",
+                help: "Next / previous file",
                 footer: None,
             },
             Binding {
                 key: "\u{2193} / \u{2191}",
-                help: "Next / previous finding, then next step",
+                help: "Next / previous finding, then next file",
                 footer: Some(("\u{2193}/\u{2191}", "finding")),
             },
             Binding {
                 key: "j/k",
-                help: "Move the line cursor in the hunk",
+                help: "Move the cursor; scroll the whole change",
                 footer: None,
             },
             Binding {
@@ -1474,12 +1334,12 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "a",
-                help: "Ask the model about this step",
+                help: "Ask the model about this file or step",
                 footer: Some(("a", "ask")),
             },
             Binding {
                 key: "r",
-                help: "Re-read this file and review it again",
+                help: "Review this file (or the whole change) again",
                 footer: Some(("r", "redo")),
             },
             Binding {
@@ -1499,7 +1359,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "m",
-                help: "Toggle the step reviewed",
+                help: "Toggle the file reviewed",
                 footer: None,
             },
             Binding {
@@ -1514,7 +1374,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "u",
-                help: "Jump to the next unreviewed step",
+                help: "Jump to the next unreviewed file",
                 footer: None,
             },
             Binding {
@@ -1549,12 +1409,32 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "b",
-                help: "Whole branch vs main, or only uncommitted",
+                help: "Branch vs main, or not pushed (or badge)",
                 footer: Some(("b", "scope")),
             },
             Binding {
                 key: "g / G",
-                help: "Overview / last step",
+                help: "Overview / final review",
+                footer: None,
+            },
+            Binding {
+                key: "w",
+                help: "Final review of the whole change",
+                footer: Some(("w", "whole change")),
+            },
+            Binding {
+                key: "M / badge",
+                help: "Walk by concern, map or triage",
+                footer: Some(("M", "mode")),
+            },
+            Binding {
+                key: "S",
+                help: "Mark the files safe to skim reviewed",
+                footer: None,
+            },
+            Binding {
+                key: "X",
+                help: "Reset notes, marks, ticks (press twice)",
                 footer: None,
             },
             Binding {
@@ -1569,7 +1449,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "wheel / click",
-                help: "Steps, scroll hunk/commentary; pick a step",
+                help: "Scroll; pick a step, reset or scope badge",
                 footer: None,
             },
         ],
@@ -2320,6 +2200,8 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
             "f / F",
             "v",
             "C",
+            "w",
+            "M / badge",
             "s",
             "?",
             "Esc / q",
@@ -2428,11 +2310,5 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         prefix: "Stash ",
         tone: Tone::Normal,
         order: &["j/k", "space / Enter", "g", "d", "n", "Esc"],
-    },
-    ModalFooter {
-        section: "Review chat",
-        prefix: "Review chat ",
-        tone: Tone::Normal,
-        order: &["Enter", "Esc"],
     },
 ];

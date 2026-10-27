@@ -1,4 +1,4 @@
-//! Reviewing this branch against main: what changed, where to start, what to check.
+//! The change a review reads: this branch against main, or what is not pushed.
 
 use anyhow::Result;
 
@@ -6,76 +6,12 @@ use super::{head_branch, preferred_commit_ref, run};
 
 mod category;
 mod collect;
-mod entry;
 pub(crate) mod language;
-mod report;
-mod source;
-mod tree;
 
-use collect::{
-    branch_review_commits, worktree_review_diff, worktree_review_files, worktree_review_stat,
-};
-use entry::review_entry_points;
-use report::render_assisted_review;
-use tree::build_review_nodes;
+use collect::{branch_review_commits, worktree_review_diff};
 
 pub use category::is_test_path;
 pub use language::Language;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ReviewFile {
-    status: String,
-    path: String,
-    old_path: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ReviewEntryPoint {
-    path: String,
-    line: Option<usize>,
-    symbol: String,
-    description: String,
-    hunk: String,
-    patch: Vec<String>,
-    context: Vec<String>,
-    added: usize,
-    removed: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AssistedReview {
-    pub report: String,
-    pub nodes: Vec<ReviewNode>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ReviewNode {
-    pub id: String,
-    pub parent: Option<String>,
-    pub depth: u16,
-    pub title: String,
-    pub body: Vec<String>,
-    pub context: Vec<String>,
-}
-
-pub const REVIEW_PR_TEXT_NODE_ID: &str = "checklist:pr-text";
-/// The checklist row a Claude Code session's review of the branch lands under.
-pub const REVIEW_AGENT_NODE_ID: &str = "checklist:agent-review";
-
-struct ReviewRender<'a> {
-    branch: &'a str,
-    base_ref: &'a str,
-    merge_base: &'a str,
-    commits: &'a [String],
-    files: &'a [ReviewFile],
-    stat: &'a str,
-    entries: &'a [ReviewEntryPoint],
-    diff: &'a str,
-}
-
-pub fn assisted_review_against_main() -> Result<String> {
-    Ok(build_assisted_review_against_main()?.report)
-}
 
 /// The branch's whole change against main, as the review reads it: the working
 /// tree against the merge-base, untracked files included and generated files
@@ -104,14 +40,49 @@ pub fn branch_diff_against_main() -> Result<BranchDiff> {
     })
 }
 
-/// What is not committed yet: the working tree against `HEAD`, staged,
-/// unstaged and untracked alike, read the way the branch review reads it.
-pub fn uncommitted_diff() -> Result<BranchDiff> {
+/// What has not been pushed yet: the working tree against where the branch's
+/// upstream and `HEAD` diverged, so unpushed commits and uncommitted edits
+/// alike. A branch that was never pushed has all of its change unpushed, so
+/// it is read against main as [`branch_diff_against_main`] reads it.
+pub fn unpushed_diff() -> Result<BranchDiff> {
+    let branch = head_branch().unwrap_or_else(|_| "HEAD".to_string());
+    let Some(upstream) = pushed_ref(&branch) else {
+        return branch_diff_against_main();
+    };
+    let merge_base = run(&["merge-base", &upstream, "HEAD"])
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_default();
+    let diff_base = if merge_base.is_empty() {
+        upstream.as_str()
+    } else {
+        merge_base.as_str()
+    };
     Ok(BranchDiff {
-        branch: head_branch().unwrap_or_else(|_| "HEAD".to_string()),
-        base_ref: "HEAD".to_string(),
-        commits: Vec::new(),
-        diff: worktree_review_diff("HEAD")?,
+        commits: branch_review_commits(&upstream)?,
+        diff: worktree_review_diff(diff_base)?,
+        branch,
+        base_ref: upstream,
+    })
+}
+
+/// Where `branch` was last pushed: its upstream, else the branch of the same
+/// name on the configured remote.
+fn pushed_ref(branch: &str) -> Option<String> {
+    let upstream = run(&[
+        "rev-parse",
+        "--abbrev-ref",
+        "--symbolic-full-name",
+        "@{upstream}",
+    ])
+    .ok()
+    .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    .filter(|upstream| !upstream.is_empty());
+    let same_name = format!("{}/{branch}", crate::preferences::remote());
+    upstream.or_else(|| {
+        let commit = format!("{same_name}^{{commit}}");
+        run(&["rev-parse", "--verify", "--quiet", &commit])
+            .ok()
+            .map(|_| same_name)
     })
 }
 
@@ -135,35 +106,6 @@ fn review_bases() -> Result<(String, String, String)> {
     Ok((branch, base_ref, merge_base))
 }
 
-pub fn build_assisted_review_against_main() -> Result<AssistedReview> {
-    let (branch, base_ref, merge_base) = review_bases()?;
-    let diff_base = if merge_base.is_empty() {
-        base_ref.as_str()
-    } else {
-        merge_base.as_str()
-    };
-    let commits = branch_review_commits(&base_ref)?;
-    let files = worktree_review_files(diff_base)?;
-    let stat = worktree_review_stat(diff_base).unwrap_or_default();
-    let diff = worktree_review_diff(diff_base)?;
-    let entries = review_entry_points(&diff);
-
-    let render = ReviewRender {
-        branch: &branch,
-        base_ref: &base_ref,
-        merge_base: &merge_base,
-        commits: &commits,
-        files: &files,
-        stat: &stat,
-        entries: &entries,
-        diff: &diff,
-    };
-    let report = render_assisted_review(&render);
-    let nodes = build_review_nodes(&render);
-
-    Ok(AssistedReview { report, nodes })
-}
-
 fn truncate_review_text(line: &str, max_chars: usize) -> String {
     let mut chars = line.chars();
     let mut out: String = chars.by_ref().take(max_chars).collect();
@@ -171,14 +113,6 @@ fn truncate_review_text(line: &str, max_chars: usize) -> String {
         out.push_str("...");
     }
     out
-}
-
-fn short_oid(oid: &str) -> &str {
-    oid.get(..12).unwrap_or(oid)
-}
-
-fn plural(n: usize) -> &'static str {
-    if n == 1 { "" } else { "s" }
 }
 
 #[cfg(test)]

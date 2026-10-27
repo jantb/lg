@@ -639,8 +639,7 @@ fn start_merge(state: &mut AppState, pr: &PullRequest) {
 }
 
 /// Open the new pull request form for the branch checked out here, filled in
-/// from what the branch carries — or from the PR text the review wrote, when
-/// there is one.
+/// from what the branch carries.
 fn start_create(state: &mut AppState) {
     let Some(branch) = state.branch.clone() else {
         state.set_status("check a branch out to open a pull request from it", false);
@@ -674,15 +673,7 @@ fn start_create(state: &mut AppState) {
     let commits = crate::git::commit_messages_since(&format!("{remote}/{base}"))
         .or_else(|_| crate::git::commit_messages_since(&base))
         .unwrap_or_default();
-    let (title, mut body) = crate::github::fill_from_commits(&branch, &commits);
-    if let Some(text) = state
-        .review
-        .assists
-        .get(crate::git::REVIEW_PR_TEXT_NODE_ID)
-        .filter(|text| !text.trim().is_empty())
-    {
-        body = text.trim().to_string();
-    }
+    let (title, body) = crate::github::fill_from_commits(&branch, &commits);
     state.github.mode = Mode::Create(CreateForm {
         branch,
         title: title.into(),
@@ -1263,21 +1254,6 @@ mod tests {
 
         assert_eq!(state.github.mode, Mode::Browse);
         assert_eq!(selected_pr(&state).map(|pr| pr.number), Some(8));
-    }
-
-    #[test]
-    fn the_review_pr_text_becomes_the_body_of_a_new_pull_request() {
-        let mut state = with_prs(Vec::new());
-        state.review.assists.insert(
-            crate::git::REVIEW_PR_TEXT_NODE_ID.to_string(),
-            "## Summary\n- adds login".into(),
-        );
-        handle_key(&mut state, key(KeyCode::Char('n'))).unwrap();
-
-        let Mode::Create(form) = &state.github.mode else {
-            panic!("the form opens");
-        };
-        assert_eq!(form.body, "## Summary\n- adds login");
     }
 
     #[test]
