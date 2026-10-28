@@ -235,7 +235,8 @@ fn select_text(state: &mut AppState, side: ratatui::layout::Rect, m: &MouseEvent
     }
 }
 
-/// A click elsewhere while the chat has the keyboard takes it back.
+/// A click in the chat gives it the keyboard and starts a selection kept to
+/// its screen; a click elsewhere while the chat has the keyboard takes it back.
 fn chat_mouse(state: &mut AppState, side: ratatui::layout::Rect, m: &MouseEvent) -> bool {
     use crate::panel::pointer;
     let Some(id) = chat_session(state) else {
@@ -259,8 +260,10 @@ fn chat_mouse(state: &mut AppState, side: ratatui::layout::Rect, m: &MouseEvent)
             }
             true
         }
-        (None, Some(_)) if pointer::left_click(m) => {
+        (None, Some(area)) if pointer::left_click(m) => {
             guided.mode = Mode::Chat;
+            // A drag from here selects the chat's own text, and no further.
+            state.selection = crate::ui::TextSelection::within(area, m.column, m.row);
             true
         }
         (None, None) if pointer::left_click(m) && guided.mode == Mode::Chat => {
@@ -2451,13 +2454,13 @@ pub(super) fn open_chat(state: &mut AppState) {
         );
         return;
     }
-    if guided.step().is_none() {
-        state.set_status("the chat is about a file: \u{2192} to one first", false);
-        return;
-    }
     if running.is_some() {
         guided.mode = Mode::Chat;
         state.set_status("chat \u{2014} Ctrl-] back to the review", false);
+        return;
+    }
+    if guided.step().is_none() {
+        state.set_status("the chat is about a file: \u{2192} to one first", false);
         return;
     }
     state.pending_action = Some(PendingAction::GuidedChat);
@@ -3501,6 +3504,99 @@ mod tests {
 
         let guided = state.guided.as_ref().unwrap();
         assert_eq!((guided.current, guided.cursor), (1, start + 1));
+    }
+
+    /// A review chat on a.rs running `script` in place of claude, once it has
+    /// printed `ready`.
+    fn chatting(state: &mut AppState, script: &str, ready: &str) {
+        let spawn = crate::term::Spawn {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), script.into()],
+            cwd: std::env::temp_dir(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+        };
+        let spec = crate::session::SessionSpec {
+            label: "review chat".into(),
+            cwd: std::env::temp_dir(),
+            sandboxed: false,
+            kind: crate::session::SessionKind::Claude,
+            prompt: None,
+        };
+        let id = state.sessions.start_with(spec, &spawn, (24, 80)).unwrap();
+        let started = std::time::Instant::now();
+        while !state
+            .sessions
+            .get(id)
+            .is_some_and(|session| session.screen().contents().contains(ready))
+        {
+            assert!(
+                started.elapsed().as_secs() < 10,
+                "the chat never printed {ready}"
+            );
+            state.sessions.pump();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let guided = state.guided.as_mut().unwrap();
+        guided.chat = Some(id);
+        guided.chat_file = Some("a.rs".into());
+    }
+
+    #[test]
+    fn a_drag_started_in_the_chat_copies_only_the_chat() {
+        let mut state = walk_with_findings();
+        chatting(&mut state, "echo chat says hello; sleep 30", "hello");
+        let (_, side) = panes(&state);
+        let chat =
+            draw::chat_screen_area(state.guided.as_deref().unwrap(), side, state.diff_view_mode)
+                .unwrap();
+
+        mouse(
+            &mut state,
+            MouseEventKind::Down(MouseButton::Left),
+            chat.x,
+            chat.y,
+        );
+        mouse(
+            &mut state,
+            MouseEventKind::Drag(MouseButton::Left),
+            0,
+            AREA.height - 1,
+        );
+        mouse(
+            &mut state,
+            MouseEventKind::Up(MouseButton::Left),
+            0,
+            AREA.height - 1,
+        );
+
+        let backend = ratatui::backend::TestBackend::new(AREA.width, AREA.height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(&state, AREA, frame)).unwrap();
+        state.sessions.close_all();
+        let copied = state.selection.unwrap().text(terminal.backend().buffer());
+        assert!(copied.contains("chat says hello"), "{copied:?}");
+        assert!(
+            !copied.contains("Renames"),
+            "the read beside it: {copied:?}"
+        );
+        assert!(!copied.contains("new one"), "the diff above it: {copied:?}");
+    }
+
+    #[test]
+    fn a_running_chat_stays_on_screen_through_the_final_review() {
+        let mut state = walk_with_findings();
+        chatting(&mut state, "echo ready; sleep 30", "ready");
+
+        press(&mut state, ratatui::crossterm::event::KeyCode::Char('w'));
+
+        assert!(state.guided.as_ref().unwrap().on_final());
+        let rows = screen(&state);
+        state.sessions.close_all();
+        assert!(
+            rows.iter().any(|row| row.contains("Claude \u{b7} a.rs")),
+            "{rows:#?}"
+        );
     }
 
     #[test]

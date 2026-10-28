@@ -940,27 +940,35 @@ fn draw_step(
 
 /// The chat is left out: it takes the mouse for itself.
 pub(super) fn selectable_areas(guided: &Guided, side: Rect, mode: DiffViewMode) -> Vec<Rect> {
-    if guided.on_final() {
-        return final_areas(guided, side, mode).0;
-    }
-    let Some(step) = guided.step() else {
+    let Some(parts) = diff_and_below(guided, side, mode) else {
         return vec![side];
     };
-    let (parts, _) = step_areas(guided, step, side, mode);
-    let commentary = if guided.chat.is_some() {
-        ui::modal_column_areas(parts[1], &CHAT_SPLIT).0[0]
-    } else {
-        parts[1]
-    };
-    vec![parts[0], commentary]
+    vec![parts[0], commentary_area(guided, parts[1])]
 }
 
 const CHAT_SPLIT: [Constraint; 2] = [Constraint::Percentage(40), Constraint::Percentage(60)];
 
+/// The diff and what sits below it, on a file's step or the final review.
+fn diff_and_below(guided: &Guided, side: Rect, mode: DiffViewMode) -> Option<Vec<Rect>> {
+    if guided.on_final() {
+        return Some(final_areas(guided, side, mode).0);
+    }
+    let step = guided.step()?;
+    Some(step_areas(guided, step, side, mode).0)
+}
+
+/// The model's read below the diff, left of the chat while one runs.
+fn commentary_area(guided: &Guided, below: Rect) -> Rect {
+    if guided.chat.is_some() {
+        ui::modal_column_areas(below, &CHAT_SPLIT).0[0]
+    } else {
+        below
+    }
+}
+
 pub(super) fn chat_screen_area(guided: &Guided, side: Rect, mode: DiffViewMode) -> Option<Rect> {
     guided.chat?;
-    let step = guided.step()?;
-    let (parts, _) = step_areas(guided, step, side, mode);
+    let parts = diff_and_below(guided, side, mode)?;
     let (columns, _) = ui::modal_column_areas(parts[1], &CHAT_SPLIT);
     let chat = columns[1];
     Some(Rect {
@@ -1016,11 +1024,7 @@ fn draw_chat(
 
 /// Where the diff is drawn: the file's, or on the final step the whole changeset.
 pub(super) fn diff_area(guided: &Guided, side: Rect, mode: DiffViewMode) -> Option<Rect> {
-    if guided.on_final() {
-        return Some(final_areas(guided, side, mode).0[0]);
-    }
-    let step = guided.step()?;
-    Some(step_areas(guided, step, side, mode).0[0])
+    Some(diff_and_below(guided, side, mode)?[0])
 }
 
 /// The findings sit in the diff, so it gets most of the room.
@@ -1031,12 +1035,16 @@ pub(super) fn step_areas(
     mode: DiffViewMode,
 ) -> (Vec<Rect>, Vec<Rect>) {
     let rows = diff_lines(guided, step, mode, area.width).lines.len();
-    let most = if guided.chat.is_some() {
+    split_for_diff(area, rows, diff_room(guided, area))
+}
+
+/// A running chat needs room to be read, so the diff gives up more of it.
+fn diff_room(guided: &Guided, area: Rect) -> u16 {
+    if guided.chat.is_some() {
         area.height / 2
     } else {
         area.height * 2 / 3
-    };
-    split_for_diff(area, rows, most)
+    }
 }
 
 fn split_for_diff(area: Rect, rows: usize, most: u16) -> (Vec<Rect>, Vec<Rect>) {
@@ -1076,7 +1084,7 @@ pub(super) fn finding_at(
     };
     if guided.on_final() {
         let (parts, _) = final_areas(guided, side, mode);
-        let (diff, commentary) = (parts[0], parts[1]);
+        let (diff, commentary) = (parts[0], commentary_area(guided, parts[1]));
         if inside(diff, column, row) {
             let lines = final_diff_lines(guided, mode, diff.width);
             let scroll = guided.final_scroll.min(guided.final_max.get());
@@ -1611,11 +1619,20 @@ fn draw_final(
     let scroll = guided.final_scroll.min(max);
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), diff);
 
-    let lines = final_commentary_lines(state, guided, below.width).lines;
-    let max = (lines.len() as u16).saturating_sub(below.height);
+    let commentary = match super::chat_session(state) {
+        Some(id) => {
+            let (columns, gaps) = ui::modal_columns(frame, below, &CHAT_SPLIT);
+            dividers.extend(gaps);
+            draw_chat(state, guided, id, columns[1], frame);
+            columns[0]
+        }
+        None => below,
+    };
+    let lines = final_commentary_lines(state, guided, commentary.width).lines;
+    let max = (lines.len() as u16).saturating_sub(commentary.height);
     guided.side_max.set(max);
     let scroll = guided.side_scroll.min(max);
-    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), below);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), commentary);
 }
 
 pub(super) fn final_areas(
@@ -1624,7 +1641,7 @@ pub(super) fn final_areas(
     mode: DiffViewMode,
 ) -> (Vec<Rect>, Vec<Rect>) {
     let rows = final_diff_lines(guided, mode, area.width).lines.len();
-    split_for_diff(area, rows, area.height * 2 / 3)
+    split_for_diff(area, rows, diff_room(guided, area))
 }
 
 /// Every file's diff in turn, each under its title.
