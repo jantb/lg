@@ -362,4 +362,42 @@ mod tests {
 
         assert!(styled_text(&line, Color::DarkGray).contains("// note"));
     }
+
+    #[test]
+    fn go_source_line_highlights_keywords_and_raw_strings() {
+        let line = highlight_source_line_for_path(
+            "func (m *Modell) navn() string { return `rå` }",
+            "tui/modell.go",
+        );
+
+        let keywords = styled_text(&line, Color::Yellow);
+        assert!(keywords.contains("func"), "{keywords}");
+        assert!(keywords.contains("return"), "{keywords}");
+        assert_eq!(styled_text(&line, Color::LightYellow), "`rå`");
+    }
+
+    #[test]
+    fn tabs_open_out_so_the_side_by_side_separator_stays_put() {
+        let diff = "diff --git a/a.go b/a.go\n\
+                    --- a/a.go\n\
+                    +++ b/a.go\n\
+                    @@ -1,3 +1,3 @@\n\
+                    -func a() {\n\
+                    -\treturn\n\
+                    -\t\tx\n\
+                    +func b() {\n\
+                    +\treturn\n\
+                    +\t\ty\n";
+        let lines = highlight_side_by_side_diff_text(diff, 60);
+        let columns: Vec<usize> = lines
+            .iter()
+            .filter_map(|line| {
+                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                assert!(!text.contains('\t'), "{text:?}");
+                text.find(" | ")
+            })
+            .collect();
+        assert_eq!(columns.len(), 3, "{columns:?}");
+        assert!(columns.iter().all(|c| *c == columns[0]), "{columns:?}");
+    }
 }

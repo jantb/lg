@@ -40,6 +40,7 @@ impl Language {
             Self::Java => java_item_label(line),
             Self::JavaScript | Self::TypeScript => script_item_label(line),
             Self::CSharp => csharp_item_label(line),
+            Self::Go => go_item_label(line),
             Self::Markdown => markdown_item_label(line),
             Self::Json => None,
         }
@@ -57,6 +58,7 @@ impl Language {
                 line.starts_with("import ") || line.starts_with("package ")
             }
             Self::CSharp => line.starts_with("using ") || line.starts_with("namespace "),
+            Self::Go => line.starts_with("import ") || line.starts_with("package "),
             Self::JavaScript | Self::TypeScript => {
                 line.starts_with("import ")
                     || (line.starts_with("export ") && line.contains(" from "))
@@ -113,6 +115,13 @@ C# / .NET:
 - Nullable reference types are honoured; no ! (null-forgiving) outside tests.
 - Dispose IDisposable/IAsyncDisposable with using; do not hold them in fields without ownership.
 - Constructor injection; controllers stay thin and services hold the rules.",
+            Self::Go => "\
+Go:
+- Every error is checked; wrap it with context (fmt.Errorf with %w) rather than returning it bare or dropping it.
+- No panic on paths reachable in production; return an error instead.
+- Goroutines have a clear owner and a way to stop; contexts are passed on, never stored in structs.
+- Accept interfaces, return concrete types; keep interfaces small and defined where they are used.
+- Receivers are consistent per type: all pointer or all value.",
             Self::Json => "\
 JSON:
 - Valid JSON: no comments or trailing commas unless every reader of the file accepts them.
@@ -292,6 +301,27 @@ pub(super) fn script_item_label(line: &str) -> Option<String> {
         return (!name.is_empty()).then(|| format!("{} {name}", &line[..3]));
     }
     class_member_name(line).map(|name| format!("method {name}"))
+}
+
+/// Go declares functions and methods with `func`, a method's receiver in
+/// parentheses before its name, and types with `type`.
+pub(super) fn go_item_label(line: &str) -> Option<String> {
+    if let Some(rest) = line.strip_prefix("func ") {
+        let rest = match rest.strip_prefix('(') {
+            Some(receiver) => receiver.split_once(')')?.1.trim_start(),
+            None => rest,
+        };
+        let name = declared_name(rest);
+        let kind = if line.starts_with("func (") {
+            "method"
+        } else {
+            "func"
+        };
+        return (!name.is_empty()).then(|| format!("{kind} {name}"));
+    }
+    let rest = line.strip_prefix("type ")?;
+    let name = declared_name(rest);
+    (!name.is_empty()).then(|| format!("type {name}"))
 }
 
 pub(super) fn csharp_item_label(line: &str) -> Option<String> {
@@ -529,6 +559,7 @@ mod tests {
         assert!(Language::Java.is_import_line("import java.util.List;"));
         assert!(Language::Kotlin.is_import_line("public import a.b.C"));
         assert!(Language::CSharp.is_import_line("using System.Text;"));
+        assert!(Language::Go.is_import_line("import \"fmt\""));
         assert!(Language::TypeScript.is_import_line("import { x } from './x';"));
         assert!(Language::TypeScript.is_import_line("export { y } from './y';"));
         assert!(Language::JavaScript.is_import_line("const fs = require('fs');"));

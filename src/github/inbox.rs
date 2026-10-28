@@ -2,10 +2,11 @@
 //! workspace: the unread notifications, and every pull request whose review is
 //! still asked of them after its notification was read.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use super::run;
@@ -13,8 +14,12 @@ use super::run;
 /// Why something is in the inbox, most pressing first.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Reason {
+    /// A review asked of the user by name.
     ReviewRequested,
     Mentioned,
+    /// A review asked of a team the user is on, not of them.
+    TeamReviewRequested,
+    TeamMentioned,
     Assigned,
     /// A deployment waiting on the user's approval.
     ApprovalRequested,
@@ -34,7 +39,8 @@ impl Reason {
     fn from_github(reason: &str) -> Self {
         match reason {
             "review_requested" => Self::ReviewRequested,
-            "mention" | "team_mention" => Self::Mentioned,
+            "mention" => Self::Mentioned,
+            "team_mention" => Self::TeamMentioned,
             "assign" => Self::Assigned,
             "approval_requested" => Self::ApprovalRequested,
             "security_alert" => Self::SecurityAlert,
@@ -50,6 +56,8 @@ impl Reason {
         match self {
             Self::ReviewRequested => "review requested",
             Self::Mentioned => "mentioned",
+            Self::TeamReviewRequested => "team review requested",
+            Self::TeamMentioned => "team mentioned",
             Self::Assigned => "assigned",
             Self::ApprovalRequested => "approval requested",
             Self::SecurityAlert => "security alert",
@@ -61,17 +69,60 @@ impl Reason {
         }
     }
 
-    /// Whether the user is the one being waited on, rather than being told
-    /// something happened.
-    pub fn asks_for_action(&self) -> bool {
-        matches!(
-            self,
+    /// The label at its shortest, for a column in a list.
+    pub fn short(&self) -> &str {
+        match self {
+            Self::ReviewRequested => "review",
+            Self::Mentioned => "mention",
+            Self::TeamReviewRequested => "review",
+            Self::TeamMentioned => "mention",
+            Self::Assigned => "assigned",
+            Self::ApprovalRequested => "approval",
+            Self::SecurityAlert => "security",
+            Self::Authored => "yours",
+            Self::Commented => "comment",
+            Self::StateChanged => "state",
+            Self::Ci => "CI",
+            Self::Other(reason) => reason,
+        }
+    }
+
+    /// Who is being waited on, if anyone.
+    pub fn section(&self) -> Section {
+        match self {
             Self::ReviewRequested
-                | Self::Mentioned
-                | Self::Assigned
-                | Self::ApprovalRequested
-                | Self::SecurityAlert
-        )
+            | Self::Mentioned
+            | Self::Assigned
+            | Self::ApprovalRequested
+            | Self::SecurityAlert => Section::You,
+            Self::TeamReviewRequested | Self::TeamMentioned => Section::Teams,
+            Self::Authored | Self::Commented | Self::StateChanged | Self::Ci | Self::Other(_) => {
+                Section::Updates
+            }
+        }
+    }
+}
+
+/// The parts of the inbox, in the order they are shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Section {
+    /// Waiting on the user by name.
+    You,
+    /// Waiting on a team the user is on.
+    Teams,
+    /// Telling the user something happened.
+    Updates,
+}
+
+impl Section {
+    pub const ALL: [Self; 3] = [Self::You, Self::Teams, Self::Updates];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::You => "Waiting on you",
+            Self::Teams => "Your teams",
+            Self::Updates => "Updates",
+        }
     }
 }
 
@@ -105,6 +156,8 @@ pub struct InboxItem {
     /// The notification thread, while there is one to mark done. A review
     /// request whose notification was already read has none.
     pub thread: Option<String>,
+    /// When it last changed, as GitHub writes it (RFC 3339); empty if unknown.
+    pub updated_at: String,
 }
 
 impl InboxItem {
@@ -115,6 +168,27 @@ impl InboxItem {
                 format!("{}#{number}", self.repo.to_lowercase())
             }
             Subject::Other(_) => format!("{} {}", self.repo.to_lowercase(), self.title),
+        }
+    }
+
+    /// How long ago it last changed, shortest form: `5m`, `3h`, `2d`, `6w`.
+    pub fn age(&self, now: DateTime<Utc>) -> Option<String> {
+        let then = DateTime::parse_from_rfc3339(&self.updated_at).ok()?;
+        let minutes = (now - then.with_timezone(&Utc)).num_minutes().max(0);
+        Some(match minutes {
+            0..60 => format!("{minutes}m"),
+            60..1440 => format!("{}h", minutes / 60),
+            1440..20160 => format!("{}d", minutes / 1440),
+            _ => format!("{}w", minutes / 10080),
+        })
+    }
+
+    /// `name#12` without the owner, or just the name for what has no number.
+    pub fn short_place(&self) -> String {
+        let name = self.repo.rsplit('/').next().unwrap_or(&self.repo);
+        match self.subject.number() {
+            Some(number) => format!("{name}#{number}"),
+            None => name.to_string(),
         }
     }
 
@@ -130,7 +204,8 @@ impl InboxItem {
 /// What a read of the inbox found.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Inbox {
-    /// Most pressing first, and otherwise in the order GitHub listed them.
+    /// What waits on the user, on their teams, then the updates, each newest
+    /// first.
     pub items: Vec<InboxItem>,
     /// The checkout of each repository the workspace holds, by lowercased
     /// `owner/name`.
@@ -153,17 +228,27 @@ pub fn read_inbox(dirs: &[PathBuf]) -> Result<Inbox> {
     }
     let notifications =
         parse_notifications(&run(&["api", "--paginate", "notifications?per_page=50"])?)?;
-    let review_requests = parse_review_requests(&run(&[
-        "search",
-        "prs",
-        "--review-requested=@me",
-        "--state=open",
-        "--limit",
-        "100",
-        "--json",
-        "number,title,url,repository",
-    ])?)?;
-    let items = gather(notifications, review_requests, |repo| {
+    let search = |query: &str| -> Result<Vec<InboxItem>> {
+        parse_review_requests(&run(&[
+            "search",
+            "prs",
+            "--state=open",
+            "--limit",
+            "100",
+            "--json",
+            "number,title,url,repository,updatedAt",
+            "--",
+            query,
+        ])?)
+    };
+    // `review-requested` counts the user's teams too; `user-review-requested`
+    // only the user, which is what tells the two apart.
+    let review_requests = search("review-requested:@me")?;
+    let personal = search("user-review-requested:@me")?
+        .iter()
+        .map(InboxItem::key)
+        .collect();
+    let items = gather(notifications, review_requests, &personal, |repo| {
         checkouts.contains_key(&repo.to_lowercase())
     });
     Ok(Inbox { items, checkouts })
@@ -179,6 +264,11 @@ pub fn mark_done(thread: &str) -> Result<()> {
         &format!("notifications/threads/{thread}"),
     ])?;
     Ok(())
+}
+
+/// Mark every one of `threads` done, stopping at the first GitHub refuses.
+pub fn mark_all_done(threads: &[String]) -> Result<()> {
+    threads.iter().try_for_each(|thread| mark_done(thread))
 }
 
 fn checkouts(dirs: &[PathBuf]) -> HashMap<String, PathBuf> {
@@ -213,16 +303,20 @@ pub fn repo_name(url: &str) -> Option<String> {
 
 /// The notifications in `watched` repositories, then every review request
 /// they do not already carry. A pull request that is both is shown once, as
-/// the review request it still is.
+/// the review request it still is: the user's own when its key is in
+/// `personal`, a team's otherwise. A review request notification for a pull
+/// request no longer asking for one is only an update.
 fn gather(
     notifications: Vec<InboxItem>,
     review_requests: Vec<InboxItem>,
+    personal: &HashSet<String>,
     watched: impl Fn(&str) -> bool,
 ) -> Vec<InboxItem> {
     let mut items: Vec<InboxItem> = notifications
         .into_iter()
         .filter(|item| watched(&item.repo))
         .collect();
+    let requested: HashSet<String> = review_requests.iter().map(InboxItem::key).collect();
     for request in review_requests
         .into_iter()
         .filter(|item| watched(&item.repo))
@@ -232,7 +326,26 @@ fn gather(
             None => items.push(request),
         }
     }
-    items.sort_by(|a, b| a.reason.cmp(&b.reason));
+    for item in &mut items {
+        if item.reason != Reason::ReviewRequested {
+            continue;
+        }
+        let key = item.key();
+        if !personal.contains(&key) {
+            item.reason = if requested.contains(&key) {
+                Reason::TeamReviewRequested
+            } else {
+                Reason::Other("review requested earlier".into())
+            };
+        }
+    }
+    // RFC 3339 times in UTC order as text; one GitHub gave none goes last.
+    items.sort_by(|a, b| {
+        a.reason
+            .section()
+            .cmp(&b.reason.section())
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+    });
     items
 }
 
@@ -242,6 +355,8 @@ struct RawNotification {
     reason: String,
     subject: RawSubject,
     repository: RawRepository,
+    #[serde(default)]
+    updated_at: String,
 }
 
 #[derive(Deserialize)]
@@ -294,6 +409,7 @@ fn notification_item(raw: RawNotification) -> InboxItem {
         reason: Reason::from_github(&raw.reason),
         url,
         thread: Some(raw.id),
+        updated_at: raw.updated_at,
     }
 }
 
@@ -303,6 +419,8 @@ struct RawSearchHit {
     title: String,
     url: String,
     repository: RawSearchRepository,
+    #[serde(default, rename = "updatedAt")]
+    updated_at: String,
 }
 
 #[derive(Deserialize)]
@@ -323,6 +441,7 @@ fn parse_review_requests(json: &str) -> Result<Vec<InboxItem>> {
             reason: Reason::ReviewRequested,
             url: hit.url,
             thread: None,
+            updated_at: hit.updated_at,
         })
         .collect())
 }
@@ -338,6 +457,37 @@ mod tests {
                             "url":"https://api.github.com/repos/{repo}/pulls/{number}"}},
                 "repository":{{"full_name":"{repo}","html_url":"https://github.com/{repo}"}}}}"#
         )
+    }
+
+    /// The pull requests whose review is asked of the user by name.
+    fn mine(keys: &[&str]) -> HashSet<String> {
+        keys.iter().map(|key| key.to_string()).collect()
+    }
+
+    #[test]
+    fn a_review_asked_of_a_team_is_told_from_one_asked_of_the_user() {
+        let requests = parse_review_requests(
+            r#"[{"number":1,"title":"Mine","url":"u","repository":{"nameWithOwner":"acme/app"}},
+                {"number":2,"title":"Team","url":"u","repository":{"nameWithOwner":"acme/app"}}]"#,
+        )
+        .unwrap();
+        let stale = parse_notifications(&format!(
+            "[{}]",
+            notification("acme/app", 3, "review_requested")
+        ))
+        .unwrap();
+
+        let items = gather(stale, requests, &mine(&["acme/app#1"]), |_| true);
+
+        let reason = |number| {
+            let item = items
+                .iter()
+                .find(|item| item.subject == Subject::PullRequest(number));
+            item.unwrap().reason.section()
+        };
+        assert_eq!(reason(1), Section::You);
+        assert_eq!(reason(2), Section::Teams);
+        assert_eq!(reason(3), Section::Updates, "no longer asking for a review");
     }
 
     #[test]
@@ -396,7 +546,9 @@ mod tests {
         )
         .unwrap();
 
-        let items = gather(notifications, requests, |repo| repo == "acme/app");
+        let items = gather(notifications, requests, &mine(&[]), |repo| {
+            repo == "acme/app"
+        });
 
         assert!(items.is_empty(), "{items:?}");
     }
@@ -409,7 +561,7 @@ mod tests {
         )
         .unwrap();
 
-        let items = gather(Vec::new(), requests, |_| true);
+        let items = gather(Vec::new(), requests, &mine(&["acme/app#7"]), |_| true);
 
         assert_eq!(items[0].reason, Reason::ReviewRequested);
         assert_eq!(items[0].url, "https://github.com/acme/app/pull/7");
@@ -425,7 +577,7 @@ mod tests {
         )
         .unwrap();
 
-        let items = gather(notifications, requests, |_| true);
+        let items = gather(notifications, requests, &mine(&["acme/app#7"]), |_| true);
 
         let sevens: Vec<_> = items
             .iter()
@@ -437,6 +589,44 @@ mod tests {
     }
 
     #[test]
+    fn an_item_says_how_long_ago_it_changed() {
+        let mut item = parse_review_requests(
+            r#"[{"number":7,"title":"Add login","url":"https://github.com/acme/app/pull/7",
+                 "repository":{"name":"app","nameWithOwner":"acme/app"},
+                 "updatedAt":"2026-10-20T12:00:00Z"}]"#,
+        )
+        .unwrap()
+        .remove(0);
+        let now = |at: &str| {
+            DateTime::parse_from_rfc3339(at)
+                .unwrap()
+                .with_timezone(&Utc)
+        };
+
+        assert_eq!(item.age(now("2026-10-20T12:05:00Z")).as_deref(), Some("5m"));
+        assert_eq!(item.age(now("2026-10-20T15:00:00Z")).as_deref(), Some("3h"));
+        assert_eq!(item.age(now("2026-10-22T12:00:00Z")).as_deref(), Some("2d"));
+        assert_eq!(item.age(now("2026-12-01T12:00:00Z")).as_deref(), Some("6w"));
+        item.updated_at.clear();
+        assert_eq!(item.age(now("2026-10-20T12:00:00Z")), None);
+    }
+
+    #[test]
+    fn the_newest_comes_first_within_what_waits_on_the_user() {
+        let requests = parse_review_requests(
+            r#"[{"number":1,"title":"Old","url":"u","repository":{"nameWithOwner":"acme/app"},
+                 "updatedAt":"2026-10-01T10:00:00Z"},
+                {"number":2,"title":"New","url":"u","repository":{"nameWithOwner":"acme/app"},
+                 "updatedAt":"2026-10-20T10:00:00Z"}]"#,
+        )
+        .unwrap();
+
+        let items = gather(Vec::new(), requests, &mine(&[]), |_| true);
+
+        assert_eq!(items[0].subject, Subject::PullRequest(2));
+    }
+
+    #[test]
     fn what_asks_for_the_user_comes_before_what_only_tells_them() {
         let json = format!(
             "[{},{}]",
@@ -444,7 +634,12 @@ mod tests {
             notification("acme/app", 2, "review_requested")
         );
 
-        let items = gather(parse_notifications(&json).unwrap(), Vec::new(), |_| true);
+        let items = gather(
+            parse_notifications(&json).unwrap(),
+            Vec::new(),
+            &mine(&["acme/app#2"]),
+            |_| true,
+        );
 
         assert_eq!(items[0].subject, Subject::PullRequest(2));
     }

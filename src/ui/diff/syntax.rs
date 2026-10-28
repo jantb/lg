@@ -37,7 +37,10 @@ pub enum Token {
 /// `path`: one `Token` per character, in order.
 pub fn diff_line_tokens(line: &str, path: &str) -> Vec<Token> {
     let mut tokens = Vec::with_capacity(line.len());
-    for span in highlight_diff_line_for_path(line, path).spans {
+    // The highlighter opens tabs out to their stop; a single space lexes the
+    // same and keeps one token per character of `line`.
+    let line = line.replace('\t', " ");
+    for span in highlight_diff_line_for_path(&line, path).spans {
         let token = match span.style.fg {
             Some(Color::Yellow) => Token::Keyword,
             Some(Color::LightYellow) => Token::Literal,

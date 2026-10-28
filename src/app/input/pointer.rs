@@ -52,7 +52,7 @@ pub(super) fn handle_modal_mouse(state: &mut AppState, area: Rect, m: &MouseEven
         Modal::GitHub => {
             state.column_drag_active = false;
             state.row_drag_active = None;
-            panel::github::handle_mouse(state, m);
+            panel::github::handle_mouse(state, area, m);
             true
         }
         Modal::Commit => {
