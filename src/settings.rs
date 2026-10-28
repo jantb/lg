@@ -216,10 +216,14 @@ pub fn commit_prompt_prefix(settings: &RepoSettings) -> String {
 pub fn subject_first(message: &str) -> String {
     let mut lines = message.lines().skip_while(|line| line.trim().is_empty());
     let subject = lines.next().unwrap_or_default().trim();
-    let body = lines.collect::<Vec<_>>().join("\n");
-    match body.trim() {
+    let body = lines
+        .skip_while(|line| line.trim().is_empty())
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    match body.trim_end() {
         "" => subject.to_string(),
-        _ => format!("{subject}\n\n{}", body.trim_matches('\n').trim_end()),
+        body => format!("{subject}\n\n{body}"),
     }
 }
 
@@ -497,6 +501,14 @@ mod tests {
         assert_eq!(
             subject_first("fix: thing\n- first\n- second\n"),
             "fix: thing\n\n- first\n- second"
+        );
+    }
+
+    #[test]
+    fn blank_lines_of_spaces_before_the_body_collapse_to_one() {
+        assert_eq!(
+            subject_first("fix: thing\n   \n\t\nbody\n  "),
+            "fix: thing\n\nbody"
         );
     }
 
