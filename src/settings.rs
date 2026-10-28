@@ -213,18 +213,40 @@ pub fn commit_prompt_prefix(settings: &RepoSettings) -> String {
 /// any body the model added kept below it, after one blank line. Models add a
 /// body when told not to often enough that the prompt alone does not keep it
 /// to one line, and dropping it loses what was just shown being written.
+///
+/// Models also wrap prose at a fixed width, which reads as ragged lines in the
+/// editor and in the log, so each paragraph is joined onto one line. Blank
+/// lines and list items keep their breaks.
 pub fn subject_first(message: &str) -> String {
     let mut lines = message.lines().skip_while(|line| line.trim().is_empty());
     let subject = lines.next().unwrap_or_default().trim();
-    let body = lines
-        .skip_while(|line| line.trim().is_empty())
-        .map(str::trim_end)
-        .collect::<Vec<_>>()
-        .join("\n");
+    let mut body: Vec<String> = Vec::new();
+    for line in lines.map(str::trim) {
+        match body.last_mut() {
+            Some(last) if !line.is_empty() && !last.is_empty() && !starts_list_item(line) => {
+                last.push(' ');
+                last.push_str(line);
+            }
+            Some(last) if line.is_empty() && last.is_empty() => {}
+            None if line.is_empty() => {}
+            _ => body.push(line.to_string()),
+        }
+    }
+    let body = body.join("\n");
     match body.trim_end() {
         "" => subject.to_string(),
         body => format!("{subject}\n\n{body}"),
     }
+}
+
+fn starts_list_item(line: &str) -> bool {
+    let numbered = line.split_once(". ").is_some_and(|(number, _)| {
+        !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+    });
+    numbered
+        || ["- ", "* ", "+ "]
+            .iter()
+            .any(|marker| line.starts_with(marker))
 }
 
 /// Instruction appended to prompts whose output the user reads, so generated PR
@@ -513,9 +535,19 @@ mod tests {
     }
 
     #[test]
-    fn a_body_keeps_its_wrapping_and_paragraphs() {
-        let message = "fix: thing\n\nThe first sentence\nwraps here.\n\nA second one.";
-        assert_eq!(subject_first(message), message);
+    fn a_wrapped_paragraph_is_joined_onto_one_line() {
+        assert_eq!(
+            subject_first("fix: thing\n\nThe first sentence\nwraps here.\n\nA second\none."),
+            "fix: thing\n\nThe first sentence wraps here.\n\nA second one."
+        );
+    }
+
+    #[test]
+    fn list_items_keep_their_own_lines_and_their_wrapped_tails() {
+        assert_eq!(
+            subject_first("fix: thing\n\n- first item\n  wraps\n- second\n1. third"),
+            "fix: thing\n\n- first item wraps\n- second\n1. third"
+        );
     }
 
     #[test]
