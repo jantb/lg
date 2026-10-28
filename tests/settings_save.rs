@@ -55,13 +55,13 @@ fn settings_saved_from_the_modal_win_over_preferences_already_set() {
     lg::preferences::save_category(
         Scope::User,
         "writing",
-        serde_json::json!({"language": "Norwegian", "subject_max": 50}),
+        serde_json::json!({"language": "Norwegian"}),
     )
     .unwrap();
     lg::preferences::save_category(
         Scope::Repository,
         "writing",
-        serde_json::json!({"subject_max": 60, "comment_style": "repo style"}),
+        serde_json::json!({"comment_style": "repo style"}),
     )
     .unwrap();
     lg::preferences::save_category(
@@ -74,8 +74,6 @@ fn settings_saved_from_the_modal_win_over_preferences_already_set() {
     lg::settings::save(&lg::settings::RepoSettings {
         pr_language: "English".into(),
         comment_style: "Conventional Commits".into(),
-        commit_subject_max_chars: 40,
-        commit_body_max_lines: 3,
         ..lg::settings::RepoSettings::default()
     })
     .unwrap();
@@ -84,8 +82,6 @@ fn settings_saved_from_the_modal_win_over_preferences_already_set() {
     let loaded = lg::settings::load();
     assert_eq!(loaded.pr_language, "English");
     assert_eq!(loaded.comment_style, "Conventional Commits");
-    assert_eq!(loaded.commit_subject_max_chars, 40);
-    assert_eq!(loaded.commit_body_max_lines, 3);
     assert_eq!(lg::preferences::load().config.models.model, "saved-model");
     assert_eq!(lg::llm::current_model(), "saved-model");
     assert_eq!(lg::llm::current_provider(), lg::llm::LlmProvider::Mtplx);
@@ -97,6 +93,6 @@ fn settings_saved_from_the_modal_win_over_preferences_already_set() {
 
     let loaded = lg::settings::load();
     assert_eq!(loaded.pr_language, "Norwegian");
-    assert_eq!(loaded.commit_subject_max_chars, 60);
+    assert_eq!(loaded.comment_style, "repo style");
     assert_ne!(lg::preferences::load().config.models.model, "saved-model");
 }

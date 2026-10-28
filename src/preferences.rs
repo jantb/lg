@@ -20,8 +20,6 @@ pub struct Preferences {
 pub struct Writing {
     pub language: String,
     pub comment_style: String,
-    pub subject_max: usize,
-    pub body_lines: usize,
     pub commit_prompt: String,
     pub review_style: String,
 }

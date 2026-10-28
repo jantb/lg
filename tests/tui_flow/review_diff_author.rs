@@ -226,8 +226,6 @@ fn model_modal_picks_and_saves_model() {
 
     app.state.settings_pr_language_input = "Norwegian".into();
     app.state.settings_comment_style_input = "terse, imperative".into();
-    app.state.settings_subject_max_input = "50".into();
-    app.state.settings_body_lines_input = "3".into();
     app.state.settings_field = lg::state::SettingsField::Save;
     panel::model::handle_key(&mut app.state, key(KeyCode::Enter)).unwrap();
     assert_eq!(
@@ -237,8 +235,6 @@ fn model_modal_picks_and_saves_model() {
             provider: lg::llm::LlmProvider::Mtplx,
             pr_language: "Norwegian".into(),
             comment_style: "terse, imperative".into(),
-            commit_subject_max_chars: Some(50),
-            commit_body_max_lines: Some(3),
         })
     );
 }

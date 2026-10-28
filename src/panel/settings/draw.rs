@@ -461,7 +461,7 @@ pub(super) fn render_detail(hub: &Settings, area: Rect, frame: &mut Frame) {
         _ if names_branch(hub, field) => "a local branch; Enter opens the picker",
         _ if names_model(hub, field) => "a model the endpoint serves; Enter opens the picker",
         Value::Bool(_) => "true or false; Enter toggles",
-        Value::Number(_) => "a whole number; \u{2191}/\u{2193} step it while editing",
+        Value::Number(_) => "a whole number",
         Value::String(_) => "text; Shift-Enter adds a line",
         Value::Array(_) => "a JSON list, for example [\"--wait\"]",
         _ => "JSON",

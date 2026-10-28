@@ -169,8 +169,6 @@ pub struct AppState {
     /// saved setting or the user, so the modal can say where they came from.
     pub settings_derived_language: bool,
     pub settings_derived_shape: bool,
-    pub settings_subject_max_input: String,
-    pub settings_body_lines_input: String,
     pub settings_prompt_is_custom: bool,
     pub settings_review_style_is_custom: bool,
     pub settings_dir: String,
@@ -373,8 +371,6 @@ impl AppState {
             settings_comment_style_choices: Vec::new(),
             settings_derived_language: false,
             settings_derived_shape: false,
-            settings_subject_max_input: String::new(),
-            settings_body_lines_input: String::new(),
             settings_prompt_is_custom: false,
             settings_review_style_is_custom: false,
             settings_dir: String::new(),

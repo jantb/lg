@@ -122,26 +122,6 @@ pub(super) fn choices(hub: &Settings) -> Vec<String> {
 pub(super) fn picking(hub: &Settings) -> bool {
     picker(hub).is_some()
 }
-/// Whether the field being edited holds a number, so the arrows step it.
-pub(super) fn stepping(hub: &Settings) -> bool {
-    fields(hub)
-        .get(hub.selected)
-        .is_some_and(|f| matches!(f.value, Value::Number(_)))
-}
-/// Moves the number being edited by `delta`, never below zero; text that is
-/// not a number yet starts from the field's saved value.
-pub(super) fn step_number(hub: &mut Settings, delta: i64) {
-    let current = hub
-        .input
-        .text
-        .trim()
-        .parse::<i64>()
-        .ok()
-        .or_else(|| fields(hub).get(hub.selected).and_then(|f| f.value.as_i64()));
-    let next = current.unwrap_or_default().saturating_add(delta).max(0);
-    hub.input.set(next.to_string());
-    hub.typed = true;
-}
 pub(super) fn move_choice(hub: &mut Settings, down: bool) {
     let count = choices(hub).len();
     if count == 0 {
@@ -386,10 +366,6 @@ pub(super) fn describe(category: Category, field: &Field) -> Option<&'static str
         (Category::Writing, _, "comment_style") => {
             "The shape of a commit message: Conventional Commits, plain imperative, and so on. Press Ctrl-L to derive it from this checkout's history, even while editing."
         }
-        (Category::Writing, _, "subject_max") => {
-            "Longest subject line the commit writer may produce, in characters."
-        }
-        (Category::Writing, _, "body_lines") => "Most lines the commit body may run to.",
         (Category::Writing, _, "commit_prompt") => {
             "The instructions given to the model before the staged diff. Enter opens the whole text in the editor; v previews the assembled prompt."
         }

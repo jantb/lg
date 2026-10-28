@@ -73,11 +73,10 @@ const CONFLICT_HUNK_NUM_PREDICT: i32 = 1_024;
 /// Ends with a [`GenMsg::Done`] or [`GenMsg::Error`].
 pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
     let settings = crate::settings::load();
-    let limits = settings.clone();
     stream_prompt(
         build_commit_prompt(&diff, &settings),
         ChatTask::new("lg-commit", COMMIT_NUM_PREDICT, false),
-        move |raw| crate::settings::enforce_commit_limits(&finalize(raw), &limits),
+        |raw| crate::settings::subject_only(&finalize(raw)),
         tx,
     );
 }

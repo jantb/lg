@@ -113,22 +113,6 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         state.settings_derived_shape,
         inner,
     ));
-    lines.extend(field_lines(
-        state,
-        SettingsField::SubjectMax,
-        "Subject max",
-        &limit_display(&state.settings_subject_max_input),
-        false,
-        inner,
-    ));
-    lines.extend(field_lines(
-        state,
-        SettingsField::BodyLines,
-        "Body lines",
-        &limit_display(&state.settings_body_lines_input),
-        false,
-        inner,
-    ));
     lines.extend([
         Line::from(vec![
             Span::raw("  "),
@@ -359,8 +343,6 @@ fn hint_for(state: &AppState) -> &'static str {
             "Format the project's commit messages follow. Up/Down compares the shapes \
              derived from history; typing overrides them."
         }
-        SettingsField::SubjectMax => "Max characters in the commit subject line. 0 means no limit.",
-        SettingsField::BodyLines => "Max body lines after the blank line. 0 means no limit.",
         SettingsField::Save => "Enter writes these settings for this checkout.",
     }
 }
@@ -400,8 +382,6 @@ fn current_value(state: &AppState) -> &str {
         SettingsField::Model => &state.llm_model_input,
         SettingsField::PrLanguage => &state.settings_pr_language_input,
         SettingsField::CommentStyle => &state.settings_comment_style_input,
-        SettingsField::SubjectMax => &state.settings_subject_max_input,
-        SettingsField::BodyLines => &state.settings_body_lines_input,
         SettingsField::Save => "",
     }
 }
@@ -411,8 +391,6 @@ fn value_mut(state: &mut AppState) -> Option<&mut String> {
         SettingsField::Model => Some(&mut state.llm_model_input),
         SettingsField::PrLanguage => Some(&mut state.settings_pr_language_input),
         SettingsField::CommentStyle => Some(&mut state.settings_comment_style_input),
-        SettingsField::SubjectMax => Some(&mut state.settings_subject_max_input),
-        SettingsField::BodyLines => Some(&mut state.settings_body_lines_input),
         SettingsField::Save => None,
     }
 }
@@ -421,15 +399,6 @@ fn value_mut(state: &mut AppState) -> Option<&mut String> {
 fn style_display(value: &str) -> String {
     if value.trim().is_empty() {
         "(none)".to_string()
-    } else {
-        value.to_string()
-    }
-}
-
-/// Empty input reads as unlimited, which is clearer spelled out than as a blank.
-fn limit_display(value: &str) -> String {
-    if value.is_empty() || value == "0" {
-        "0 (unlimited)".to_string()
     } else {
         value.to_string()
     }
@@ -532,12 +501,6 @@ fn edit_key(state: &mut AppState, key: KeyEvent, ctrl: bool) {
                 state.settings_comment_style_input.push(c);
                 state.settings_derived_shape = false;
             }
-            SettingsField::SubjectMax if c.is_ascii_digit() => {
-                push_limit_digit(&mut state.settings_subject_max_input, c);
-            }
-            SettingsField::BodyLines if c.is_ascii_digit() => {
-                push_limit_digit(&mut state.settings_body_lines_input, c);
-            }
             _ => {}
         },
         _ => {}
@@ -556,65 +519,26 @@ fn save(state: &mut AppState) {
         provider: state.llm_provider,
         pr_language: state.settings_pr_language_input.clone(),
         comment_style: state.settings_comment_style_input.clone(),
-        commit_subject_max_chars: parse_limit(&state.settings_subject_max_input),
-        commit_body_max_lines: parse_limit(&state.settings_body_lines_input),
     });
 }
 
-/// A typed limit: empty means unlimited, and anything unparsable is `None`,
-/// which keeps the value already stored rather than silently resetting it.
-fn parse_limit(value: &str) -> Option<usize> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Some(0);
-    }
-    value.parse::<usize>().ok()
-}
-
-/// Up/Down inside a row walks its choice list, or nudges a numeric limit. A text
-/// row with no choices is left alone, so arrows never overwrite typed prose.
+/// Up/Down inside a row walks its choice list. A text row with no choices is
+/// left alone, so arrows never overwrite typed prose.
 fn step_value(state: &mut AppState, next: bool) {
     let choices = field_choices(state);
-    if !choices.is_empty() {
-        let idx = match choice_index(state) {
-            Some(idx) if next => (idx + 1) % choices.len(),
-            Some(idx) => (idx + choices.len() - 1) % choices.len(),
-            None => 0,
-        };
-        let picked = choices[idx].clone();
-        if let Some(value) = value_mut(state) {
-            *value = picked;
-        }
-        sync_selection_to_input(state);
+    if choices.is_empty() {
         return;
     }
-    if !matches!(
-        state.settings_field,
-        SettingsField::SubjectMax | SettingsField::BodyLines
-    ) {
-        return;
-    }
-    // Up raises a number and Down lowers it, matching how a spinner reads.
+    let idx = match choice_index(state) {
+        Some(idx) if next => (idx + 1) % choices.len(),
+        Some(idx) => (idx + choices.len() - 1) % choices.len(),
+        None => 0,
+    };
+    let picked = choices[idx].clone();
     if let Some(value) = value_mut(state) {
-        let current: usize = value.parse().unwrap_or(0);
-        let stepped = if next {
-            current.saturating_sub(1)
-        } else {
-            (current + 1).min(9999)
-        };
-        *value = stepped.to_string();
+        *value = picked;
     }
-}
-
-/// Limits are at most four digits; a longer number is never a real cap and only
-/// overflows the field.
-fn push_limit_digit(input: &mut String, digit: char) {
-    if input == "0" {
-        input.clear();
-    }
-    if input.len() < 4 {
-        input.push(digit);
-    }
+    sync_selection_to_input(state);
 }
 
 fn sync_selection_to_input(state: &mut AppState) {
@@ -647,8 +571,6 @@ mod tests {
     fn state_with_fields() -> AppState {
         let mut state = AppState::new();
         state.settings_pr_language_input = "English".to_string();
-        state.settings_subject_max_input = "72".to_string();
-        state.settings_body_lines_input = "8".to_string();
         state
     }
 
@@ -663,8 +585,6 @@ mod tests {
         for expected in [
             SettingsField::PrLanguage,
             SettingsField::CommentStyle,
-            SettingsField::SubjectMax,
-            SettingsField::BodyLines,
             SettingsField::Save,
             SettingsField::Model,
         ] {
@@ -721,7 +641,7 @@ mod tests {
             handle_key(&mut state, key(KeyCode::Char(c), false)).unwrap();
         }
         assert_eq!(state.settings_pr_language_input, "Norsk");
-        assert_eq!(state.settings_subject_max_input, "72");
+        assert_eq!(state.settings_comment_style_input, "");
     }
 
     #[test]
@@ -744,44 +664,6 @@ mod tests {
         focus(&mut state, SettingsField::PrLanguage);
         handle_key(&mut state, key(KeyCode::Esc, false)).unwrap();
         assert_eq!(state.modal, Modal::None);
-    }
-
-    #[test]
-    fn limit_fields_accept_digits_only() {
-        let mut state = state_with_fields();
-        focus(&mut state, SettingsField::SubjectMax);
-        handle_key(&mut state, key(KeyCode::Enter, false)).unwrap();
-        state.settings_subject_max_input.clear();
-        for c in "5a0".chars() {
-            handle_key(&mut state, key(KeyCode::Char(c), false)).unwrap();
-        }
-        assert_eq!(state.settings_subject_max_input, "50");
-    }
-
-    #[test]
-    fn up_down_nudges_a_numeric_limit_while_editing() {
-        let mut state = state_with_fields();
-        focus(&mut state, SettingsField::BodyLines);
-        handle_key(&mut state, key(KeyCode::Enter, false)).unwrap();
-        handle_key(&mut state, key(KeyCode::Up, false)).unwrap();
-        assert_eq!(state.settings_body_lines_input, "9");
-        handle_key(&mut state, key(KeyCode::Down, false)).unwrap();
-        handle_key(&mut state, key(KeyCode::Down, false)).unwrap();
-        assert_eq!(state.settings_body_lines_input, "7");
-    }
-
-    #[test]
-    fn a_leading_zero_is_replaced_by_the_next_digit() {
-        let mut input = "0".to_string();
-        push_limit_digit(&mut input, '4');
-        assert_eq!(input, "4");
-    }
-
-    #[test]
-    fn limit_digits_are_capped_in_length() {
-        let mut input = "1234".to_string();
-        push_limit_digit(&mut input, '5');
-        assert_eq!(input, "1234");
     }
 
     #[test]
@@ -935,12 +817,5 @@ mod tests {
         assert_eq!(state.settings_field, SettingsField::PrLanguage);
         handle_key(&mut state, key(KeyCode::Char('s'), true)).unwrap();
         assert!(state.pending_action.is_none());
-    }
-
-    #[test]
-    fn unlimited_limits_read_as_unlimited() {
-        assert_eq!(limit_display("0"), "0 (unlimited)");
-        assert_eq!(limit_display(""), "0 (unlimited)");
-        assert_eq!(limit_display("72"), "72");
     }
 }

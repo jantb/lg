@@ -189,18 +189,14 @@ pub enum SettingsField {
     Model,
     PrLanguage,
     CommentStyle,
-    SubjectMax,
-    BodyLines,
     Save,
 }
 
 impl SettingsField {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 4] = [
         Self::Model,
         Self::PrLanguage,
         Self::CommentStyle,
-        Self::SubjectMax,
-        Self::BodyLines,
         Self::Save,
     ];
 
@@ -333,9 +329,6 @@ pub enum PendingAction {
         provider: crate::llm::LlmProvider,
         pr_language: String,
         comment_style: String,
-        /// `None` keeps the limit already saved; `Some(0)` is unlimited.
-        commit_subject_max_chars: Option<usize>,
-        commit_body_max_lines: Option<usize>,
     },
     ClearSettings,
     EditCommitPrompt,

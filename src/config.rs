@@ -24,13 +24,11 @@ Rules:
 - First line format: `type(scope): summary` — scope is optional.
 - type is one of: feat, fix, refactor, perf, docs, test, chore, build, ci, style.
 - First line uses imperative mood, lowercase summary, and no trailing period.
-- Keep the first line complete; drop detail only where a stated length limit requires it.
+- Keep it concise, but complete: never cut the summary short to fit a length.
 - Describe the behavior change, not the files touched. Be specific.
 - Prefer concrete user-visible outcomes over vague words like update, improve, or change.
 - Use the change summary first; use the diff excerpt only for extra detail.
-- For non-trivial changes, include a short body after a blank line.
-- Detail lines should explain the important behavior, condition, control-flow path, or test coverage.
-- Prefer one line only when the staged diff is tiny and obvious.
+- Write exactly one line: no body and no blank line after it.
 - Do not use emoji.
 - Output ONLY the commit message. No prose, no quotes, no markdown, no code fences.
 
@@ -41,9 +39,6 @@ Examples:
 - perf(llm): reuse shared http client across requests
 - feat(tui): show staged and unstaged counts in status panel
 - feat(flow): retry release validation after conflict resolution
-
-  Add a follow-up validation path once resolved files are staged.
-  Cover the new continuation branch with a release-flow test.
 
 Staged changes:
 

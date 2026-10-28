@@ -588,32 +588,6 @@ mod tests {
     }
 
     #[test]
-    fn arrows_step_a_number_while_editing_it() {
-        let mut state = writing_hub();
-        select(&mut state, "/writing/body_lines");
-        press(&mut state, KeyCode::Enter);
-        press(&mut state, KeyCode::Up);
-        press(&mut state, KeyCode::Up);
-        press(&mut state, KeyCode::Down);
-        press(&mut state, KeyCode::PageUp);
-        press(&mut state, KeyCode::Enter);
-        assert_eq!(state.settings_hub.draft["writing"]["body_lines"], json!(19));
-        assert!(!state.settings_hub.editing);
-    }
-
-    #[test]
-    fn a_number_never_steps_below_zero() {
-        let mut state = writing_hub();
-        select(&mut state, "/writing/subject_max");
-        press(&mut state, KeyCode::Enter);
-        for _ in 0..10 {
-            press(&mut state, KeyCode::PageDown);
-        }
-        press(&mut state, KeyCode::Enter);
-        assert_eq!(state.settings_hub.draft["writing"]["subject_max"], json!(0));
-    }
-
-    #[test]
     fn language_is_picked_from_the_supported_languages() {
         let mut state = writing_hub();
         select(&mut state, "/writing/language");

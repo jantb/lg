@@ -33,10 +33,11 @@ pub use keys::{handle_key, handle_paste};
 /// The wheel over the step list scrolls it, over the diff moves its cursor
 /// (or on the final step scrolls the whole changeset), and over the
 /// commentary scrolls it (or the notes, in the summary). Only a click on a
-/// step in the list goes to it, which is what has the model read it; the divider beside the list drags to resize it, the
-/// scope badge switches scope, and the reset button under the list resets the
-/// review on a second click. None of it marks a step reviewed: that stays with
-/// the keys that say so.
+/// step in the list goes to it, which is what has the model read it. The
+/// divider beside the list drags to resize it, the scope badge switches
+/// scope, and the reset button under the list resets the review on a second
+/// click. None of it marks a step reviewed: that stays with the keys that
+/// say so.
 pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &MouseEvent) {
     use crate::panel::pointer;
     let Some((list, side)) = state

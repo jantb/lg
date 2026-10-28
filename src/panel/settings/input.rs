@@ -112,15 +112,6 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 move_choice(hub, key.code == KeyCode::Down);
                 return Ok(());
             }
-            KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown if stepping(hub) => {
-                let size = match key.code {
-                    KeyCode::PageUp | KeyCode::PageDown => 10,
-                    _ if key.modifiers.contains(KeyModifiers::SHIFT) => 10,
-                    _ => 1,
-                };
-                let up = matches!(key.code, KeyCode::Up | KeyCode::PageUp);
-                step_number(hub, if up { size } else { -size });
-            }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 hub.input.insert_char('\n');
             }

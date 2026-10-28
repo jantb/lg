@@ -383,8 +383,6 @@ pub(crate) fn load_repo_settings_into_state(state: &mut AppState) {
     state.settings_review_style_is_custom = settings.review_style_is_custom();
     state.settings_pr_language_input = settings.pr_language;
     state.settings_comment_style_input = settings.comment_style;
-    state.settings_subject_max_input = settings.commit_subject_max_chars.to_string();
-    state.settings_body_lines_input = settings.commit_body_max_lines.to_string();
     state.settings_dir = crate::settings::settings_dir_display();
     state.settings_derived_language = false;
     state.settings_derived_shape = false;

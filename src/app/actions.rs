@@ -18,8 +18,6 @@ fn save_settings(
     provider: crate::llm::LlmProvider,
     pr_language: &str,
     comment_style: &str,
-    commit_subject_max_chars: Option<usize>,
-    commit_body_max_lines: Option<usize>,
 ) -> Result<()> {
     // With claude answering, the field shows the Claude model, which is
     // chosen in Settings; saving it here would overwrite the local model.
@@ -33,9 +31,6 @@ fn save_settings(
     crate::settings::save(&crate::settings::RepoSettings {
         pr_language: pr_language.trim().to_string(),
         comment_style: comment_style.trim().to_string(),
-        commit_subject_max_chars: commit_subject_max_chars
-            .unwrap_or(current.commit_subject_max_chars),
-        commit_body_max_lines: commit_body_max_lines.unwrap_or(current.commit_body_max_lines),
         commit_prompt: current.commit_prompt,
         review_style: current.review_style,
     })
@@ -204,17 +199,8 @@ impl App {
                 provider,
                 pr_language,
                 comment_style,
-                commit_subject_max_chars,
-                commit_body_max_lines,
             } => self.settle(
-                save_settings(
-                    &model,
-                    provider,
-                    &pr_language,
-                    &comment_style,
-                    commit_subject_max_chars,
-                    commit_body_max_lines,
-                ),
+                save_settings(&model, provider, &pr_language, &comment_style),
                 "settings save failed",
                 |app, ()| {
                     app.reload_settings_state();

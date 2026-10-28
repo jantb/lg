@@ -170,9 +170,6 @@ impl LlmPhase {
 /// much the server has to read, not for comparing servers.
 const BYTES_PER_TOKEN: f64 = 3.5;
 
-/// How long reading a prompt of `prompt_bytes` should take at `tps` tokens
-/// per second, the rate the server last read at. Both halves are estimates,
-/// so the answer is too; it is for knowing whether to wait or get coffee.
 /// How long reading a prompt of `prompt_bytes` should take, at the speed the
 /// server read the last measured one; `None` before any was measured.
 pub fn expected_prefill_for(prompt_bytes: usize) -> Option<Duration> {
@@ -180,6 +177,9 @@ pub fn expected_prefill_for(prompt_bytes: usize) -> Option<Duration> {
     expected_prefill(prompt_bytes, tps)
 }
 
+/// How long reading a prompt of `prompt_bytes` should take at `tps` tokens
+/// per second, the rate the server last read at. Both halves are estimates,
+/// so the answer is too; it is for knowing whether to wait or get coffee.
 fn expected_prefill(prompt_bytes: usize, tps: f64) -> Option<Duration> {
     (prompt_bytes > 0 && tps > 0.0)
         .then(|| Duration::from_secs_f64(prompt_bytes as f64 / BYTES_PER_TOKEN / tps))
