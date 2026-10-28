@@ -200,6 +200,7 @@ pub fn commit_prompt_prefix(settings: &RepoSettings) -> String {
     if !style.is_empty() {
         prompt.push_str("\n\nMessage shape (follow the format this project already uses):\n- ");
         prompt.push_str(&style);
+        prompt.push_str("\n- Take only its first-line format: the message is one line, whatever the shape says about a body.");
     }
     prompt.push_str("\n\nLanguage:\n");
     prompt.push_str(&language_instruction(settings));
@@ -208,15 +209,16 @@ pub fn commit_prompt_prefix(settings: &RepoSettings) -> String {
     prompt
 }
 
-/// The subject of a generated commit message. Models add a body when told not
-/// to often enough that the prompt alone does not keep it to one line.
+/// A generated commit message folded onto one line. Models add a body when
+/// told not to often enough that the prompt alone does not keep it to one
+/// line, and dropping that body loses what was just shown being written.
 pub fn subject_only(message: &str) -> String {
     message
         .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or_default()
-        .trim()
-        .to_string()
+        .map(|line| line.trim().trim_start_matches(['-', '*']).trim())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Instruction appended to prompts whose output the user reads, so generated PR
@@ -489,8 +491,11 @@ mod tests {
     }
 
     #[test]
-    fn a_generated_body_is_dropped() {
-        assert_eq!(subject_only("fix: thing\n\nfirst\nsecond\n"), "fix: thing");
+    fn a_generated_body_is_kept_on_the_one_line() {
+        assert_eq!(
+            subject_only("fix: thing\n\n- first\n- second\n"),
+            "fix: thing; first; second"
+        );
     }
 
     #[test]

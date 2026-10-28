@@ -301,11 +301,11 @@ pub fn build_conventions_prompt(history: &str) -> String {
         "Read these recent commit messages from one repository and report the \
          conventions most of them follow.\n\n\
          Judge by what the majority of the messages do, not by one outlier.\n\
-         For the shape, describe the format only \u{2014} subject prefix or tag convention \
-         (for example Conventional Commits or a ticket key) or the absence of one, \
-         capitalisation and trailing punctuation of the subject, grammatical mood \
-         (imperative or past tense), and whether a body appears and whether it is \
-         bullets or prose. Do not describe the topics the commits are about.\n\n\
+         For the shape, describe the subject line's format only \u{2014} prefix or tag \
+         convention (for example Conventional Commits or a ticket key) or the absence \
+         of one, capitalisation and trailing punctuation, and grammatical mood \
+         (imperative or past tense). Leave bodies out: the messages written from it \
+         are one line. Do not describe the topics the commits are about.\n\n\
          Answer with exactly four lines and nothing else:\n\
          language: <the English name of the natural language the prose is written in>\n\
          shape: <one sentence, at most 25 words, describing the format most messages use>\n\
