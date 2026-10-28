@@ -1,6 +1,8 @@
 //! Syntax colouring for a line of code, shared by the diff, the source view
 //! and the code blocks of rendered Markdown.
 
+use std::borrow::Cow;
+
 use ratatui::{
     style::{Color, Modifier, Style},
     text::Span,
@@ -13,6 +15,7 @@ use crate::language::Language;
 #[derive(Clone, Copy)]
 enum Keywords {
     CSharp,
+    Go,
     Java,
     Kotlin,
     Rust,
@@ -24,6 +27,7 @@ impl Keywords {
             Language::Rust => Some(Self::Rust),
             Language::Kotlin => Some(Self::Kotlin),
             Language::CSharp => Some(Self::CSharp),
+            Language::Go => Some(Self::Go),
             Language::Java => Some(Self::Java),
             Language::JavaScript | Language::TypeScript | Language::Markdown | Language::Json => {
                 None
@@ -32,6 +36,11 @@ impl Keywords {
     }
 }
 
+/// Columns between tab stops when a tab is drawn. A terminal cell holds no
+/// tab, so tabs become spaces before a line is coloured; left in, they draw
+/// zero wide while the layout counts each as one column.
+const TAB_WIDTH: usize = 4;
+
 /// A line of a file in `language`: Markdown gets its own line-oriented pass,
 /// everything else goes through [`highlight_code`].
 pub(crate) fn highlight_line(
@@ -39,11 +48,32 @@ pub(crate) fn highlight_line(
     language: Option<Language>,
     default_style: Style,
 ) -> Vec<Span<'static>> {
+    let code = expand_tabs(code);
     match language {
-        Some(Language::Markdown) => highlight_markdown(code, default_style),
-        Some(Language::Json) => highlight_json(code, default_style),
-        _ => highlight_code(code, language, default_style),
+        Some(Language::Markdown) => highlight_markdown(&code, default_style),
+        Some(Language::Json) => highlight_json(&code, default_style),
+        _ => highlight_code(&code, language, default_style),
     }
+}
+
+/// `code` with each tab replaced by the spaces up to the next tab stop.
+fn expand_tabs(code: &str) -> Cow<'_, str> {
+    if !code.contains('\t') {
+        return Cow::Borrowed(code);
+    }
+    let mut out = String::with_capacity(code.len() + TAB_WIDTH);
+    let mut column = 0usize;
+    for ch in code.chars() {
+        if ch == '\t' {
+            let pad = TAB_WIDTH - column % TAB_WIDTH;
+            out.extend(std::iter::repeat_n(' ', pad));
+            column += pad;
+        } else {
+            out.push(ch);
+            column += 1;
+        }
+    }
+    Cow::Owned(out)
 }
 
 /// A line of JSON: keys apart from string values, and numbers and the three
@@ -98,6 +128,7 @@ pub(crate) fn highlight_code(
     language: Option<Language>,
     default_style: Style,
 ) -> Vec<Span<'static>> {
+    let code = &*expand_tabs(code);
     let Some(syntax) = language.and_then(Keywords::of) else {
         return vec![Span::styled(code.to_string(), default_style)];
     };
@@ -114,9 +145,17 @@ pub(crate) fn highlight_code(
             ));
             return spans;
         }
-        if ch == '"' {
+        let raw_string = ch == '`' && matches!(syntax, Keywords::Go);
+        if ch == '"' || raw_string {
             push_plain_code(&mut spans, code, plain_start, idx, default_style);
-            let end = string_end(code, idx + ch.len_utf8());
+            let end = if raw_string {
+                // A Go raw string has no escapes and ends at the next backtick.
+                code[idx + 1..]
+                    .find('`')
+                    .map_or(code.len(), |close| idx + close + 2)
+            } else {
+                string_end(code, idx + ch.len_utf8())
+            };
             spans.push(Span::styled(
                 code[idx..end].to_string(),
                 color_style(Color::LightYellow, default_style),
@@ -521,6 +560,47 @@ fn keyword_style(word: &str, syntax: Keywords, base: Style) -> Option<Style> {
                 | "when"
                 | "while"
                 | "yield"
+        ),
+        Keywords::Go => matches!(
+            word,
+            "any"
+                | "bool"
+                | "break"
+                | "byte"
+                | "case"
+                | "chan"
+                | "const"
+                | "continue"
+                | "default"
+                | "defer"
+                | "else"
+                | "error"
+                | "fallthrough"
+                | "false"
+                | "float64"
+                | "for"
+                | "func"
+                | "go"
+                | "goto"
+                | "if"
+                | "import"
+                | "int"
+                | "int64"
+                | "interface"
+                | "iota"
+                | "map"
+                | "nil"
+                | "package"
+                | "range"
+                | "return"
+                | "rune"
+                | "select"
+                | "string"
+                | "struct"
+                | "switch"
+                | "true"
+                | "type"
+                | "var"
         ),
         Keywords::Kotlin => matches!(
             word,

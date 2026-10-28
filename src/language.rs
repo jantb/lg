@@ -12,18 +12,20 @@ pub enum Language {
     JavaScript,
     TypeScript,
     CSharp,
+    Go,
     Markdown,
     Json,
 }
 
 impl Language {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Rust,
         Self::Kotlin,
         Self::Java,
         Self::JavaScript,
         Self::TypeScript,
         Self::CSharp,
+        Self::Go,
         Self::Markdown,
         Self::Json,
     ];
@@ -38,6 +40,7 @@ impl Language {
             "js" | "jsx" | "mjs" | "cjs" => Self::JavaScript,
             "ts" | "tsx" | "mts" | "cts" => Self::TypeScript,
             "cs" | "csx" => Self::CSharp,
+            "go" => Self::Go,
             "md" | "markdown" => Self::Markdown,
             "json" => Self::Json,
             _ => return None,
@@ -54,6 +57,7 @@ impl Language {
             "js" | "jsx" | "mjs" | "cjs" | "javascript" => Self::JavaScript,
             "ts" | "tsx" | "mts" | "cts" | "typescript" => Self::TypeScript,
             "cs" | "csx" | "csharp" | "c#" => Self::CSharp,
+            "go" | "golang" => Self::Go,
             "md" | "markdown" => Self::Markdown,
             "json" => Self::Json,
             _ => return None,
@@ -68,6 +72,7 @@ impl Language {
             Self::JavaScript => "JavaScript",
             Self::TypeScript => "TypeScript",
             Self::CSharp => "C#",
+            Self::Go => "Go",
             Self::Markdown => "Markdown",
             Self::Json => "JSON",
         }
@@ -81,7 +86,7 @@ pub fn is_source_path(path: &str) -> bool {
         Path::new(path)
             .extension()
             .and_then(|extension| extension.to_str()),
-        Some("kt" | "kts" | "java" | "md" | "rs" | "cs" | "csx")
+        Some("kt" | "kts" | "java" | "md" | "rs" | "cs" | "csx" | "go")
     )
 }
 
@@ -110,6 +115,7 @@ mod tests {
             Language::from_path("Api/Program.cs"),
             Some(Language::CSharp)
         );
+        assert_eq!(Language::from_path("cmd/main.go"), Some(Language::Go));
         assert_eq!(Language::from_path("README.md"), Some(Language::Markdown));
         assert_eq!(Language::from_path("Makefile"), None);
         assert_eq!(Language::from_path("data.json"), Some(Language::Json));
