@@ -209,37 +209,18 @@ pub fn commit_prompt_prefix(settings: &RepoSettings) -> String {
     prompt
 }
 
-/// A generated commit message folded onto one line. Models add a body when
-/// told not to often enough that the prompt alone does not keep it to one
-/// line, and dropping that body loses what was just shown being written.
-/// Each paragraph and bullet of the body becomes one `; `-separated piece, so
-/// prose wrapped across lines still reads as sentences.
-pub fn subject_only(message: &str) -> String {
-    let mut lines = message
-        .lines()
-        .map(str::trim)
-        .skip_while(|line| line.is_empty());
-    let mut pieces: Vec<String> = lines.next().map(str::to_string).into_iter().collect();
-    let mut open = false;
-    for line in lines {
-        let bullet = line.strip_prefix("- ").or_else(|| line.strip_prefix("* "));
-        match (bullet, pieces.last_mut()) {
-            _ if line.is_empty() => open = false,
-            (Some(item), _) => {
-                pieces.push(item.trim().to_string());
-                open = true;
-            }
-            (None, Some(last)) if open => {
-                last.push(' ');
-                last.push_str(line);
-            }
-            (None, _) => {
-                pieces.push(line.to_string());
-                open = true;
-            }
-        }
+/// A generated commit message with its subject alone on the first line and
+/// any body the model added kept below it, after one blank line. Models add a
+/// body when told not to often enough that the prompt alone does not keep it
+/// to one line, and dropping it loses what was just shown being written.
+pub fn subject_first(message: &str) -> String {
+    let mut lines = message.lines().skip_while(|line| line.trim().is_empty());
+    let subject = lines.next().unwrap_or_default().trim();
+    let body = lines.collect::<Vec<_>>().join("\n");
+    match body.trim() {
+        "" => subject.to_string(),
+        _ => format!("{subject}\n\n{}", body.trim_matches('\n').trim_end()),
     }
-    pieces.join("; ")
 }
 
 /// Instruction appended to prompts whose output the user reads, so generated PR
@@ -508,28 +489,21 @@ mod tests {
     #[test]
     fn a_long_subject_is_kept_whole() {
         let long = format!("feat: {}", "x ".repeat(100).trim_end());
-        assert_eq!(subject_only(&long), long);
+        assert_eq!(subject_first(&long), long);
     }
 
     #[test]
-    fn a_generated_body_is_kept_on_the_one_line() {
+    fn a_generated_body_stays_below_the_subject_after_a_blank_line() {
         assert_eq!(
-            subject_only("fix: thing\n\n- first\n- second\n"),
-            "fix: thing; first; second"
+            subject_first("fix: thing\n- first\n- second\n"),
+            "fix: thing\n\n- first\n- second"
         );
     }
 
     #[test]
-    fn a_wrapped_prose_body_keeps_its_sentences_whole() {
-        assert_eq!(
-            subject_only("fix: thing\n\nThe first sentence\nwraps here.\n\nA second one.\n"),
-            "fix: thing; The first sentence wraps here.; A second one."
-        );
-    }
-
-    #[test]
-    fn a_subject_that_starts_with_a_marker_keeps_it() {
-        assert_eq!(subject_only("* fix: thing\n* first"), "* fix: thing; first");
+    fn a_body_keeps_its_wrapping_and_paragraphs() {
+        let message = "fix: thing\n\nThe first sentence\nwraps here.\n\nA second one.";
+        assert_eq!(subject_first(message), message);
     }
 
     #[test]
@@ -542,8 +516,8 @@ mod tests {
     }
 
     #[test]
-    fn subject_only_message_stays_single_line() {
-        assert_eq!(subject_only("fix: thing\n\n\n"), "fix: thing");
+    fn a_subject_with_no_body_stays_single_line() {
+        assert_eq!(subject_first("fix: thing\n\n\n"), "fix: thing");
     }
 
     #[test]

@@ -76,7 +76,7 @@ pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
     stream_prompt(
         build_commit_prompt(&diff, &settings),
         ChatTask::new("lg-commit", COMMIT_NUM_PREDICT, false),
-        |raw| crate::settings::subject_only(&finalize(raw)),
+        |raw| crate::settings::subject_first(&finalize(raw)),
         tx,
     );
 }
