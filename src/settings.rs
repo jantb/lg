@@ -212,13 +212,34 @@ pub fn commit_prompt_prefix(settings: &RepoSettings) -> String {
 /// A generated commit message folded onto one line. Models add a body when
 /// told not to often enough that the prompt alone does not keep it to one
 /// line, and dropping that body loses what was just shown being written.
+/// Each paragraph and bullet of the body becomes one `; `-separated piece, so
+/// prose wrapped across lines still reads as sentences.
 pub fn subject_only(message: &str) -> String {
-    message
+    let mut lines = message
         .lines()
-        .map(|line| line.trim().trim_start_matches(['-', '*']).trim())
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("; ")
+        .map(str::trim)
+        .skip_while(|line| line.is_empty());
+    let mut pieces: Vec<String> = lines.next().map(str::to_string).into_iter().collect();
+    let mut open = false;
+    for line in lines {
+        let bullet = line.strip_prefix("- ").or_else(|| line.strip_prefix("* "));
+        match (bullet, pieces.last_mut()) {
+            _ if line.is_empty() => open = false,
+            (Some(item), _) => {
+                pieces.push(item.trim().to_string());
+                open = true;
+            }
+            (None, Some(last)) if open => {
+                last.push(' ');
+                last.push_str(line);
+            }
+            (None, _) => {
+                pieces.push(line.to_string());
+                open = true;
+            }
+        }
+    }
+    pieces.join("; ")
 }
 
 /// Instruction appended to prompts whose output the user reads, so generated PR
@@ -496,6 +517,28 @@ mod tests {
             subject_only("fix: thing\n\n- first\n- second\n"),
             "fix: thing; first; second"
         );
+    }
+
+    #[test]
+    fn a_wrapped_prose_body_keeps_its_sentences_whole() {
+        assert_eq!(
+            subject_only("fix: thing\n\nThe first sentence\nwraps here.\n\nA second one.\n"),
+            "fix: thing; The first sentence wraps here.; A second one."
+        );
+    }
+
+    #[test]
+    fn a_subject_that_starts_with_a_marker_keeps_it() {
+        assert_eq!(subject_only("* fix: thing\n* first"), "* fix: thing; first");
+    }
+
+    #[test]
+    fn the_commit_prompt_keeps_a_shape_with_a_body_to_one_line() {
+        let settings = RepoSettings {
+            comment_style: "Conventional Commits with optional prose bodies".to_string(),
+            ..RepoSettings::default()
+        };
+        assert!(commit_prompt_prefix(&settings).contains("the message is one line"));
     }
 
     #[test]
