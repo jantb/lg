@@ -631,9 +631,20 @@ fn serialized(
 }
 
 fn read_patch(path: &Path) -> Result<serde_json::Value> {
-    let text = std::fs::read_to_string(path)?;
-    let value: toml::Value = toml::from_str(&text).context("invalid TOML")?;
-    Ok(serde_json::to_value(value)?)
+    parse_patch(&std::fs::read_to_string(path)?)
+}
+/// Settings lg once had and has dropped. A file that still sets them reads as
+/// if it did not, and the next save writes it back without them.
+const RETIRED: [(&str, &str); 2] = [("writing", "subject_max"), ("writing", "body_lines")];
+fn parse_patch(text: &str) -> Result<serde_json::Value> {
+    let value: toml::Value = toml::from_str(text).context("invalid TOML")?;
+    let mut value = serde_json::to_value(value)?;
+    for (category, key) in RETIRED {
+        if let Some(table) = value.get_mut(category).and_then(|v| v.as_object_mut()) {
+            table.remove(key);
+        }
+    }
+    Ok(value)
 }
 pub fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     use std::io::Write;
@@ -1136,9 +1147,20 @@ mod word_setting_tests {
     use super::*;
 
     fn parse(toml_text: &str) -> std::result::Result<Preferences, String> {
-        let value: toml::Value = toml::from_str(toml_text).expect("valid TOML");
-        let json = serde_json::to_value(value).expect("TOML is JSON");
+        let json = parse_patch(toml_text).expect("valid TOML");
         serde_json::from_value::<Preferences>(json).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn a_file_that_still_sets_the_retired_commit_limits_reads_and_saves_without_them() {
+        let text =
+            "version = 1\n[writing]\nlanguage = \"Norwegian\"\nsubject_max = 72\nbody_lines = 8\n";
+        let prefs = parse(text).expect("the retired limits are not an error");
+        assert_eq!(prefs.writing.language, "Norwegian");
+        let rewritten = toml::to_string_pretty(&parse_patch(text).unwrap()).unwrap();
+        assert!(rewritten.contains("Norwegian"), "{rewritten}");
+        assert!(!rewritten.contains("subject_max"), "{rewritten}");
+        assert!(!rewritten.contains("body_lines"), "{rewritten}");
     }
 
     #[test]
