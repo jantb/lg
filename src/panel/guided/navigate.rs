@@ -1,7 +1,11 @@
 //! Moving through the walk: from step to step, finding to finding, and line
 //! to line.
 
-use super::*;
+use crate::git::guided::GuidedFile;
+use crate::state::{AppState, Modal};
+
+use super::notes::open_summary;
+use super::{Guided, Mode, OVERVIEW, OpenFinding, Source};
 
 /// Move to step `index`, marking the one being left as reviewed when moving
 /// forward past it.

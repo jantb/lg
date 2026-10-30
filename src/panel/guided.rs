@@ -12,12 +12,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Receiver;
 
-use crate::git::guided::{GuidedFile, GuidedNote, GuidedProgress, Side, TickedFinding, WalkMode};
+use crate::git::guided::{GuidedFile, GuidedNote, GuidedProgress, WalkMode};
 use crate::panel::text_input::TextInput;
-use crate::state::{
-    AppState, DiffViewMode, GenMsg, Modal, PendingAction, Poll, poll_once, stopped_unexpectedly,
-};
-use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use crate::state::{DiffViewMode, GenMsg};
 
 mod assist;
 mod chat;
@@ -36,15 +33,6 @@ mod poll;
 mod progress;
 mod tree;
 mod work;
-
-use assist::*;
-use chat::*;
-use context::*;
-use found::*;
-use load::*;
-use navigate::*;
-use notes::*;
-use progress::*;
 
 pub use chat::{chat_has_keyboard, chat_on_screen, fit_chat};
 pub use draw::render;

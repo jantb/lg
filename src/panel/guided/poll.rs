@@ -1,7 +1,17 @@
 //! Each tick: the change being read, the model's answers streaming in, the
 //! questions out with Claude, and the reads to ask for next.
 
-use super::*;
+use std::collections::HashSet;
+
+use crate::state::{AppState, GenMsg, Poll, poll_once, stopped_unexpectedly};
+
+use super::chat::{note_file_change_for_chat, tell_chat_what_is_read};
+use super::context::{file_context, final_context, step_context, whole_diff};
+use super::load::{apply_loaded, reload};
+use super::{
+    Ask, CONCURRENT_CHECKS, CONCURRENT_CLAUDE, CONCURRENT_LOCAL, Check, CheckAnswer, Commentary,
+    Guided, Mode, OVERVIEW, OVERVIEW_KEY, Target, findings, work,
+};
 
 /// Take in whatever the background work produced since the last frame, and
 /// start the commentary the reviewer is about to want.

@@ -1,6 +1,10 @@
 //! What the guided review tests share: walks set up in a known state, and
 //! keys, clicks and the screen to drive and read them.
 
+use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+
+use crate::state::{AppState, Modal};
+
 mod file_findings;
 mod final_review;
 mod issues;

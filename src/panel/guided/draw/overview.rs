@@ -1,6 +1,19 @@
 //! The overview step: what the change is, and the plan for walking it.
 
-use super::*;
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Paragraph, Wrap};
+
+use crate::git::guided::WalkMode;
+use crate::panel::guided::Guided;
+use crate::panel::guided::plan::{Plan, Risk};
+use crate::state::{AppState, SPINNER_FRAMES};
+
+use super::commentary::{commentary_lines, exchange_lines};
+use super::list::risk_color;
+use super::{KEY, LABEL, progress_text, wrapped_rows};
 
 pub(super) fn draw_overview(state: &AppState, guided: &Guided, area: Rect, frame: &mut Frame) {
     let mut lines = vec![Line::from(Span::styled(

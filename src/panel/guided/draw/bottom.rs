@@ -1,6 +1,16 @@
 //! The line under the walk, and the summary of every note.
 
-use super::*;
+use ratatui::Frame;
+use ratatui::layout::{Position, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Paragraph, Wrap};
+
+use crate::panel::guided::{Guided, Mode, Source};
+use crate::panel::keys;
+use crate::ui;
+
+use super::{KEY, LABEL, NOTE, wrapped_rows};
 
 /// Every note, file by file, and for a pull request the review they become.
 pub(super) fn draw_summary(

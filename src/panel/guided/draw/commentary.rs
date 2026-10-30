@@ -1,6 +1,18 @@
 //! The model's read of a file, and the questions asked about it.
 
-use super::*;
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
+
+use crate::git::guided::GuidedFile;
+use crate::panel::guided::findings::Finding;
+use crate::panel::guided::{Commentary, Guided, findings};
+use crate::state::{AppState, SPINNER_FRAMES};
+
+use super::diff::finding_lines;
+use super::{KEY, LABEL, verdict_look};
 
 pub(super) fn draw_commentary(
     state: &AppState,

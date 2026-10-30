@@ -1,7 +1,22 @@
 //! How the side is shared on a file's step: the diff above, the model's read
 //! below, and the chat beside the read while one runs.
 
-use super::*;
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
+
+use crate::git::guided::{GuidedFile, TickedFinding};
+use crate::panel::guided::{Guided, Mode};
+use crate::state::{AppState, DiffViewMode};
+use crate::ui;
+
+use super::LABEL;
+use super::commentary::draw_commentary;
+use super::diff::diff_lines;
+use super::final_review::{draw_final, final_areas, final_commentary_lines, final_diff_lines};
+use super::overview::draw_overview;
 
 /// The step on screen: its file's diff above, the model's read of it below.
 pub(super) fn draw_step(

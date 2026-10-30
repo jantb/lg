@@ -1,7 +1,16 @@
 //! The mouse in a guided review: the step list, the panes beside it, the
 //! chat, and the badges and buttons around them.
 
-use super::*;
+use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+use crate::state::AppState;
+
+use super::chat::chat_session;
+use super::found::toggle_ticks;
+use super::load::switch_scope;
+use super::navigate::{go_to, go_to_finding, move_cursor, read_concern, scroll_final, switch_walk};
+use super::progress::reset_review;
+use super::{Mode, draw, keys};
 
 /// The wheel over the step list scrolls it, over the diff moves its cursor
 /// (or on the final step scrolls the whole changeset), and over the

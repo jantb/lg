@@ -1,6 +1,9 @@
 //! Marking files reviewed, and starting the review over.
 
-use super::*;
+use crate::git::guided::{GuidedFile, GuidedProgress};
+use crate::state::AppState;
+
+use super::{Mode, OVERVIEW};
 
 /// Mark every file the plan says is safe to skim as reviewed.
 pub(super) fn mark_skims_reviewed(state: &mut AppState) {

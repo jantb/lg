@@ -1,5 +1,9 @@
 //! The review chat beside the walk.
 
+use crate::git::guided::TickedFinding;
+use crate::state::PendingAction;
+use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+
 use super::*;
 
 #[test]

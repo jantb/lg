@@ -1,7 +1,12 @@
 //! What the reads found, in each file and across the whole change, which of
 //! it is still open, and ticking it off.
 
-use super::*;
+use std::collections::HashSet;
+
+use crate::git::guided::{GuidedFile, TickedFinding};
+use crate::state::{AppState, DiffViewMode};
+
+use super::{Guided, OpenFinding, Verdict, findings};
 
 impl Guided {
     /// Every finding not yet ticked off in what has been read, the final

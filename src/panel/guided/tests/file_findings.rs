@@ -1,5 +1,10 @@
 //! A file's findings: under their lines, walked by the arrows, ticked off.
 
+use crate::git::guided::TickedFinding;
+use crate::state::AppState;
+
+use crate::panel::guided::context::file_context;
+
 use super::*;
 
 #[test]

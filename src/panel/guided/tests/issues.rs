@@ -1,5 +1,8 @@
 //! The issues walk over every open finding.
 
+use crate::state::AppState;
+use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+
 use super::*;
 
 /// Reads of three files and the final review, each with findings of

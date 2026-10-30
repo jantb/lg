@@ -2,26 +2,24 @@
 //! its notes, and the model's read of it beneath; on the final step, the whole
 //! changeset with the model's read of it as one change.
 
-use ratatui::{
-    Frame,
-    layout::{Constraint, Position, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{List, ListItem, Paragraph, Wrap},
-};
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
 
-use super::findings::{self, Finding, Severity};
-use super::layout::{self, Row};
-use super::plan::{Plan, Risk};
-use super::tree::{self, Entry};
-use super::{
-    Commentary, Guided, Mode, OVERVIEW, OVERVIEW_KEY, OpenFinding, Progress, Source, Verdict,
-    chat_session, notes_markdown, ticket_in, triage_rank,
-};
-use crate::git::guided::{GuidedFile, HunkLine, LineKind, Side, TickedFinding, WalkMode};
-use crate::panel::keys;
-use crate::state::{AppState, DiffViewMode, SPINNER_FRAMES};
-use crate::ui::{self, DiffContentKind};
+use crate::git::guided::GuidedFile;
+use crate::state::{AppState, SPINNER_FRAMES};
+use crate::ui;
+
+use super::chat::chat_session;
+use super::findings::Severity;
+use super::found::ticket_in;
+use super::notes::notes_markdown;
+use super::{Guided, Mode, OVERVIEW, OVERVIEW_KEY, Progress, Verdict, triage_rank};
+use bottom::{draw_bottom, draw_summary};
+use list::{draw_reset_button, draw_steps, scope_badge, walk_badge};
+use panes::draw_step;
 
 mod bottom;
 mod commentary;
@@ -31,15 +29,6 @@ mod list;
 mod overview;
 mod panes;
 
-use bottom::*;
-use commentary::*;
-use diff::*;
-use final_review::*;
-use list::*;
-use overview::*;
-use panes::*;
-
-pub(super) use final_review::final_areas;
 pub(super) use list::{
     RowTarget, list_width, on_concern_button, reset_button_area, row_targets, scope_badge_area,
     steps_area, walk_badge_area,

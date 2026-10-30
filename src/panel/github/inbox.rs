@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
+use super::Tab;
+use super::browse::{dispatch, switch_tab};
 use super::work::{Pending, spawn_read, take_answer};
-use super::{Tab, dispatch, switch_tab};
 use crate::config::GITHUB_INBOX_INTERVAL_SECS;
 use crate::github::{InboxItem, PullRequest, Reason, Section, Subject};
 use crate::state::{AppState, GitHubAction, Modal, Poll, poll_once};

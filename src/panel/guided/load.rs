@@ -1,7 +1,10 @@
 //! Opening a walk over the branch, what is not pushed or a pull request, and
 //! reading the change into it.
 
-use super::*;
+use crate::git::guided::GuidedFile;
+use crate::state::{AppState, Modal, PendingAction};
+
+use super::{Guided, Loaded, OVERVIEW, Overview, Source, work};
 
 /// Walk the branch on screen against main, or on main itself, what has not
 /// been pushed yet.

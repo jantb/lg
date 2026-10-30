@@ -1,7 +1,21 @@
 //! The final step: the whole changeset with the final review's findings under
 //! their lines, and its read of the change below.
 
-use super::*;
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
+
+use crate::panel::guided::findings::Finding;
+use crate::panel::guided::{Guided, Progress, findings};
+use crate::state::{AppState, DiffViewMode, SPINNER_FRAMES};
+use crate::ui;
+
+use super::commentary::{commentary_lines, exchange_lines};
+use super::diff::{DiffLines, file_title, final_inline, finding_lines, inline_lead, push_diff};
+use super::panes::{CHAT_SPLIT, diff_room, draw_chat, split_for_diff};
+use super::{CURSOR_BG, KEY, LABEL, progress_text, verdict_look};
 
 /// The final step: the whole changeset above, every file one after another
 /// with the final review's findings under their lines, and the model's read
@@ -61,7 +75,7 @@ fn reveal(scroll: u16, rows: &std::ops::Range<usize>, height: u16) -> u16 {
     }
 }
 
-pub(in crate::panel::guided) fn final_areas(
+pub(super) fn final_areas(
     guided: &Guided,
     area: Rect,
     mode: DiffViewMode,

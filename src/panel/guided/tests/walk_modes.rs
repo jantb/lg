@@ -1,5 +1,10 @@
 //! The plan's walk modes and its concerns.
 
+use crate::state::AppState;
+use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+
+use crate::panel::guided::context::file_context;
+
 use super::*;
 
 #[test]

@@ -1,7 +1,12 @@
 //! What the model is shown of the change for a file, a concern or the whole
 //! of it.
 
-use super::*;
+use crate::git::guided::GuidedFile;
+
+use super::found::ticket_in;
+use super::{
+    CONCERN_CONTEXT_BYTES, Guided, SOURCE_CONTEXT_LINES, WHOLE_DIFF_BYTES, findings, plan,
+};
 
 /// Everything the model is shown about step `index`: the change's overview,
 /// the file's diff with every line numbered, and the source around its hunks

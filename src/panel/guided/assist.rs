@@ -1,7 +1,15 @@
 //! Asking the model about a step or to read it again, and having Claude or
 //! the editor change the code.
 
-use super::*;
+use crate::state::{AppState, PendingAction};
+
+use super::context::{final_context, step_context};
+use super::load::reload;
+use super::notes::notes_markdown;
+use super::{
+    Ask, ChatNews, Commentary, Exchange, Guided, Mode, OVERVIEW, OVERVIEW_KEY, Target,
+    WHOLE_CHANGE, work,
+};
 
 /// Ask the model about the step on screen.
 pub(super) fn ask_question(state: &mut AppState) {

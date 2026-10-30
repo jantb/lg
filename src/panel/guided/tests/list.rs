@@ -1,5 +1,10 @@
 //! The step list and the panes beside it, under the mouse.
 
+use crate::state::AppState;
+use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+
+use crate::panel::guided::load::overview_of;
+
 use super::*;
 
 #[test]

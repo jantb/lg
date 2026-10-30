@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-use super::run;
+use super::gh::run;
 
 /// Why something is in the inbox, most pressing first.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

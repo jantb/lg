@@ -1,7 +1,22 @@
 //! The step list down the left: the overview, each file or finding, the
 //! final review, and the badges and button around it.
 
-use super::*;
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{List, ListItem, Paragraph};
+
+use crate::git::guided::{GuidedFile, WalkMode};
+use crate::panel::guided::findings::Severity;
+use crate::panel::guided::plan::{Plan, Risk};
+use crate::panel::guided::tree::Entry;
+use crate::panel::guided::{Commentary, Guided, OVERVIEW, OpenFinding, Source, Verdict, tree};
+
+use super::{
+    CURSOR_BG, ISSUE, LABEL, NIT, NOTE, modal_rows, no_text_diff, severity_color, severity_mark,
+    truncate_left, verdict_look,
+};
 
 /// Where the scope badge opening the progress line is, which a click switches.
 pub(in crate::panel::guided) fn scope_badge_area(guided: &Guided, area: Rect) -> Option<Rect> {

@@ -1,5 +1,9 @@
 //! Resetting the review.
 
+use crate::git::guided::Side;
+use crate::state::AppState;
+use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+
 use super::*;
 
 fn reviewed_with_a_note() -> AppState {

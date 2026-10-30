@@ -25,8 +25,9 @@ pub fn handle_paste(state: &mut AppState, pasted: &str) -> bool {
     if state.modal != crate::state::Modal::GuidedReview {
         return false;
     }
-    if super::chat_has_keyboard(state) {
-        if let Some(session) = super::chat_session(state).and_then(|id| state.sessions.get_mut(id))
+    if super::chat::chat_has_keyboard(state) {
+        if let Some(session) =
+            super::chat::chat_session(state).and_then(|id| state.sessions.get_mut(id))
         {
             let bracketed = session.bracketed_paste();
             session.send(&crate::term::encode_paste(pasted, bracketed));
@@ -61,57 +62,63 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         }
     }
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => super::leave(state),
-        KeyCode::Right | KeyCode::Down if walking_issues(state) => super::next_issue(state),
-        KeyCode::Left | KeyCode::Up if walking_issues(state) => super::previous_issue(state),
-        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') | KeyCode::Tab => {
-            super::next_step(state)
+        KeyCode::Esc | KeyCode::Char('q') => super::navigate::leave(state),
+        KeyCode::Right | KeyCode::Down if walking_issues(state) => {
+            super::navigate::next_issue(state)
         }
-        KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab => super::previous_step(state),
-        KeyCode::Char(']') => super::next_step(state),
-        KeyCode::Char('[') => super::previous_step(state),
-        KeyCode::Char('M') => super::switch_walk(state),
-        KeyCode::Char('S') => super::mark_skims_reviewed(state),
-        KeyCode::Char('A') => super::read_concern_on_screen(state),
+        KeyCode::Left | KeyCode::Up if walking_issues(state) => {
+            super::navigate::previous_issue(state)
+        }
+        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') | KeyCode::Tab => {
+            super::navigate::next_step(state)
+        }
+        KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab => {
+            super::navigate::previous_step(state)
+        }
+        KeyCode::Char(']') => super::navigate::next_step(state),
+        KeyCode::Char('[') => super::navigate::previous_step(state),
+        KeyCode::Char('M') => super::navigate::switch_walk(state),
+        KeyCode::Char('S') => super::progress::mark_skims_reviewed(state),
+        KeyCode::Char('A') => super::navigate::read_concern_on_screen(state),
         KeyCode::Char('d') if ctrl => scroll_side(state, 8),
         KeyCode::Char('u') if ctrl => scroll_side(state, -8),
-        KeyCode::Char('u') => super::next_unreviewed(state),
-        KeyCode::Char('m') => super::toggle_reviewed(state),
-        KeyCode::Down => super::next_finding(state),
-        KeyCode::Up => super::previous_finding(state),
-        KeyCode::Char('j') => super::move_cursor(state, true),
-        KeyCode::Char('k') => super::move_cursor(state, false),
+        KeyCode::Char('u') => super::navigate::next_unreviewed(state),
+        KeyCode::Char('m') => super::progress::toggle_reviewed(state),
+        KeyCode::Down => super::navigate::next_finding(state),
+        KeyCode::Up => super::navigate::previous_finding(state),
+        KeyCode::Char('j') => super::navigate::move_cursor(state, true),
+        KeyCode::Char('k') => super::navigate::move_cursor(state, false),
         KeyCode::PageDown | KeyCode::Char('J') => scroll_side(state, 8),
         KeyCode::PageUp | KeyCode::Char('K') => scroll_side(state, -8),
         KeyCode::Char('g') | KeyCode::Home => go_overview(state),
-        KeyCode::Char('G') | KeyCode::End | KeyCode::Char('w') => super::go_final(state),
-        KeyCode::Char('X') => super::reset_review(state),
-        KeyCode::Enter if on_final(state) => super::go_to_picked(state),
+        KeyCode::Char('G') | KeyCode::End | KeyCode::Char('w') => super::navigate::go_final(state),
+        KeyCode::Char('X') => super::progress::reset_review(state),
+        KeyCode::Enter if on_final(state) => super::navigate::go_to_picked(state),
         KeyCode::Char('c') | KeyCode::Enter => start_note(state),
-        KeyCode::Char('x') => super::delete_note_at_cursor(state),
+        KeyCode::Char('x') => super::notes::delete_note_at_cursor(state),
         KeyCode::Char('a') => set_mode(
             state,
             Mode::Question {
                 text: Default::default(),
             },
         ),
-        KeyCode::Char('r') => super::review_again(state),
+        KeyCode::Char('r') => super::assist::review_again(state),
         KeyCode::Char('R') => {
-            super::reload(state);
+            super::load::reload(state);
             state.set_status("reading the change again\u{2026}", false);
         }
-        KeyCode::Char('e') => super::edit_at_cursor(state, false),
-        KeyCode::Char('o') => super::edit_at_cursor(state, true),
-        KeyCode::Char('O') => super::open_in_browser(state),
+        KeyCode::Char('e') => super::assist::edit_at_cursor(state, false),
+        KeyCode::Char('o') => super::assist::edit_at_cursor(state, true),
+        KeyCode::Char('O') => super::load::open_in_browser(state),
         KeyCode::Char('f') => start_fix(state, false),
         KeyCode::Char('F') => start_fix(state, true),
-        KeyCode::Char('s') => super::open_summary(state),
+        KeyCode::Char('s') => super::notes::open_summary(state),
         KeyCode::Char('y') => copy_notes(state),
         KeyCode::Char('Y') => copy_file_findings(state),
-        KeyCode::Char('b') => super::switch_scope(state),
-        KeyCode::Char('v') => super::toggle_layout(state),
-        KeyCode::Char('t') => super::tick_at_cursor(state),
-        KeyCode::Char('C') => super::open_chat(state),
+        KeyCode::Char('b') => super::load::switch_scope(state),
+        KeyCode::Char('v') => super::navigate::toggle_layout(state),
+        KeyCode::Char('t') => super::found::tick_at_cursor(state),
+        KeyCode::Char('C') => super::chat::open_chat(state),
         _ => {}
     }
 }
@@ -133,7 +140,7 @@ fn chat_key(state: &mut AppState, key: KeyEvent) {
         set_mode(state, Mode::Browse);
         return;
     }
-    match super::chat_session(state).and_then(|id| state.sessions.get_mut(id)) {
+    match super::chat::chat_session(state).and_then(|id| state.sessions.get_mut(id)) {
         Some(session) => {
             if let Some(bytes) = crate::term::encode_key(key, session.application_cursor()) {
                 session.send(&bytes);
@@ -144,7 +151,7 @@ fn chat_key(state: &mut AppState, key: KeyEvent) {
 }
 
 fn go_overview(state: &mut AppState) {
-    super::go_to(state, super::OVERVIEW, false);
+    super::navigate::go_to(state, super::OVERVIEW, false);
 }
 
 fn set_mode(state: &mut AppState, mode: Mode) {
@@ -257,7 +264,7 @@ fn copy_notes(state: &mut AppState) {
         state.set_status("no notes to copy yet", false);
         return;
     }
-    let text = super::notes_markdown(guided);
+    let text = super::notes::notes_markdown(guided);
     state.pending_action = Some(PendingAction::CopyToClipboard {
         label: "review notes".to_string(),
         text,
@@ -287,9 +294,9 @@ fn text_key(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('w') if ctrl => text.delete_word_before(),
         KeyCode::Enter => {
             let send: fn(&mut AppState) = match guided.mode {
-                Mode::Note { .. } => super::commit_note,
-                Mode::Question { .. } => super::ask_question,
-                _ => super::start_fix,
+                Mode::Note { .. } => super::notes::commit_note,
+                Mode::Question { .. } => super::assist::ask_question,
+                _ => super::assist::start_fix,
             };
             send(state);
         }
@@ -316,9 +323,9 @@ fn summary_key(state: &mut AppState, key: KeyEvent) {
             let n = crate::github::ReviewEvent::ALL.len();
             *event = (*event + n - 1) % n;
         }
-        KeyCode::Char('s') if ctrl && is_pr => super::submit(state),
+        KeyCode::Char('s') if ctrl && is_pr => super::notes::submit(state),
         KeyCode::Enter if is_pr && !key.modifiers.contains(KeyModifiers::ALT) => {
-            super::submit(state)
+            super::notes::submit(state)
         }
         KeyCode::Enter => body.insert_char('\n'),
         KeyCode::Char('y') if ctrl || !is_pr => copy_notes(state),

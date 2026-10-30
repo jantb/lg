@@ -1,6 +1,6 @@
 //! The work a guided review hands to other threads: reading the change, the
 //! model's commentary and answers, and Claude's fixes. Each answers on a
-//! channel of its own, which [`super::poll`] reads.
+//! channel of its own, which [`super::poll::poll`] reads.
 
 use std::sync::mpsc::Receiver;
 
@@ -41,7 +41,7 @@ pub(super) fn load_local(source: &Source) -> Receiver<Result<Loaded, String>> {
                         },
                     )
                 };
-                let overview = super::overview_of(&title, "", &diff.commits, &steps);
+                let overview = super::load::overview_of(&title, "", &diff.commits, &steps);
                 Loaded {
                     source,
                     steps,
@@ -64,7 +64,7 @@ pub(super) fn load_pull_request(
             let diff = crate::github::pr_diff(pr.number)?;
             let commit = crate::github::pr_head(pr.number)?;
             let steps = crate::git::guided::parse_files(&diff);
-            let overview = super::overview_of(
+            let overview = super::load::overview_of(
                 &format!(
                     "Pull request #{} {} ({} into {})",
                     pr.number, pr.title, pr.head, pr.base

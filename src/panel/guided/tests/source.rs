@@ -1,5 +1,10 @@
 //! What is walked: the branch, what is not pushed, or a pull request.
 
+use crate::state::{AppState, Modal, PendingAction};
+use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+
+use crate::panel::guided::load::switch_scope;
+
 use super::*;
 
 fn opened_in_browser(state: &AppState) -> Option<&str> {

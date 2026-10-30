@@ -1,7 +1,13 @@
 //! The reviewer's notes: writing them on lines, the summary of all of them,
 //! and for a pull request submitting them as one review.
 
-use super::*;
+use std::collections::HashSet;
+
+use crate::git::guided::{GuidedNote, Side};
+use crate::panel::text_input::TextInput;
+use crate::state::{AppState, PendingAction};
+
+use super::{Guided, Mode, Source};
 
 /// Save the note being written on the cursor line.
 pub(super) fn commit_note(state: &mut AppState) {

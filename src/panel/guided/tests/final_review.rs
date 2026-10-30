@@ -1,5 +1,11 @@
 //! The final review of the whole change.
 
+use crate::git::guided::TickedFinding;
+use crate::state::{AppState, PendingAction};
+use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+
+use crate::panel::guided::context::final_context;
+
 use super::*;
 
 #[test]

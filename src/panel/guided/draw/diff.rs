@@ -1,7 +1,18 @@
 //! A file's diff as the walk draws it, with its notes and the findings under
 //! their lines.
 
-use super::*;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+
+use crate::git::guided::{GuidedFile, HunkLine, LineKind, Side, TickedFinding};
+use crate::panel::guided::findings::Finding;
+use crate::panel::guided::layout::Row;
+use crate::panel::guided::{Guided, findings, layout};
+use crate::state::DiffViewMode;
+use crate::ui;
+use crate::ui::DiffContentKind;
+
+use super::{CURSOR_BG, LABEL, NOTE, file_label, severity_color, severity_mark, verdict_look};
 
 pub(super) struct DiffLines {
     pub(super) lines: Vec<Line<'static>>,

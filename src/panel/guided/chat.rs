@@ -1,7 +1,10 @@
 //! The Claude Code chat beside the walk: when it opens, what it is about,
 //! and what it is told as the walk moves on.
 
-use super::*;
+use crate::state::{AppState, Modal, PendingAction};
+
+use super::found::ticket_in;
+use super::{ChatNews, Guided, Mode, WHOLE_CHANGE, draw, findings};
 
 impl Guided {
     /// What a chat opened now is about: the file on screen, or on the final
