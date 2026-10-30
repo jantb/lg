@@ -76,6 +76,11 @@ pub enum Source {
         /// Where the branch was last pushed, once the walk has read it.
         base_ref: String,
     },
+    /// The whole codebase as it stands, every file read as if it were new:
+    /// what there is to review when nothing is set against it.
+    Codebase {
+        branch: String,
+    },
     PullRequest {
         number: u64,
         title: String,
@@ -97,7 +102,7 @@ impl Source {
     /// Whether the files on disk are the ones being reviewed.
     pub fn editable(&self) -> bool {
         match self {
-            Self::Branch { .. } | Self::Unpushed { .. } => true,
+            Self::Branch { .. } | Self::Unpushed { .. } | Self::Codebase { .. } => true,
             Self::PullRequest { local, .. } => *local,
         }
     }
@@ -106,6 +111,7 @@ impl Source {
         match self {
             Self::Branch { branch, .. } => format!("branch-{branch}"),
             Self::Unpushed { branch, .. } => format!("unpushed-{branch}"),
+            Self::Codebase { branch } => format!("codebase-{branch}"),
             Self::PullRequest { number, .. } => format!("pr-{number}"),
         }
     }
@@ -119,6 +125,7 @@ impl Source {
             Self::Unpushed { branch, base_ref } => {
                 format!("what is not pushed on {branch} (vs {base_ref})")
             }
+            Self::Codebase { branch } => format!("the whole codebase on {branch}"),
             Self::PullRequest {
                 number,
                 title,

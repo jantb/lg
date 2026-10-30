@@ -9,6 +9,7 @@ mod file_findings;
 mod final_review;
 mod issues;
 mod list;
+mod parts;
 mod questions;
 mod reset;
 mod review_chat;

@@ -1409,7 +1409,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "b",
-                help: "Branch vs main, or not pushed (or badge)",
+                help: "Branch, not pushed or whole codebase (badge)",
                 footer: Some(("b", "scope")),
             },
             Binding {

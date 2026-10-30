@@ -49,8 +49,9 @@ agents safely.
 - **Guided review.** Walk the branch against `main` (`R`; on `main` itself,
   what is not pushed yet), or a pull request (`v` in GitHub), one file at a
   time, its files listed as their directory tree; `b` or a click on the scope
-  badge switches between the whole branch and only what is not pushed
-  (unpushed commits and uncommitted edits). `?` inside it lists every key.
+  badge moves between the whole branch, only what is not pushed (unpushed
+  commits and uncommitted edits), and the whole codebase as it stands, every
+  file read as if new. `?` inside it lists every key.
   The walk opens with the model's plan of the whole diff: its concerns,
   a reading order, each file's risk and what is safe to skim. The mode badge
   in the header (or `M`) orders the files from that plan, with nothing lost
@@ -67,7 +68,11 @@ agents safely.
   Code make the change in place. Edits show up in the walk at once. After the
   last file comes the final review (`w`): the whole changeset in one view,
   with the model reading it as one change for what file-by-file reading
-  misses, its findings pinned under their lines. `X` twice, or the reset
+  misses, its findings pinned under their lines; `↓`/`↑` pick one, `Enter`
+  opens it, `f` fixes it and `C` chats about the whole change. A change too
+  big for one read is planned in parts, and its final review reads one
+  concern of the plan at a time, so files that work together are read
+  together. `X` twice, or the reset
   button under the file list, starts the review over. For a pull request, `s`
   submits every note as inline comments in one review (comment, approve or
   request changes). Progress and notes live in the git directory, so leaving

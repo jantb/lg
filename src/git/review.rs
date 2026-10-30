@@ -65,6 +65,20 @@ pub fn unpushed_diff() -> Result<BranchDiff> {
     })
 }
 
+/// Git's empty tree: the codebase against it is every file, each read as added.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// The whole codebase as it stands in the working tree, untracked files
+/// included and generated files suppressed: what a review of all of it reads.
+pub fn codebase_diff() -> Result<BranchDiff> {
+    Ok(BranchDiff {
+        branch: head_branch().unwrap_or_else(|_| "HEAD".to_string()),
+        base_ref: String::new(),
+        commits: Vec::new(),
+        diff: worktree_review_diff(EMPTY_TREE)?,
+    })
+}
+
 /// Where `branch` was last pushed: its upstream, else the branch of the same
 /// name on the configured remote.
 fn pushed_ref(branch: &str) -> Option<String> {

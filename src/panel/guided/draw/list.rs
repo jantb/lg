@@ -362,6 +362,7 @@ pub(super) fn scope_badge(source: &Source) -> Span<'static> {
         Source::Unpushed { base_ref, .. } => {
             (format!(" NOT PUSHED vs {base_ref} "), Color::Magenta)
         }
+        Source::Codebase { .. } => (" WHOLE CODEBASE ".to_string(), Color::Green),
         Source::PullRequest { number, .. } => (format!(" PR #{number} "), Color::Cyan),
     };
     Span::styled(

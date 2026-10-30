@@ -53,9 +53,10 @@ fn open_local(state: &mut AppState, source: Source) {
     state.set_status(format!("reading {what} for a guided review\u{2026}"), false);
 }
 
-/// Switch the walk between the whole branch against main and only what has
-/// not been pushed yet. Each keeps its own progress and notes, so switching
-/// back resumes where that walk stopped.
+/// Switch the walk on: from the whole branch against main to only what has
+/// not been pushed yet, to the whole codebase, and round again. Each keeps
+/// its own progress and notes, so switching back resumes where that walk
+/// stopped.
 pub(super) fn switch_scope(state: &mut AppState) {
     let Some(guided) = state.guided.as_deref() else {
         return;
@@ -73,14 +74,15 @@ pub(super) fn switch_scope(state: &mut AppState) {
             branch: branch.clone(),
             base_ref: String::new(),
         },
-        Source::Unpushed { branch, .. } if *branch == base => {
-            state.set_status(
-                format!("{branch} is the base branch; there is no branch against it to review"),
-                true,
-            );
-            return;
-        }
-        Source::Unpushed { branch, .. } => Source::Branch {
+        Source::Unpushed { branch, .. } => Source::Codebase {
+            branch: branch.clone(),
+        },
+        // The base branch has no branch against it to walk.
+        Source::Codebase { branch } if *branch == base => Source::Unpushed {
+            branch: branch.clone(),
+            base_ref: String::new(),
+        },
+        Source::Codebase { branch } => Source::Branch {
             branch: branch.clone(),
             base_ref: base,
         },

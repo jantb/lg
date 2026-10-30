@@ -89,7 +89,9 @@ pub use remote::{
     FetchOutcome, ForcePushPlan, fetch_updates, force_push_plan, merge_upstream, pull, push,
     push_force_with_lease, push_with_upstream, remote_url, remote_urls, set_branch_upstream,
 };
-pub use review::{BranchDiff, Language, branch_diff_against_main, is_test_path, unpushed_diff};
+pub use review::{
+    BranchDiff, Language, branch_diff_against_main, codebase_diff, is_test_path, unpushed_diff,
+};
 pub use stash::{StashEntry, stash_apply, stash_drop, stash_list, stash_pop, stash_push};
 pub use status::{
     FileEntry, all_ignored, parse_porcelain, parse_porcelain_xy, status_entries, status_porcelain,

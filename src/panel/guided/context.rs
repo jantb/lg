@@ -5,7 +5,7 @@ use crate::git::guided::GuidedFile;
 
 use super::found::ticket_in;
 use super::{
-    CONCERN_CONTEXT_BYTES, Guided, SOURCE_CONTEXT_LINES, WHOLE_DIFF_BYTES, findings, plan,
+    CONCERN_CONTEXT_BYTES, Guided, SOURCE_CONTEXT_LINES, Source, WHOLE_DIFF_BYTES, findings, plan,
 };
 
 /// Everything the model is shown about step `index`: the change's overview,
@@ -33,7 +33,9 @@ pub(super) fn file_context(guided: &Guided, index: usize) -> String {
     ));
     out.push_str(&numbered_diff(step));
     out.push_str(&concern_context(guided, step));
+    // Over the whole codebase the hunk is the whole file already.
     if guided.source.editable()
+        && !matches!(guided.source, Source::Codebase { .. })
         && let Some(source) = source_around(step)
     {
         out.push_str("\nThe file around its hunks, as it is now:\n");
@@ -145,13 +147,86 @@ fn numbered_diff(step: &GuidedFile) -> String {
 /// The whole changeset for the final review: every file's diff, as much as
 /// fits, and what the file-by-file reads have found and not yet had ticked off.
 pub(super) fn final_context(guided: &Guided) -> String {
+    let paths: Vec<String> = guided.steps.iter().map(|step| step.path.clone()).collect();
+    final_part(guided, "", &whole_diff(guided), &paths)
+}
+
+/// What the plan reads, a part at a time: the overview and as much of the
+/// diff as one read takes. A change too big for one read is planned in
+/// several, each told it is one of them; the files go in path order, so a
+/// directory stays together as far as it fits.
+pub(super) fn plan_contexts(guided: &Guided) -> Vec<String> {
+    let in_path_order: Vec<Vec<String>> = guided
+        .steps
+        .iter()
+        .map(|step| vec![step.path.clone()])
+        .collect();
+    let parts = diff_parts(guided, &in_path_order);
+    let count = parts.len();
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(at, part)| {
+            format!(
+                "{}\n{}The whole diff, file by file:\n{}",
+                guided.overview,
+                part_note(at, count),
+                part.diff
+            )
+        })
+        .collect()
+}
+
+/// What the final review reads, a part at a time as [`plan_contexts`] does,
+/// each part with what is still open in its own files. The parts are the
+/// plan's concerns, so the files that work together are read together; only
+/// a concern too big for one read is split.
+pub(super) fn final_contexts(guided: &Guided) -> Vec<String> {
+    let groups: Vec<Vec<String>> = match guided.plan() {
+        Some(plan) => plan
+            .concerns
+            .into_iter()
+            .map(|concern| concern.paths)
+            .collect(),
+        None => guided
+            .steps
+            .iter()
+            .map(|step| vec![step.path.clone()])
+            .collect(),
+    };
+    let parts = diff_parts(guided, &groups);
+    let count = parts.len();
+    parts
+        .iter()
+        .enumerate()
+        .map(|(at, part)| final_part(guided, &part_note(at, count), &part.diff, &part.paths))
+        .collect()
+}
+
+fn part_note(at: usize, count: usize) -> String {
+    if count == 1 {
+        return String::new();
+    }
+    format!(
+        "This is part {} of {} of the diff, read on its own; the other parts are read \
+         separately, so speak only to the files shown here.\n",
+        at + 1,
+        count
+    )
+}
+
+/// The final review of the files `paths`, whose diff is `diff`.
+fn final_part(guided: &Guided, note: &str, diff: &str, paths: &[String]) -> String {
     let mut out = format!(
-        "Change overview:\n{}\nThe whole diff, file by file:\n{}",
-        guided.overview,
-        whole_diff(guided)
+        "Change overview:\n{}\n{note}The whole diff, file by file:\n{diff}",
+        guided.overview
     );
     out.push_str("\nWhat the file-by-file reads raised that is still open:\n");
-    for step in &guided.steps {
+    for step in guided
+        .steps
+        .iter()
+        .filter(|step| paths.contains(&step.path))
+    {
         let Some(commentary) = guided.commentary.get(&step.key()).filter(|c| c.done) else {
             out.push_str(&format!("- {}: not read yet\n", step.path));
             continue;
@@ -170,13 +245,102 @@ pub(super) fn final_context(guided: &Guided) -> String {
             ));
         }
     }
-    for note in &guided.progress.notes {
+    for note in guided
+        .progress
+        .notes
+        .iter()
+        .filter(|note| paths.contains(&note.path))
+    {
         out.push_str(&format!(
             "- {}:L{} reviewer's note: {}\n",
             note.path, note.line, note.body
         ));
     }
     out
+}
+
+/// One read's share of the diff, and the files it covers.
+struct DiffPart {
+    paths: Vec<String>,
+    diff: String,
+}
+
+/// Every file's numbered diff, packed into parts of at most
+/// [`WHOLE_DIFF_BYTES`] a group at a time: a group that fits the part being
+/// filled joins it, one that fits a part of its own starts one, and only a
+/// group too big for any part is split. A file goes in the first group that
+/// names it, one in no group comes last, and one too long for any part is
+/// named in the part it falls in and left out, as [`whole_diff`] leaves it out.
+fn diff_parts(guided: &Guided, groups: &[Vec<String>]) -> Vec<DiffPart> {
+    let mut parts = vec![DiffPart {
+        paths: Vec::new(),
+        diff: String::new(),
+    }];
+    let mut left = WHOLE_DIFF_BYTES;
+    let grouped: Vec<&String> = groups.iter().flatten().collect();
+    let ungrouped: Vec<String> = guided
+        .steps
+        .iter()
+        .map(|step| step.path.clone())
+        .filter(|path| !grouped.contains(&path))
+        .collect();
+    let mut placed = std::collections::HashSet::new();
+    for group in groups.iter().chain(std::iter::once(&ungrouped)) {
+        let files: Vec<(&GuidedFile, String)> = guided
+            .steps
+            .iter()
+            .filter(|step| group.contains(&step.path) && placed.insert(step.path.clone()))
+            .map(|step| (step, numbered_diff(step)))
+            .collect();
+        let size: usize = files
+            .iter()
+            .map(|(_, diff)| diff.len())
+            .filter(|&len| len <= WHOLE_DIFF_BYTES)
+            .sum();
+        if size > left && size <= WHOLE_DIFF_BYTES {
+            parts.push(DiffPart {
+                paths: Vec::new(),
+                diff: String::new(),
+            });
+            left = WHOLE_DIFF_BYTES;
+        }
+        for (step, diff) in files {
+            let note = step
+                .file_note
+                .as_deref()
+                .map(|note| format!(" ({note})"))
+                .unwrap_or_default();
+            if diff.len() > WHOLE_DIFF_BYTES {
+                let part = parts.last_mut().expect("there is always a part");
+                part.paths.push(step.path.clone());
+                part.diff.push_str(&format!(
+                    "\n=== {}{note}: left out, the diff is too long to show whole\n",
+                    step.path
+                ));
+                continue;
+            }
+            if diff.len() > left {
+                parts.push(DiffPart {
+                    paths: Vec::new(),
+                    diff: String::new(),
+                });
+                left = WHOLE_DIFF_BYTES;
+            }
+            left -= diff.len();
+            let part = parts.last_mut().expect("there is always a part");
+            part.paths.push(step.path.clone());
+            part.diff
+                .push_str(&format!("\n=== {}{note}\n{diff}", step.path));
+        }
+    }
+    parts.retain(|part| !part.paths.is_empty());
+    if parts.is_empty() {
+        parts.push(DiffPart {
+            paths: Vec::new(),
+            diff: String::new(),
+        });
+    }
+    parts
 }
 
 /// The working file's lines around each hunk, numbered; windows that meet

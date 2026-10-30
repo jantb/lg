@@ -103,7 +103,7 @@ fn a_read_of_the_change_that_dies_is_reported() {
 }
 
 #[test]
-fn b_switches_between_the_whole_branch_and_what_is_not_pushed() {
+fn b_moves_from_the_whole_branch_to_what_is_not_pushed_to_the_whole_codebase_and_round() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE);
     let mut state = walk_on_a_long_hunk();
@@ -120,6 +120,14 @@ fn b_switches_between_the_whole_branch_and_what_is_not_pushed() {
     handle_key(&mut state, b).unwrap();
     assert_eq!(
         state.guided.as_ref().unwrap().source,
+        Source::Codebase {
+            branch: "guided-test-branch".into(),
+        }
+    );
+
+    handle_key(&mut state, b).unwrap();
+    assert_eq!(
+        state.guided.as_ref().unwrap().source,
         Source::Branch {
             branch: "guided-test-branch".into(),
             base_ref: crate::preferences::base_branch(),
@@ -128,22 +136,26 @@ fn b_switches_between_the_whole_branch_and_what_is_not_pushed() {
 }
 
 /// On the base branch there is no branch against it to walk, so the walk
-/// over what is not pushed stays put and says why.
+/// moves between what is not pushed and the whole codebase.
 #[test]
-fn the_base_branch_has_only_what_is_not_pushed_to_walk() {
+fn the_base_branch_walks_what_is_not_pushed_or_the_whole_codebase() {
     let mut state = AppState::new();
     let branch = crate::preferences::base_branch();
     let unpushed = Source::Unpushed {
-        branch,
+        branch: branch.clone(),
         base_ref: String::new(),
     };
     state.guided = Some(Box::new(Guided::new(unpushed.clone())));
     state.modal = Modal::GuidedReview;
 
     switch_scope(&mut state);
+    assert_eq!(
+        state.guided.as_ref().unwrap().source,
+        Source::Codebase { branch }
+    );
 
+    switch_scope(&mut state);
     assert_eq!(state.guided.as_ref().unwrap().source, unpushed);
-    assert!(state.status.is_some_and(|status| status.is_error));
 }
 
 #[test]

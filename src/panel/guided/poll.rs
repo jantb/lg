@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use crate::state::{AppState, GenMsg, Poll, poll_once, stopped_unexpectedly};
 
 use super::chat::{note_file_change_for_chat, tell_chat_what_is_read};
-use super::context::{file_context, final_context, step_context, whole_diff};
+use super::context::{file_context, final_contexts, plan_contexts, step_context};
 use super::load::{apply_loaded, reload};
 use super::{
     Ask, CONCURRENT_CHECKS, CONCURRENT_CLAUDE, CONCURRENT_LOCAL, Check, CheckAnswer, Commentary,
@@ -364,17 +364,13 @@ pub(super) fn start_wanted_commentary(guided: &mut Guided) {
             continue;
         }
         let (rx, prompt_bytes) = if index == OVERVIEW {
-            let context = format!(
-                "{}\nThe whole diff, file by file:\n{}",
-                guided.overview,
-                whole_diff(guided)
-            );
-            let bytes = context.len();
-            (work::ask_overview(context), bytes)
+            let contexts = plan_contexts(guided);
+            let bytes = contexts.iter().map(String::len).sum();
+            (work::ask_overview(contexts, concurrency()), bytes)
         } else if index == guided.final_step() {
-            let context = final_context(guided);
-            let bytes = context.len();
-            (work::ask_final(context), bytes)
+            let contexts = final_contexts(guided);
+            let bytes = contexts.iter().map(String::len).sum();
+            (work::ask_final(contexts, concurrency()), bytes)
         } else {
             // The walk's first brief, so the cached prompt stays the same.
             let shared = guided

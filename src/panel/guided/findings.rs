@@ -71,6 +71,38 @@ pub fn read(text: &str) -> Reading {
     reading
 }
 
+/// The answers to the parts of one read as one answer: their summaries on one
+/// line first, every other line as its part gave it, and one verdict last,
+/// the worst any part gave.
+pub fn combine(parts: &[String]) -> String {
+    const VERDICTS: [&str; 3] = ["ok", "nit", "issue"];
+    let mut summaries = Vec::new();
+    let mut lines = Vec::new();
+    let mut worst: Option<usize> = None;
+    for raw in parts.iter().flat_map(|part| part.lines()) {
+        let line = without_markup(raw);
+        if let Some(summary) = after_key(line, "summary") {
+            summaries.push(summary.to_string());
+        } else if let Some(verdict) = after_key(line, "verdict") {
+            let word = verdict.trim_matches(|c: char| !c.is_alphabetic());
+            if let Some(rank) = VERDICTS.iter().position(|w| w.eq_ignore_ascii_case(word)) {
+                worst = Some(worst.map_or(rank, |worst| worst.max(rank)));
+            }
+        } else {
+            lines.push(raw.to_string());
+        }
+    }
+    let mut out = Vec::new();
+    if !summaries.is_empty() {
+        out.push(format!("Summary: {}", summaries.join(" ")));
+    }
+    out.extend(lines);
+    if let Some(worst) = worst {
+        out.push(format!("Verdict: {}", VERDICTS[worst]));
+    }
+    out.join("\n")
+}
+
 /// The commentary `text` without its question lines, and those lines.
 pub fn split_questions(text: &str) -> (String, Vec<String>) {
     let mut kept = Vec::new();

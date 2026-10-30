@@ -1,4 +1,5 @@
-//! The diffs a review reads: the branch against main, and what is not pushed.
+//! The diffs a review reads: the branch against main, what is not pushed,
+//! and the whole codebase.
 
 use super::common::*;
 
@@ -125,5 +126,35 @@ fn the_unpushed_diff_holds_only_what_the_upstream_lacks() {
             && !unpushed.commits.iter().any(|c| c.contains("pushed change")),
         "{:?}",
         unpushed.commits
+    );
+}
+
+#[test]
+fn the_codebase_diff_reads_every_file_as_it_stands_untracked_ones_included() {
+    let dir = init_repo();
+    fs::create_dir(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/lib.rs"), "pub fn old() {}\n").unwrap();
+    fs::write(dir.path().join("README.md"), "# readme\n").unwrap();
+    stage_in(dir.path(), "src/lib.rs");
+    stage_in(dir.path(), "README.md");
+    commit_in(dir.path(), "initial commit");
+    fs::write(dir.path().join("src/lib.rs"), "pub fn edited() {}\n").unwrap();
+    fs::write(dir.path().join("src/new.rs"), "pub fn fresh() {}\n").unwrap();
+
+    let _cwd = CwdGuard::new(dir.path());
+    let codebase = lg::git::codebase_diff().unwrap();
+
+    assert!(codebase.commits.is_empty());
+    assert!(codebase.diff.contains("+# readme"), "{}", codebase.diff);
+    assert!(
+        codebase.diff.contains("+pub fn edited() {}"),
+        "{}",
+        codebase.diff
+    );
+    assert!(!codebase.diff.contains("pub fn old"), "{}", codebase.diff);
+    assert!(
+        codebase.diff.contains("+pub fn fresh() {}"),
+        "{}",
+        codebase.diff
     );
 }
