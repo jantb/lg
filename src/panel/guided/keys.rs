@@ -86,6 +86,7 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('g') | KeyCode::Home => go_overview(state),
         KeyCode::Char('G') | KeyCode::End | KeyCode::Char('w') => super::go_final(state),
         KeyCode::Char('X') => super::reset_review(state),
+        KeyCode::Enter if on_final(state) => super::go_to_picked(state),
         KeyCode::Char('c') | KeyCode::Enter => start_note(state),
         KeyCode::Char('x') => super::delete_note_at_cursor(state),
         KeyCode::Char('a') => set_mode(
@@ -113,6 +114,10 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('C') => super::open_chat(state),
         _ => {}
     }
+}
+
+fn on_final(state: &AppState) -> bool {
+    state.guided.as_deref().is_some_and(super::Guided::on_final)
 }
 
 /// In issues mode the arrows walk the open findings rather than the files.
@@ -179,7 +184,9 @@ fn start_note(state: &mut AppState) {
     };
 }
 
-/// Starts from the note on the cursor line, else what the model flagged there; with `all_notes`, every note in the review.
+/// Starts from the note on the cursor line, else what the model flagged
+/// there, or on the final step the picked finding; with `all_notes`, every
+/// note in the review, and on the final step every finding still open too.
 fn start_fix(state: &mut AppState, all_notes: bool) {
     let Some(guided) = state.guided.as_mut() else {
         return;
@@ -191,16 +198,27 @@ fn start_fix(state: &mut AppState, all_notes: bool) {
         );
         return;
     }
-    if all_notes && guided.progress.notes.is_empty() {
+    let open_across = guided.on_final() && !guided.final_open_lines().is_empty();
+    if all_notes && guided.progress.notes.is_empty() && !open_across {
         state.set_status("no notes to address yet", false);
         return;
     }
-    if !all_notes && guided.step().is_none() {
-        state.set_status("pick a file to change", false);
+    if !all_notes && guided.aim().is_none() {
+        let message = if guided.on_final() {
+            "the final review has no finding in the change to fix"
+        } else {
+            "pick a file to change"
+        };
+        state.set_status(message, false);
         return;
     }
     let text = if all_notes {
         String::new()
+    } else if guided.on_final() {
+        guided
+            .picked()
+            .map(|(path, finding)| format!("{path}:L{} {}", finding.line, finding.text))
+            .unwrap_or_default()
     } else {
         guided
             .note_at_cursor()
@@ -218,8 +236,11 @@ fn copy_file_findings(state: &mut AppState) {
     let Some(guided) = state.guided.as_ref() else {
         return;
     };
-    let Some(path) = guided.step().map(|step| step.path.clone()) else {
-        state.set_status("the findings are a file's: \u{2192} to one first", false);
+    let Some(path) = guided.chat_subject() else {
+        state.set_status(
+            "the findings are a file's or the whole change's: \u{2192} to one first",
+            false,
+        );
         return;
     };
     state.pending_action = Some(PendingAction::CopyToClipboard {

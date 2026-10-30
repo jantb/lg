@@ -24,13 +24,12 @@ impl App {
     }
 }
 
-/// Returns the file the chat starts on.
+/// Returns what the chat starts on: a file, or the whole change.
 fn start(state: &mut AppState) -> Result<String> {
     let guided = state.guided.as_ref().context("no guided review open")?;
     let path = guided
-        .step()
-        .map(|step| step.path.clone())
-        .context("no file on screen")?;
+        .chat_subject()
+        .context("no file or whole change on screen")?;
     let cwd = PathBuf::from(state.repo_root.as_deref().context("no repository open")?);
     let read = guided.has_read(&path);
     let brief = if read {

@@ -1314,7 +1314,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "\u{2193} / \u{2191}",
-                help: "Next / previous finding, then next file",
+                help: "Next / previous finding (final: pick)",
                 footer: Some(("\u{2193}/\u{2191}", "finding")),
             },
             Binding {
@@ -1324,7 +1324,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "c / Enter",
-                help: "Write or edit a note on the cursor line",
+                help: "Note on the line; final: go to finding",
                 footer: Some(("c", "note")),
             },
             Binding {
@@ -1354,7 +1354,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "f / F",
-                help: "Have Claude make a change / fix all notes",
+                help: "Claude: change / fix all notes and findings",
                 footer: Some(("f", "fix")),
             },
             Binding {
@@ -1364,7 +1364,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "t / click",
-                help: "Tick off the findings on the line",
+                help: "Tick off findings on the line or picked",
                 footer: None,
             },
             Binding {
@@ -1379,7 +1379,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "C",
-                help: "Chat with Claude in the checkout to fix",
+                help: "Chat to fix this file or the whole change",
                 footer: Some(("C", "chat")),
             },
             Binding {

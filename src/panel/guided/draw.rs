@@ -1087,7 +1087,7 @@ pub(super) fn finding_at(
         let (diff, commentary) = (parts[0], commentary_area(guided, parts[1]));
         if inside(diff, column, row) {
             let lines = final_diff_lines(guided, mode, diff.width);
-            let scroll = guided.final_scroll.min(guided.final_max.get());
+            let scroll = guided.final_scroll.get().min(guided.final_max.get());
             return ticked_at(lines.findings, usize::from(scroll + row - diff.y));
         }
         if inside(commentary, column, row) {
@@ -1376,16 +1376,7 @@ fn inline_lead(mode: DiffViewMode, width: u16) -> String {
 }
 
 fn inline_findings(guided: &Guided, step: &GuidedFile, lead: &str, width: u16) -> Vec<Inline> {
-    let Some(commentary) = guided.commentary.get(&step.key()) else {
-        return Vec::new();
-    };
-    placed_inline(
-        guided,
-        step,
-        &findings::read(&commentary.text).findings,
-        lead,
-        width,
-    )
+    placed_inline(guided, step, &guided.findings_in(step), lead, width)
 }
 
 /// The final review's findings that cite `step`'s file, under their lines.
@@ -1613,10 +1604,17 @@ fn draw_final(
     ui::draw_dividers(frame, &gaps);
     dividers.extend(gaps);
     let (diff, below) = (parts[0], parts[1]);
-    let lines = final_diff_lines(guided, mode, diff.width).lines;
+    let DiffLines { lines, cursor, .. } = final_diff_lines(guided, mode, diff.width);
     let max = (lines.len() as u16).saturating_sub(diff.height);
     guided.final_max.set(max);
-    let scroll = guided.final_scroll.min(max);
+    if guided.final_reveal.replace(false) && !cursor.is_empty() {
+        guided.final_scroll.set(reveal(
+            guided.final_scroll.get().min(max),
+            &cursor,
+            diff.height,
+        ));
+    }
+    let scroll = guided.final_scroll.get().min(max);
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), diff);
 
     let commentary = match super::chat_session(state) {
@@ -1633,6 +1631,20 @@ fn draw_final(
     guided.side_max.set(max);
     let scroll = guided.side_scroll.min(max);
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), commentary);
+}
+
+/// `scroll` moved as little as brings `rows` into a pane `height` high, with
+/// the code line a finding sits under shown above it.
+fn reveal(scroll: u16, rows: &std::ops::Range<usize>, height: u16) -> u16 {
+    let first = u16::try_from(rows.start.saturating_sub(2)).unwrap_or(u16::MAX);
+    let end = u16::try_from(rows.end).unwrap_or(u16::MAX);
+    if first < scroll {
+        first
+    } else if end > scroll.saturating_add(height) {
+        end.saturating_sub(height).min(first)
+    } else {
+        scroll
+    }
 }
 
 pub(super) fn final_areas(
@@ -1669,7 +1681,29 @@ fn final_diff_lines(guided: &Guided, mode: DiffViewMode, width: u16) -> DiffLine
         let flagged = final_inline(guided, step, &lead, width);
         push_diff(guided, step, mode, width, &flagged, None, &mut out);
     }
+    mark_picked(guided, &mut out);
     out
+}
+
+/// The picked finding's rows, lit as the cursor line is and made `lines.cursor`.
+fn mark_picked(guided: &Guided, lines: &mut DiffLines) {
+    let Some((path, finding)) = guided.picked() else {
+        return;
+    };
+    let picked = super::ticket_in(&path, &finding);
+    let Some(rows) = lines
+        .findings
+        .iter()
+        .find(|(_, ticket)| *ticket == picked)
+        .map(|(rows, _)| rows.clone())
+    else {
+        return;
+    };
+    for line in &mut lines.lines[rows.clone()] {
+        *line =
+            std::mem::take(line).style(Style::default().bg(CURSOR_BG).add_modifier(Modifier::BOLD));
+    }
+    lines.cursor = rows;
 }
 
 /// The model's read of the whole change: its summary, then the findings it
@@ -1720,7 +1754,7 @@ fn final_commentary_lines(state: &AppState, guided: &Guided, width: u16) -> Diff
             }
             if !reading.cited.is_empty() {
                 header.push(Span::styled(
-                    " \u{b7} click a finding to tick it off",
+                    " \u{b7} \u{2193}/\u{2191} pick a finding \u{b7} Enter go to it \u{b7} t or click ticks it off",
                     LABEL,
                 ));
             }
@@ -1765,6 +1799,7 @@ fn final_commentary_lines(state: &AppState, guided: &Guided, width: u16) -> Diff
             }
         }
     }
+    mark_picked(guided, &mut out);
     out.lines.extend(exchange_lines(state, guided, &key, width));
     out.lines.push(Line::from(""));
     out.lines.push(Line::from(vec![
@@ -1774,7 +1809,10 @@ fn final_commentary_lines(state: &AppState, guided: &Guided, width: u16) -> Diff
         } else {
             " shows every note"
         }),
-        Span::styled(" \u{b7} r reads the whole change again", LABEL),
+        Span::styled(
+            " \u{b7} f fixes the picked finding, F every one open \u{b7} C chats about the whole change \u{b7} r reads it again",
+            LABEL,
+        ),
     ]));
     out
 }
@@ -2088,7 +2126,9 @@ fn draw_bottom(guided: &Guided, area: Rect, frame: &mut Frame) {
         ),
         Mode::Question { text } => ("ask", text),
         Mode::Fix { text, all_notes } => (
-            if *all_notes {
+            if *all_notes && guided.on_final() {
+                "claude: address every open finding and note (extra instructions optional)"
+            } else if *all_notes {
                 "claude: address every note (extra instructions optional)"
             } else {
                 "claude: change"

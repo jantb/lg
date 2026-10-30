@@ -171,7 +171,7 @@ fn a_guided_review_keeps_its_notes_sees_edits_and_on_main_walks_the_changes() {
     assert_eq!(app.state.modal, Modal::Help);
     app.render().unwrap();
     assert!(
-        screen(&app).contains("Write or edit a note on the cursor line"),
+        screen(&app).contains("Note on the line"),
         "help opens on the guided review's keys: {}",
         screen(&app)
     );

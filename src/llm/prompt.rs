@@ -67,8 +67,9 @@ pub fn build_guided_step_system_prompt(overview: &str, settings: &RepoSettings) 
 pub fn build_guided_chat_prompt(title: &str, review: &str, settings: &RepoSettings) -> String {
     format!(
         "You are pairing with a reviewer on {title}, in this checkout. lg's guided review walks\n\
-         the change file by file; what is still open in the file on screen is below, and when the\n\
-         reviewer moves to another file you will be told what is open there.\n\
+         the change file by file, then reviews the whole change at once; what is still open in the\n\
+         file on screen, or across the whole change, is below, and when the reviewer moves on you\n\
+         will be told what is open there.\n\
          Read the code they point at, but change nothing until the reviewer says what to fix, one\n\
          at a time or all at once. Keep each change minimal, match the surrounding style, and never\n\
          commit or otherwise change git state. Start by saying in two or three lines what is open.\n\n\
@@ -82,14 +83,14 @@ pub fn build_guided_chat_prompt(title: &str, review: &str, settings: &RepoSettin
 
 pub fn build_guided_chat_file_read(brief: &str) -> String {
     format!(
-        "lg has read the file the reviewer is on now. {brief}\n\
+        "lg has read what the reviewer is on now: a file, or the whole change. {brief}\n\
          Say in two or three lines what is open there, then wait."
     )
 }
 
 pub fn build_guided_chat_redo(brief: &str) -> String {
     format!(
-        "The reviewer has changed the file and lg has reviewed it again. {brief}\n\
+        "The reviewer has made changes and lg has reviewed what they are on again. {brief}\n\
          Say in two or three lines what is fixed and what is still open, then wait."
     )
 }

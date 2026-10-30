@@ -164,7 +164,7 @@ fn button_click(
 }
 
 fn note_file_change_for_chat(guided: &mut Guided) {
-    let Some(path) = guided.step().map(|step| step.path.clone()) else {
+    let Some(path) = guided.chat_subject() else {
         return;
     };
     if guided.chat.is_none() || guided.chat_file.as_deref() == Some(path.as_str()) {
@@ -299,6 +299,8 @@ fn resize_list(state: &mut AppState, list: ratatui::layout::Rect, m: &MouseEvent
 /// The step before the first file: what the change is for.
 pub const OVERVIEW: usize = 0;
 const OVERVIEW_KEY: &str = "overview";
+/// What the chat is about on the final step, where it is no one file.
+pub const WHOLE_CHANGE: &str = "the whole change";
 /// Source lines either side of a hunk that travel with it to the model.
 const SOURCE_CONTEXT_LINES: usize = 25;
 /// How many requests for commentary may run at once.
@@ -549,10 +551,16 @@ pub struct Guided {
     /// The step list's first row shown, once the wheel has scrolled it; until
     /// then, and after any move by key, the list follows the step on screen.
     pub list_scroll: Option<usize>,
-    /// How far the whole changeset is scrolled on the final step.
-    pub final_scroll: u16,
+    /// How far the whole changeset is scrolled on the final step; the draw
+    /// moves it to bring a newly picked finding into view.
+    pub final_scroll: std::cell::Cell<u16>,
     /// How far it could scroll when it was last drawn, as [`Guided::side_max`].
     pub final_max: std::cell::Cell<u16>,
+    /// The final review's finding picked on the final step, by its place
+    /// among those the review cites.
+    pub final_pick: usize,
+    /// The pick moved since the last draw, which scrolls the whole change to it.
+    pub final_reveal: std::cell::Cell<bool>,
     pub chat: Option<crate::session::SessionId>,
     pub chat_file: Option<String>,
     chat_owed: Vec<(String, ChatNews)>,
@@ -595,8 +603,10 @@ impl Guided {
             delete_armed: None,
             reset_armed: false,
             list_scroll: None,
-            final_scroll: 0,
+            final_scroll: std::cell::Cell::new(0),
             final_max: std::cell::Cell::new(0),
+            final_pick: 0,
+            final_reveal: std::cell::Cell::new(false),
             chat: None,
             chat_file: None,
             chat_owed: Vec::new(),
@@ -931,14 +941,102 @@ impl Guided {
         let Some(step) = self.step() else {
             return Vec::new();
         };
-        let Some(commentary) = self.commentary.get(&step.key()) else {
-            return Vec::new();
-        };
-        let reading = findings::read(&commentary.text);
-        findings::place(step, &reading.findings)
+        findings::place(step, &self.findings_in(step))
             .0
             .into_iter()
             .map(|(at, finding)| (at, finding.clone()))
+            .collect()
+    }
+
+    /// What was found in `step`: its own read's findings, then those the
+    /// final review cites in its file.
+    pub(super) fn findings_in(&self, step: &GuidedFile) -> Vec<findings::Finding> {
+        let own = self
+            .commentary
+            .get(&step.key())
+            .map(|commentary| findings::read(&commentary.text).findings)
+            .unwrap_or_default();
+        let cited = self
+            .final_cited()
+            .into_iter()
+            .filter(|(path, _)| *path == step.path)
+            .map(|(_, finding)| finding);
+        own.into_iter().chain(cited).collect()
+    }
+
+    /// The findings the final review cites, by file, in the order it gave them.
+    pub fn final_cited(&self) -> Vec<(String, findings::Finding)> {
+        self.commentary
+            .get(&self.final_key())
+            .map(|commentary| findings::read(&commentary.text).cited)
+            .unwrap_or_default()
+    }
+
+    /// The finding picked on the final step, kept in range as the review is read again.
+    pub fn picked(&self) -> Option<(String, findings::Finding)> {
+        let mut cited = self.final_cited();
+        let at = self.final_pick.min(cited.len().checked_sub(1)?);
+        Some(cited.swap_remove(at))
+    }
+
+    /// The picked finding as a place in its file's diff, when the change has that file.
+    fn picked_open(&self) -> Option<OpenFinding> {
+        let (path, finding) = self.picked()?;
+        let index = self.steps.iter().position(|step| step.path == path)?;
+        let at = findings::place(&self.steps[index], std::slice::from_ref(&finding))
+            .0
+            .first()
+            .map(|(at, _)| *at);
+        Some(OpenFinding {
+            step: index + 1,
+            at,
+            finding,
+            whole: true,
+        })
+    }
+
+    /// The step and diff line a change or an edit is aimed at: the cursor
+    /// line of the file on screen, or on the final step the picked finding's.
+    fn aim(&self) -> Option<(usize, usize)> {
+        if self.on_final() {
+            let open = self.picked_open()?;
+            let at = open
+                .at
+                .unwrap_or_else(|| self.steps[open.step - 1].first_changed());
+            return Some((open.step, at));
+        }
+        self.step().map(|_| (self.current, self.cursor))
+    }
+
+    /// What a chat opened now is about: the file on screen, or on the final
+    /// step [`WHOLE_CHANGE`].
+    pub fn chat_subject(&self) -> Option<String> {
+        match self.step() {
+            Some(step) => Some(step.path.clone()),
+            None if self.on_final() => Some(WHOLE_CHANGE.to_string()),
+            None => None,
+        }
+    }
+
+    fn final_done(&self) -> bool {
+        self.commentary
+            .get(&self.final_key())
+            .is_some_and(|commentary| commentary.done)
+    }
+
+    /// The final review's findings not yet ticked off, one `path:L<n>` line each.
+    fn final_open_lines(&self) -> String {
+        self.final_cited()
+            .into_iter()
+            .filter(|(path, finding)| !self.is_ticked(&ticket_in(path, finding)))
+            .map(|(path, finding)| {
+                format!(
+                    "- {path}:L{} {}: {}\n",
+                    finding.line,
+                    finding.severity.word(),
+                    finding.text
+                )
+            })
             .collect()
     }
 
@@ -952,6 +1050,16 @@ impl Guided {
     }
 
     pub fn chat_brief(&self, path: &str) -> String {
+        if path == WHOLE_CHANGE {
+            let mut out = format!("Open across the whole change:\n{}", self.final_open_lines());
+            for note in &self.progress.notes {
+                out.push_str(&format!(
+                    "- {}:L{} note: {}\n",
+                    note.path, note.line, note.body
+                ));
+            }
+            return out;
+        }
         let mut out = format!("Open in {path}:\n");
         for step in self.steps.iter().filter(|step| step.path == path) {
             let Some(commentary) = self.commentary.get(&step.key()).filter(|c| c.done) else {
@@ -969,6 +1077,21 @@ impl Guided {
                 let word = finding.severity.word();
                 out.push_str(&format!("- L{} {word}: {}\n", finding.line, finding.text));
             }
+        }
+        let across = if self.final_done() {
+            self.final_cited()
+        } else {
+            Vec::new()
+        };
+        let across = across
+            .into_iter()
+            .filter(|(cited, finding)| cited == path && !self.is_ticked(&ticket_in(path, finding)));
+        for (_, finding) in across {
+            let word = finding.severity.word();
+            out.push_str(&format!(
+                "- L{} {word} (from the review of the whole change): {}\n",
+                finding.line, finding.text
+            ));
         }
         for note in self.progress.notes.iter().filter(|note| note.path == path) {
             out.push_str(&format!("- L{} note: {}\n", note.line, note.body));
@@ -1030,6 +1153,9 @@ impl Guided {
 
     /// A file the change no longer touches has nothing left to wait for.
     pub fn has_read(&self, path: &str) -> bool {
+        if path == WHOLE_CHANGE {
+            return self.loading.is_none() && self.final_done();
+        }
         self.loading.is_none()
             && self
                 .steps
@@ -1991,7 +2117,7 @@ fn go_to(state: &mut AppState, index: usize, mark_left: bool) {
     guided.current = index.min(guided.final_step());
     guided.cursor = guided.step().map(GuidedFile::first_changed).unwrap_or(0);
     guided.side_scroll = 0;
-    guided.final_scroll = 0;
+    guided.final_scroll.set(0);
     guided.list_scroll = None;
     if guided.on_final() {
         let noun = if guided.source.is_pull_request() {
@@ -2000,7 +2126,9 @@ fn go_to(state: &mut AppState, index: usize, mark_left: bool) {
             "s shows every note"
         };
         state.set_status(
-            format!("final review of the whole change \u{2014} {noun}"),
+            format!(
+                "final review of the whole change \u{2014} \u{2193}/\u{2191} pick a finding, Enter go to it, f fix, C chat, {noun}"
+            ),
             false,
         );
     }
@@ -2243,7 +2371,8 @@ pub(super) fn reset_review(state: &mut AppState) {
     guided.current = OVERVIEW;
     guided.cursor = 0;
     guided.side_scroll = 0;
-    guided.final_scroll = 0;
+    guided.final_scroll.set(0);
+    guided.final_pick = 0;
     match guided.save() {
         Ok(()) => state.set_status(
             "review reset \u{2014} starting over from the overview",
@@ -2256,12 +2385,12 @@ pub(super) fn reset_review(state: &mut AppState) {
 /// Scrolls the whole changeset on the final step, as the cursor scrolls a file.
 pub(super) fn scroll_final(state: &mut AppState, by: i32) {
     if let Some(guided) = state.guided.as_mut() {
-        guided.final_scroll = guided.final_scroll.min(guided.final_max.get());
-        guided.final_scroll = if by >= 0 {
-            guided.final_scroll.saturating_add(by as u16)
+        let from = guided.final_scroll.get().min(guided.final_max.get());
+        guided.final_scroll.set(if by >= 0 {
+            from.saturating_add(by as u16)
         } else {
-            guided.final_scroll.saturating_sub(by.unsigned_abs() as u16)
-        };
+            from.saturating_sub(by.unsigned_abs() as u16)
+        });
     }
 }
 
@@ -2351,6 +2480,10 @@ pub(super) fn next_finding(state: &mut AppState) {
     let Some(guided) = state.guided.as_mut() else {
         return;
     };
+    if guided.on_final() {
+        pick_final(state, true);
+        return;
+    }
     if guided.step().is_none() || guided.still_reading(ai) {
         move_cursor(state, true);
         return;
@@ -2372,6 +2505,10 @@ pub(super) fn previous_finding(state: &mut AppState) {
     let Some(guided) = state.guided.as_mut() else {
         return;
     };
+    if guided.on_final() {
+        pick_final(state, false);
+        return;
+    }
     if guided.step().is_none() || guided.still_reading(ai) {
         move_cursor(state, false);
         return;
@@ -2386,6 +2523,39 @@ pub(super) fn previous_finding(state: &mut AppState) {
     let left = guided.current;
     previous_step(state);
     land_on_finding(state, left, false);
+}
+
+/// Pick the next or previous finding the final review cites; with none to
+/// pick, the whole change scrolls a line instead.
+fn pick_final(state: &mut AppState, down: bool) {
+    let Some(guided) = state.guided.as_mut() else {
+        return;
+    };
+    let Some(last) = guided.final_cited().len().checked_sub(1) else {
+        scroll_final(state, if down { 1 } else { -1 });
+        return;
+    };
+    let here = guided.final_pick.min(last);
+    guided.final_pick = if down {
+        (here + 1).min(last)
+    } else {
+        here.saturating_sub(1)
+    };
+    guided.final_reveal.set(true);
+}
+
+/// Open the picked finding's file with the cursor on its line.
+pub(super) fn go_to_picked(state: &mut AppState) {
+    let Some(guided) = state.guided.as_deref() else {
+        return;
+    };
+    match (guided.picked_open(), guided.picked()) {
+        (Some(open), _) => go_to_finding(state, &open),
+        (None, Some((path, _))) => {
+            state.set_status(format!("{path} is not part of the change"), false)
+        }
+        (None, None) => state.set_status("the final review has no findings to go to", false),
+    }
 }
 
 fn land_on_finding(state: &mut AppState, left: usize, first: bool) {
@@ -2410,6 +2580,13 @@ pub(super) fn tick_at_cursor(state: &mut AppState) {
     let Some(guided) = state.guided.as_ref() else {
         return;
     };
+    if guided.on_final() {
+        match guided.picked() {
+            Some((path, finding)) => toggle_ticks(state, vec![ticket_in(&path, &finding)]),
+            None => state.set_status("the final review has no findings to tick off", false),
+        }
+        return;
+    }
     let here: Vec<TickedFinding> = guided
         .placed_findings()
         .into_iter()
@@ -2459,8 +2636,11 @@ pub(super) fn open_chat(state: &mut AppState) {
         state.set_status("chat \u{2014} Ctrl-] back to the review", false);
         return;
     }
-    if guided.step().is_none() {
-        state.set_status("the chat is about a file: \u{2192} to one first", false);
+    if guided.chat_subject().is_none() {
+        state.set_status(
+            "the chat is about a file or the whole change: \u{2192} to one first",
+            false,
+        );
         return;
     }
     state.pending_action = Some(PendingAction::GuidedChat);
@@ -2649,6 +2829,9 @@ pub(super) fn review_again(state: &mut AppState) {
     };
     let Some(step) = guided.step() else {
         let key = if guided.on_final() {
+            if guided.chat.is_some() {
+                guided.owe_chat(WHOLE_CHANGE.to_string(), ChatNews::Redone);
+            }
             guided.final_key()
         } else {
             OVERVIEW_KEY.to_string()
@@ -2701,35 +2884,45 @@ pub(super) fn start_fix(state: &mut AppState) {
         return;
     };
     let instruction = text.trim().to_string();
-    let (context, what) = if all_notes {
+    let (context, what) = if all_notes && guided.on_final() {
+        (
+            format!(
+                "{}\nOpen findings of the review of the whole change:\n{}",
+                notes_markdown(guided),
+                guided.final_open_lines()
+            ),
+            "every open finding and note".to_string(),
+        )
+    } else if all_notes {
         (notes_markdown(guided), "every note".to_string())
     } else {
         if instruction.is_empty() {
             state.set_status("say what to change; Esc cancels", false);
             return;
         }
-        let Some(step) = guided.step() else {
+        let Some((index, at)) = guided.aim() else {
             return;
         };
+        let step = &guided.steps[index - 1];
         let line = step
             .lines
-            .get(guided.cursor)
+            .get(at)
             .and_then(|line| line.new.or(line.old))
             .map(|n| format!(" (cursor on L{n})"))
             .unwrap_or_default();
         (
             format!(
                 "{}\nThe reviewer is looking at {}{line}.",
-                step_context(guided, guided.current),
+                step_context(guided, index),
                 step.path
             ),
             step.path.clone(),
         )
     };
-    let instruction = if all_notes && instruction.is_empty() {
-        "Address every review note below.".to_string()
-    } else {
-        instruction
+    let instruction = match (all_notes && instruction.is_empty(), guided.on_final()) {
+        (true, true) => "Address every review note and open finding below.".to_string(),
+        (true, false) => "Address every review note below.".to_string(),
+        (false, _) => instruction,
     };
     let prompt = crate::llm::build_guided_fix_prompt(&context, &instruction);
     guided.fixing = Some((work::run_fix(root, prompt), what.clone()));
@@ -2749,15 +2942,21 @@ pub(super) fn edit_at_cursor(state: &mut AppState, in_ide: bool) {
         );
         return;
     }
-    let Some(step) = guided.step() else {
-        state.set_status("pick a file to edit", false);
+    let Some((index, at)) = guided.aim() else {
+        let message = if guided.on_final() {
+            "the final review has no finding in the change to edit"
+        } else {
+            "pick a file to edit"
+        };
+        state.set_status(message, false);
         return;
     };
+    let step = &guided.steps[index - 1];
     if step.file_note.as_deref() == Some("deleted file") {
         state.set_status("this file is deleted on the branch", false);
         return;
     }
-    let line = step.editor_line(guided.cursor);
+    let line = step.editor_line(at);
     let path = step.path.clone();
     state.pending_action = Some(if in_ide {
         PendingAction::OpenFile(path)
@@ -3879,6 +4078,122 @@ mod tests {
         );
     }
 
+    /// `walk_with_findings` on its final step, whose review cites a.rs and
+    /// b.rs. Its progress is saved under `branch`, so what one test ticks off
+    /// is not ticked in another.
+    fn on_final_with_findings(branch: &str) -> AppState {
+        let mut state = walk_with_findings();
+        let guided = state.guided.as_mut().unwrap();
+        guided.source = Source::Branch {
+            branch: branch.into(),
+            base_ref: "main".into(),
+        };
+        guided.progress = GuidedProgress {
+            reviewed: guided.progress.reviewed.clone(),
+            ..GuidedProgress::default()
+        };
+        guided.current = guided.final_step();
+        let key = guided.final_key();
+        guided.commentary.insert(
+            key,
+            commentary(
+                "Summary: Two renames that agree.\n\
+                 a.rs:L21 nit: new two repeats new one.\n\
+                 b.rs:L1 issue: callers of x are not updated.\n\
+                 Verdict: issue",
+            ),
+        );
+        state
+    }
+
+    #[test]
+    fn a_finding_of_the_final_review_is_picked_and_opened_on_its_line() {
+        use ratatui::crossterm::event::KeyCode::{Char, Down, Enter};
+        let mut state = on_final_with_findings("guided-test-final-open");
+
+        press(&mut state, Down);
+        press(&mut state, Enter);
+
+        assert_eq!(cursor_line(&state), (2, "+y".into()));
+        assert!(
+            screen(&state)
+                .iter()
+                .any(|row| row.contains("callers of x are not updated")),
+            "the finding shows under its line in the file"
+        );
+        press(&mut state, Char('t'));
+        press(&mut state, Char('w'));
+        assert_eq!(
+            state.guided.as_ref().unwrap().final_verdict(),
+            Some(Verdict::Nit)
+        );
+    }
+
+    #[test]
+    fn the_picked_finding_is_ticked_off_on_the_final_review() {
+        use ratatui::crossterm::event::KeyCode::{Char, Down};
+        let mut state = on_final_with_findings("guided-test-final-tick");
+
+        press(&mut state, Down);
+        press(&mut state, Char('t'));
+
+        assert_eq!(
+            state.guided.as_ref().unwrap().final_verdict(),
+            Some(Verdict::Nit)
+        );
+    }
+
+    #[test]
+    fn the_chat_opens_on_the_final_review_with_what_is_open_across_the_change() {
+        let mut state = on_final_with_findings("guided-test-final-chat");
+        state
+            .guided
+            .as_mut()
+            .unwrap()
+            .progress
+            .ticked
+            .push(TickedFinding {
+                path: "a.rs".into(),
+                line: 21,
+                text: "new two repeats new one.".into(),
+            });
+
+        press(&mut state, ratatui::crossterm::event::KeyCode::Char('C'));
+
+        assert_eq!(state.pending_action, Some(PendingAction::GuidedChat));
+        let guided = state.guided.as_ref().unwrap();
+        let subject = guided.chat_subject().unwrap();
+        let brief = guided.chat_brief(&subject);
+        assert!(
+            brief.contains("b.rs:L1 issue: callers of x are not updated"),
+            "{brief}"
+        );
+        assert!(!brief.contains("repeats new one"), "{brief}");
+    }
+
+    #[test]
+    fn a_fix_on_the_final_review_starts_from_the_picked_finding() {
+        use ratatui::crossterm::event::KeyCode::{Char, Down};
+        let mut state = on_final_with_findings("guided-test-final-fix");
+
+        press(&mut state, Down);
+        press(&mut state, Char('f'));
+
+        let Mode::Fix { text, .. } = &state.guided.as_ref().unwrap().mode else {
+            panic!("f asks what to change");
+        };
+        assert!(text.contains("callers of x are not updated"), "{}", &**text);
+    }
+
+    #[test]
+    fn the_chat_about_a_file_hears_what_the_final_review_found_in_it() {
+        let state = on_final_with_findings("guided-test-final-brief");
+
+        let brief = state.guided.as_ref().unwrap().chat_brief("b.rs");
+
+        assert!(brief.contains("callers of x are not updated"), "{brief}");
+    }
+
     fn reviewed_with_a_note() -> AppState {
         let mut state = walk_with_findings();
         let guided = state.guided.as_mut().unwrap();
@@ -4118,6 +4433,12 @@ mod tests {
     fn a_click_on_the_walk_badge_switches_mode_and_keeps_what_was_done() {
         let mut state = walk_with_plan();
         let guided = state.guided.as_mut().unwrap();
+        // It reads back what it saved, which the other walks with the plan
+        // would overwrite under the shared key.
+        guided.source = Source::Branch {
+            branch: "guided-test-walk-badge".into(),
+            base_ref: "main".into(),
+        };
         let reviewed = guided.steps[0].key();
         guided.progress.reviewed.push(reviewed.clone());
         let badge = draw::walk_badge_area(state.guided.as_deref().unwrap(), AREA).unwrap();
