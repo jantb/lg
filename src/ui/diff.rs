@@ -297,6 +297,42 @@ mod tests {
     }
 
     #[test]
+    fn sql_tells_keywords_in_any_case_from_names_strings_and_comments() {
+        let line = "+select \"order\", count(id) FROM orders WHERE note = 'it''s -- not' -- why";
+        let tokens = diff_line_tokens(line, "db/migration/V2__report.sql");
+        let of = |needle: &str, token: Token| {
+            let at = line.find(needle).expect("the line has it");
+            tokens[at..at + needle.chars().count()]
+                .iter()
+                .all(|t| *t == token)
+        };
+
+        assert!(of("select", Token::Keyword), "{tokens:?}");
+        assert!(of("FROM", Token::Keyword), "{tokens:?}");
+        assert!(of("WHERE", Token::Keyword), "{tokens:?}");
+        assert!(of("\"order\"", Token::Plain), "{tokens:?}");
+        assert!(of("count", Token::Function), "{tokens:?}");
+        assert!(of("orders", Token::Plain), "{tokens:?}");
+        assert!(of("'it''s -- not'", Token::Literal), "{tokens:?}");
+        assert!(of("-- why", Token::Comment), "{tokens:?}");
+    }
+
+    #[test]
+    fn sql_column_types_and_numbers_are_told_apart() {
+        let line = highlight_source_line_for_path(
+            "  amount NUMERIC(12, 2) NOT NULL DEFAULT 0, /* øre */",
+            "schema.sql",
+        );
+
+        assert_eq!(styled_text(&line, Color::LightCyan), "NUMERIC");
+        assert_eq!(styled_text(&line, Color::LightYellow), "1220");
+        assert_eq!(styled_text(&line, Color::DarkGray), "/* øre */");
+        let keywords = styled_text(&line, Color::Yellow);
+        assert!(keywords.contains("NOT"), "{keywords}");
+        assert!(keywords.contains("DEFAULT"), "{keywords}");
+    }
+
+    #[test]
     fn a_header_naming_a_path_with_spaces_gives_the_whole_path() {
         assert_eq!(
             diff_header_path("diff --git a/my dir/x.rs b/my dir/x.rs").as_deref(),
