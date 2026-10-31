@@ -304,8 +304,8 @@ fn is_here(guided: &Guided, open: &OpenFinding) -> bool {
     open.step == guided.current && open.at == Some(guided.cursor)
 }
 
-/// The button at the right end of a concern's heading: reads every file of
-/// it, then counts them in, then tallies what is open in them.
+/// The badge at the right end of a concern's heading: how many of its files
+/// are read, then what is open in them.
 fn concern_button(guided: &Guided, paths: &[String]) -> Span<'static> {
     let (read, total) = guided.read_of(paths);
     if read == total {
@@ -322,35 +322,10 @@ fn concern_button(guided: &Guided, paths: &[String]) -> Span<'static> {
             (issues, _) => Span::styled(format!(" \u{25cf}{issues} "), Style::default().fg(ISSUE)),
         };
     }
-    if guided.reading_ahead(paths) {
-        return Span::styled(
-            format!(" {read}/{total} "),
-            Style::default().fg(Color::Cyan),
-        );
-    }
     Span::styled(
-        " \u{25b6} read all ",
-        Style::default().fg(Color::White).bg(Color::Rgb(50, 50, 50)),
+        format!(" {read}/{total} "),
+        Style::default().fg(Color::Cyan),
     )
-}
-
-/// Whether `column` is on the button of concern `index`'s heading in a list
-/// drawn in `list`.
-pub(in crate::panel::guided) fn on_concern_button(
-    guided: &Guided,
-    list: Rect,
-    index: usize,
-    column: u16,
-) -> bool {
-    let Some(concern) = guided
-        .plan()
-        .and_then(|plan| plan.concerns.into_iter().nth(index))
-    else {
-        return false;
-    };
-    let width = u16::try_from(concern_button(guided, &concern.paths).width()).unwrap_or(0);
-    let end = list.x + list.width;
-    column >= end.saturating_sub(width) && column < end
 }
 
 pub(super) fn scope_badge(source: &Source) -> Span<'static> {
@@ -410,7 +385,7 @@ pub(super) fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
                     .map(|concern| concern.paths.clone())
                     .unwrap_or_default();
                 let button = concern_button(guided, &paths);
-                // The button sits at the right edge, where the eye finds it
+                // The badge sits at the right edge, where the eye finds it
                 // in every heading's row alike.
                 let room = width.saturating_sub(2 + button.width());
                 let title = truncate_left(&title, room);

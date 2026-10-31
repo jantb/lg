@@ -7,18 +7,91 @@ use crate::panel::guided::context::file_context;
 
 use super::*;
 
+/// The step number of `path` in the walk.
+fn number(state: &AppState, path: &str) -> usize {
+    let guided = state.guided.as_deref().unwrap();
+    guided.steps.iter().position(|s| s.path == path).unwrap() + 1
+}
+
 #[test]
-fn the_plan_is_read_first_and_a_file_only_once_the_walk_reaches_it() {
-    let mut state = walk_with_findings();
+fn the_plan_is_read_first_then_the_file_on_screen_then_every_file_but_the_skims() {
+    let mut state = walk_with_plan();
+    let lookup = number(&state, "src/lookup.rs");
     let guided = state.guided.as_mut().unwrap();
 
-    guided.current = 1;
-    assert_eq!(steps_to_read(guided), vec![OVERVIEW, 1]);
     guided.current = OVERVIEW;
-    assert_eq!(steps_to_read(guided), vec![OVERVIEW]);
-    guided.current = guided.final_step();
-    assert_eq!(steps_to_read(guided), vec![OVERVIEW, guided.final_step()]);
+    let in_order = |state: &AppState| {
+        let guided = state.guided.as_deref().unwrap();
+        steps_to_read(guided)
+            .into_iter()
+            .map(|step| match step {
+                OVERVIEW => "overview".to_string(),
+                step => guided.steps[step - 1].path.clone(),
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        in_order(&state),
+        [
+            "overview",
+            "src/cache.rs",
+            "src/lookup.rs",
+            "tests/cache.rs"
+        ]
+    );
 
+    state.guided.as_mut().unwrap().current = lookup;
+    assert_eq!(
+        in_order(&state),
+        [
+            "overview",
+            "src/lookup.rs",
+            "src/cache.rs",
+            "tests/cache.rs"
+        ]
+    );
+    // A skim is read only when the walk is on it.
+    state.guided.as_mut().unwrap().current = number(&state, "Cargo.lock");
+    assert_eq!(in_order(&state)[1], "Cargo.lock");
+}
+
+#[test]
+fn the_final_review_waits_until_every_file_is_read_and_its_questions_settled() {
+    let mut state = walk_with_plan();
+    let guided = state.guided.as_mut().unwrap();
+    let last = guided.final_step();
+    guided.current = last;
+    assert!(!steps_to_read(guided).contains(&last));
+    assert_eq!(guided.final_progress(), Some(Progress::Queued { ahead: 3 }));
+
+    for path in ["src/cache.rs", "src/lookup.rs", "tests/cache.rs"] {
+        let key = guided.steps.iter().find(|s| s.path == path).unwrap().key();
+        guided
+            .commentary
+            .insert(key, commentary("Summary: Fine.\nVerdict: ok"));
+    }
+    let lookup = guided
+        .steps
+        .iter()
+        .find(|s| s.path == "src/lookup.rs")
+        .unwrap()
+        .key();
+    guided.check_queue.push(lookup.clone());
+    assert!(!guided.ready_for_final());
+    guided.check_queue.clear();
+    guided.commentary.get_mut(&lookup).unwrap().checking = true;
+    assert_eq!(guided.files_settled(), (2, 3));
+    assert!(!steps_to_read(guided).contains(&last));
+
+    guided.commentary.get_mut(&lookup).unwrap().checking = false;
+    assert!(guided.ready_for_final());
+    assert_eq!(steps_to_read(guided).last(), Some(&last));
+}
+
+#[test]
+fn a_file_the_chat_is_owed_is_read_before_the_rest() {
+    let mut state = walk_with_findings();
+    let guided = state.guided.as_mut().unwrap();
     guided.owe_chat("a.rs".into(), ChatNews::FileRead);
     guided.owe_chat("a.rs".into(), ChatNews::Redone);
     guided.owe_chat("a.rs".into(), ChatNews::FileRead);
@@ -27,7 +100,7 @@ fn the_plan_is_read_first_and_a_file_only_once_the_walk_reaches_it() {
         vec![("a.rs".to_string(), ChatNews::Redone)]
     );
     guided.current = 2;
-    assert_eq!(steps_to_read(guided), vec![OVERVIEW, 2, 1]);
+    assert_eq!(steps_to_read(guided)[..3], [OVERVIEW, 2, 1]);
 }
 
 fn walked(state: &AppState) -> Vec<String> {
@@ -236,56 +309,30 @@ fn triage_lists_the_files_in_risk_bands_and_the_map_numbers_them() {
     assert!(rows.iter().any(|row| row.contains("4 Cargo.lock")));
 }
 
-/// The button reads the whole concern; a click on the heading's title
-/// does nothing, so reading is always chosen.
+/// A concern's heading counts its files in as they are read, then
+/// tallies what is open in them.
 #[test]
-fn a_concerns_button_reads_all_of_its_files_and_only_the_button_does() {
+fn a_concerns_heading_counts_its_files_in_then_tallies_them() {
     let mut state = walk_with_plan();
-    state.ai_assist = true;
-    let (list, _) = panes(&state);
     let rows = list_text(&state);
-    let heading = list.y + row_of(&rows, "The cache") as u16;
-    assert!(rows[row_of(&rows, "The cache")].contains("read all"));
-    let click = |state: &mut AppState, column: u16| {
-        mouse(
-            state,
-            MouseEventKind::Down(MouseButton::Left),
-            column,
-            heading,
-        )
-    };
+    assert!(
+        rows[row_of(&rows, "The cache")].contains("0/2"),
+        "{rows:#?}"
+    );
 
-    click(&mut state, list.x + 3);
-    assert!(!state.guided.as_ref().unwrap().wants_read("src/cache.rs"));
-
-    click(&mut state, list.x + list.width - 2);
-    let guided = state.guided.as_deref().unwrap();
-    assert!(guided.wants_read("src/cache.rs") && guided.wants_read("src/lookup.rs"));
-    assert!(!guided.wants_read("tests/cache.rs"));
-    let number = |path: &str| guided.steps.iter().position(|s| s.path == path).unwrap() + 1;
-    let wanted = steps_to_read(guided);
-    assert!(wanted.contains(&number("src/cache.rs")));
-    assert!(wanted.contains(&number("src/lookup.rs")));
-    assert!(!wanted.contains(&number("tests/cache.rs")));
-}
-
-#[test]
-fn a_reads_the_concern_of_the_file_on_screen() {
-    let mut state = walk_with_plan();
-    state.ai_assist = true;
     let guided = state.guided.as_mut().unwrap();
-    guided.current = guided
-        .steps
-        .iter()
-        .position(|s| s.path == "tests/cache.rs")
-        .unwrap()
-        + 1;
-
-    press(&mut state, ratatui::crossterm::event::KeyCode::Char('A'));
-
-    let guided = state.guided.as_deref().unwrap();
-    assert!(guided.wants_read("tests/cache.rs"));
-    assert!(!guided.wants_read("src/cache.rs"));
+    for path in ["src/cache.rs", "src/lookup.rs"] {
+        let key = guided.steps.iter().find(|s| s.path == path).unwrap().key();
+        guided.commentary.insert(
+            key,
+            commentary("Summary: Fine.\nL1 nit: a name.\nVerdict: nit"),
+        );
+    }
+    let rows = list_text(&state);
+    assert!(
+        rows[row_of(&rows, "The cache")].contains("\u{25cb}2"),
+        "{rows:#?}"
+    );
 }
 
 #[test]

@@ -81,6 +81,10 @@ pub fn poll(state: &mut AppState) {
     }
 
     let answered = drain_asks(guided);
+    let final_key = guided.final_key();
+    if answered.contains(&final_key) {
+        notices.push((review_done(guided), false));
+    }
     // Without a checkout there is no code to settle questions in.
     if let Some(root) = &root {
         guided.check_queue.extend(answered);
@@ -113,6 +117,22 @@ pub fn poll(state: &mut AppState) {
     if reload_after_fix {
         reload(state);
     }
+}
+
+/// What the whole review came to, said when its final read is in.
+fn review_done(guided: &Guided) -> String {
+    let open = guided.open_findings();
+    let count = |severity| {
+        open.iter()
+            .filter(|open| open.finding.severity == severity)
+            .count()
+    };
+    format!(
+        "review read: {} issue(s), {} nit(s), {} question(s) open \u{2014} M for the issues walk",
+        count(findings::Severity::Issue),
+        count(findings::Severity::Nit),
+        count(findings::Severity::Question),
+    )
 }
 
 /// The keys of the steps whose commentary came in whole.
@@ -308,19 +328,21 @@ fn concurrency() -> usize {
 }
 
 /// Most wanted first: the plan, which orders the walk, then the step on
-/// screen. A file is read only once the walk reaches it, the reviewer asks for
-/// its concern to be read, or the chat is owed its redo.
+/// screen, then every other file in the walk's order, and once they are all
+/// read and settled the final review, which sees what they raised.
 pub(super) fn steps_to_read(guided: &Guided) -> Vec<usize> {
     let owed = |i: usize| {
         let path = &guided.steps[i - 1].path;
         guided.chat_owed.iter().any(|(owed, _)| owed == path)
     };
-    let wanted = |i: usize| guided.read_wanted.contains(&guided.steps[i - 1].path);
+    let on_screen = Some(guided.current).filter(|&i| i != guided.final_step());
+    let last = guided.ready_for_final().then(|| guided.final_step());
     let mut seen = HashSet::new();
     std::iter::once(OVERVIEW)
-        .chain(std::iter::once(guided.current))
-        .chain(guided.walk_order().into_iter().filter(|&i| wanted(i)))
+        .chain(on_screen)
         .chain((1..=guided.total()).filter(|&i| owed(i)))
+        .chain(guided.files_to_read())
+        .chain(last)
         .filter(|&i| seen.insert(i))
         .collect()
 }

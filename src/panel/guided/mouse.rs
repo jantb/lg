@@ -8,7 +8,7 @@ use crate::state::AppState;
 use super::chat::chat_session;
 use super::found::toggle_ticks;
 use super::load::switch_scope;
-use super::navigate::{go_to, go_to_finding, move_cursor, read_concern, scroll_final, switch_walk};
+use super::navigate::{go_to, go_to_finding, move_cursor, scroll_final, switch_walk};
 use super::progress::reset_review;
 use super::{Mode, draw, keys};
 
@@ -96,11 +96,6 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
             match target {
                 Some(draw::RowTarget::Step(step)) => go_to(state, step, false),
                 Some(draw::RowTarget::Finding(open)) => go_to_finding(state, &open),
-                Some(draw::RowTarget::Concern(index))
-                    if draw::on_concern_button(guided, steps, index, m.column) =>
-                {
-                    read_concern(state, index)
-                }
                 Some(draw::RowTarget::Concern(_)) | None => {}
             }
             if let Some(guided) = state.guided.as_mut() {

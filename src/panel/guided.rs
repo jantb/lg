@@ -2,6 +2,11 @@
 //! read of each file beside it, notes pinned to lines, and the code editable
 //! on the way through; then a final read of the whole change across files.
 //!
+//! The model reads ahead of the reviewer the way the guided-review skill
+//! does: the plan, then every file in the walk's order with its questions
+//! settled in the code, then the whole change, so every issue and nit is on
+//! the list without walking to it first.
+//!
 //! The walk runs over the branch on screen — against main, or against where it
 //! was last pushed — in the working tree, so an edit made during the review is
 //! part of it the moment it is saved; or over a pull request as GitHub shows
@@ -290,8 +295,6 @@ pub struct Guided {
     checks: Vec<Check>,
     /// Steps whose questions wait for a check to free up, by key.
     check_queue: Vec<String>,
-    /// Files the reviewer asked to have read ahead of the walk, by path.
-    read_wanted: Vec<String>,
     /// Steps whose commentary was asked for and failed, so they are not asked
     /// again every frame.
     failed: HashSet<String>,
@@ -350,7 +353,6 @@ impl Guided {
             asks: Vec::new(),
             checks: Vec::new(),
             check_queue: Vec::new(),
-            read_wanted: Vec::new(),
             failed: HashSet::new(),
             earlier: HashMap::new(),
             delete_armed: None,
@@ -462,16 +464,45 @@ impl Guided {
         (read, steps.len())
     }
 
-    /// Whether the reviewer asked for `path` to be read ahead of the walk.
-    pub fn wants_read(&self, path: &str) -> bool {
-        self.read_wanted.iter().any(|wanted| wanted == path)
+    /// The files the review reads, in the walk's order: every one but those
+    /// the plan says are safe to skim.
+    pub fn files_to_read(&self) -> Vec<usize> {
+        let skim = self.plan().map(|plan| plan.skim).unwrap_or_default();
+        self.walk_order()
+            .into_iter()
+            .filter(|&step| !skim.contains_key(&self.steps[step - 1].path))
+            .collect()
     }
 
-    /// Whether every file of `paths` was asked for ahead of the walk and not
-    /// all of them are in yet.
-    pub fn reading_ahead(&self, paths: &[String]) -> bool {
-        let (read, total) = self.read_of(paths);
-        read < total && paths.iter().all(|path| self.read_wanted.contains(path))
+    /// How many of [`Guided::files_to_read`] are read with their questions
+    /// settled, or failed, and how many there are.
+    pub fn files_settled(&self) -> (usize, usize) {
+        let files = self.files_to_read();
+        let settled = files
+            .iter()
+            .filter(|&&step| {
+                let key = self.steps[step - 1].key();
+                self.failed.contains(&key)
+                    || (self
+                        .commentary
+                        .get(&key)
+                        .is_some_and(|c| c.done && !c.checking)
+                        && !self.check_queue.contains(&key))
+            })
+            .count();
+        (settled, files.len())
+    }
+
+    /// Whether every file is read and settled, so the final review can see
+    /// all they raised: the plan in, then each file.
+    pub fn ready_for_final(&self) -> bool {
+        let planned = self
+            .commentary
+            .get(OVERVIEW_KEY)
+            .is_some_and(|plan| plan.done)
+            || self.failed.contains(OVERVIEW_KEY);
+        let (settled, total) = self.files_settled();
+        planned && settled == total
     }
 
     /// How far the plan has got while it is being read: the diff being read,
@@ -489,18 +520,17 @@ impl Guided {
         }))
     }
 
-    /// How far the final review has got: waiting its turn while the walk is
-    /// on it, the change being read, then the findings written so far.
+    /// How far the final review has got: waiting for the files while the
+    /// walk is on it, the change being read, then the findings written so far.
     pub fn final_progress(&self) -> Option<Progress> {
         let key = self.final_key();
         match self.commentary.get(&key) {
-            None if self.on_final() && !self.failed.contains(&key) => Some(Progress::Queued {
-                ahead: self
-                    .asks
-                    .iter()
-                    .filter(|ask| matches!(ask.target, Target::Commentary(_)))
-                    .count(),
-            }),
+            None if self.on_final() && !self.failed.contains(&key) => {
+                let (settled, total) = self.files_settled();
+                Some(Progress::Queued {
+                    ahead: total - settled,
+                })
+            }
             Some(commentary) if !commentary.done => {
                 let reading = findings::read(&commentary.text);
                 Some(before_writing(commentary).unwrap_or(Progress::Finding {
@@ -627,7 +657,7 @@ pub struct OpenFinding {
 /// A long read on its way: the plan, or the final review of the whole change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Progress {
-    /// Not sent yet: this many reads have the model's turns ahead of it.
+    /// Not sent yet: this many files are still being read and settled.
     Queued {
         ahead: usize,
     },

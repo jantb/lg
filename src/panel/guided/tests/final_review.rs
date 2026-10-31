@@ -213,8 +213,8 @@ fn the_chat_about_a_file_hears_what_the_final_review_found_in_it() {
     assert!(brief.contains("callers of x are not updated"), "{brief}");
 }
 
-/// Going to the final review shows it working from the first moment: in
-/// line behind the reads already running, then reading the change, then
+/// Going to the final review shows it working from the first moment:
+/// waiting for the files still being read, then reading the change, then
 /// how many findings it has written.
 #[test]
 fn the_final_review_shows_how_far_it_has_got() {
@@ -222,16 +222,11 @@ fn the_final_review_shows_how_far_it_has_got() {
     state.ai_assist = true;
     let guided = state.guided.as_mut().unwrap();
     guided.current = guided.final_step();
-    let (_busy, rx) = std::sync::mpsc::channel();
-    guided.asks.push(Ask {
-        target: Target::Commentary(guided.steps[0].key()),
-        rx,
-    });
-    assert_eq!(guided.final_progress(), Some(Progress::Queued { ahead: 1 }));
+    assert_eq!(guided.final_progress(), Some(Progress::Queued { ahead: 3 }));
     assert!(
         screen(&state)
             .iter()
-            .any(|row| row.contains("queued behind 1 read"))
+            .any(|row| row.contains("waiting for 3 file(s)"))
     );
 
     let guided = state.guided.as_mut().unwrap();

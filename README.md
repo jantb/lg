@@ -59,9 +59,13 @@ agents safely.
   concern as context), as a map numbered in the plan's reading order, as
   triage in risk bands with `S` marking the files to skim reviewed, or as
   issues: every open finding of what has been read, worst first, which the
-  arrows walk so the main issues come before the nits. A file is read when
-  the walk reaches it; a concern's `▶ read all` button (or `A`) reads all of
-  it at once, and a bar shows how far the plan has got. Each file comes
+  arrows walk so the main issues come before the nits. Once the plan is in,
+  the model reads ahead of you the way the guided-review skill does: the file
+  on screen first, then every file not safe to skim in the walk's order, each
+  with its questions settled in the code, then the whole change once they
+  are all in, so the issues walk lists every finding without walking to it
+  first. Each concern's heading counts its files in, and a bar shows how far
+  the plan has got. Each file comes
   with the model's read of all its hunks together. Move a line
   cursor, pin notes to lines, ask follow-up questions, and fix things as you
   go: `e` opens `$EDITOR` at the line with lg suspended, and `f` has Claude

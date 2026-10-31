@@ -60,7 +60,6 @@ pub(super) fn reset_review(state: &mut AppState) {
     guided.asks.clear();
     guided.checks.clear();
     guided.check_queue.clear();
-    guided.read_wanted.clear();
     guided.chat_owed.clear();
     guided.shared_brief = None;
     guided.delete_armed = None;

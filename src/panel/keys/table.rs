@@ -1433,11 +1433,6 @@ pub const SECTIONS: &[Section] = &[
                 footer: None,
             },
             Binding {
-                key: "A / \u{25b6} read all",
-                help: "Read every file of this concern now",
-                footer: None,
-            },
-            Binding {
                 key: "X",
                 help: "Reset notes, marks, ticks (press twice)",
                 footer: None,

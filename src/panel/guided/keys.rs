@@ -79,7 +79,6 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('[') => super::navigate::previous_step(state),
         KeyCode::Char('M') => super::navigate::switch_walk(state),
         KeyCode::Char('S') => super::progress::mark_skims_reviewed(state),
-        KeyCode::Char('A') => super::navigate::read_concern_on_screen(state),
         KeyCode::Char('d') if ctrl => scroll_side(state, 8),
         KeyCode::Char('u') if ctrl => scroll_side(state, -8),
         KeyCode::Char('u') => super::navigate::next_unreviewed(state),

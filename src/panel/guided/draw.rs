@@ -30,8 +30,8 @@ mod overview;
 mod panes;
 
 pub(super) use list::{
-    RowTarget, list_width, on_concern_button, reset_button_area, row_targets, scope_badge_area,
-    steps_area, walk_badge_area,
+    RowTarget, list_width, reset_button_area, row_targets, scope_badge_area, steps_area,
+    walk_badge_area,
 };
 #[cfg(test)]
 pub(super) use panes::step_areas;
@@ -137,7 +137,7 @@ fn modal_rows(guided: &Guided, area: Rect) -> Option<(Rect, Vec<Rect>)> {
 fn progress_text(progress: Progress, width: usize) -> String {
     match progress {
         Progress::Queued { ahead: 0 } => "starting".to_string(),
-        Progress::Queued { ahead } => format!("queued behind {ahead} read(s) already running"),
+        Progress::Queued { ahead } => format!("waiting for {ahead} file(s) to be read"),
         Progress::Reading {
             elapsed,
             expected: Some(expected),
@@ -229,16 +229,10 @@ fn draw_progress(state: &AppState, guided: &Guided, area: Rect, frame: &mut Fram
             Style::default().fg(Color::Cyan),
         ));
     }
-    let wanted: Vec<String> = guided
-        .steps
-        .iter()
-        .filter(|step| guided.wants_read(&step.path))
-        .map(|step| step.path.clone())
-        .collect();
-    let (read, total) = guided.read_of(&wanted);
-    if read < total {
+    let (settled, total) = guided.files_settled();
+    if state.ai_assist && guided.plan().is_some() && settled < total {
         spans.push(Span::styled(
-            format!("  {spinner} reading {read}/{total} file(s)"),
+            format!("  {spinner} reading {settled}/{total} file(s)"),
             Style::default().fg(Color::Cyan),
         ));
     }

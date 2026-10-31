@@ -86,62 +86,6 @@ pub(super) fn switch_walk(state: &mut AppState) {
     }
 }
 
-/// Have every file of concern `index` read now, ahead of the walk.
-pub(super) fn read_concern(state: &mut AppState, index: usize) {
-    if !state.ai_assist {
-        state.set_status(crate::panel::commit::AI_OFF_NOTICE, false);
-        return;
-    }
-    let Some(guided) = state.guided.as_mut() else {
-        return;
-    };
-    let Some(concern) = guided
-        .plan()
-        .and_then(|plan| plan.concerns.into_iter().nth(index))
-    else {
-        return;
-    };
-    let (read, total) = guided.read_of(&concern.paths);
-    for path in &concern.paths {
-        if !guided.read_wanted.contains(path) {
-            guided.read_wanted.push(path.clone());
-        }
-    }
-    let message = if read == total {
-        format!("every file of \"{}\" is read", concern.title)
-    } else {
-        format!(
-            "reading the {} file(s) of \"{}\" still unread\u{2026}",
-            total - read,
-            concern.title
-        )
-    };
-    state.set_status(message, false);
-}
-
-/// Have the concern of the file on screen read whole.
-pub(super) fn read_concern_on_screen(state: &mut AppState) {
-    let Some(guided) = state.guided.as_deref() else {
-        return;
-    };
-    let Some(path) = guided.step().map(|step| step.path.clone()) else {
-        state.set_status("the concern is a file's: \u{2192} to one first", false);
-        return;
-    };
-    let Some(plan) = guided.plan() else {
-        state.set_status("the plan is not read yet", false);
-        return;
-    };
-    match plan
-        .concerns
-        .iter()
-        .position(|concern| concern.paths.contains(&path))
-    {
-        Some(index) => read_concern(state, index),
-        None => state.set_status("this file is in no concern", false),
-    }
-}
-
 /// The next open finding, worst first: its file on screen, the cursor on its
 /// line. Past the last is the final review, and past that every note.
 pub(super) fn next_issue(state: &mut AppState) {
