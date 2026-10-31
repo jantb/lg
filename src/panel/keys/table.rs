@@ -1373,6 +1373,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("C", "chat")),
             },
             Binding {
+                key: "< / > / drag",
+                help: "Widen / narrow the chat",
+                footer: None,
+            },
+            Binding {
                 key: "J/K",
                 help: "Scroll the commentary",
                 footer: None,

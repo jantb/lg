@@ -14,7 +14,7 @@ use crate::ui;
 
 use super::commentary::commentary_lines;
 use super::diff::{DiffLines, file_title, final_inline, finding_lines, inline_lead, push_diff};
-use super::panes::{CHAT_SPLIT, diff_room, draw_chat, split_for_diff};
+use super::panes::{diff_room, draw_chat, split_chat, split_for_diff};
 use super::{CURSOR_BG, KEY, LABEL, progress_text, verdict_look};
 
 /// The final step: the whole changeset above, every file one after another
@@ -47,7 +47,7 @@ pub(super) fn draw_final(
 
     let commentary = match super::chat_session(state) {
         Some(id) => {
-            let (columns, gaps) = ui::modal_columns(frame, below, &CHAT_SPLIT);
+            let (columns, gaps) = split_chat(frame, guided, below);
             dividers.extend(gaps);
             draw_chat(state, guided, id, columns[1], frame);
             columns[0]

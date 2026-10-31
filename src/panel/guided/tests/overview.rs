@@ -152,3 +152,86 @@ fn claude_opens_beside_a_review_with_a_model_and_a_checkout() {
         "not checked out here"
     );
 }
+
+/// The overview with a chat beside it, as far as the layout knows.
+fn overview_with_chat() -> AppState {
+    let mut state = overview_with_findings();
+    state.guided.as_mut().unwrap().chat = Some(crate::session::SessionId::unstarted(1));
+    state
+}
+
+fn chat_screen(state: &AppState) -> ratatui::layout::Rect {
+    let (_, side) = panes(state);
+    draw::chat_screen_area(state.guided.as_deref().unwrap(), side, state.diff_view_mode).unwrap()
+}
+
+#[test]
+fn dragging_the_divider_left_of_the_chat_sizes_it_for_the_next_review_too() {
+    let mut state = overview_with_chat();
+    let before = chat_screen(&state);
+    let divider = before.x - 1;
+
+    mouse(
+        &mut state,
+        MouseEventKind::Down(MouseButton::Left),
+        divider,
+        before.y,
+    );
+    mouse(
+        &mut state,
+        MouseEventKind::Drag(MouseButton::Left),
+        divider - 10,
+        before.y,
+    );
+    mouse(
+        &mut state,
+        MouseEventKind::Up(MouseButton::Left),
+        divider - 10,
+        before.y,
+    );
+
+    let after = chat_screen(&state);
+    assert_eq!(after.width, before.width + 10);
+    assert_eq!(
+        after.x + after.width,
+        before.x + before.width,
+        "the right edge stays"
+    );
+    assert_eq!(state.guided_chat_width, Some(after.width));
+    assert_eq!(
+        state.guided.as_deref().unwrap().current,
+        OVERVIEW,
+        "a drag goes nowhere"
+    );
+}
+
+#[test]
+fn angle_brackets_widen_and_narrow_the_chat() {
+    use ratatui::crossterm::event::KeyCode::Char;
+    let mut state = overview_with_chat();
+    let (_, side) = panes(&state);
+    state.guided.as_ref().unwrap().chat_room.set(side.width);
+    let before = chat_screen(&state).width;
+
+    press(&mut state, Char('<'));
+    assert_eq!(chat_screen(&state).width, before + 4);
+    press(&mut state, Char('>'));
+    press(&mut state, Char('>'));
+    assert_eq!(chat_screen(&state).width, before - 4);
+}
+
+#[test]
+fn the_chat_and_the_read_beside_it_each_keep_a_minimum() {
+    assert_eq!(draw::chat_width(None, 100), 60);
+    assert_eq!(draw::chat_width(Some(5), 100), 24);
+    assert_eq!(
+        draw::chat_width(Some(95), 100),
+        79,
+        "the read keeps 20 and the divider"
+    );
+    assert_eq!(
+        draw::chat_width(Some(40), 30),
+        9,
+        "too narrow for both: the read wins"
+    );
+}

@@ -36,7 +36,7 @@ pub(super) use list::{
 pub(super) use overview::{OverviewTarget, overview_target_at};
 #[cfg(test)]
 pub(super) use panes::step_areas;
-pub(super) use panes::{chat_screen_area, diff_area, finding_at, selectable_areas};
+pub(super) use panes::{chat_screen_area, chat_width, diff_area, finding_at, selectable_areas};
 
 const LABEL: Style = Style::new().fg(Color::DarkGray);
 const KEY: Style = Style::new().fg(Color::Yellow);

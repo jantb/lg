@@ -286,6 +286,11 @@ pub struct Guided {
     pub final_reveal: std::cell::Cell<bool>,
     pub chat: Option<crate::session::SessionId>,
     pub chat_file: Option<String>,
+    /// The chat as wide as it was dragged or sized; until then, three fifths
+    /// of the width it shares with the model's read.
+    pub chat_width: Option<u16>,
+    /// The width the chat last shared with the read, to size it by key.
+    pub chat_room: std::cell::Cell<u16>,
     chat_owed: Vec<(String, ChatNews)>,
 }
 
@@ -329,6 +334,8 @@ impl Guided {
             final_reveal: std::cell::Cell::new(false),
             chat: None,
             chat_file: None,
+            chat_width: None,
+            chat_room: std::cell::Cell::new(0),
             chat_owed: Vec::new(),
         }
     }

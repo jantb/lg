@@ -29,7 +29,7 @@ pub fn handle_mouse(state: &mut AppState, area: ratatui::layout::Rect, m: &Mouse
     else {
         return;
     };
-    if resize_list(state, list, m) {
+    if resize_list(state, list, m) || resize_chat(state, side, m) {
         return;
     }
     if pointer::left_click(m) && button_click(state, area, list, m) {
@@ -228,6 +228,54 @@ fn chat_mouse(state: &mut AppState, side: ratatui::layout::Rect, m: &MouseEvent)
         }
         _ => false,
     }
+}
+
+/// The divider left of the chat, dragged, sets how wide the chat is.
+/// Returns whether the event went to the drag.
+fn resize_chat(state: &mut AppState, side: ratatui::layout::Rect, m: &MouseEvent) -> bool {
+    let mode = state.diff_view_mode;
+    let Some(screen) = state
+        .guided
+        .as_deref()
+        .and_then(|guided| draw::chat_screen_area(guided, side, mode))
+    else {
+        state.guided_chat_drag_active = false;
+        return false;
+    };
+    match m.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            // The divider runs down beside the chat's title row and its screen.
+            let rows = screen.y.saturating_sub(1)..screen.y + screen.height;
+            state.guided_chat_drag_active = m.column + 1 == screen.x && rows.contains(&m.row);
+            state.guided_chat_drag_active
+        }
+        MouseEventKind::Drag(MouseButton::Left) if state.guided_chat_drag_active => {
+            let right = screen.x + screen.width;
+            set_chat_width(state, right.saturating_sub(m.column + 1));
+            true
+        }
+        MouseEventKind::Up(MouseButton::Left) if state.guided_chat_drag_active => {
+            state.guided_chat_drag_active = false;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Sizes the chat, held to what the room beside it allows, for this review
+/// and the next.
+pub(super) fn set_chat_width(state: &mut AppState, width: u16) {
+    let Some(guided) = state.guided.as_mut() else {
+        return;
+    };
+    let room = guided.chat_room.get();
+    let width = if room == 0 {
+        width
+    } else {
+        draw::chat_width(Some(width), room)
+    };
+    guided.chat_width = Some(width);
+    state.guided_chat_width = Some(width);
 }
 
 /// The divider right of the step list, dragged, sets how wide the list is.

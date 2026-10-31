@@ -106,6 +106,8 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('v') => super::navigate::toggle_layout(state),
         KeyCode::Char('t') => super::found::tick_at_cursor(state),
         KeyCode::Char('C') => super::chat::open_chat(state),
+        KeyCode::Char('<') => resize_chat(state, 4),
+        KeyCode::Char('>') => resize_chat(state, -4),
         _ => {}
     }
 }
@@ -135,6 +137,20 @@ fn chat_key(state: &mut AppState, key: KeyEvent) {
         }
         None => set_mode(state, Mode::Browse),
     }
+}
+
+/// Widens the chat by `by` columns, or narrows it when `by` is negative.
+fn resize_chat(state: &mut AppState, by: i32) {
+    let Some(guided) = state.guided.as_deref() else {
+        return;
+    };
+    if guided.chat.is_none() {
+        state.set_status("no chat to size: C opens one", false);
+        return;
+    }
+    let shown = super::draw::chat_width(guided.chat_width, guided.chat_room.get());
+    let width = shown.saturating_add_signed(by as i16);
+    super::mouse::set_chat_width(state, width);
 }
 
 fn go_overview(state: &mut AppState) {

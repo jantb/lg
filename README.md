@@ -62,7 +62,8 @@ agents safely.
   opens it at its line. Claude Code opens beside the review from the start,
   told what is open as the reads come in, so you can fix as you go: `f` hands
   it the finding or note on the cursor line (on the overview, everything
-  open), ready to send. The mode badge in the header (or `M`) walks the files
+  open), ready to send. Drag the divider left of it, or press `<` and `>`,
+  to size it. The mode badge in the header (or `M`) walks the files
   by concern (the default, each file read with the rest of its concern as
   context) or by issue: every open finding, worst first, which the arrows
   walk so the main issues come before the nits. Each concern's heading counts

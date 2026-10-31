@@ -47,6 +47,7 @@ fn open_local(state: &mut AppState, source: Source) {
         _ => "the branch",
     };
     let mut guided = Guided::new(source);
+    guided.chat_width = state.guided_chat_width;
     guided.loading = Some(work::load_local(&guided.source));
     state.guided = Some(Box::new(guided));
     state.modal = Modal::GuidedReview;
@@ -110,6 +111,7 @@ pub fn open_pull_request(state: &mut AppState, pr: &crate::github::PullRequest) 
         commit: String::new(),
         local,
     });
+    guided.chat_width = state.guided_chat_width;
     guided.loading = Some(work::load_pull_request(pr.clone(), local));
     guided.pull_request = Some(pr.clone());
     state.guided = Some(Box::new(guided));

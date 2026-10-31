@@ -33,7 +33,7 @@ pub(super) fn draw_step(
         }
         match super::chat_session(state) {
             Some(id) => {
-                let (columns, gaps) = ui::modal_columns(frame, area, &CHAT_SPLIT);
+                let (columns, gaps) = split_chat(frame, guided, area);
                 dividers.extend(gaps);
                 draw_overview(state, guided, columns[0], frame);
                 draw_chat(state, guided, id, columns[1], frame);
@@ -49,7 +49,7 @@ pub(super) fn draw_step(
     draw_diff(guided, step, mode, parts[0], frame);
     match super::chat_session(state) {
         Some(id) => {
-            let (columns, gaps) = ui::modal_columns(frame, parts[1], &CHAT_SPLIT);
+            let (columns, gaps) = split_chat(frame, guided, parts[1]);
             dividers.extend(gaps);
             draw_commentary(state, guided, step, columns[0], frame);
             draw_chat(state, guided, id, columns[1], frame);
@@ -70,8 +70,32 @@ pub(in crate::panel::guided) fn selectable_areas(
     vec![parts[0], commentary_area(guided, parts[1])]
 }
 
-pub(super) const CHAT_SPLIT: [Constraint; 2] =
-    [Constraint::Percentage(40), Constraint::Percentage(60)];
+/// The narrowest the chat and the read beside it are drawn.
+const MIN_CHAT_WIDTH: u16 = 24;
+const MIN_READ_WIDTH: u16 = 20;
+
+/// How wide the chat is when it shares `room` columns with the read: as
+/// asked for, else three fifths, leaving the read its own minimum.
+pub(in crate::panel::guided) fn chat_width(asked: Option<u16>, room: u16) -> u16 {
+    let most = room.saturating_sub(MIN_READ_WIDTH + 1);
+    asked
+        .unwrap_or(room * 3 / 5)
+        .min(most)
+        .max(MIN_CHAT_WIDTH.min(most))
+}
+
+fn chat_split(guided: &Guided, room: u16) -> [Constraint; 2] {
+    [
+        Constraint::Min(0),
+        Constraint::Length(chat_width(guided.chat_width, room)),
+    ]
+}
+
+/// The read left, the chat right, and the divider between them drawn.
+pub(super) fn split_chat(frame: &mut Frame, guided: &Guided, area: Rect) -> (Vec<Rect>, Vec<Rect>) {
+    guided.chat_room.set(area.width);
+    ui::modal_columns(frame, area, &chat_split(guided, area.width))
+}
 
 /// The diff and what sits below it, on a file's step or the final review.
 fn diff_and_below(guided: &Guided, side: Rect, mode: DiffViewMode) -> Option<Vec<Rect>> {
@@ -86,7 +110,7 @@ fn diff_and_below(guided: &Guided, side: Rect, mode: DiffViewMode) -> Option<Vec
 /// while one runs.
 pub(super) fn commentary_area(guided: &Guided, below: Rect) -> Rect {
     if guided.chat.is_some() {
-        ui::modal_column_areas(below, &CHAT_SPLIT).0[0]
+        ui::modal_column_areas(below, &chat_split(guided, below.width)).0[0]
     } else {
         below
     }
@@ -100,7 +124,7 @@ pub(in crate::panel::guided) fn chat_screen_area(
     guided.chat?;
     // The overview has nothing above it: the chat shares the whole side.
     let below = diff_and_below(guided, side, mode).map_or(side, |parts| parts[1]);
-    let (columns, _) = ui::modal_column_areas(below, &CHAT_SPLIT);
+    let (columns, _) = ui::modal_column_areas(below, &chat_split(guided, below.width));
     let chat = columns[1];
     Some(Rect {
         y: chat.y + 1,
