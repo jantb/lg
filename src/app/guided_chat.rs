@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use crate::panel::guided::{ChatNews, Mode};
+use crate::panel::guided::{ChatNews, Mode, WHOLE_CHANGE};
 use crate::session::{SessionId, SessionKind, SessionSpec};
 use crate::state::AppState;
 
@@ -28,12 +28,11 @@ impl App {
     }
 }
 
-/// Returns what the chat starts on: a file, or the whole change.
+/// The chat is about the whole change, wherever the walk is: moving through
+/// the walk tells it nothing, and `f` hands it what to fix.
 fn start(state: &mut AppState, focus: bool) -> Result<String> {
     let guided = state.guided.as_ref().context("no guided review open")?;
-    let path = guided
-        .chat_subject()
-        .context("no file or whole change on screen")?;
+    let path = WHOLE_CHANGE.to_string();
     let cwd = PathBuf::from(state.repo_root.as_deref().context("no repository open")?);
     let read = guided.has_read(&path);
     let brief = if read {

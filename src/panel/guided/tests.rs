@@ -12,6 +12,7 @@ mod list;
 mod overview;
 mod parts;
 mod questions;
+mod refresh;
 mod reset;
 mod review_chat;
 mod source;
@@ -159,7 +160,7 @@ pub(super) fn chatting(state: &mut AppState, script: &str, ready: &str) {
     }
     let guided = state.guided.as_mut().unwrap();
     guided.chat = Some(id);
-    guided.chat_file = Some("a.rs".into());
+    guided.chat_file = Some(WHOLE_CHANGE.into());
 }
 
 /// Four files and the plan the model gave for them. Progress starts empty

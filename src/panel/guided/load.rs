@@ -148,6 +148,7 @@ pub fn reload(state: &mut AppState) {
         return;
     };
     if guided.loading.is_some() {
+        guided.reload_owed = true;
         return;
     }
     guided.loading = Some(match (&guided.source, guided.pull_request.clone()) {
@@ -202,6 +203,24 @@ pub(super) fn overview_of(
 pub(super) fn apply_loaded(guided: &mut Guided, loaded: Loaded, first_load: bool) {
     let previous = guided.step().map(|step| (step.key(), step.path.clone()));
     let was_final = guided.on_final();
+    let (cursor, side_scroll) = (guided.cursor, guided.side_scroll);
+    // A file changed since it was read takes its last read along, so the
+    // next one can say what the change fixed.
+    for old in &guided.steps {
+        let changed = loaded
+            .steps
+            .iter()
+            .any(|step| step.path == old.path && step.key() != old.key());
+        if let Some(read) = guided
+            .commentary
+            .get(&old.key())
+            .filter(|c| changed && c.done && c.error.is_none())
+        {
+            guided
+                .earlier
+                .insert(old.path.clone(), read.text.trim().to_string());
+        }
+    }
     // A fresh read keeps a pull request's commit, which only the load knows.
     guided.source = loaded.source;
     guided.steps = loaded.steps;
@@ -209,7 +228,7 @@ pub(super) fn apply_loaded(guided: &mut Guided, loaded: Loaded, first_load: bool
     guided.brief = loaded.overview.brief;
     if was_final {
         guided.current = guided.final_step();
-    } else if let Some((key, path)) = previous {
+    } else if let Some((key, path)) = previous.clone() {
         // The same change if it is still there, else the same file, else
         // where the walk was.
         let index = guided
@@ -227,8 +246,15 @@ pub(super) fn apply_loaded(guided: &mut Guided, loaded: Loaded, first_load: bool
         guided.current = first_unreviewed(guided).unwrap_or(OVERVIEW);
     }
     guided.current = guided.current.min(guided.final_step());
-    guided.cursor = guided.step().map(GuidedFile::first_changed).unwrap_or(0);
-    guided.side_scroll = 0;
+    // A read that changed nothing on screen leaves the reviewer where they were.
+    let unchanged = previous.is_some_and(|(key, _)| guided.step().is_some_and(|s| s.key() == key));
+    if unchanged {
+        guided.cursor = cursor;
+        guided.side_scroll = side_scroll;
+    } else {
+        guided.cursor = guided.step().map(GuidedFile::first_changed).unwrap_or(0);
+        guided.side_scroll = 0;
+    }
 }
 
 fn first_unreviewed(guided: &Guided) -> Option<usize> {

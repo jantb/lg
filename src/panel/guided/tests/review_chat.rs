@@ -51,19 +51,20 @@ fn a_running_chat_stays_on_screen_through_the_final_review() {
     let mut state = walk_with_findings();
     chatting(&mut state, "echo ready; sleep 30", "ready");
 
-    press(&mut state, ratatui::crossterm::event::KeyCode::Char('w'));
+    press(&mut state, ratatui::crossterm::event::KeyCode::Char('G'));
 
     assert!(state.guided.as_ref().unwrap().on_final());
     let rows = screen(&state);
     state.sessions.close_all();
     assert!(
-        rows.iter().any(|row| row.contains("Claude \u{b7} a.rs")),
+        rows.iter()
+            .any(|row| row.contains("Claude \u{b7} the whole change")),
         "{rows:#?}"
     );
 }
 
 #[test]
-fn the_chat_starts_on_what_is_open_in_the_file_on_screen() {
+fn c_opens_the_chat_and_y_copies_what_is_open_in_the_file_on_screen() {
     let mut state = walk_with_findings();
     let guided = state.guided.as_mut().unwrap();
     guided.progress.ticked.push(TickedFinding {
@@ -91,4 +92,23 @@ fn the_chat_starts_on_what_is_open_in_the_file_on_screen() {
         panic!("Y copies");
     };
     assert_eq!(*text, brief);
+}
+
+/// The chat is about the whole change: walking from file to file tells it
+/// nothing, so it is not handed a brief for every file passed.
+#[test]
+fn walking_the_review_sends_the_chat_nothing() {
+    use ratatui::crossterm::event::KeyCode::{Left, Right};
+    let mut state = walk_with_findings();
+    state.ai_assist = false;
+    state.guided.as_mut().unwrap().chat = Some(crate::session::SessionId::unstarted(1));
+
+    for key in [Right, Right, Left] {
+        press(&mut state, key);
+        poll(&mut state);
+    }
+
+    let guided = state.guided.as_ref().unwrap();
+    assert!(guided.chat_owed.is_empty());
+    assert_eq!(guided.chat_file, None, "the chat does not follow the walk");
 }
