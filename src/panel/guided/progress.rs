@@ -1,7 +1,7 @@
 //! Marking files reviewed, and starting the review over.
 
 use crate::git::guided::{GuidedFile, GuidedProgress};
-use crate::state::AppState;
+use crate::state::{AppState, PendingAction};
 
 use super::{Mode, OVERVIEW};
 
@@ -34,6 +34,8 @@ pub(super) fn mark_skims_reviewed(state: &mut AppState) {
 }
 
 /// The first press only asks: it forgets every note, which the walk cannot give back.
+/// The Claude chat starts over with it, so it does not go on about a review
+/// that is gone.
 pub(super) fn reset_review(state: &mut AppState) {
     let Some(guided) = state.guided.as_mut() else {
         return;
@@ -43,7 +45,7 @@ pub(super) fn reset_review(state: &mut AppState) {
         let notes = guided.progress.notes.len();
         state.set_status(
             format!(
-                "reset again to start over: forgets {notes} note(s), every reviewed mark and tick, and the model's reads"
+                "reset again to start over: forgets {notes} note(s), every reviewed mark and tick, and the model's reads, and restarts the chat"
             ),
             false,
         );
@@ -60,6 +62,8 @@ pub(super) fn reset_review(state: &mut AppState) {
     guided.checks.clear();
     guided.check_queue.clear();
     guided.chat_owed.clear();
+    let chat = guided.chat.take();
+    guided.chat_file = None;
     guided.shared_brief = None;
     guided.delete_armed = None;
     guided.mode = Mode::Browse;
@@ -68,7 +72,16 @@ pub(super) fn reset_review(state: &mut AppState) {
     guided.side_scroll = 0;
     guided.final_scroll.set(0);
     guided.final_pick = 0;
-    match guided.save() {
+    let reopen = chat.is_some()
+        || super::poll::opens_chat_beside(guided, state.ai_assist, state.repo_root.is_some());
+    let saved = guided.save();
+    if let Some(id) = chat {
+        state.sessions.close(id);
+    }
+    if reopen {
+        state.pending_action = Some(PendingAction::GuidedChat { focus: false });
+    }
+    match saved {
         Ok(()) => state.set_status(
             "review reset \u{2014} starting over from the overview",
             false,

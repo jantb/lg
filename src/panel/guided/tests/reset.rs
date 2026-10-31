@@ -64,3 +64,27 @@ fn the_reset_button_under_the_steps_resets_on_a_second_click() {
     click(&mut state);
     assert!(was_reset(&state));
 }
+
+#[test]
+fn a_reset_closes_the_chat_and_opens_a_fresh_one() {
+    use ratatui::crossterm::event::KeyCode::Char;
+    let mut state = reviewed_with_a_note();
+    let guided = state.guided.as_mut().unwrap();
+    guided.chat = Some(crate::session::SessionId::unstarted(1));
+    guided.chat_file = Some("a.rs".into());
+    guided.mode = Mode::Browse;
+
+    press(&mut state, Char('X'));
+    assert!(
+        state.guided.as_ref().unwrap().chat.is_some(),
+        "the first press only asks"
+    );
+    press(&mut state, Char('X'));
+
+    let guided = state.guided.as_ref().unwrap();
+    assert!(guided.chat.is_none() && guided.chat_file.is_none());
+    assert_eq!(
+        state.pending_action,
+        Some(crate::state::PendingAction::GuidedChat { focus: false })
+    );
+}
