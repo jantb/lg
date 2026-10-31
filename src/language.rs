@@ -15,10 +15,11 @@ pub enum Language {
     Go,
     Markdown,
     Json,
+    Sql,
 }
 
 impl Language {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Rust,
         Self::Kotlin,
         Self::Java,
@@ -28,6 +29,7 @@ impl Language {
         Self::Go,
         Self::Markdown,
         Self::Json,
+        Self::Sql,
     ];
 
     /// The language of the file at `path`, judged by its extension.
@@ -43,6 +45,7 @@ impl Language {
             "go" => Self::Go,
             "md" | "markdown" => Self::Markdown,
             "json" => Self::Json,
+            "sql" => Self::Sql,
             _ => return None,
         })
     }
@@ -60,6 +63,8 @@ impl Language {
             "go" | "golang" => Self::Go,
             "md" | "markdown" => Self::Markdown,
             "json" => Self::Json,
+            "sql" | "psql" | "postgres" | "postgresql" | "plpgsql" | "mysql" | "sqlite"
+            | "tsql" => Self::Sql,
             _ => return None,
         })
     }
@@ -75,6 +80,7 @@ impl Language {
             Self::Go => "Go",
             Self::Markdown => "Markdown",
             Self::Json => "JSON",
+            Self::Sql => "SQL",
         }
     }
 }
@@ -119,6 +125,10 @@ mod tests {
         assert_eq!(Language::from_path("README.md"), Some(Language::Markdown));
         assert_eq!(Language::from_path("Makefile"), None);
         assert_eq!(Language::from_path("data.json"), Some(Language::Json));
+        assert_eq!(
+            Language::from_path("db/migration/V1__init.sql"),
+            Some(Language::Sql)
+        );
     }
 
     #[test]
@@ -132,6 +142,8 @@ mod tests {
             Language::from_fence_tag("typescript"),
             Some(Language::TypeScript)
         );
+        assert_eq!(Language::from_fence_tag("SQL"), Some(Language::Sql));
+        assert_eq!(Language::from_fence_tag("postgresql"), Some(Language::Sql));
         assert_eq!(Language::from_fence_tag(""), None);
         assert_eq!(Language::from_fence_tag("text"), None);
     }

@@ -29,9 +29,11 @@ impl Keywords {
             Language::CSharp => Some(Self::CSharp),
             Language::Go => Some(Self::Go),
             Language::Java => Some(Self::Java),
-            Language::JavaScript | Language::TypeScript | Language::Markdown | Language::Json => {
-                None
-            }
+            Language::JavaScript
+            | Language::TypeScript
+            | Language::Markdown
+            | Language::Json
+            | Language::Sql => None,
         }
     }
 }
@@ -52,6 +54,7 @@ pub(crate) fn highlight_line(
     match language {
         Some(Language::Markdown) => highlight_markdown(&code, default_style),
         Some(Language::Json) => highlight_json(&code, default_style),
+        Some(Language::Sql) => highlight_sql(&code, default_style),
         _ => highlight_code(&code, language, default_style),
     }
 }
@@ -119,6 +122,85 @@ fn highlight_json(code: &str, base: Style) -> Vec<Span<'static>> {
     }
     push_plain_code(&mut spans, code, plain_start, code.len(), base);
     spans
+}
+
+/// A line of SQL. Keywords are matched in any case, as SQL is written both
+/// ways. A line is lexed on its own, so a `/* */` comment that opens on it
+/// runs to its close or the end of the line, and the lines inside one that
+/// spans several are not known to be comment.
+fn highlight_sql(code: &str, base: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut plain_start = 0usize;
+    let mut chars = code.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        let next = chars.peek().map(|(_, next)| *next);
+        let (end, style) = if ch == '-' && next == Some('-') {
+            (code.len(), Some(color_style(Color::DarkGray, base)))
+        } else if ch == '/' && next == Some('*') {
+            let end = code[idx + 2..]
+                .find("*/")
+                .map_or(code.len(), |close| idx + 2 + close + 2);
+            (end, Some(color_style(Color::DarkGray, base)))
+        } else if ch == '\'' {
+            (
+                sql_string_end(code, idx + 1),
+                Some(color_style(Color::LightYellow, base)),
+            )
+        } else if ch == '"' || ch == '`' {
+            // A quoted identifier is a name, whatever word it spells.
+            let end = code[idx + 1..]
+                .find(ch)
+                .map_or(code.len(), |close| idx + close + 2);
+            (end, None)
+        } else if ch.is_ascii_digit() {
+            let end = idx
+                + code[idx..]
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '.'))
+                    .unwrap_or(code.len() - idx);
+            (end, Some(color_style(Color::LightYellow, base)))
+        } else if is_ident_start(ch) {
+            let end = idx
+                + code[idx..]
+                    .find(|c: char| !is_ident_continue(c))
+                    .unwrap_or(code.len() - idx);
+            let word = code[idx..end].to_ascii_lowercase();
+            let style = if is_sql_keyword(&word) {
+                Some(color_style(Color::Yellow, base).add_modifier(Modifier::BOLD))
+            } else if is_sql_type(&word) {
+                Some(color_style(Color::LightCyan, base))
+            } else {
+                function_style(code, end, base)
+            };
+            (end, style)
+        } else {
+            continue;
+        };
+        if let Some(style) = style {
+            push_plain_code(&mut spans, code, plain_start, idx, base);
+            spans.push(Span::styled(code[idx..end].to_string(), style));
+            plain_start = end;
+        }
+        while chars.peek().is_some_and(|(next, _)| *next < end) {
+            chars.next();
+        }
+    }
+    push_plain_code(&mut spans, code, plain_start, code.len(), base);
+    spans
+}
+
+/// The end of a SQL string whose body starts at `start`. SQL escapes a quote
+/// by doubling it, so `''` inside the string does not close it.
+fn sql_string_end(code: &str, start: usize) -> usize {
+    let mut rest = start;
+    while let Some(quote) = code[rest..].find('\'') {
+        let after = rest + quote + 1;
+        if code[after..].starts_with('\'') {
+            rest = after + 1;
+        } else {
+            return after;
+        }
+    }
+    code.len()
 }
 
 /// A line of code coloured by the code lexer: comments, strings, keywords,
@@ -627,4 +709,138 @@ fn keyword_style(word: &str, syntax: Keywords, base: Style) -> Option<Style> {
         ),
     };
     keyword.then_some(color_style(Color::Yellow, base).add_modifier(Modifier::BOLD))
+}
+
+/// A SQL keyword, given in lower case.
+fn is_sql_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "add"
+            | "after"
+            | "all"
+            | "alter"
+            | "and"
+            | "as"
+            | "asc"
+            | "before"
+            | "begin"
+            | "between"
+            | "by"
+            | "cascade"
+            | "case"
+            | "check"
+            | "column"
+            | "commit"
+            | "conflict"
+            | "constraint"
+            | "create"
+            | "cross"
+            | "default"
+            | "delete"
+            | "desc"
+            | "distinct"
+            | "do"
+            | "drop"
+            | "else"
+            | "end"
+            | "except"
+            | "exists"
+            | "false"
+            | "foreign"
+            | "from"
+            | "full"
+            | "function"
+            | "grant"
+            | "group"
+            | "having"
+            | "if"
+            | "ilike"
+            | "in"
+            | "index"
+            | "inner"
+            | "insert"
+            | "intersect"
+            | "into"
+            | "is"
+            | "join"
+            | "key"
+            | "lateral"
+            | "left"
+            | "like"
+            | "limit"
+            | "not"
+            | "nothing"
+            | "null"
+            | "offset"
+            | "on"
+            | "or"
+            | "order"
+            | "outer"
+            | "over"
+            | "partition"
+            | "primary"
+            | "procedure"
+            | "recursive"
+            | "references"
+            | "rename"
+            | "replace"
+            | "returning"
+            | "returns"
+            | "revoke"
+            | "right"
+            | "rollback"
+            | "schema"
+            | "select"
+            | "sequence"
+            | "set"
+            | "table"
+            | "then"
+            | "to"
+            | "transaction"
+            | "trigger"
+            | "true"
+            | "truncate"
+            | "union"
+            | "unique"
+            | "update"
+            | "using"
+            | "values"
+            | "view"
+            | "when"
+            | "where"
+            | "with"
+    )
+}
+
+/// A SQL column type, given in lower case.
+fn is_sql_type(word: &str) -> bool {
+    matches!(
+        word,
+        "bigint"
+            | "bigserial"
+            | "blob"
+            | "bool"
+            | "boolean"
+            | "bytea"
+            | "char"
+            | "date"
+            | "decimal"
+            | "double"
+            | "float"
+            | "int"
+            | "integer"
+            | "interval"
+            | "json"
+            | "jsonb"
+            | "numeric"
+            | "real"
+            | "serial"
+            | "smallint"
+            | "text"
+            | "time"
+            | "timestamp"
+            | "timestamptz"
+            | "uuid"
+            | "varchar"
+    )
 }

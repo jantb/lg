@@ -42,6 +42,7 @@ impl Language {
             Self::CSharp => csharp_item_label(line),
             Self::Go => go_item_label(line),
             Self::Markdown => markdown_item_label(line),
+            Self::Sql => sql_item_label(line),
             Self::Json => None,
         }
     }
@@ -64,7 +65,7 @@ impl Language {
                     || (line.starts_with("export ") && line.contains(" from "))
                     || (line.contains("require(") && line.starts_with("const "))
             }
-            Self::Markdown | Self::Json => false,
+            Self::Markdown | Self::Json | Self::Sql => false,
         }
     }
 
@@ -127,6 +128,12 @@ JSON:
 - Valid JSON: no comments or trailing commas unless every reader of the file accepts them.
 - New keys follow the naming and order the file already uses, so the diff shows only what changed.
 - No secrets, and no value that differs per environment, in a committed file.",
+            Self::Sql => "\
+SQL:
+- A migration that has run is never edited; the schema changes through a new one.
+- Values reach a query as bind parameters, never spliced into its text.
+- A change that locks or rewrites a large table (a NOT NULL column with no default, an index built without CONCURRENTLY, a column type change) says how it runs on live data.
+- Columns a foreign key or a frequent filter uses have an index.",
             Self::Markdown => "\
 Markdown:
 - Headings form one outline; a change under a heading should still belong there.
@@ -378,6 +385,39 @@ pub(super) fn markdown_item_label(line: &str) -> Option<String> {
     (!title.is_empty()).then(|| format!("section {title}"))
 }
 
+/// SQL items are the schema objects a `CREATE` or `ALTER` names, in whatever
+/// case the statement is written.
+pub(super) fn sql_item_label(line: &str) -> Option<String> {
+    let mut words = line.split_whitespace();
+    let verb = words.next()?;
+    if !verb.eq_ignore_ascii_case("create") && !verb.eq_ignore_ascii_case("alter") {
+        return None;
+    }
+    let kind = words.find_map(|word| {
+        let word = word.to_ascii_lowercase();
+        matches!(
+            word.as_str(),
+            "table"
+                | "view"
+                | "index"
+                | "function"
+                | "procedure"
+                | "trigger"
+                | "type"
+                | "sequence"
+                | "schema"
+        )
+        .then_some(word)
+    })?;
+    let name = words.find(|word| {
+        !["if", "not", "exists", "concurrently", "only"]
+            .iter()
+            .any(|skip| word.eq_ignore_ascii_case(skip))
+    })?;
+    let name = declared_name(name);
+    (!name.is_empty()).then(|| format!("{kind} {name}"))
+}
+
 fn strip_modifiers<'a>(mut line: &'a str, modifiers: &[&str]) -> &'a str {
     loop {
         match modifiers.iter().find_map(|m| line.strip_prefix(m)) {
@@ -551,6 +591,29 @@ mod tests {
             kotlin_item_label("sealed interface Outcome"),
             Some("sealed interface Outcome".into())
         );
+    }
+
+    #[test]
+    fn sql_items_are_the_schema_objects_a_statement_creates_or_alters() {
+        assert_eq!(
+            sql_item_label("CREATE TABLE IF NOT EXISTS orders ("),
+            Some("table orders".into())
+        );
+        assert_eq!(
+            sql_item_label(
+                "create unique index concurrently orders_customer_idx on orders (customer_id);"
+            ),
+            Some("index orders_customer_idx".into())
+        );
+        assert_eq!(
+            sql_item_label("CREATE OR REPLACE FUNCTION total(order_id bigint)"),
+            Some("function total".into())
+        );
+        assert_eq!(
+            sql_item_label("ALTER TABLE orders ADD COLUMN note text;"),
+            Some("table orders".into())
+        );
+        assert_eq!(sql_item_label("SELECT * FROM orders;"), None);
     }
 
     #[test]
