@@ -74,7 +74,10 @@ fn the_chat_starts_on_what_is_open_in_the_file_on_screen() {
 
     press(&mut state, ratatui::crossterm::event::KeyCode::Char('C'));
 
-    assert_eq!(state.pending_action, Some(PendingAction::GuidedChat));
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::GuidedChat { focus: true })
+    );
     let brief = state.guided.as_ref().unwrap().chat_brief("a.rs");
     assert!(
         brief.contains("L2 issue: -1 stands in for missing"),

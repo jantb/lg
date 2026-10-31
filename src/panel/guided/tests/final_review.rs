@@ -4,7 +4,7 @@ use crate::git::guided::TickedFinding;
 use crate::state::{AppState, PendingAction};
 use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 
-use crate::panel::guided::context::final_context;
+use crate::panel::guided::context::final_contexts;
 
 use super::*;
 
@@ -36,7 +36,7 @@ fn the_final_review_is_shown_the_whole_change_and_what_is_still_open() {
         text: "tail could say what it ends.".into(),
     });
 
-    let context = final_context(guided);
+    let context = final_contexts(guided).concat();
 
     for line in ["+new one", "+new two", "+y"] {
         assert!(context.contains(line), "{line} missing from\n{context}");
@@ -179,29 +179,40 @@ fn the_chat_opens_on_the_final_review_with_what_is_open_across_the_change() {
 
     press(&mut state, ratatui::crossterm::event::KeyCode::Char('C'));
 
-    assert_eq!(state.pending_action, Some(PendingAction::GuidedChat));
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::GuidedChat { focus: true })
+    );
     let guided = state.guided.as_ref().unwrap();
     let subject = guided.chat_subject().unwrap();
     let brief = guided.chat_brief(&subject);
     assert!(
-        brief.contains("b.rs:L1 issue: callers of x are not updated"),
+        brief.contains(
+            "b.rs:L1 issue (from the review of the whole change): callers of x are not updated"
+        ),
         "{brief}"
     );
     assert!(!brief.contains("repeats new one"), "{brief}");
 }
 
 #[test]
-fn a_fix_on_the_final_review_starts_from_the_picked_finding() {
+fn a_fix_on_the_final_review_asks_the_chat_about_the_picked_finding() {
     use ratatui::crossterm::event::KeyCode::{Char, Down};
     let mut state = on_final_with_findings("guided-test-final-fix");
 
     press(&mut state, Down);
-    press(&mut state, Char('f'));
+    let request = state.guided.as_ref().unwrap().fix_request().unwrap();
+    assert!(
+        request.contains("b.rs:L1: callers of x are not updated"),
+        "{request}"
+    );
 
-    let Mode::Fix { text, .. } = &state.guided.as_ref().unwrap().mode else {
-        panic!("f asks what to change");
-    };
-    assert!(text.contains("callers of x are not updated"), "{}", &**text);
+    // With no chat running yet, f starts one to hand it to.
+    press(&mut state, Char('f'));
+    assert_eq!(
+        state.pending_action,
+        Some(PendingAction::GuidedChat { focus: true })
+    );
 }
 
 #[test]

@@ -178,21 +178,6 @@ impl Guided {
     }
 
     /// The final review's findings not yet ticked off, one `path:L<n>` line each.
-    pub(super) fn final_open_lines(&self) -> String {
-        self.final_cited()
-            .into_iter()
-            .filter(|(path, finding)| !self.is_ticked(&ticket_in(path, finding)))
-            .map(|(path, finding)| {
-                format!(
-                    "- {path}:L{} {}: {}\n",
-                    finding.line,
-                    finding.severity.word(),
-                    finding.text
-                )
-            })
-            .collect()
-    }
-
     pub(super) fn ticket(&self, finding: &findings::Finding) -> TickedFinding {
         ticket_in(
             self.step()

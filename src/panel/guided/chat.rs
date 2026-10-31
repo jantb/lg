@@ -7,19 +7,32 @@ use super::found::ticket_in;
 use super::{ChatNews, Guided, Mode, WHOLE_CHANGE, draw, findings};
 
 impl Guided {
-    /// What a chat opened now is about: the file on screen, or on the final
-    /// step [`WHOLE_CHANGE`].
+    /// What a chat opened now is about: the file on screen, or on the
+    /// overview and the final step [`WHOLE_CHANGE`].
     pub fn chat_subject(&self) -> Option<String> {
-        match self.step() {
-            Some(step) => Some(step.path.clone()),
-            None if self.on_final() => Some(WHOLE_CHANGE.to_string()),
-            None => None,
-        }
+        Some(match self.step() {
+            Some(step) => step.path.clone(),
+            None => WHOLE_CHANGE.to_string(),
+        })
     }
 
     pub fn chat_brief(&self, path: &str) -> String {
         if path == WHOLE_CHANGE {
-            let mut out = format!("Open across the whole change:\n{}", self.final_open_lines());
+            let mut out = String::from("Open across the whole change, worst first:\n");
+            for open in self.open_findings() {
+                let path = &self.steps[open.step - 1].path;
+                let from = if open.whole {
+                    " (from the review of the whole change)"
+                } else {
+                    ""
+                };
+                out.push_str(&format!(
+                    "- {path}:L{} {}{from}: {}\n",
+                    open.finding.line,
+                    open.finding.severity.word(),
+                    open.finding.text
+                ));
+            }
             for note in &self.progress.notes {
                 out.push_str(&format!(
                     "- {}:L{} note: {}\n",
@@ -137,14 +150,87 @@ pub(super) fn open_chat(state: &mut AppState) {
         state.set_status("chat \u{2014} Ctrl-] back to the review", false);
         return;
     }
-    if guided.chat_subject().is_none() {
+    state.pending_action = Some(PendingAction::GuidedChat { focus: true });
+}
+
+/// Hand the chat what to fix, in its input for the reviewer to read and
+/// send: the note or findings on the cursor line, the picked finding on the
+/// final step, or on the overview everything still open.
+pub(super) fn fix_in_chat(state: &mut AppState) {
+    let Some(guided) = state.guided.as_deref() else {
+        return;
+    };
+    match guided.fix_request() {
+        Some(request) => send_to_chat(state, &request),
+        None => state.set_status("nothing flagged here to fix", false),
+    }
+}
+
+impl Guided {
+    /// What `f` asks the chat to fix where the reviewer is.
+    pub(super) fn fix_request(&self) -> Option<String> {
+        let guided = self;
+        if guided.on_final() {
+            guided
+                .picked()
+                .map(|(path, finding)| format!("Fix {path}:L{}: {}", finding.line, finding.text))
+        } else if let Some(step) = guided.step() {
+            let text = guided
+                .note_at_cursor()
+                .and_then(|index| guided.progress.notes.get(index))
+                .map(|note| note.body.clone())
+                .unwrap_or_else(|| guided.findings_at_cursor());
+            let line = step
+                .lines
+                .get(guided.cursor)
+                .and_then(|line| line.new.or(line.old));
+            (!text.trim().is_empty()).then(|| match line {
+                Some(n) => format!("Fix {}:L{n}: {}", step.path, text.trim()),
+                None => format!("Fix {}: {}", step.path, text.trim()),
+            })
+        } else {
+            (!guided.open_findings().is_empty()).then(|| {
+                format!(
+                    "Fix what is open, one at a time, worst first.\n{}",
+                    guided.chat_brief(WHOLE_CHANGE)
+                )
+            })
+        }
+    }
+}
+
+/// Puts `text` in the chat's input and gives it the keyboard, so the
+/// reviewer can add to it before sending; starts the chat first if needed.
+pub(super) fn send_to_chat(state: &mut AppState, text: &str) {
+    let Some(guided) = state.guided.as_deref() else {
+        return;
+    };
+    if !guided.source.editable() {
         state.set_status(
-            "the chat is about a file or the whole change: \u{2192} to one first",
+            "this pull request is not checked out here \u{2014} check it out to fix it in a chat",
             false,
         );
         return;
     }
-    state.pending_action = Some(PendingAction::GuidedChat);
+    let Some(id) = chat_session(state) else {
+        state.pending_action = Some(PendingAction::GuidedChat { focus: true });
+        state.set_status(
+            "starting Claude \u{2014} press f again once it is up",
+            false,
+        );
+        return;
+    };
+    if let Some(session) = state.sessions.get_mut(id) {
+        let bracketed = session.bracketed_paste();
+        session.send(&crate::term::encode_paste(text, bracketed));
+    }
+    if let Some(guided) = state.guided.as_mut() {
+        guided.mode = Mode::Chat;
+    }
+    state.set_status(
+        "in the chat \u{2014} Enter sends it, Ctrl-] back to the review",
+        false,
+    );
 }
 
 pub(super) fn chat_session(state: &AppState) -> Option<crate::session::SessionId> {

@@ -343,34 +343,9 @@ fn claude_args(system: &str, task: ChatTask, model: &str) -> Vec<String> {
     args
 }
 
-/// The tools a fix run may use: enough to read the code and change it, and
-/// nothing that runs a command.
-const FIX_TOOLS: &str = "Read,Edit,Write,Grep,Glob";
-
 /// The tools a check may use: enough to read the code, and nothing that
 /// changes it or runs a command.
 const CHECK_TOOLS: &str = "Read,Grep,Glob";
-
-/// Have Claude Code apply one change in `cwd` and wait for it, returning the
-/// one line it says about what it did.
-///
-/// The run edits files and does nothing else: no shell, no MCP servers, no
-/// settings files with hooks of their own, and edits accepted without asking
-/// because nobody is at its terminal to ask. Blocks, so it belongs on a thread.
-pub fn run_claude_fix(cwd: &std::path::Path, prompt: &str) -> anyhow::Result<String> {
-    let said = run_claude_headless(
-        cwd,
-        prompt,
-        FIX_TOOLS,
-        &["--permission-mode", "acceptEdits"],
-    )?;
-    let said = last_lines(&said, 1);
-    Ok(if said.is_empty() {
-        "claude applied the change".to_string()
-    } else {
-        said
-    })
-}
 
 /// Have Claude Code read the code in `cwd` to answer `prompt`, and wait for
 /// its whole answer. It cannot change a file or run a command. Blocks, so it

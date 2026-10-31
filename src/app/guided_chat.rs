@@ -11,10 +11,14 @@ use crate::state::AppState;
 use super::App;
 
 impl App {
-    pub(super) fn open_guided_chat(&mut self) {
-        match start(&mut self.state) {
-            Ok(path) => self.state.set_status(
+    pub(super) fn open_guided_chat(&mut self, focus: bool) {
+        match start(&mut self.state, focus) {
+            Ok(path) if focus => self.state.set_status(
                 format!("chat about {path} \u{2014} Ctrl-] back to the review"),
+                false,
+            ),
+            Ok(_) => self.state.set_status(
+                "Claude is open beside the review \u{2014} C or click to type",
                 false,
             ),
             Err(e) => self
@@ -25,7 +29,7 @@ impl App {
 }
 
 /// Returns what the chat starts on: a file, or the whole change.
-fn start(state: &mut AppState) -> Result<String> {
+fn start(state: &mut AppState, focus: bool) -> Result<String> {
     let guided = state.guided.as_ref().context("no guided review open")?;
     let path = guided
         .chat_subject()
@@ -63,7 +67,9 @@ fn start(state: &mut AppState) -> Result<String> {
     if let Some(guided) = state.guided.as_mut() {
         guided.chat = Some(id);
         guided.chat_file = Some(path.clone());
-        guided.mode = Mode::Chat;
+        if focus {
+            guided.mode = Mode::Chat;
+        }
         if !read {
             guided.owe_chat(path.clone(), ChatNews::FileRead);
         }

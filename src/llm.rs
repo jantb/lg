@@ -14,8 +14,7 @@ mod stream;
 mod think;
 
 pub use claude::{
-    ClaudeModel, claude_models, prime_claude_models_async, run_claude_check, run_claude_fix,
-    served_claude_models,
+    ClaudeModel, claude_models, prime_claude_models_async, run_claude_check, served_claude_models,
 };
 pub use prompt::{GIVE_UP_PHRASE, build_conflict_hunk_prompt};
 pub use provider::{
@@ -38,12 +37,11 @@ pub use stream::error_means_unreachable;
 
 use prompt::{
     build_commit_prompt, build_conventions_prompt, build_guided_final_prompt,
-    build_guided_overview_prompt, build_guided_question_system_prompt,
-    build_guided_step_system_prompt,
+    build_guided_overview_prompt, build_guided_step_system_prompt,
 };
 pub use prompt::{
-    build_guided_chat_file_read, build_guided_chat_prompt, build_guided_chat_questions,
-    build_guided_chat_redo, build_guided_fix_prompt, build_guided_question_check_prompt,
+    build_guided_chat_file_read, build_guided_chat_prompt, build_guided_chat_redo,
+    build_guided_question_check_prompt,
 };
 use reply::{finalize, finalize_conflict_hunk, finalize_review_chat, parse_conventions};
 use stream::{ChatMessage, ChatTask, stream_messages, stream_prompt};
@@ -61,7 +59,6 @@ const CONVENTIONS_NUM_PREDICT: i32 = 300;
 const GUIDED_STEP_NUM_PREDICT: i32 = 2_048;
 const GUIDED_OVERVIEW_NUM_PREDICT: i32 = 2_048;
 const GUIDED_FINAL_NUM_PREDICT: i32 = 2_048;
-const GUIDED_QUESTION_NUM_PREDICT: i32 = 1_024;
 /// Enough for a conflict the local model is allowed to try at all: both sides
 /// of one hunk and a little joining. A budget large enough for a whole file
 /// would only buy a longer wrong answer.
@@ -163,38 +160,6 @@ pub fn stream_guided_final(context: String, tx: Sender<GenMsg>) {
 }
 
 /// A question about the step on screen, with what was already said about it.
-pub fn stream_guided_question(
-    context: String,
-    commentary: String,
-    question: String,
-    tx: Sender<GenMsg>,
-) {
-    let mut messages = vec![ChatMessage {
-        role: "system",
-        content: build_guided_question_system_prompt(&context, &crate::settings::load()),
-    }];
-    if !commentary.trim().is_empty() {
-        messages.push(ChatMessage {
-            role: "user",
-            content: "What do you make of this?".to_string(),
-        });
-        messages.push(ChatMessage {
-            role: "assistant",
-            content: commentary,
-        });
-    }
-    messages.push(ChatMessage {
-        role: "user",
-        content: question,
-    });
-    stream_messages(
-        messages,
-        ChatTask::new("lg-guided-question", GUIDED_QUESTION_NUM_PREDICT, false),
-        finalize_review_chat,
-        tx,
-    );
-}
-
 /// Ask for the merged lines that replace one conflict, and report them on `tx`
 /// as an ordinary generation.
 ///

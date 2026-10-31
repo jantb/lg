@@ -61,13 +61,6 @@ pub(super) fn switch_scope(state: &mut AppState) {
     let Some(guided) = state.guided.as_deref() else {
         return;
     };
-    if guided.fixing.is_some() {
-        state.set_status(
-            "claude is still changing the code; switch once it is done",
-            true,
-        );
-        return;
-    }
     let base = crate::preferences::base_branch();
     let source = match &guided.source {
         Source::Branch { branch, .. } => Source::Unpushed {

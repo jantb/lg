@@ -169,6 +169,17 @@ fn select_text(state: &mut AppState, side: ratatui::layout::Rect, m: &MouseEvent
                 .and_then(|_| draw::finding_at(state, side, m.column, m.row));
             if let Some(finding) = finding {
                 toggle_ticks(state, vec![finding]);
+                return true;
+            }
+            let target = state
+                .guided
+                .as_deref()
+                .filter(|guided| clicked && guided.mode == Mode::Browse)
+                .and_then(|_| draw::overview_target_at(state, side, m.column, m.row));
+            match target {
+                Some(draw::OverviewTarget::Finding(open)) => go_to_finding(state, &open),
+                Some(draw::OverviewTarget::File(step)) => go_to(state, step, false),
+                None => {}
             }
             true
         }

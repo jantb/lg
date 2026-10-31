@@ -156,36 +156,9 @@ fn by_concern_the_walk_goes_concern_by_concern_with_each_listed_over_its_files()
 }
 
 #[test]
-fn on_the_map_the_walk_follows_the_plans_reading_order() {
-    let mut state = walk_with_plan();
-    state.guided.as_mut().unwrap().progress.walk = WalkMode::Map;
-
-    assert_eq!(
-        walked(&state),
-        [
-            "tests/cache.rs",
-            "src/cache.rs",
-            "src/lookup.rs",
-            "Cargo.lock"
-        ]
-    );
-}
-
-#[test]
-fn triage_walks_the_riskiest_first_and_s_marks_the_files_to_skim_reviewed() {
+fn s_marks_the_files_to_skim_reviewed() {
     use ratatui::crossterm::event::KeyCode::Char;
     let mut state = walk_with_plan();
-    state.guided.as_mut().unwrap().progress.walk = WalkMode::Triage;
-
-    assert_eq!(
-        walked(&state),
-        [
-            "src/lookup.rs",
-            "src/cache.rs",
-            "tests/cache.rs",
-            "Cargo.lock"
-        ]
-    );
 
     press(&mut state, Char('S'));
     let guided = state.guided.as_deref().unwrap();
@@ -203,7 +176,7 @@ fn without_a_plan_every_mode_walks_the_file_tree() {
     let mut state = walk_with_plan();
     let guided = state.guided.as_mut().unwrap();
     guided.commentary.clear();
-    for walk in [WalkMode::Concerns, WalkMode::Map, WalkMode::Triage] {
+    for walk in [WalkMode::Concerns, WalkMode::Issues] {
         state.guided.as_mut().unwrap().progress.walk = walk;
         assert_eq!(
             walked(&state),
@@ -242,10 +215,10 @@ fn a_click_on_the_walk_badge_switches_mode_and_keeps_what_was_done() {
     };
 
     click(&mut state);
-    assert_eq!(state.guided.as_ref().unwrap().walk(), WalkMode::Map);
-    assert!(screen(&state)[badge.y as usize].contains("MAP"));
+    assert_eq!(state.guided.as_ref().unwrap().walk(), WalkMode::Issues);
+    assert!(screen(&state)[badge.y as usize].contains("ISSUES"));
     click(&mut state);
-    assert_eq!(state.guided.as_ref().unwrap().walk(), WalkMode::Triage);
+    assert_eq!(state.guided.as_ref().unwrap().walk(), WalkMode::Concerns);
     press(&mut state, ratatui::crossterm::event::KeyCode::Char('M'));
     assert_eq!(state.guided.as_ref().unwrap().walk(), WalkMode::Issues);
     press(&mut state, ratatui::crossterm::event::KeyCode::Char('M'));
@@ -289,24 +262,6 @@ fn files_wait_for_the_plan_while_it_is_read() {
 
     assert!(!guided.commentary.contains_key(&guided.steps[0].key()));
     assert!(guided.asks.is_empty());
-}
-
-#[test]
-fn triage_lists_the_files_in_risk_bands_and_the_map_numbers_them() {
-    let mut state = walk_with_plan();
-    state.guided.as_mut().unwrap().progress.walk = WalkMode::Triage;
-    let rows = list_text(&state);
-    assert!(row_of(&rows, "High risk") < row_of(&rows, "lookup.rs"));
-    assert!(row_of(&rows, "lookup.rs") < row_of(&rows, "Medium risk"));
-    assert!(row_of(&rows, "Medium risk") < row_of(&rows, "cache.rs"));
-    assert!(row_of(&rows, "Safe to skim") < row_of(&rows, "Cargo.lock"));
-
-    state.guided.as_mut().unwrap().progress.walk = WalkMode::Map;
-    let rows = list_text(&state);
-    assert!(!rows.iter().any(|row| row.contains("risk")));
-    // Numbered in the plan's order: the tests first, the lockfile last.
-    assert!(row_of(&rows, "tests/") < row_of(&rows, "1 cache.rs"));
-    assert!(rows.iter().any(|row| row.contains("4 Cargo.lock")));
 }
 
 /// A concern's heading counts its files in as they are read, then

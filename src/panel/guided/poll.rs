@@ -3,14 +3,14 @@
 
 use std::collections::HashSet;
 
-use crate::state::{AppState, GenMsg, Poll, poll_once, stopped_unexpectedly};
+use crate::state::{AppState, GenMsg, PendingAction, Poll, poll_once, stopped_unexpectedly};
 
 use super::chat::{note_file_change_for_chat, tell_chat_what_is_read};
 use super::context::{file_context, final_contexts, plan_contexts, step_context};
-use super::load::{apply_loaded, reload};
+use super::load::apply_loaded;
 use super::{
-    Ask, CONCURRENT_CHECKS, CONCURRENT_CLAUDE, CONCURRENT_LOCAL, Check, CheckAnswer, Commentary,
-    Guided, Mode, OVERVIEW, OVERVIEW_KEY, Target, findings, work,
+    Ask, CONCURRENT_CHECKS, CONCURRENT_CLAUDE, CONCURRENT_LOCAL, Check, Commentary, Guided, Mode,
+    OVERVIEW, OVERVIEW_KEY, findings, work,
 };
 
 /// Take in whatever the background work produced since the last frame, and
@@ -29,6 +29,12 @@ pub fn poll(state: &mut AppState) {
                 guided.loading = None;
                 let first_load = guided.steps.is_empty() && guided.overview.is_empty();
                 apply_loaded(guided, loaded, first_load);
+                if first_load
+                    && opens_chat_beside(guided, ai, root.is_some())
+                    && state.pending_action.is_none()
+                {
+                    state.pending_action = Some(PendingAction::GuidedChat { focus: false });
+                }
                 if first_load {
                     notices.push((
                         format!(
@@ -59,27 +65,6 @@ pub fn poll(state: &mut AppState) {
         }
     }
 
-    let mut reload_after_fix = false;
-    if let Some((rx, _)) = guided.fixing.as_ref() {
-        match poll_once(rx) {
-            Poll::Message(result) => {
-                guided.fixing = None;
-                match result {
-                    Ok(said) => {
-                        notices.push((format!("claude: {said}"), false));
-                        reload_after_fix = true;
-                    }
-                    Err(message) => notices.push((message, true)),
-                }
-            }
-            Poll::Disconnected => {
-                guided.fixing = None;
-                notices.push((stopped_unexpectedly("the claude fix"), true));
-            }
-            Poll::Pending => {}
-        }
-    }
-
     let answered = drain_asks(guided);
     let final_key = guided.final_key();
     if answered.contains(&final_key) {
@@ -90,7 +75,7 @@ pub fn poll(state: &mut AppState) {
         guided.check_queue.extend(answered);
         while guided.checks.len() < CONCURRENT_CHECKS && !guided.check_queue.is_empty() {
             let key = guided.check_queue.remove(0);
-            start_question_check(guided, root, &key, &mut state.sessions);
+            start_question_check(guided, root, &key);
         }
     }
     drain_checks(guided, &mut notices);
@@ -114,9 +99,12 @@ pub fn poll(state: &mut AppState) {
     for (text, is_error) in notices {
         state.set_status(text, is_error);
     }
-    if reload_after_fix {
-        reload(state);
-    }
+}
+
+/// Claude opens beside a new review, ready to fix what the model finds:
+/// when there is a model to find it and a checkout to fix it in.
+pub(super) fn opens_chat_beside(guided: &Guided, ai: bool, checkout: bool) -> bool {
+    ai && checkout && guided.chat.is_none() && guided.source.editable()
 }
 
 /// What the whole review came to, said when its final read is in.
@@ -140,20 +128,7 @@ fn drain_asks(guided: &mut Guided) -> Vec<String> {
     let mut finished = Vec::new();
     let mut answered = Vec::new();
     for (index, ask) in guided.asks.iter().enumerate() {
-        let entry = match &ask.target {
-            Target::Commentary(key) => guided.commentary.entry(key.clone()).or_default(),
-            Target::Answer(key, at) => match guided
-                .exchanges
-                .get_mut(key)
-                .and_then(|exchanges| exchanges.get_mut(*at))
-            {
-                Some(exchange) => &mut exchange.answer,
-                None => {
-                    finished.push(index);
-                    continue;
-                }
-            },
-        };
+        let entry = guided.commentary.entry(ask.key.clone()).or_default();
         loop {
             match poll_once(&ask.rx) {
                 Poll::Message(GenMsg::Thinking(_)) => entry.thinking = true,
@@ -170,9 +145,7 @@ fn drain_asks(guided: &mut Guided) -> Vec<String> {
                     }
                     entry.done = true;
                     entry.thinking = false;
-                    if let Target::Commentary(key) = &ask.target {
-                        answered.push(key.clone());
-                    }
+                    answered.push(ask.key.clone());
                     finished.push(index);
                     break;
                 }
@@ -180,9 +153,7 @@ fn drain_asks(guided: &mut Guided) -> Vec<String> {
                     entry.error = Some(message);
                     entry.done = true;
                     entry.thinking = false;
-                    if let Target::Commentary(key) = &ask.target {
-                        guided.failed.insert(key.clone());
-                    }
+                    guided.failed.insert(ask.key.clone());
                     finished.push(index);
                     break;
                 }
@@ -206,12 +177,7 @@ fn drain_asks(guided: &mut Guided) -> Vec<String> {
 
 /// Send the questions step `key`'s commentary raised to Claude, to be settled
 /// in the checkout, when the files there are the ones being reviewed.
-fn start_question_check(
-    guided: &mut Guided,
-    root: &str,
-    key: &str,
-    sessions: &mut crate::session::Sessions,
-) {
+fn start_question_check(guided: &mut Guided, root: &str, key: &str) {
     if !guided.source.editable() {
         return;
     }
@@ -225,36 +191,12 @@ fn start_question_check(
     if questions.is_empty() {
         return;
     }
-    let step = &guided.steps[index];
-    let chat = guided
-        .chat
-        .and_then(|id| sessions.get_mut(id))
-        .and_then(|chat| {
-            let file = crate::hooks::fresh_session_file(
-                std::path::Path::new(root),
-                &answer_file_name(key),
-            )
-            .ok()?;
-            Some((chat, file))
-        });
-    let answer = match chat {
-        Some((chat, file)) => {
-            let message =
-                crate::llm::build_guided_chat_questions(&step.path, &questions.join("\n"), &file);
-            let bracketed = chat.bracketed_paste();
-            chat.send(&crate::term::encode_paste(&message, bracketed));
-            chat.send(b"\r");
-            CheckAnswer::Chat(file)
-        }
-        None => {
-            let prompt = crate::llm::build_guided_question_check_prompt(
-                &step_context(guided, index + 1),
-                &questions.join("\n"),
-                &crate::settings::load(),
-            );
-            CheckAnswer::Headless(work::check_questions(root.to_string(), prompt))
-        }
-    };
+    let prompt = crate::llm::build_guided_question_check_prompt(
+        &step_context(guided, index + 1),
+        &questions.join("\n"),
+        &crate::settings::load(),
+    );
+    let answer = work::check_questions(root.to_string(), prompt);
     if let Some(commentary) = guided.commentary.get_mut(key) {
         commentary.text = without;
         commentary.done = false;
@@ -267,34 +209,12 @@ fn start_question_check(
     });
 }
 
-/// One file per step: the key's own hash covers only the changed lines, which
-/// two files can share.
-fn answer_file_name(key: &str) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    key.hash(&mut hasher);
-    format!("guided-questions-{:016x}.md", hasher.finish())
-}
-
 /// Put what each finished check settled back into its step's commentary. A
 /// check that failed puts the questions back as they were asked.
 pub(super) fn drain_checks(guided: &mut Guided, notices: &mut Vec<(String, bool)>) {
     let mut finished = Vec::new();
     for (index, check) in guided.checks.iter().enumerate() {
-        let polled = match &check.answer {
-            CheckAnswer::Headless(rx) => poll_once(rx),
-            CheckAnswer::Chat(file) => match std::fs::read_to_string(file) {
-                Ok(settled) => {
-                    let _ = std::fs::remove_file(file);
-                    Poll::Message(Ok(settled))
-                }
-                Err(_) if guided.chat.is_none() => Poll::Message(Err(
-                    "the review chat ended before it settled the questions".to_string(),
-                )),
-                Err(_) => Poll::Pending,
-            },
-        };
-        let settled = match polled {
+        let settled = match poll_once(&check.answer) {
             Poll::Pending => continue,
             Poll::Message(Ok(settled)) => settled,
             Poll::Message(Err(message)) => {
@@ -352,11 +272,7 @@ pub(super) fn start_wanted_commentary(guided: &mut Guided) {
         return;
     }
     let limit = concurrency();
-    let running = guided
-        .asks
-        .iter()
-        .filter(|ask| matches!(ask.target, Target::Commentary(_)))
-        .count();
+    let running = guided.asks.len();
     if running >= limit {
         return;
     }
@@ -411,10 +327,7 @@ pub(super) fn start_wanted_commentary(guided: &mut Guided) {
                 ..Commentary::default()
             },
         );
-        guided.asks.push(Ask {
-            target: Target::Commentary(key),
-            rx,
-        });
+        guided.asks.push(Ask { key, rx });
         slots -= 1;
     }
 }

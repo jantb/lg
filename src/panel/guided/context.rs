@@ -106,30 +106,6 @@ fn concern_context(guided: &Guided, step: &GuidedFile) -> String {
     out
 }
 
-/// Every file's numbered diff, as much as fits.
-pub(super) fn whole_diff(guided: &Guided) -> String {
-    let mut out = String::new();
-    let mut left = WHOLE_DIFF_BYTES;
-    for step in &guided.steps {
-        let note = step
-            .file_note
-            .as_deref()
-            .map(|note| format!(" ({note})"))
-            .unwrap_or_default();
-        let diff = numbered_diff(step);
-        if diff.len() > left {
-            out.push_str(&format!(
-                "\n=== {}{note}: left out, the diff is too long to show whole\n",
-                step.path
-            ));
-            continue;
-        }
-        left -= diff.len();
-        out.push_str(&format!("\n=== {}{note}\n{diff}", step.path));
-    }
-    out
-}
-
 /// The file's diff with each line numbered as a finding cites it.
 fn numbered_diff(step: &GuidedFile) -> String {
     let mut out = String::new();
@@ -142,13 +118,6 @@ fn numbered_diff(step: &GuidedFile) -> String {
         out.push_str(&format!("{number:>6} {}\n", line.text));
     }
     out
-}
-
-/// The whole changeset for the final review: every file's diff, as much as
-/// fits, and what the file-by-file reads have found and not yet had ticked off.
-pub(super) fn final_context(guided: &Guided) -> String {
-    let paths: Vec<String> = guided.steps.iter().map(|step| step.path.clone()).collect();
-    final_part(guided, "", &whole_diff(guided), &paths)
 }
 
 /// What the plan reads, a part at a time: the overview and as much of the

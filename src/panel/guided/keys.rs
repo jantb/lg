@@ -13,7 +13,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     };
     match mode {
         Mode::Browse => browse(state, key),
-        Mode::Note { .. } | Mode::Question { .. } | Mode::Fix { .. } => text_key(state, key),
+        Mode::Note { .. } => text_key(state, key),
         Mode::Summary { .. } => summary_key(state, key),
         Mode::Chat => chat_key(state, key),
     }
@@ -38,7 +38,7 @@ pub fn handle_paste(state: &mut AppState, pasted: &str) -> bool {
         return false;
     };
     match &mut guided.mode {
-        Mode::Note { text, .. } | Mode::Question { text } | Mode::Fix { text, .. } => {
+        Mode::Note { text, .. } => {
             text.insert_str(pasted);
             true
         }
@@ -51,7 +51,6 @@ pub fn handle_paste(state: &mut AppState, pasted: &str) -> bool {
 }
 
 fn browse(state: &mut AppState, key: KeyEvent) {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     // Only the very next key can confirm deleting a note or resetting.
     if let Some(guided) = state.guided.as_mut() {
         if key.code != KeyCode::Char('x') {
@@ -75,32 +74,22 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab => {
             super::navigate::previous_step(state)
         }
-        KeyCode::Char(']') => super::navigate::next_step(state),
-        KeyCode::Char('[') => super::navigate::previous_step(state),
         KeyCode::Char('M') => super::navigate::switch_walk(state),
         KeyCode::Char('S') => super::progress::mark_skims_reviewed(state),
-        KeyCode::Char('d') if ctrl => scroll_side(state, 8),
-        KeyCode::Char('u') if ctrl => scroll_side(state, -8),
         KeyCode::Char('u') => super::navigate::next_unreviewed(state),
         KeyCode::Char('m') => super::progress::toggle_reviewed(state),
         KeyCode::Down => super::navigate::next_finding(state),
         KeyCode::Up => super::navigate::previous_finding(state),
         KeyCode::Char('j') => super::navigate::move_cursor(state, true),
         KeyCode::Char('k') => super::navigate::move_cursor(state, false),
-        KeyCode::PageDown | KeyCode::Char('J') => scroll_side(state, 8),
-        KeyCode::PageUp | KeyCode::Char('K') => scroll_side(state, -8),
+        KeyCode::Char('J') => scroll_side(state, 8),
+        KeyCode::Char('K') => scroll_side(state, -8),
         KeyCode::Char('g') | KeyCode::Home => go_overview(state),
-        KeyCode::Char('G') | KeyCode::End | KeyCode::Char('w') => super::navigate::go_final(state),
+        KeyCode::Char('G') | KeyCode::End => super::navigate::go_final(state),
         KeyCode::Char('X') => super::progress::reset_review(state),
         KeyCode::Enter if on_final(state) => super::navigate::go_to_picked(state),
         KeyCode::Char('c') | KeyCode::Enter => start_note(state),
         KeyCode::Char('x') => super::notes::delete_note_at_cursor(state),
-        KeyCode::Char('a') => set_mode(
-            state,
-            Mode::Question {
-                text: Default::default(),
-            },
-        ),
         KeyCode::Char('r') => super::assist::review_again(state),
         KeyCode::Char('R') => {
             super::load::reload(state);
@@ -109,8 +98,7 @@ fn browse(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('e') => super::assist::edit_at_cursor(state, false),
         KeyCode::Char('o') => super::assist::edit_at_cursor(state, true),
         KeyCode::Char('O') => super::load::open_in_browser(state),
-        KeyCode::Char('f') => start_fix(state, false),
-        KeyCode::Char('F') => start_fix(state, true),
+        KeyCode::Char('f') => super::chat::fix_in_chat(state),
         KeyCode::Char('s') => super::notes::open_summary(state),
         KeyCode::Char('y') => copy_notes(state),
         KeyCode::Char('Y') => copy_file_findings(state),
@@ -190,54 +178,6 @@ fn start_note(state: &mut AppState) {
     };
 }
 
-/// Starts from the note on the cursor line, else what the model flagged
-/// there, or on the final step the picked finding; with `all_notes`, every
-/// note in the review, and on the final step every finding still open too.
-fn start_fix(state: &mut AppState, all_notes: bool) {
-    let Some(guided) = state.guided.as_mut() else {
-        return;
-    };
-    if !guided.source.editable() {
-        state.set_status(
-            "this pull request is not checked out here \u{2014} check it out to have claude change it",
-            false,
-        );
-        return;
-    }
-    let open_across = guided.on_final() && !guided.final_open_lines().is_empty();
-    if all_notes && guided.progress.notes.is_empty() && !open_across {
-        state.set_status("no notes to address yet", false);
-        return;
-    }
-    if !all_notes && guided.aim().is_none() {
-        let message = if guided.on_final() {
-            "the final review has no finding in the change to fix"
-        } else {
-            "pick a file to change"
-        };
-        state.set_status(message, false);
-        return;
-    }
-    let text = if all_notes {
-        String::new()
-    } else if guided.on_final() {
-        guided
-            .picked()
-            .map(|(path, finding)| format!("{path}:L{} {}", finding.line, finding.text))
-            .unwrap_or_default()
-    } else {
-        guided
-            .note_at_cursor()
-            .and_then(|index| guided.progress.notes.get(index))
-            .map(|note| note.body.clone())
-            .unwrap_or_else(|| guided.findings_at_cursor())
-    };
-    guided.mode = Mode::Fix {
-        text: text.into(),
-        all_notes,
-    };
-}
-
 fn copy_file_findings(state: &mut AppState) {
     let Some(guided) = state.guided.as_ref() else {
         return;
@@ -270,17 +210,15 @@ fn copy_notes(state: &mut AppState) {
     });
 }
 
-/// Typing into a note, a question or a fix request. Enter sends it; Alt+Enter
-/// or Ctrl+J starts a new line; Esc drops it.
+/// Typing a note. Enter saves it; Alt+Enter or Ctrl+J starts a new line;
+/// Esc drops it.
 fn text_key(state: &mut AppState, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let Some(guided) = state.guided.as_mut() else {
         return;
     };
-    let (Mode::Note { text, .. } | Mode::Question { text } | Mode::Fix { text, .. }) =
-        &mut guided.mode
-    else {
+    let Mode::Note { text, .. } = &mut guided.mode else {
         return;
     };
     match key.code {
@@ -291,14 +229,7 @@ fn text_key(state: &mut AppState, key: KeyEvent) {
         KeyCode::Char('j') if ctrl => text.insert_char('\n'),
         KeyCode::Char('u') if ctrl => text.clear(),
         KeyCode::Char('w') if ctrl => text.delete_word_before(),
-        KeyCode::Enter => {
-            let send: fn(&mut AppState) = match guided.mode {
-                Mode::Note { .. } => super::notes::commit_note,
-                Mode::Question { .. } => super::assist::ask_question,
-                _ => super::assist::start_fix,
-            };
-            send(state);
-        }
+        KeyCode::Enter => super::notes::commit_note(state),
         _ => {
             text.handle_key(key);
         }
@@ -329,8 +260,9 @@ fn summary_key(state: &mut AppState, key: KeyEvent) {
         KeyCode::Enter => body.insert_char('\n'),
         KeyCode::Char('y') if ctrl || !is_pr => copy_notes(state),
         KeyCode::Char('f') if ctrl || !is_pr => {
+            let notes = super::notes::notes_markdown(guided);
             guided.mode = Mode::Browse;
-            start_fix(state, true);
+            super::chat::send_to_chat(state, &format!("Address every review note:\n{notes}"));
         }
         KeyCode::Char('j') if ctrl => body.insert_char('\n'),
         KeyCode::Down if !is_pr => scroll_side(state, 1),

@@ -12,7 +12,7 @@ use crate::panel::guided::{Commentary, Guided, findings};
 use crate::state::{AppState, SPINNER_FRAMES};
 
 use super::diff::finding_lines;
-use super::{KEY, LABEL, verdict_look};
+use super::{LABEL, verdict_look};
 
 pub(super) fn draw_commentary(
     state: &AppState,
@@ -21,8 +21,7 @@ pub(super) fn draw_commentary(
     area: Rect,
     frame: &mut Frame,
 ) {
-    let mut lines = step_commentary_lines(state, guided, step, area.width);
-    lines.extend(exchange_lines(state, guided, &step.key(), area.width));
+    let lines = step_commentary_lines(state, guided, step, area.width);
     // Pinned to the bottom when a new answer is asked for, like a chat.
     let max = (lines.len() as u16).saturating_sub(area.height);
     guided.side_max.set(max);
@@ -184,25 +183,6 @@ pub(super) fn commentary_lines(
             format!("  {spinner}"),
             Style::default().fg(Color::Cyan),
         )));
-    }
-    lines
-}
-
-pub(super) fn exchange_lines(
-    state: &AppState,
-    guided: &Guided,
-    key: &str,
-    width: u16,
-) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    for exchange in guided.exchanges.get(key).into_iter().flatten() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("you \u{203a} ", KEY),
-            Span::styled(exchange.question.clone(), Style::default().fg(Color::White)),
-        ]));
-        let answer = commentary_lines(state, Some(&exchange.answer), width);
-        lines.extend(answer.into_iter().skip(1));
     }
     lines
 }

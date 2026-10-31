@@ -54,7 +54,6 @@ pub(super) fn reset_review(state: &mut AppState) {
         ..GuidedProgress::default()
     };
     guided.commentary.clear();
-    guided.exchanges.clear();
     guided.failed.clear();
     guided.earlier.clear();
     guided.asks.clear();

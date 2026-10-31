@@ -121,17 +121,6 @@ pub(super) fn draw_bottom(guided: &Guided, area: Rect, frame: &mut Frame) {
             },
             text,
         ),
-        Mode::Question { text } => ("ask", text),
-        Mode::Fix { text, all_notes } => (
-            if *all_notes && guided.on_final() {
-                "claude: address every open finding and note (extra instructions optional)"
-            } else if *all_notes {
-                "claude: address every note (extra instructions optional)"
-            } else {
-                "claude: change"
-            },
-            text,
-        ),
         Mode::Chat => {
             frame.render_widget(
                 Paragraph::new(ui::key_hints(&keys::footer_pairs("Guided review: chat"))),

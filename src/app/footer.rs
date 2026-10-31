@@ -77,9 +77,7 @@ fn modal_footer_title(state: &AppState, modal: Modal) -> Option<&'static str> {
         Modal::GuidedReview => match state.guided.as_deref() {
             Some(guided) => match &guided.mode {
                 GuidedMode::Browse => "Guided review",
-                GuidedMode::Note { .. } | GuidedMode::Question { .. } | GuidedMode::Fix { .. } => {
-                    "Guided review: writing"
-                }
+                GuidedMode::Note { .. } => "Guided review: writing",
                 GuidedMode::Summary { .. } if guided.source.is_pull_request() => {
                     "Guided review: submit"
                 }

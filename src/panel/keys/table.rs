@@ -1308,11 +1308,6 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("\u{2192}/\u{2190}", "step")),
             },
             Binding {
-                key: "] / [",
-                help: "Next / previous file",
-                footer: None,
-            },
-            Binding {
                 key: "\u{2193} / \u{2191}",
                 help: "Next / previous finding (final: pick)",
                 footer: Some(("\u{2193}/\u{2191}", "finding")),
@@ -1333,11 +1328,6 @@ pub const SECTIONS: &[Section] = &[
                 footer: None,
             },
             Binding {
-                key: "a",
-                help: "Ask the model about this file or step",
-                footer: Some(("a", "ask")),
-            },
-            Binding {
                 key: "r",
                 help: "Review this file (or the whole change) again",
                 footer: Some(("r", "redo")),
@@ -1353,8 +1343,8 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("O", "browser")),
             },
             Binding {
-                key: "f / F",
-                help: "Claude: change / fix all notes and findings",
+                key: "f",
+                help: "Have Claude fix the line's finding, or all",
                 footer: Some(("f", "fix")),
             },
             Binding {
@@ -1414,17 +1404,12 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "g / G",
-                help: "Overview / final review",
-                footer: None,
-            },
-            Binding {
-                key: "w",
-                help: "Final review of the whole change",
-                footer: Some(("w", "whole change")),
+                help: "Overview / final review of the whole change",
+                footer: Some(("G", "whole change")),
             },
             Binding {
                 key: "M / badge",
-                help: "Walk by concern, map, triage or issues",
+                help: "Walk by concern or by issue",
                 footer: Some(("M", "mode")),
             },
             Binding {
@@ -1518,7 +1503,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "f",
-                help: "Have Claude address every note",
+                help: "Hand every note to Claude",
                 footer: Some(("f", "claude fixes all")),
             },
             Binding {
@@ -1566,7 +1551,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "Ctrl-F",
-                help: "Have Claude address every note",
+                help: "Hand every note to Claude",
                 footer: None,
             },
             Binding {
@@ -2203,14 +2188,13 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
             "\u{2193} / \u{2191}",
             "b",
             "c / Enter",
-            "a",
             "r",
             "e / o",
             "O",
-            "f / F",
+            "f",
             "v",
             "C",
-            "w",
+            "g / G",
             "M / badge",
             "s",
             "?",

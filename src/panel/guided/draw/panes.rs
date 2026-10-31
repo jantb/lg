@@ -29,8 +29,16 @@ pub(super) fn draw_step(
     let Some(step) = guided.step() else {
         if guided.on_final() {
             draw_final(state, guided, area, frame, dividers);
-        } else {
-            draw_overview(state, guided, area, frame);
+            return;
+        }
+        match super::chat_session(state) {
+            Some(id) => {
+                let (columns, gaps) = ui::modal_columns(frame, area, &CHAT_SPLIT);
+                dividers.extend(gaps);
+                draw_overview(state, guided, columns[0], frame);
+                draw_chat(state, guided, id, columns[1], frame);
+            }
+            None => draw_overview(state, guided, area, frame),
         }
         return;
     };
@@ -57,7 +65,7 @@ pub(in crate::panel::guided) fn selectable_areas(
     mode: DiffViewMode,
 ) -> Vec<Rect> {
     let Some(parts) = diff_and_below(guided, side, mode) else {
-        return vec![side];
+        return vec![commentary_area(guided, side)];
     };
     vec![parts[0], commentary_area(guided, parts[1])]
 }
@@ -74,8 +82,9 @@ fn diff_and_below(guided: &Guided, side: Rect, mode: DiffViewMode) -> Option<Vec
     Some(step_areas(guided, step, side, mode).0)
 }
 
-/// The model's read below the diff, left of the chat while one runs.
-fn commentary_area(guided: &Guided, below: Rect) -> Rect {
+/// The model's read below the diff, or the overview, left of the chat
+/// while one runs.
+pub(super) fn commentary_area(guided: &Guided, below: Rect) -> Rect {
     if guided.chat.is_some() {
         ui::modal_column_areas(below, &CHAT_SPLIT).0[0]
     } else {
@@ -89,8 +98,9 @@ pub(in crate::panel::guided) fn chat_screen_area(
     mode: DiffViewMode,
 ) -> Option<Rect> {
     guided.chat?;
-    let parts = diff_and_below(guided, side, mode)?;
-    let (columns, _) = ui::modal_column_areas(parts[1], &CHAT_SPLIT);
+    // The overview has nothing above it: the chat shares the whole side.
+    let below = diff_and_below(guided, side, mode).map_or(side, |parts| parts[1]);
+    let (columns, _) = ui::modal_column_areas(below, &CHAT_SPLIT);
     let chat = columns[1];
     Some(Rect {
         y: chat.y + 1,

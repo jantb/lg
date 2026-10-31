@@ -187,41 +187,20 @@ pub enum Verdict {
     Issue,
 }
 
-/// A question asked about a step, and the answer so far.
-#[derive(Debug, Clone)]
-pub struct Exchange {
-    pub question: String,
-    pub answer: Commentary,
-}
-
 /// One request to the model in flight.
 struct Ask {
-    /// The commentary it fills in: a step key, or a step key plus the index of
-    /// the question being answered.
-    target: Target,
+    /// The step whose commentary it fills in.
+    key: String,
     rx: Receiver<GenMsg>,
 }
 
-/// A step's questions out with Claude to be settled in the code.
+/// A step's questions out with a headless Claude run to be settled in the
+/// code, kept out of the review chat so it stays free for fixing.
 struct Check {
     key: String,
     /// Put back as they were if the check fails.
     questions: Vec<String>,
-    answer: CheckAnswer,
-}
-
-/// Who settles a step's questions: the review chat when one is open, since it
-/// is already reading the code with the reviewer, else a headless run.
-enum CheckAnswer {
-    Headless(Receiver<Result<String, String>>),
-    /// The file the chat was told to write its answer to.
-    Chat(std::path::PathBuf),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Target {
-    Commentary(String),
-    Answer(String, usize),
+    answer: Receiver<Result<String, String>>,
 }
 
 /// What the keyboard is doing.
@@ -233,15 +212,6 @@ pub enum Mode {
     Note {
         text: TextInput,
         editing: Option<usize>,
-    },
-    /// Asking the model about the step on screen.
-    Question {
-        text: TextInput,
-    },
-    /// Telling Claude what to change.
-    Fix {
-        text: TextInput,
-        all_notes: bool,
     },
     /// Every note, and for a pull request the review they are submitted as.
     Summary {
@@ -284,11 +254,8 @@ pub struct Guided {
     pub side_max: std::cell::Cell<u16>,
     pub progress: GuidedProgress,
     pub commentary: HashMap<String, Commentary>,
-    pub exchanges: HashMap<String, Vec<Exchange>>,
     pub mode: Mode,
     pub loading: Option<Receiver<Result<Loaded, String>>>,
-    /// A Claude Code run applying a fix, and what it was asked to change.
-    pub fixing: Option<(Receiver<Result<String, String>>, String)>,
     /// The pull request being walked, as the list had it, to read it again.
     pull_request: Option<crate::github::PullRequest>,
     asks: Vec<Ask>,
@@ -345,10 +312,8 @@ impl Guided {
             side_max: std::cell::Cell::new(0),
             progress,
             commentary: HashMap::new(),
-            exchanges: HashMap::new(),
             mode: Mode::Browse,
             loading: None,
-            fixing: None,
             pull_request: None,
             asks: Vec::new(),
             checks: Vec::new(),
@@ -417,28 +382,15 @@ impl Guided {
         let Some(plan) = self.plan() else {
             return (1..=self.total()).collect();
         };
-        let paths: Vec<String> = match self.walk() {
-            WalkMode::Concerns | WalkMode::Issues => plan
-                .concerns
-                .iter()
-                .flat_map(|concern| {
-                    let mut paths = concern.paths.clone();
-                    paths.sort();
-                    paths
-                })
-                .collect(),
-            WalkMode::Map => plan.order.clone(),
-            // Band by band, each band's files as its tree lists them.
-            WalkMode::Triage => {
-                let mut paths = plan.order.clone();
-                paths.sort_by(|a, b| {
-                    triage_rank(&plan, a)
-                        .cmp(&triage_rank(&plan, b))
-                        .then(a.cmp(b))
-                });
+        let paths: Vec<String> = plan
+            .concerns
+            .iter()
+            .flat_map(|concern| {
+                let mut paths = concern.paths.clone();
+                paths.sort();
                 paths
-            }
-        };
+            })
+            .collect();
         paths
             .iter()
             .filter_map(|path| self.steps.iter().position(|step| step.path == *path))
@@ -588,7 +540,6 @@ impl Guided {
 
     pub fn working(&self) -> bool {
         self.loading.is_some()
-            || self.fixing.is_some()
             || !self.asks.is_empty()
             || !self.checks.is_empty()
             || !self.check_queue.is_empty()
@@ -698,19 +649,6 @@ fn before_writing(commentary: &Commentary) -> Option<Progress> {
             expected: crate::llm::expected_prefill_for(commentary.prompt_bytes),
         }
     })
-}
-
-/// Riskiest first; files safe to skim after every other.
-pub(super) fn triage_rank(plan: &plan::Plan, path: &str) -> usize {
-    if plan.skim.contains_key(path) {
-        return 4;
-    }
-    match plan.risk.get(path).map(|(risk, _)| *risk) {
-        Some(plan::Risk::High) => 0,
-        Some(plan::Risk::Medium) => 1,
-        Some(plan::Risk::Low) => 2,
-        None => 3,
-    }
 }
 
 // ─── Opening and loading ─────────────────────────────────────────────────────

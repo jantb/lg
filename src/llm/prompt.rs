@@ -1,7 +1,5 @@
 //! The prompt each task sends, and the repo style guide they share.
 
-use std::path::Path;
-
 use crate::git::Language;
 use crate::settings::RepoSettings;
 
@@ -154,32 +152,8 @@ pub fn build_guided_final_prompt(context: &str, settings: &RepoSettings) -> Stri
 }
 
 /// The system prompt for a question asked about the step on screen.
-pub fn build_guided_question_system_prompt(context: &str, settings: &RepoSettings) -> String {
-    format!(
-        "You are helping a reviewer understand one file of a change they are reviewing. Answer\n\
-         their question from the context below; say what is missing rather than guessing. Be\n\
-         brief and concrete, cite lines as `L123`, and do not use code fences unless asked for\n\
-         replacement code.\n\n\
-         {}\n\
-         {context}",
-        crate::settings::language_instruction(settings)
-    )
-}
-
 /// What a headless Claude Code run is asked when the reviewer wants a step
 /// fixed: the one change, in the one place, and nothing else.
-pub fn build_guided_fix_prompt(context: &str, instruction: &str) -> String {
-    format!(
-        "You are making one small change requested during a code review of this checkout.\n\
-         Apply exactly what the reviewer asks below, in the file shown, editing it in place.\n\
-         Read what you need to get it right, keep the change minimal, match the surrounding style,\n\
-         and do not touch unrelated code, commit, or run anything that changes git state.\n\
-         When done, reply with one line saying what you changed.\n\n\
-         Reviewer's request:\n{instruction}\n\n\
-         {context}"
-    )
-}
-
 /// What a headless Claude Code run is asked when a step's commentary raised
 /// questions: settle them in the code, and keep only what the reviewer has to
 /// decide.
@@ -204,24 +178,6 @@ pub fn build_guided_question_check_prompt(
          Questions:\n{questions}\n\n\
          {context}",
         crate::settings::language_instruction(settings)
-    )
-}
-
-/// What the review chat is told when lg's read of a file raised questions:
-/// settle them in the code and write what still matters where lg reads it.
-pub fn build_guided_chat_questions(path: &str, questions: &str, answer: &Path) -> String {
-    format!(
-        "lg's read of {path} raised the questions below. Settle each one by reading\n\
-         the code: open the file, follow the callers and the tests. Change nothing.\n\
-         Then write one line per question that still matters to {answer}, in exactly this shape:\n\
-         L<n> issue: <what is wrong and why it matters>\n\
-         L<n> nit: <a smaller point>\n\
-         L<n> question: <only what the code cannot settle and the reviewer must decide; say what you found>\n\
-         Leave out every question the code answers with nothing to flag, and write an empty file\n\
-         when that is all of them. Keep <n> as the question had it. Then say in one line what you\n\
-         found, and wait.\n\n\
-         {questions}",
-        answer = answer.display(),
     )
 }
 

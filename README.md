@@ -53,29 +53,28 @@ agents safely.
   commits and uncommitted edits), and the whole codebase as it stands, every
   file read as if new. `?` inside it lists every key.
   The walk opens with the model's plan of the whole diff: its concerns,
-  a reading order, each file's risk and what is safe to skim. The mode badge
-  in the header (or `M`) orders the files from that plan, with nothing lost
-  in switching: by concern (the default, each file read with the rest of its
-  concern as context), as a map numbered in the plan's reading order, as
-  triage in risk bands with `S` marking the files to skim reviewed, or as
-  issues: every open finding of what has been read, worst first, which the
-  arrows walk so the main issues come before the nits. Once the plan is in,
-  the model reads ahead of you the way the guided-review skill does: the file
-  on screen first, then every file not safe to skim in the walk's order, each
-  with its questions settled in the code, then the whole change once they
-  are all in, so the issues walk lists every finding without walking to it
-  first. Each concern's heading counts its files in, and a bar shows how far
-  the plan has got. Each file comes
-  with the model's read of all its hunks together. Move a line
-  cursor, pin notes to lines, ask follow-up questions, and fix things as you
-  go: `e` opens `$EDITOR` at the line with lg suspended, and `f` has Claude
-  Code make the change in place. Edits show up in the walk at once. After the
-  last file comes the final review (`w`): the whole changeset in one view,
-  with the model reading it as one change for what file-by-file reading
-  misses, its findings pinned under their lines; `↓`/`↑` pick one, `Enter`
-  opens it, `f` fixes it and `C` chats about the whole change. A change too
-  big for one read is planned in parts, and its final review reads one
-  concern of the plan at a time, so files that work together are read
+  a reading order, each file's risk and what is safe to skim. Once the plan
+  is in, the model reads ahead of you the way the guided-review skill does:
+  the file on screen first, then every file not safe to skim, each with its
+  questions settled in the code, then the whole change once they are all in.
+  The overview shows where the problems are: every open finding, worst
+  first, the files worth watching and the risky ones; a click on any of them
+  opens it at its line. Claude Code opens beside the review from the start,
+  told what is open as the reads come in, so you can fix as you go: `f` hands
+  it the finding or note on the cursor line (on the overview, everything
+  open), ready to send. The mode badge in the header (or `M`) walks the files
+  by concern (the default, each file read with the rest of its concern as
+  context) or by issue: every open finding, worst first, which the arrows
+  walk so the main issues come before the nits. Each concern's heading counts
+  its files in, and a bar shows how far the reads have got. Move a line
+  cursor and pin notes to lines; `e` opens `$EDITOR` at the line with lg
+  suspended, and edits show up in the walk at once. After the last file
+  comes the final review (`G`): the whole changeset in one view, with the
+  model reading it as one change for what file-by-file reading misses, its
+  findings pinned under their lines; `↓`/`↑` pick one, `Enter` opens it and
+  `f` hands it to Claude. A change too big for one read is planned in parts,
+  and its final review reads one concern of the plan at a time, so files
+  that work together are read
   together. `X` twice, or the reset
   button under the file list, starts the review over. For a pull request, `s`
   submits every note as inline comments in one review (comment, approve or

@@ -12,7 +12,7 @@ use crate::panel::guided::{Guided, Progress, findings};
 use crate::state::{AppState, DiffViewMode, SPINNER_FRAMES};
 use crate::ui;
 
-use super::commentary::{commentary_lines, exchange_lines};
+use super::commentary::commentary_lines;
 use super::diff::{DiffLines, file_title, final_inline, finding_lines, inline_lead, push_diff};
 use super::panes::{CHAT_SPLIT, diff_room, draw_chat, split_for_diff};
 use super::{CURSOR_BG, KEY, LABEL, progress_text, verdict_look};
@@ -228,7 +228,6 @@ pub(super) fn final_commentary_lines(state: &AppState, guided: &Guided, width: u
         }
     }
     mark_picked(guided, &mut out);
-    out.lines.extend(exchange_lines(state, guided, &key, width));
     out.lines.push(Line::from(""));
     out.lines.push(Line::from(vec![
         Span::styled("\u{2192}", KEY),

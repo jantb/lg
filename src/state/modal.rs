@@ -299,7 +299,10 @@ pub enum PendingAction {
     },
     Promote(crate::git::environments::PromotionPreview),
     GenerateMessage,
-    GuidedChat,
+    /// `focus` gives it the keyboard; opened beside a new review it waits.
+    GuidedChat {
+        focus: bool,
+    },
     CopyToClipboard {
         label: String,
         text: String,

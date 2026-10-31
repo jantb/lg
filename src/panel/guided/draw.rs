@@ -16,7 +16,7 @@ use super::chat::chat_session;
 use super::findings::Severity;
 use super::found::ticket_in;
 use super::notes::notes_markdown;
-use super::{Guided, Mode, OVERVIEW, OVERVIEW_KEY, Progress, Verdict, triage_rank};
+use super::{Guided, Mode, OVERVIEW, OVERVIEW_KEY, Progress, Verdict};
 use bottom::{draw_bottom, draw_summary};
 use list::{draw_reset_button, draw_steps, scope_badge, walk_badge};
 use panes::draw_step;
@@ -33,6 +33,7 @@ pub(super) use list::{
     RowTarget, list_width, reset_button_area, row_targets, scope_badge_area, steps_area,
     walk_badge_area,
 };
+pub(super) use overview::{OverviewTarget, overview_target_at};
 #[cfg(test)]
 pub(super) use panes::step_areas;
 pub(super) use panes::{chat_screen_area, diff_area, finding_at, selectable_areas};
@@ -174,9 +175,7 @@ fn bar(done: usize, total: usize, width: usize) -> String {
 
 fn bottom_height(guided: &Guided) -> u16 {
     match &guided.mode {
-        Mode::Note { text, .. } | Mode::Question { text } | Mode::Fix { text, .. } => {
-            (text.lines().count().max(1) as u16 + 1).min(6)
-        }
+        Mode::Note { text, .. } => (text.lines().count().max(1) as u16 + 1).min(6),
         _ => 1,
     }
 }
@@ -239,12 +238,6 @@ fn draw_progress(state: &AppState, guided: &Guided, area: Rect, frame: &mut Fram
     if guided.loading.is_some() {
         spans.push(Span::styled(
             format!("  {spinner} reading the change"),
-            Style::default().fg(Color::Cyan),
-        ));
-    }
-    if let Some((_, what)) = &guided.fixing {
-        spans.push(Span::styled(
-            format!("  {spinner} claude is changing {what}"),
             Style::default().fg(Color::Cyan),
         ));
     }

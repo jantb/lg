@@ -239,13 +239,11 @@ pub struct TickedFinding {
 /// reads at the start: switching between them loses nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum WalkMode {
-    /// Grouped by what each part of the change is for.
+    /// Grouped by what each part of the change is for. A review saved while
+    /// the map and triage walks were still there comes back to this.
     #[default]
+    #[serde(alias = "Map", alias = "Triage")]
     Concerns,
-    /// The file tree, read in the order the plan suggests.
-    Map,
-    /// Riskiest first, files safe to skim last.
-    Triage,
     /// Every open finding of what has been read, worst first.
     Issues,
 }
@@ -253,9 +251,7 @@ pub enum WalkMode {
 impl WalkMode {
     pub fn next(self) -> Self {
         match self {
-            Self::Concerns => Self::Map,
-            Self::Map => Self::Triage,
-            Self::Triage => Self::Issues,
+            Self::Concerns => Self::Issues,
             Self::Issues => Self::Concerns,
         }
     }
@@ -263,8 +259,6 @@ impl WalkMode {
     pub fn label(self) -> &'static str {
         match self {
             Self::Concerns => "CONCERNS",
-            Self::Map => "MAP",
-            Self::Triage => "TRIAGE",
             Self::Issues => "ISSUES",
         }
     }
@@ -272,8 +266,6 @@ impl WalkMode {
     pub fn describe(self) -> &'static str {
         match self {
             Self::Concerns => "grouped by concern, each file read with the rest of its concern",
-            Self::Map => "the file tree, in the plan's reading order",
-            Self::Triage => "riskiest first, files safe to skim last",
             Self::Issues => "the open findings of every file read, worst first",
         }
     }
@@ -446,7 +438,7 @@ new file mode 100644
                 line: 12,
                 text: "-1 is used as an index".into(),
             }],
-            walk: WalkMode::Triage,
+            walk: WalkMode::Issues,
         };
         let text = serde_json::to_string(&progress).unwrap();
 
@@ -454,5 +446,14 @@ new file mode 100644
             serde_json::from_str::<GuidedProgress>(&text).unwrap(),
             progress
         );
+    }
+
+    #[test]
+    fn a_review_saved_in_a_walk_mode_since_removed_walks_by_concern() {
+        for old in ["Map", "Triage"] {
+            let text = format!("{{\"walk\":\"{old}\"}}");
+            let progress: GuidedProgress = serde_json::from_str(&text).unwrap();
+            assert_eq!(progress.walk, WalkMode::Concerns);
+        }
     }
 }

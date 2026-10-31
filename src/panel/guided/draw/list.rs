@@ -85,19 +85,6 @@ pub(in crate::panel::guided) fn list_width(inner_width: u16, requested: Option<u
         .clamp(MIN_LIST_WIDTH, widest)
 }
 
-/// Triage's bands, by [`super::triage_rank`]: riskiest first, then the files
-/// the plan rated no risk for, then those safe to skim.
-const RISK_BANDS: [(&str, Color); 5] = [
-    ("\u{25cf} High risk", ISSUE),
-    ("\u{25cf} Medium risk", NIT),
-    ("\u{25cf} Low risk", Color::Green),
-    ("\u{b7} Not rated", Color::Gray),
-    (
-        "\u{25cb} Safe to skim (S marks them reviewed)",
-        Color::DarkGray,
-    ),
-];
-
 /// One row of the step list.
 enum ListRow {
     Overview,
@@ -175,27 +162,7 @@ fn list_rows(guided: &Guided, plan: Option<&Plan>) -> Vec<ListRow> {
         rows.push(ListRow::Final);
         return rows;
     }
-    if let Some(plan) = plan.filter(|_| guided.walk() == WalkMode::Triage) {
-        for (rank, (text, color)) in RISK_BANDS.iter().enumerate() {
-            let paths: Vec<&str> = guided
-                .steps
-                .iter()
-                .map(|step| step.path.as_str())
-                .filter(|path| super::triage_rank(plan, path) == rank)
-                .collect();
-            if paths.is_empty() {
-                continue;
-            }
-            rows.push(ListRow::Band {
-                text: format!("{text} ({})", paths.len()),
-                color: *color,
-            });
-            rows.extend(tree_rows(&paths, 1));
-        }
-        rows.push(ListRow::Final);
-        return rows;
-    }
-    match plan.filter(|_| guided.walk() == WalkMode::Concerns) {
+    match plan {
         Some(plan) => {
             for (index, concern) in plan.concerns.iter().enumerate() {
                 rows.push(ListRow::Concern {
@@ -354,7 +321,6 @@ pub(super) fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
     let area = steps_area(area);
     let width = area.width as usize;
     let plan = guided.plan();
-    let order = guided.walk_order();
     let selected = |here: bool| {
         if here {
             Style::default().bg(CURSOR_BG).add_modifier(Modifier::BOLD)
@@ -409,9 +375,7 @@ pub(super) fn draw_steps(guided: &Guided, area: Rect, frame: &mut Frame) {
             ListRow::Finding(open) => {
                 finding_row(guided, &open, width, selected(is_here(guided, &open)))
             }
-            ListRow::File { step, name, depth } => {
-                file_row(guided, plan.as_ref(), &order, step, &name, depth, width)
-            }
+            ListRow::File { step, name, depth } => file_row(guided, step, &name, depth, width),
             ListRow::Final => {
                 let style = selected(guided.on_final());
                 let verdict = verdict_mark(
@@ -474,12 +438,9 @@ fn finding_row(
 }
 
 /// A file's row: its verdict in the first column, where a narrow list cannot
-/// cut it off; its place in the reading order on the map; its name; then its
-/// notes and open findings.
+/// cut it off; its name; then its notes and open findings.
 fn file_row(
     guided: &Guided,
-    plan: Option<&Plan>,
-    order: &[usize],
     number: usize,
     name: &str,
     depth: usize,
@@ -487,8 +448,6 @@ fn file_row(
 ) -> ListItem<'static> {
     let step = &guided.steps[number - 1];
     let here = guided.current == number;
-    let triage = guided.walk() == WalkMode::Triage;
-    let skim = plan.is_some_and(|plan| plan.skim.contains_key(&step.path));
     let mark = if guided.is_reviewed(step) {
         Span::styled("\u{2713} ", Style::default().fg(Color::Green))
     } else if here {
@@ -497,17 +456,10 @@ fn file_row(
         Span::styled("\u{b7} ", LABEL)
     };
     let verdict = verdict_mark(guided.commentary.get(&step.key()), guided.verdict(step));
-    let base = match (here, guided.is_reviewed(step) || (triage && skim)) {
+    let base = match (here, guided.is_reviewed(step)) {
         (true, _) => Style::default().bg(CURSOR_BG).add_modifier(Modifier::BOLD),
         (false, true) => LABEL,
         (false, false) => Style::default().fg(Color::White),
-    };
-    let place = match (plan, guided.walk()) {
-        (Some(_), WalkMode::Map) => order
-            .iter()
-            .position(|&at| at == number)
-            .map(|at| Span::styled(format!("{} ", at + 1), Style::default().fg(Color::Cyan))),
-        _ => None,
     };
     let mut tail = Vec::new();
     let notes = guided.notes_for(step).len();
@@ -518,16 +470,12 @@ fn file_row(
     // The name first; what happened to a file with no text diff after
     // everything else, where a narrow list cuts it off first.
     let indent = "  ".repeat(depth);
-    let used = 4
-        + indent.len()
-        + place.as_ref().map_or(0, Span::width)
-        + tail.iter().map(Span::width).sum::<usize>();
+    let used = 4 + indent.len() + tail.iter().map(Span::width).sum::<usize>();
     if let Some(what) = no_text_diff(step) {
         tail.push(Span::styled(format!(" {what}"), LABEL));
     }
     let label = Span::styled(truncate_left(name, width.saturating_sub(used)), base);
     let mut spans = vec![verdict, Span::raw(indent), mark];
-    spans.extend(place);
     spans.push(label);
     spans.extend(tail);
     ListItem::new(Line::from(spans)).style(base)

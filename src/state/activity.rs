@@ -141,7 +141,7 @@ impl AppState {
         } else {
             match &self.pending_action {
                 Some(PendingAction::GenerateMessage) => Some("starting generator"),
-                Some(PendingAction::GuidedChat) => Some("opening the review chat"),
+                Some(PendingAction::GuidedChat { .. }) => Some("opening the review chat"),
                 Some(PendingAction::CopyToClipboard { .. }) => Some("copying"),
                 Some(PendingAction::EditFile { .. }) => Some("opening the editor"),
                 Some(PendingAction::Commit) => Some("committing"),
