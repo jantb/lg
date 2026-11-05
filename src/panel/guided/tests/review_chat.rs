@@ -51,7 +51,7 @@ fn a_running_chat_stays_on_screen_through_the_final_review() {
     let mut state = walk_with_findings();
     chatting(&mut state, "echo ready; sleep 30", "ready");
 
-    press(&mut state, ratatui::crossterm::event::KeyCode::Char('w'));
+    press(&mut state, ratatui::crossterm::event::KeyCode::Char('G'));
 
     assert!(state.guided.as_ref().unwrap().on_final());
     let rows = screen(&state);

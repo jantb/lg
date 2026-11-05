@@ -16,10 +16,17 @@ use super::{LABEL, draw_placeholder, truncate};
 pub(super) fn draw_repo_list(state: &AppState, area: Rect, frame: &mut Frame) {
     let gh = &state.github;
     let [search, list_area] = repo_list_areas(area);
+    let visible = visible_repos(gh);
+    let count = match (gh.repos.len(), gh.query.trim().is_empty()) {
+        (0, _) => String::new(),
+        (all, true) => format!("   {all} repositories"),
+        (all, false) => format!("   {} of {all}", visible.len()),
+    };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" Search ", LABEL),
             Span::styled(gh.query.to_string(), Style::default().fg(Color::White)),
+            Span::styled(count, LABEL),
         ])),
         search,
     );
@@ -28,7 +35,6 @@ pub(super) fn draw_repo_list(state: &AppState, area: Rect, frame: &mut Frame) {
         search.y,
     ));
 
-    let visible = visible_repos(gh);
     if visible.is_empty() {
         let (text, error) = match (&gh.repos_error, gh.repos_loading.is_some()) {
             (Some(err), _) => (err.clone(), true),
@@ -51,8 +57,13 @@ pub(super) fn draw_repo_list(state: &AppState, area: Rect, frame: &mut Frame) {
         return;
     }
     let width = list_area.width.saturating_sub(2) as usize;
+    let rows = list_area.height as usize;
+    let offset = gh.repo_idx.saturating_sub(rows.saturating_sub(1));
+    // Only the rows on screen are built: an organization can list thousands.
     let items: Vec<ListItem> = visible
         .iter()
+        .skip(offset)
+        .take(rows)
         .map(|repo| {
             let mut tags = Vec::new();
             if repo.private {
@@ -82,9 +93,7 @@ pub(super) fn draw_repo_list(state: &AppState, area: Rect, frame: &mut Frame) {
     let list = List::new(items)
         .highlight_style(palette::selection())
         .highlight_symbol("\u{203a}");
-    let rows = list_area.height as usize;
-    let offset = gh.repo_idx.saturating_sub(rows.saturating_sub(1));
-    let mut list_state = crate::panel::scroll::list_state(Some(gh.repo_idx), offset);
+    let mut list_state = crate::panel::scroll::list_state(Some(gh.repo_idx - offset), 0);
     frame.render_stateful_widget(list, list_area, &mut list_state);
 }
 

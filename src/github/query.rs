@@ -11,7 +11,9 @@ use super::{Owners, PrFilter, PullRequest, RepoInfo, Repository};
 /// searched on GitHub, not scrolled through in a terminal.
 const PR_LIMIT: &str = "50";
 
-const REPO_LIMIT: &str = "200";
+/// How many repositories one owner's list asks for: enough that a large
+/// organization is listed whole, so the search finds any of its repositories.
+const REPO_LIMIT: &str = "5000";
 
 const PR_FIELDS: &str = "number,title,author,headRefName,baseRefName,state,isDraft,\
                          reviewDecision,mergeable,statusCheckRollup,latestReviews,url,body,\

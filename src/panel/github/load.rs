@@ -103,7 +103,19 @@ pub(super) fn step_owner(state: &mut AppState, forward: bool) {
     } else {
         (idx + len - 1) % len
     };
-    state.github.owner = choices[next].clone();
+    show_owner(state, next);
+}
+
+/// List the repositories of the owner at `idx` among the choices, unless
+/// they are the ones listed already.
+pub(super) fn show_owner(state: &mut AppState, idx: usize) {
+    let Some(owner) = state.github.owner_choices().into_iter().nth(idx) else {
+        return;
+    };
+    if owner == state.github.owner {
+        return;
+    }
+    state.github.owner = owner;
     // The last owner's repositories must not be what Enter clones while this
     // one's are still on their way.
     state.github.repos.clear();

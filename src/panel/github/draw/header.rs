@@ -86,11 +86,7 @@ pub(super) fn header_spans(
         }
         Tab::Repositories => {
             let used: usize = spans.iter().map(|(span, _)| span.width()).sum();
-            spans.extend(
-                owner_spans(state, (width as usize).saturating_sub(used))
-                    .into_iter()
-                    .map(plain),
-            );
+            spans.extend(owner_spans(state, (width as usize).saturating_sub(used)));
             if gh.repos_loading.is_some() {
                 spans.push(plain(Span::styled(
                     format!("   {} reading repositories", spinner(state)),
@@ -102,9 +98,6 @@ pub(super) fn header_spans(
     spans
 }
 
-/// Whose repositories are listed, among everyone whose could be: every owner
-/// by name when they fit in `room`, otherwise the chosen one and where it
-/// stands among them.
 /// Every filter, the one shown picked out, each a click away; or, with no
 /// room for them all, the one shown and a click that steps on from it.
 fn filter_spans(chosen: PrFilter, room: usize) -> Vec<(Span<'static>, Option<HeaderClick>)> {
@@ -140,7 +133,10 @@ fn filter_spans(chosen: PrFilter, room: usize) -> Vec<(Span<'static>, Option<Hea
     spans
 }
 
-fn owner_spans(state: &AppState, room: usize) -> Vec<Span<'static>> {
+/// Whose repositories are listed, among everyone whose could be: every owner
+/// by name when they fit in `room`, otherwise the chosen one and where it
+/// stands among them.
+fn owner_spans(state: &AppState, room: usize) -> Vec<(Span<'static>, Option<HeaderClick>)> {
     let gh = &state.github;
     let name = |owner: &Option<String>| match (owner, &gh.owners) {
         (Some(org), _) => org.clone(),
@@ -148,10 +144,11 @@ fn owner_spans(state: &AppState, room: usize) -> Vec<Span<'static>> {
         (None, _) => "you".to_string(),
     };
     let chosen = Style::default().fg(Color::Cyan);
+    let next = Some(HeaderClick::NextOwner);
     let choices = gh.owner_choices();
-    let mut spans = vec![Span::styled("owner ", LABEL)];
+    let mut spans = vec![(Span::styled("owner ", LABEL), next)];
     if choices.len() < 2 {
-        spans.push(Span::styled(name(&gh.owner), chosen));
+        spans.push((Span::styled(name(&gh.owner), chosen), next));
         return spans;
     }
     let hint = "  (\u{2190}\u{2192} changes)";
@@ -160,25 +157,28 @@ fn owner_spans(state: &AppState, room: usize) -> Vec<Span<'static>> {
         .map(|owner| name(owner).chars().count() + 2)
         .sum();
     if 6 + all + hint.chars().count() <= room {
-        for owner in &choices {
+        for (idx, owner) in choices.iter().enumerate() {
             let style = if *owner == gh.owner {
                 chosen.add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(palette::TEXT_IDLE)
             };
-            spans.push(Span::styled(format!(" {} ", name(owner)), style));
+            spans.push((
+                Span::styled(format!(" {} ", name(owner)), style),
+                Some(HeaderClick::Owner(idx)),
+            ));
         }
     } else {
         let at = choices
             .iter()
             .position(|owner| *owner == gh.owner)
             .unwrap_or(0);
-        spans.push(Span::styled(name(&gh.owner), chosen));
-        spans.push(Span::styled(
-            format!(" {}/{}", at + 1, choices.len()),
-            LABEL,
+        spans.push((Span::styled(name(&gh.owner), chosen), next));
+        spans.push((
+            Span::styled(format!(" {}/{}", at + 1, choices.len()), LABEL),
+            next,
         ));
     }
-    spans.push(Span::styled(hint, LABEL));
+    spans.push((Span::styled(hint, LABEL), next));
     spans
 }

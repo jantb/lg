@@ -1,4 +1,9 @@
 use anyhow::Result;
+use ratatui::crossterm::{
+    cursor::Hide,
+    execute, queue,
+    terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
+};
 use ratatui::{Frame, backend::Backend, layout::Rect};
 
 use crate::{
@@ -26,12 +31,23 @@ where
 }
 
 impl App {
+    /// The frame is written with the cursor hidden and inside a synchronized
+    /// update. Otherwise a cursor left showing in a text field is dragged
+    /// across the screen by every cell the frame rewrites, which a modal's
+    /// animated border does thirty times a second.
     pub(super) fn render(&mut self) -> Result<()> {
         let area = terminal_area(self.terminal.size()?);
         prepare(&mut self.state, area);
         let mut selected = None;
-        self.terminal
-            .draw(|frame| selected = draw(frame, &self.state))?;
+        queue!(self.terminal.backend_mut(), BeginSynchronizedUpdate, Hide)?;
+        let drawn = self
+            .terminal
+            .draw(|frame| selected = draw(frame, &self.state))
+            .map(|_| ());
+        // Ended even when the draw failed, so the terminal does not sit on a
+        // held screen.
+        execute!(self.terminal.backend_mut(), EndSynchronizedUpdate)?;
+        drawn?;
         copy_selection(&mut self.state, selected);
         Ok(())
     }

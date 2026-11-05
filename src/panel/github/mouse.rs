@@ -1,5 +1,5 @@
-//! The mouse over the modal: tabs and filters in the header, rows in the
-//! lists.
+//! The mouse over the modal: tabs, filters and owners in the header, rows in
+//! the lists.
 
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -7,12 +7,13 @@ use ratatui::layout::Rect;
 use crate::state::AppState;
 
 use super::browse::{next_filter, select_pr, show_filter, show_tab, toggle_drafts};
+use super::load::{show_owner, step_owner};
 use super::lookup::visible_repos;
 use super::{Mode, Tab, draw, inbox};
 
 /// The wheel moves through whichever list is on screen; a click on the header
-/// picks a tab, steps the filter or shows and hides drafts, and a click in the
-/// list selects what it lands on.
+/// picks a tab or an owner, steps the filter or shows and hides drafts, and a
+/// click in the list selects what it lands on.
 pub fn handle_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) {
     if state.github.mode != Mode::Browse {
         return;
@@ -26,6 +27,8 @@ pub fn handle_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) {
                 Some(draw::HeaderClick::Filter(filter)) => show_filter(state, filter),
                 Some(draw::HeaderClick::NextFilter) => next_filter(state),
                 Some(draw::HeaderClick::Drafts) => toggle_drafts(state),
+                Some(draw::HeaderClick::Owner(idx)) => show_owner(state, idx),
+                Some(draw::HeaderClick::NextOwner) => step_owner(state, true),
                 None => {
                     if let Some(idx) = draw::list_click(state, area, m.column, m.row) {
                         match state.github.tab {

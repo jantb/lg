@@ -38,6 +38,12 @@ pub(in crate::panel::github) enum HeaderClick {
     NextFilter,
     /// Whether drafts are shown, which flips.
     Drafts,
+    /// An owner to list the repositories of, by its place among
+    /// [`owner_choices`](crate::panel::github::GitHub::owner_choices).
+    Owner(usize),
+    /// The owner shown when there is no room for every choice, which steps
+    /// to the next one.
+    NextOwner,
 }
 
 /// What the header holds at `column`, `row`, measured the way [`render`]

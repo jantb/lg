@@ -376,6 +376,75 @@ fn the_arrows_step_through_the_users_organizations_and_back_to_the_user() {
     assert_eq!(state.github.owner.as_deref(), Some("zeta"));
 }
 
+/// Click the header of the repositories tab, drawn `width` wide, on `text`
+/// in its owner line.
+fn click_owner(state: &mut AppState, width: u16, text: &str) {
+    let area = ratatui::layout::Rect::new(0, 0, width, 30);
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 30)).unwrap();
+    terminal.draw(|frame| render(state, area, frame)).unwrap();
+    let buf = terminal.backend().buffer();
+    let (column, row) = (0..buf.area.height)
+        .find_map(|y| {
+            let line: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            let owners = line.find("owner ")?;
+            let byte = owners + line[owners..].find(text)?;
+            Some((line[..byte].chars().count() as u16, y))
+        })
+        .unwrap_or_else(|| panic!("{text} is in the owner line"));
+    let click = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    handle_mouse(state, area, &click);
+}
+
+#[test]
+fn a_click_on_an_owner_lists_their_repositories() {
+    let mut state = with_owners(&["acme", "zeta"]);
+
+    click_owner(&mut state, 160, "zeta");
+    assert_eq!(state.github.owner.as_deref(), Some("zeta"));
+    assert!(
+        visible_repos(&state.github).is_empty(),
+        "me/lg is not zeta's to offer"
+    );
+    click_owner(&mut state, 160, " me ");
+    assert_eq!(state.github.owner, None);
+}
+
+#[test]
+fn a_narrow_header_steps_to_the_next_owner_on_a_click() {
+    let mut state = with_owners(&["acme", "zeta"]);
+
+    click_owner(&mut state, 70, "me");
+    assert_eq!(state.github.owner.as_deref(), Some("acme"));
+}
+
+#[test]
+fn a_long_list_scrolls_to_the_repository_selected_far_down_it() {
+    let mut state = with_owners(&[]);
+    state.github.repos = (0..1100)
+        .map(|n| repo(&format!("spk/repo-{n:04}"), ""))
+        .collect();
+    state.github.repo_idx = 1042;
+    let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|frame| render(&state, area, frame)).unwrap();
+    let screen: String = {
+        let buf = terminal.backend().buffer();
+        (0..buf.area.height)
+            .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
+            .map(|at| buf[at].symbol())
+            .collect()
+    };
+
+    assert!(screen.contains("\u{203a} spk/repo-1042"), "{screen}");
+    assert!(screen.contains("1100 repositories"), "{screen}");
+}
+
 #[test]
 fn another_owners_list_never_clones_from_the_last_one() {
     let mut state = with_owners(&["acme"]);
