@@ -5,9 +5,9 @@ use std::collections::HashSet;
 
 use crate::state::{AppState, GenMsg, PendingAction, Poll, poll_once, stopped_unexpectedly};
 
-use super::chat::{note_file_change_for_chat, tell_chat_what_is_read};
+use super::chat::tell_chat_what_is_read;
 use super::context::{file_context, final_contexts, plan_contexts, step_context};
-use super::load::apply_loaded;
+use super::load::{apply_loaded, reload};
 use super::{
     Ask, CONCURRENT_CHECKS, CONCURRENT_CLAUDE, CONCURRENT_LOCAL, Check, Commentary, Guided, Mode,
     OVERVIEW, OVERVIEW_KEY, findings, work,
@@ -93,12 +93,37 @@ pub fn poll(state: &mut AppState) {
         }
         notices.push(("the review chat ended".to_string(), false));
     }
-    note_file_change_for_chat(guided);
+    let chat_done = chat_turn_ended(guided, &state.sessions);
+    let owed = guided.loading.is_none() && std::mem::take(&mut guided.reload_owed);
+    if chat_done {
+        notices.push((
+            "Claude is done \u{2014} reading the change again".to_string(),
+            false,
+        ));
+    }
     tell_chat_what_is_read(guided, &mut state.sessions);
 
     for (text, is_error) in notices {
         state.set_status(text, is_error);
     }
+    // What the chat changed shows in the walk: a file it edited is read
+    // again, and the whole change after it, so the lists follow the fix.
+    if chat_done || owed {
+        reload(state);
+    }
+}
+
+/// Whether the chat just finished a turn: it was working, or waiting on a
+/// question, the last time and is not now.
+pub(super) fn chat_turn_ended(guided: &mut Guided, sessions: &crate::session::Sessions) -> bool {
+    use crate::session::SessionActivity::{NeedsInput, Working};
+    let busy = guided
+        .chat
+        .and_then(|id| sessions.get(id))
+        .is_some_and(|chat| matches!(chat.activity(), Working | NeedsInput));
+    let ended = guided.chat_busy && !busy;
+    guided.chat_busy = busy;
+    ended
 }
 
 /// Claude opens beside a new review, ready to fix what the model finds:

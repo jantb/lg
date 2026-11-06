@@ -291,6 +291,11 @@ pub struct Guided {
     pub chat_width: Option<u16>,
     /// The width the chat last shared with the read, to size it by key.
     pub chat_room: std::cell::Cell<u16>,
+    /// The chat was in the middle of a turn when last looked at.
+    chat_busy: bool,
+    /// A read asked for while one was running, to start once it is in, so
+    /// what changed after the running one began is not missed.
+    reload_owed: bool,
     chat_owed: Vec<(String, ChatNews)>,
 }
 
@@ -336,6 +341,8 @@ impl Guided {
             chat_file: None,
             chat_width: None,
             chat_room: std::cell::Cell::new(0),
+            chat_busy: false,
+            reload_owed: false,
             chat_owed: Vec::new(),
         }
     }

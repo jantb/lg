@@ -141,7 +141,7 @@ fn a_finding_of_the_final_review_is_picked_and_opened_on_its_line() {
         "the finding shows under its line in the file"
     );
     press(&mut state, Char('t'));
-    press(&mut state, Char('w'));
+    press(&mut state, Char('G'));
     assert_eq!(
         state.guided.as_ref().unwrap().final_verdict(),
         Some(Verdict::Nit)

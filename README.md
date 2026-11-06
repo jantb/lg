@@ -59,8 +59,11 @@ agents safely.
   questions settled in the code, then the whole change once they are all in.
   The overview shows where the problems are: every open finding, worst
   first, the files worth watching and the risky ones; a click on any of them
-  opens it at its line. Claude Code opens beside the review from the start,
-  told what is open as the reads come in, so you can fix as you go: `f` hands
+  opens it at its line. Claude Code opens beside the review from the start
+  and is told once what is open across the whole change, when the reads are
+  in; walking the files tells it nothing more. When it finishes a turn, the
+  change is read again, so a file it fixed is reviewed anew and the lists
+  follow. Fix as you go: `f` hands
   it the finding or note on the cursor line (on the overview, everything
   open), ready to send. Drag the divider left of it, or press `<` and `>`,
   to size it. The mode badge in the header (or `M`) walks the files

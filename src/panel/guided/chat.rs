@@ -101,17 +101,6 @@ impl Guided {
     }
 }
 
-pub(super) fn note_file_change_for_chat(guided: &mut Guided) {
-    let Some(path) = guided.chat_subject() else {
-        return;
-    };
-    if guided.chat.is_none() || guided.chat_file.as_deref() == Some(path.as_str()) {
-        return;
-    }
-    guided.chat_file = Some(path.clone());
-    guided.owe_chat(path, ChatNews::FileRead);
-}
-
 /// Each piece of news waits until lg has read the whole file it is about.
 pub(super) fn tell_chat_what_is_read(guided: &mut Guided, sessions: &mut crate::session::Sessions) {
     let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut guided.chat_owed)
