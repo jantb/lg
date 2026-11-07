@@ -15,7 +15,7 @@ use super::load::{load_owners, load_pull_requests, load_repositories, step_owner
 use super::lookup::{
     clone_destination, clone_request, selected_pr, visible_repos, worktree_path_for,
 };
-use super::{Compose, CreateField, Mode, Tab, inbox};
+use super::{Compose, CreateField, Mode, Tab, inbox, threads};
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     match state.github.mode {
@@ -28,6 +28,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         Mode::Merge(_) => merge_key(state, key),
         Mode::ConfirmClose => confirm_close_key(state, key),
         Mode::Create(_) => create_key(state, key),
+        Mode::Threads(_) => threads::handle_key(state, key),
     }
     Ok(())
 }
@@ -161,6 +162,7 @@ fn browse_pull_requests(state: &mut AppState, key: KeyEvent) {
             None => state.set_status("no main worktree to put a new one next to", true),
         },
         KeyCode::Char('v') => crate::panel::guided::open_pull_request(state, &pr),
+        KeyCode::Char('t') => threads::open(state, number, pr.title.clone()),
         KeyCode::Char('a') if still_open(state) => compose(state, Compose::Approve),
         KeyCode::Char('x') if still_open(state) => compose(state, Compose::RequestChanges),
         KeyCode::Char('c') => compose(state, Compose::Comment),
@@ -268,6 +270,7 @@ pub fn handle_paste(state: &mut AppState, text: &str) -> bool {
             CreateField::Base => form.base.insert_str(one_line().trim()),
             CreateField::Draft => return false,
         },
+        Mode::Threads(view) => return threads::paste(view, text),
         Mode::Browse if state.github.tab == Tab::Repositories => {
             state.github.query.insert_str(one_line().trim());
             state.github.repo_idx = 0;

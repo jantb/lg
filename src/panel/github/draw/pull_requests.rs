@@ -119,6 +119,14 @@ pub(super) fn draw_pr_list(state: &AppState, area: Rect, frame: &mut Frame) {
                 marks.push(Span::raw(" "));
                 marks.push(checks);
             }
+            if let Some(count) = state.github.thread_counts.get(&pr.number)
+                && count.unresolved > 0
+            {
+                marks.push(Span::styled(
+                    format!(" \u{25c6}{}", count.unresolved),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
             if pr.review == ReviewDecision::Approved {
                 marks.push(Span::styled(" \u{2714}", review_style(pr.review)));
             } else if pr.review == ReviewDecision::ChangesRequested {
@@ -295,6 +303,14 @@ pub(super) fn draw_pr_detail(state: &AppState, area: Rect, frame: &mut Frame) {
                 Style::default().fg(Color::Red),
             )));
         }
+    }
+    if let Some(&count) = state.github.thread_counts.get(&pr.number)
+        && count.total > 0
+    {
+        let mut spans = vec![Span::styled("conversations ", LABEL)];
+        spans.extend(super::threads::count_spans(count));
+        spans.push(Span::styled("  t goes through them", LABEL));
+        lines.push(Line::from(spans));
     }
     if !pr.reviews.is_empty() {
         let mut spans = vec![Span::styled("reviews ", LABEL)];

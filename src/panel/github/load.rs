@@ -6,7 +6,7 @@ use crate::state::{AppState, Modal};
 use super::forms::start_create;
 use super::lookup::{is_mine, visible_repos};
 use super::work::take_answer;
-use super::{GitHub, Mode, Tab, inbox, work};
+use super::{GitHub, Mode, Tab, inbox, threads, work};
 
 pub fn open(state: &mut AppState) {
     let dir = crate::git::active_repo();
@@ -15,6 +15,7 @@ pub fn open(state: &mut AppState) {
         state.github.repo = None;
         state.github.pr_idx = 0;
         state.github.prs_error = None;
+        state.github.thread_counts.clear();
     }
     state.github.mode = Mode::Browse;
     // With no checkout there are no pull requests to show, and cloning one is
@@ -135,6 +136,7 @@ pub fn after_action(state: &mut AppState) {
 /// Take in whatever the lists being read have sent back.
 pub fn poll(state: &mut AppState) {
     inbox::poll(state);
+    threads::poll(state);
     let gh = &mut state.github;
     let mut create = false;
     if let Some(result) = take_answer(&mut gh.prs_loading) {
@@ -147,6 +149,7 @@ pub fn poll(state: &mut AppState) {
                 gh.pr_idx = gh.pr_idx.min(gh.prs.len().saturating_sub(1));
                 gh.prs_error = None;
                 put_mine_first(gh);
+                threads::load_counts(gh);
                 create = std::mem::take(&mut gh.create_on_load);
             }
             Err(err) => {

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use super::gh::failure;
 use super::query::search_terms;
 use super::review::review_payload;
+use super::threads::{counts_query, parse_thread_counts, parse_threads};
 use super::*;
 
 #[test]
@@ -284,4 +285,73 @@ fn a_failed_call_says_what_gh_said_on_one_line() {
     assert!(!text.contains('\n'), "{text}");
     assert!(text.contains("gh pr merge"), "{text}");
     assert!(text.contains("prohibits the merge"), "{text}");
+}
+
+/// The shape `gh api graphql` answered with for a pull request's threads.
+const THREADS_JSON: &str = r#"{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+  {"id":"PRRT_1","isResolved":false,"isOutdated":true,"path":"Cargo.toml","line":null,
+   "originalLine":27,"resolvedBy":null,"comments":{"nodes":[
+     {"author":{"login":"bob"},"body":"bump this\r\nplease","createdAt":"2026-11-01T08:05:15Z",
+      "url":"https://github.com/acme/app/pull/7#discussion_r1","diffHunk":"@@ -1 +1 @@\n-a\n+b"},
+     {"author":null,"body":"ok","createdAt":"2026-11-02T08:00:00Z","url":"","diffHunk":""}]}},
+  {"id":"PRRT_2","isResolved":true,"isOutdated":false,"path":"src/lib.rs","line":4,
+   "originalLine":4,"resolvedBy":{"login":"alice"},"comments":{"nodes":[
+     {"author":{"login":"carol"},"body":"nit","createdAt":"","url":"","diffHunk":""}]}}
+]}}}}}"#;
+
+#[test]
+fn review_threads_read_back_with_where_they_are_and_who_said_what() {
+    let threads = parse_threads(THREADS_JSON).unwrap();
+    assert_eq!(threads.len(), 2);
+
+    let open = &threads[0];
+    assert_eq!(open.id, "PRRT_1");
+    assert!(!open.resolved && open.outdated);
+    assert_eq!(
+        open.location(),
+        "Cargo.toml:27",
+        "an outdated thread keeps its old line"
+    );
+    assert_eq!(open.author(), "bob");
+    assert_eq!(open.comments[0].body, "bump this\nplease");
+    assert_eq!(open.comments[1].author, "ghost", "a deleted account");
+    assert_eq!(open.url, "https://github.com/acme/app/pull/7#discussion_r1");
+    assert!(open.diff_hunk.ends_with("+b"));
+
+    assert_eq!(threads[1].resolved_by.as_deref(), Some("alice"));
+    assert_eq!(
+        ThreadCount::of(&threads),
+        ThreadCount {
+            unresolved: 1,
+            total: 2
+        }
+    );
+}
+
+#[test]
+fn a_pull_request_github_cannot_find_is_an_error_not_an_empty_list() {
+    let json = r#"{"data":{"repository":{"pullRequest":null}},"errors":[{"message":"nope"}]}"#;
+    assert!(parse_threads(json).is_err());
+}
+
+#[test]
+fn conversations_are_counted_for_every_pull_request_in_one_query() {
+    let query = counts_query(&[3, 12]);
+    assert!(query.contains("p3:pullRequest(number:3)"), "{query}");
+    assert!(query.contains("p12:pullRequest(number:12)"), "{query}");
+
+    let json = r#"{"data":{"repository":{
+        "p3":{"reviewThreads":{"nodes":[{"isResolved":true},{"isResolved":false}]}},
+        "p12":{"reviewThreads":{"nodes":[]}},
+        "p99":null}}}"#;
+    let counts = parse_thread_counts(json).unwrap();
+    assert_eq!(
+        counts.get(&3),
+        Some(&ThreadCount {
+            unresolved: 1,
+            total: 2
+        })
+    );
+    assert_eq!(counts.get(&12), Some(&ThreadCount::default()));
+    assert!(!counts.contains_key(&99));
 }

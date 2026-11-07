@@ -11,7 +11,11 @@
 use std::path::PathBuf;
 use work::Pending;
 
-use crate::github::{MergeMethod, Owners, PrFilter, PullRequest, RepoInfo, Repository};
+use std::collections::HashMap;
+
+use crate::github::{
+    MergeMethod, Owners, PrFilter, PullRequest, RepoInfo, Repository, ThreadCount,
+};
 use crate::panel::text_input::TextInput;
 
 mod browse;
@@ -21,6 +25,7 @@ pub mod inbox;
 mod load;
 mod lookup;
 mod mouse;
+pub mod threads;
 mod work;
 
 pub use draw::render;
@@ -70,6 +75,8 @@ pub enum Mode {
     ConfirmClose,
     /// Writing a new pull request for the current branch.
     Create(CreateForm),
+    /// Going through the selected pull request's conversations.
+    Threads(threads::ThreadsView),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +177,16 @@ pub struct GitHub {
     pub prs_dir: Option<PathBuf>,
     /// How far the selected pull request's description is scrolled.
     pub detail_scroll: u16,
+    /// How many conversations each listed pull request has open, read after
+    /// the list itself.
+    pub thread_counts: HashMap<u64, ThreadCount>,
+    pub counts_loading: Option<Pending<HashMap<u64, ThreadCount>>>,
+    /// The conversations of the pull request [`Mode::Threads`] shows, on
+    /// their way.
+    pub threads_loading: Option<Pending<(u64, Vec<crate::github::ReviewThread>)>>,
+    /// Replies and resolutions sent and not yet answered. They run side by
+    /// side, so going through a dozen conversations never waits on GitHub.
+    pub thread_writes: Vec<Pending<threads::Written>>,
 
     pub repos: Vec<Repository>,
     pub repo_idx: usize,

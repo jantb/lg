@@ -25,6 +25,7 @@ mod header;
 mod inbox;
 mod pull_requests;
 mod repositories;
+mod threads;
 
 pub(super) use areas::{HeaderClick, header_click, list_click};
 
@@ -52,6 +53,12 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     draw_tabs(state, rows[0], frame);
     match (&state.github.mode, state.github.tab) {
         (Mode::Create(form), _) => draw_create(form, rows[1], frame),
+        (Mode::Threads(view), _) => {
+            let (panes, gaps) = ui::modal_columns(frame, rows[1], columns(Tab::PullRequests));
+            dividers.extend(gaps);
+            threads::draw_list(view, panes[0], frame, spinner(state));
+            threads::draw_conversation(view, panes[1], frame);
+        }
         (_, Tab::Inbox) => {
             let (panes, gaps) = ui::modal_columns(frame, rows[1], columns(Tab::Inbox));
             dividers.extend(gaps);
@@ -146,6 +153,7 @@ fn draw_bottom(state: &AppState, area: Rect, frame: &mut Frame) {
         }
         (Mode::Merge(_), _) => hints("GitHub merge"),
         (Mode::Create(_), _) => hints("GitHub new pull request"),
+        (Mode::Threads(view), _) => threads::bottom_line(view, area, frame),
         (Mode::Browse, Tab::Inbox) => hints("GitHub inbox"),
         (Mode::Browse, Tab::PullRequests) => ui::key_hints(&pr_hints(state)),
         (Mode::Browse, Tab::Repositories) => hints("GitHub repositories"),

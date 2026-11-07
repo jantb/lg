@@ -13,6 +13,7 @@ mod inbox;
 mod parse;
 mod query;
 mod review;
+mod threads;
 
 pub use inbox::{Inbox, InboxItem, Reason, Section, Subject, mark_all_done, mark_done, read_inbox};
 
@@ -24,6 +25,10 @@ pub use cloning::{clone, clone_dir, open_in_browser};
 pub use parse::{parse_owners, parse_pull_requests, parse_repo_info, parse_repositories};
 pub use query::{owners, pr_diff, pr_head, pull_request, pull_requests, repo_info, repositories};
 pub use review::{LineComment, ReviewEvent, comment, review, submit_review};
+pub use threads::{
+    ReviewThread, ThreadComment, ThreadCount, reply_to_thread, resolve_thread, review_threads,
+    thread_counts,
+};
 
 /// Which pull requests the list shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

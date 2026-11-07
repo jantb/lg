@@ -70,6 +70,8 @@ fn modal_footer_title(state: &AppState, modal: Modal) -> Option<&'static str> {
             (GitHubMode::Merge(_), _) => "GitHub merge",
             (GitHubMode::Create(_), _) => "GitHub new pull request",
             (GitHubMode::ConfirmClose, _) => "GitHub close",
+            (GitHubMode::Threads(view), _) if view.reply.is_some() => "GitHub reply",
+            (GitHubMode::Threads(_), _) => "GitHub conversations",
             (GitHubMode::Browse, Tab::Repositories) => "GitHub repositories",
             (GitHubMode::Browse, Tab::Inbox) => "GitHub inbox",
             (GitHubMode::Browse, Tab::PullRequests) => "GitHub",

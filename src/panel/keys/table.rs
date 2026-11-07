@@ -1593,6 +1593,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("v", "guided review")),
             },
             Binding {
+                key: "t",
+                help: "Go through its conversations: reply, resolve",
+                footer: Some(("t", "conversations")),
+            },
+            Binding {
                 key: "a",
                 help: "Approve, with an optional comment",
                 footer: Some(("a", "approve")),
@@ -1874,6 +1879,87 @@ pub const SECTIONS: &[Section] = &[
                 key: "n / Esc",
                 help: "Keep it open",
                 footer: Some(("n/Esc", "keep it")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "GitHub conversations",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "j/k",
+                help: "Move between conversations",
+                footer: Some(("j/k", "select")),
+            },
+            Binding {
+                key: "Enter / r",
+                help: "Reply to the conversation",
+                footer: Some(("Enter", "reply")),
+            },
+            Binding {
+                key: "Space",
+                help: "Resolve it, or open it again",
+                footer: Some(("Space", "resolve")),
+            },
+            Binding {
+                key: "h",
+                help: "Show or hide the resolved ones",
+                footer: Some(("h", "resolved")),
+            },
+            Binding {
+                key: "o",
+                help: "Open the conversation in the browser",
+                footer: Some(("o", "browser")),
+            },
+            Binding {
+                key: "Ctrl-d / Ctrl-u",
+                help: "Scroll the conversation",
+                footer: None,
+            },
+            Binding {
+                key: "Ctrl-R",
+                help: "Read the conversations again",
+                footer: None,
+            },
+            Binding {
+                key: "Esc / q",
+                help: "Back to the pull requests",
+                footer: Some(("Esc", "back")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "GitHub reply",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "Enter",
+                help: "Send the reply",
+                footer: Some(("Enter", "send")),
+            },
+            Binding {
+                key: "Alt-Enter",
+                help: "Send the reply and resolve the conversation",
+                footer: Some(("Alt-Enter", "send & resolve")),
+            },
+            Binding {
+                key: "\u{2190}/\u{2192} Home/End",
+                help: "Move the cursor",
+                footer: None,
+            },
+            Binding {
+                key: "Ctrl-U",
+                help: "Clear the text",
+                footer: None,
+            },
+            Binding {
+                key: "Esc",
+                help: "Cancel",
+                footer: Some(("Esc", "cancel")),
             },
         ],
         footer_meta: None,
@@ -2181,7 +2267,7 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         prefix: "GitHub ",
         tone: Tone::Normal,
         order: &[
-            "j/k", "Tab", "Enter", "o", "w", "v", "a", "x", "c", "m", "D", "X", "n", "Esc",
+            "j/k", "Tab", "Enter", "o", "w", "v", "t", "a", "x", "c", "m", "D", "X", "n", "Esc",
         ],
     },
     ModalFooter {
@@ -2273,6 +2359,18 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         prefix: "Close pull request ",
         tone: Tone::Danger,
         order: &["y", "n / Esc"],
+    },
+    ModalFooter {
+        section: "GitHub conversations",
+        prefix: "Conversations ",
+        tone: Tone::Normal,
+        order: &["j/k", "Enter / r", "Space", "h", "o", "Esc / q"],
+    },
+    ModalFooter {
+        section: "GitHub reply",
+        prefix: "Reply ",
+        tone: Tone::Normal,
+        order: &["Enter", "Alt-Enter", "Esc"],
     },
     ModalFooter {
         section: "Environments",

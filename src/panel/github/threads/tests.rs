@@ -1,0 +1,288 @@
+use std::cell::RefCell;
+use std::sync::mpsc::Sender;
+
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::github::{
+    Checks, Mergeable, Owners, PrState, PullRequest, ReviewDecision, ReviewThread, ThreadComment,
+    ThreadCount,
+};
+use crate::panel::github::{Mode, handle_key, handle_paste, poll};
+use crate::state::{AppState, Modal};
+
+use super::{Pending, ThreadsView, Written};
+
+/// A write the view sent, and the line to answer it on.
+struct Sent {
+    id: String,
+    reply: Option<String>,
+    resolve: bool,
+    answer: Sender<Result<Written, String>>,
+}
+
+thread_local! {
+    static SENT: RefCell<Vec<Sent>> = const { RefCell::new(Vec::new()) };
+}
+
+pub(super) fn record_write(
+    _number: u64,
+    id: String,
+    reply: Option<String>,
+    resolve: bool,
+) -> Pending<Written> {
+    let (answer, rx) = std::sync::mpsc::channel();
+    SENT.with(|sent| {
+        sent.borrow_mut().push(Sent {
+            id,
+            reply,
+            resolve,
+            answer,
+        })
+    });
+    rx
+}
+
+fn sent() -> Vec<(String, Option<String>, bool)> {
+    SENT.with(|sent| {
+        sent.borrow()
+            .iter()
+            .map(|s| (s.id.clone(), s.reply.clone(), s.resolve))
+            .collect()
+    })
+}
+
+/// Answer every write sent so far, as GitHub would once it has them.
+fn answer_all(number: u64, said: &str) {
+    SENT.with(|sent| {
+        for s in sent.borrow_mut().drain(..) {
+            let _ = s.answer.send(Ok((number, said.to_string())));
+        }
+    });
+}
+
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+fn pr(number: u64) -> PullRequest {
+    PullRequest {
+        number,
+        title: format!("PR {number}"),
+        author: "alice".into(),
+        head: "feat".into(),
+        head_owner: None,
+        base: "main".into(),
+        state: PrState::Open,
+        draft: false,
+        review: ReviewDecision::ReviewRequired,
+        reviews: Vec::new(),
+        checks: Checks::default(),
+        mergeable: Mergeable::Yes,
+        url: String::new(),
+        body: String::new(),
+        additions: 0,
+        deletions: 0,
+        changed_files: 0,
+        updated_at: String::new(),
+    }
+}
+
+fn thread(id: &str, path: &str, resolved: bool) -> ReviewThread {
+    ReviewThread {
+        id: id.into(),
+        path: path.into(),
+        line: Some(10),
+        resolved,
+        outdated: false,
+        resolved_by: None,
+        url: format!("https://github.com/acme/app/pull/7#{id}"),
+        diff_hunk: "@@ -1,2 +1,2 @@\n-old\n+new".into(),
+        comments: vec![ThreadComment {
+            author: "bob".into(),
+            body: format!("about {path}"),
+            created_at: "2026-11-01T10:00:00Z".into(),
+        }],
+    }
+}
+
+/// The modal open on pull request #7, its conversations just read.
+fn with_threads(threads: Vec<ReviewThread>) -> AppState {
+    SENT.with(|sent| sent.borrow_mut().clear());
+    let mut state = AppState::new();
+    state.repo_root = Some("/work/app".into());
+    state.modal = Modal::GitHub;
+    state.github.prs = vec![pr(7)];
+    state.github.owners = Some(Owners {
+        login: "me".into(),
+        orgs: Vec::new(),
+    });
+    handle_key(&mut state, key(KeyCode::Char('t'))).unwrap();
+    arrive(&mut state, threads);
+    state
+}
+
+fn arrive(state: &mut AppState, threads: Vec<ReviewThread>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    state.github.threads_loading = Some(rx);
+    tx.send(Ok((7, threads))).unwrap();
+    poll(state);
+}
+
+fn view(state: &AppState) -> &ThreadsView {
+    match &state.github.mode {
+        Mode::Threads(view) => view,
+        mode => panic!("not on the conversations: {mode:?}"),
+    }
+}
+
+fn shown(state: &AppState) -> Vec<String> {
+    let view = view(state);
+    view.visible()
+        .into_iter()
+        .map(|i| view.threads[i].id.clone())
+        .collect()
+}
+
+fn selected(state: &AppState) -> Option<String> {
+    view(state).selected().map(|t| t.id.clone())
+}
+
+#[test]
+fn t_opens_the_conversations_of_the_selected_pull_request() {
+    let state = with_threads(vec![thread("A", "src/a.rs", false)]);
+    assert_eq!(view(&state).number, 7);
+    assert_eq!(selected(&state).as_deref(), Some("A"));
+}
+
+#[test]
+fn only_what_is_left_to_resolve_is_listed_until_asked_for_the_rest() {
+    let mut state = with_threads(vec![
+        thread("A", "a.rs", false),
+        thread("B", "b.rs", true),
+        thread("C", "c.rs", false),
+    ]);
+    assert_eq!(shown(&state), ["A", "C"]);
+    assert_eq!(
+        view(&state).count(),
+        ThreadCount {
+            unresolved: 2,
+            total: 3
+        }
+    );
+    assert_eq!(
+        state.github.thread_counts.get(&7).copied(),
+        Some(view(&state).count()),
+        "the pull request list counts what was read"
+    );
+
+    handle_key(&mut state, key(KeyCode::Char('h'))).unwrap();
+    assert_eq!(shown(&state), ["A", "B", "C"]);
+}
+
+#[test]
+fn resolving_moves_on_to_the_next_conversation_at_once() {
+    let mut state = with_threads(vec![
+        thread("A", "a.rs", false),
+        thread("B", "b.rs", false),
+        thread("C", "c.rs", false),
+    ]);
+
+    handle_key(&mut state, key(KeyCode::Char(' '))).unwrap();
+    assert_eq!(sent(), [("A".to_string(), None, true)]);
+    assert_eq!(shown(&state), ["B", "C"]);
+    assert_eq!(selected(&state).as_deref(), Some("B"));
+    assert_eq!(state.github.thread_counts[&7].unresolved, 2);
+
+    // The next one goes without waiting for GitHub to answer the first.
+    handle_key(&mut state, key(KeyCode::Char(' '))).unwrap();
+    assert_eq!(sent().len(), 2);
+    assert_eq!(selected(&state).as_deref(), Some("C"));
+    assert_eq!(state.github.thread_counts[&7].unresolved, 1);
+}
+
+#[test]
+fn a_resolved_conversation_can_be_opened_again() {
+    let mut state = with_threads(vec![thread("A", "a.rs", true)]);
+    handle_key(&mut state, key(KeyCode::Char('h'))).unwrap();
+    handle_key(&mut state, key(KeyCode::Char(' '))).unwrap();
+    assert_eq!(sent(), [("A".to_string(), None, false)]);
+    assert!(!view(&state).threads[0].resolved);
+}
+
+#[test]
+fn a_reply_shows_under_the_conversation_and_is_sent() {
+    let mut state = with_threads(vec![thread("A", "a.rs", false)]);
+    handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+    for c in "done".chars() {
+        handle_key(&mut state, key(KeyCode::Char(c))).unwrap();
+    }
+    handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+
+    assert_eq!(sent(), [("A".to_string(), Some("done".to_string()), false)]);
+    let comments = &view(&state).threads[0].comments;
+    assert_eq!(comments.last().map(|c| c.author.as_str()), Some("me"));
+    assert_eq!(comments.last().map(|c| c.body.as_str()), Some("done"));
+    assert!(view(&state).reply.is_none());
+    assert_eq!(shown(&state), ["A"], "a plain reply leaves it open");
+}
+
+#[test]
+fn alt_enter_replies_and_resolves_in_one_go() {
+    let mut state = with_threads(vec![thread("A", "a.rs", false), thread("B", "b.rs", false)]);
+    handle_key(&mut state, key(KeyCode::Char('r'))).unwrap();
+    assert!(handle_paste(&mut state, "fixed in\nabc123"));
+    handle_key(&mut state, KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)).unwrap();
+
+    assert_eq!(
+        sent(),
+        [("A".to_string(), Some("fixed in abc123".to_string()), true)]
+    );
+    assert_eq!(selected(&state).as_deref(), Some("B"));
+}
+
+#[test]
+fn an_empty_reply_is_not_sent() {
+    let mut state = with_threads(vec![thread("A", "a.rs", false)]);
+    handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+    handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+    assert!(sent().is_empty());
+    assert!(view(&state).reply.is_some(), "still writing");
+    handle_key(&mut state, key(KeyCode::Esc)).unwrap();
+    assert!(view(&state).reply.is_none());
+    assert!(matches!(state.github.mode, Mode::Threads(_)));
+}
+
+#[test]
+fn a_read_that_lands_before_the_writes_does_not_undo_them() {
+    let mut state = with_threads(vec![thread("A", "a.rs", false), thread("B", "b.rs", false)]);
+    handle_key(&mut state, key(KeyCode::Char(' '))).unwrap();
+
+    // GitHub's older answer, from before the resolution reached it.
+    arrive(
+        &mut state,
+        vec![thread("A", "a.rs", false), thread("B", "b.rs", false)],
+    );
+    assert_eq!(shown(&state), ["B"]);
+
+    answer_all(7, "resolved");
+    poll(&mut state);
+    assert!(state.github.thread_writes.is_empty());
+    assert!(
+        state.github.threads_loading.is_some(),
+        "read again once every write is in"
+    );
+    let status = state
+        .status
+        .as_ref()
+        .map(|s| s.text.clone())
+        .unwrap_or_default();
+    assert!(status.contains("1 left to resolve"), "{status}");
+}
+
+#[test]
+fn escape_goes_back_to_the_pull_requests() {
+    let mut state = with_threads(vec![thread("A", "a.rs", false)]);
+    handle_key(&mut state, key(KeyCode::Esc)).unwrap();
+    assert_eq!(state.github.mode, Mode::Browse);
+    assert_eq!(state.modal, Modal::GitHub);
+}
