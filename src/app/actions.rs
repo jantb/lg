@@ -237,6 +237,9 @@ impl App {
                 self.report_open(crate::git::open_project_path_in_ide(&PathBuf::from(path)))
             }
             PendingAction::OpenFile(path) => self.report_open(crate::git::open_file_in_ide(&path)),
+            PendingAction::OpenFileAt { path, line } => {
+                self.report_open(crate::git::open_file_in_ide_at(&path, line))
+            }
             PendingAction::EditFile { path, line } => self.edit_file(&path, line),
             PendingAction::CopyToClipboard { label, text } => {
                 self.settle(copy_to_clipboard(&text), "copy failed", |app, ()| {

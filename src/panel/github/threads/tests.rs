@@ -286,3 +286,74 @@ fn escape_goes_back_to_the_pull_requests() {
     assert_eq!(state.github.mode, Mode::Browse);
     assert_eq!(state.modal, Modal::GitHub);
 }
+
+/// The conversations of #7, with its branch checked out in a checkout that
+/// has `files` in it.
+fn checked_out(files: &[&str], threads: Vec<ReviewThread>) -> (tempfile::TempDir, AppState) {
+    let dir = tempfile::tempdir().unwrap();
+    for file in files {
+        let path = dir.path().join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "fn main() {}\n").unwrap();
+    }
+    let mut state = with_threads(threads);
+    state.repo_root = Some(dir.path().to_string_lossy().into_owned());
+    state.branch = Some("feat".into());
+    (dir, state)
+}
+
+#[test]
+fn e_opens_the_code_of_the_conversation_at_its_line() {
+    let mut a = thread("A", "src/a.rs", false);
+    a.line = Some(42);
+    let (_dir, mut state) = checked_out(&["src/a.rs"], vec![a]);
+    handle_key(&mut state, key(KeyCode::Char('e'))).unwrap();
+    assert_eq!(
+        state.pending_action,
+        Some(crate::state::PendingAction::EditFile {
+            path: "src/a.rs".into(),
+            line: 42,
+        })
+    );
+    assert_eq!(view(&state).number, 7, "the conversations stay open");
+}
+
+#[test]
+fn i_opens_the_code_of_the_conversation_in_the_ide() {
+    let (_dir, mut state) = checked_out(&["src/a.rs"], vec![thread("A", "src/a.rs", false)]);
+    handle_key(&mut state, key(KeyCode::Char('i'))).unwrap();
+    assert_eq!(
+        state.pending_action,
+        Some(crate::state::PendingAction::OpenFileAt {
+            path: "src/a.rs".into(),
+            line: 10,
+        })
+    );
+}
+
+#[test]
+fn the_code_is_not_opened_when_another_branch_is_checked_out() {
+    let (_dir, mut state) = checked_out(&["src/a.rs"], vec![thread("A", "src/a.rs", false)]);
+    state.branch = Some("main".into());
+    handle_key(&mut state, key(KeyCode::Char('e'))).unwrap();
+    assert_eq!(state.pending_action, None);
+    let status = state
+        .status
+        .as_ref()
+        .map(|s| s.text.as_str())
+        .unwrap_or_default();
+    assert!(status.contains("not checked out"), "{status}");
+}
+
+#[test]
+fn a_file_gone_from_the_checkout_is_not_opened() {
+    let (_dir, mut state) = checked_out(&[], vec![thread("A", "src/gone.rs", false)]);
+    handle_key(&mut state, key(KeyCode::Char('e'))).unwrap();
+    assert_eq!(state.pending_action, None);
+    let status = state
+        .status
+        .as_ref()
+        .map(|s| s.text.as_str())
+        .unwrap_or_default();
+    assert!(status.contains("src/gone.rs"), "{status}");
+}

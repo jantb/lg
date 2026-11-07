@@ -1909,6 +1909,16 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("h", "resolved")),
             },
             Binding {
+                key: "e",
+                help: "Go to its code in the editor",
+                footer: Some(("e", "edit")),
+            },
+            Binding {
+                key: "i",
+                help: "Go to its code in the IDE",
+                footer: Some(("i", "IDE")),
+            },
+            Binding {
                 key: "o",
                 help: "Open the conversation in the browser",
                 footer: Some(("o", "browser")),
@@ -2364,7 +2374,7 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         section: "GitHub conversations",
         prefix: "Conversations ",
         tone: Tone::Normal,
-        order: &["j/k", "Enter / r", "Space", "h", "o", "Esc / q"],
+        order: &["j/k", "Enter / r", "Space", "e", "i", "h", "o", "Esc / q"],
     },
     ModalFooter {
         section: "GitHub reply",

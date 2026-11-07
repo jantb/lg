@@ -184,7 +184,9 @@ impl AppState {
                 Some(PendingAction::OpenProject | PendingAction::OpenProjectAt(_)) => {
                     Some("opening project")
                 }
-                Some(PendingAction::OpenFile(_)) => Some("opening file"),
+                Some(PendingAction::OpenFile(_) | PendingAction::OpenFileAt { .. }) => {
+                    Some("opening file")
+                }
                 Some(PendingAction::DeleteBranch { .. }) => Some("deleting branch"),
                 Some(PendingAction::SetBranchUpstream { .. }) => Some("setting upstream"),
                 Some(PendingAction::SwitchRepository { .. }) => Some("switching repo"),

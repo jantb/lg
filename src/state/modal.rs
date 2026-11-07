@@ -386,6 +386,11 @@ pub enum PendingAction {
     OpenProject,
     OpenProjectAt(String),
     OpenFile(String),
+    /// Open a file in the IDE at a given line.
+    OpenFileAt {
+        path: String,
+        line: usize,
+    },
     /// Open a file at a line in the terminal editor, with lg suspended until
     /// it exits.
     EditFile {

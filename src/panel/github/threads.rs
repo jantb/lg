@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::github::{ReviewThread, ThreadComment, ThreadCount};
 use crate::panel::text_input::TextInput;
-use crate::state::{AppState, GitHubAction, Poll, poll_once};
+use crate::state::{AppState, GitHubAction, PendingAction, Poll, poll_once};
 
 use super::browse::dispatch;
 use super::work::{Pending, spawn_read, take_answer};
@@ -22,6 +22,9 @@ use super::{GitHub, Mode};
 pub struct ThreadsView {
     pub number: u64,
     pub title: String,
+    /// The branch the pull request is on: its code is here to open only when
+    /// that branch is the one checked out.
+    pub head: String,
     pub threads: Vec<ReviewThread>,
     /// Whether they have been read at least once.
     pub loaded: bool,
@@ -38,10 +41,11 @@ pub struct ThreadsView {
 }
 
 impl ThreadsView {
-    fn new(number: u64, title: String) -> Self {
+    fn new(number: u64, title: String, head: String) -> Self {
         Self {
             number,
             title,
+            head,
             threads: Vec::new(),
             loaded: false,
             error: None,
@@ -99,8 +103,8 @@ impl ThreadsView {
 pub type Written = (u64, String);
 
 /// Open the conversations of the selected pull request.
-pub(super) fn open(state: &mut AppState, number: u64, title: String) {
-    state.github.mode = Mode::Threads(ThreadsView::new(number, title));
+pub(super) fn open(state: &mut AppState, number: u64, title: String, head: String) {
+    state.github.mode = Mode::Threads(ThreadsView::new(number, title, head));
     load(&mut state.github, number);
 }
 
@@ -184,8 +188,47 @@ fn browse_key(state: &mut AppState, key: KeyEvent) {
             Some(url) if !url.is_empty() => dispatch(state, GitHubAction::OpenInBrowser { url }),
             _ => state.set_status("nothing to open", false),
         },
+        KeyCode::Char('e') => go_to_code(state, false),
+        KeyCode::Char('i') => go_to_code(state, true),
         _ => {}
     }
+}
+
+/// Open the code the selected conversation is on, at its line: in the
+/// terminal editor, or in the IDE. That is the pull request's code only when
+/// its branch is the one checked out, so nothing is opened otherwise.
+fn go_to_code(state: &mut AppState, in_ide: bool) {
+    let Some(view) = current(state) else {
+        return;
+    };
+    let Some(thread) = view.selected() else {
+        state.set_status("no conversation selected", false);
+        return;
+    };
+    let (number, head) = (view.number, view.head.clone());
+    let (path, line) = (thread.path.clone(), thread.line.unwrap_or(1) as usize);
+    if state.branch.as_deref() != Some(head.as_str()) {
+        state.set_status(
+            format!(
+                "#{number} is not checked out here \u{2014} Esc, then Enter on it checks out {head}"
+            ),
+            false,
+        );
+        return;
+    }
+    let exists = state
+        .repo_root
+        .as_ref()
+        .is_some_and(|root| std::path::Path::new(root).join(&path).is_file());
+    if !exists {
+        state.set_status(format!("{path} is not in the checkout"), false);
+        return;
+    }
+    state.pending_action = Some(if in_ide {
+        PendingAction::OpenFileAt { path, line }
+    } else {
+        PendingAction::EditFile { path, line }
+    });
 }
 
 fn reply_key(state: &mut AppState, key: KeyEvent) {
