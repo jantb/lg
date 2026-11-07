@@ -154,6 +154,11 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
         panel::guided::handle_key(host.state_mut(), k)?;
         return Ok(());
     }
+    // And in the chat beside a pull request's conversations.
+    if panel::github::threads_chat_has_keyboard(host.state()) {
+        panel::github::handle_key(host.state_mut(), k)?;
+        return Ok(());
+    }
     if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
         host.state_mut().request_quit();
         return Ok(());

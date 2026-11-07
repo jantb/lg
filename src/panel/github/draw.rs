@@ -13,7 +13,7 @@ use crate::ui::{self, palette};
 
 use super::lookup::selected_pr;
 use super::{Compose, Mode, Tab};
-use areas::{columns, modal_area, too_small};
+use areas::{columns, modal_area, thread_columns, too_small};
 use forms::{draw_create, draw_merge};
 use header::draw_tabs;
 use pull_requests::{draw_pr_detail, draw_pr_list, pr_hints};
@@ -27,7 +27,9 @@ mod pull_requests;
 mod repositories;
 mod threads;
 
-pub(super) use areas::{HeaderClick, header_click, list_click};
+pub(super) use areas::{
+    HeaderClick, header_click, list_click, thread_chat_area, thread_chat_screen,
+};
 
 pub(super) const LABEL: Style = Style::new().fg(Color::DarkGray);
 
@@ -54,10 +56,14 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     match (&state.github.mode, state.github.tab) {
         (Mode::Create(form), _) => draw_create(form, rows[1], frame),
         (Mode::Threads(view), _) => {
-            let (panes, gaps) = ui::modal_columns(frame, rows[1], columns(Tab::PullRequests));
+            let chat = super::threads::chat::session(state);
+            let (panes, gaps) = ui::modal_columns(frame, rows[1], thread_columns(chat.is_some()));
             dividers.extend(gaps);
             threads::draw_list(view, panes[0], frame, spinner(state));
             threads::draw_conversation(view, panes[1], frame);
+            if let Some(id) = chat {
+                threads::draw_chat(state, view, id, panes[2], frame);
+            }
         }
         (_, Tab::Inbox) => {
             let (panes, gaps) = ui::modal_columns(frame, rows[1], columns(Tab::Inbox));

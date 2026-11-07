@@ -41,7 +41,7 @@ use prompt::{
 };
 pub use prompt::{
     build_guided_chat_file_read, build_guided_chat_prompt, build_guided_chat_redo,
-    build_guided_question_check_prompt,
+    build_guided_question_check_prompt, build_threads_chat_next, build_threads_chat_prompt,
 };
 use reply::{finalize, finalize_conflict_hunk, finalize_review_chat, parse_conventions};
 use stream::{ChatMessage, ChatTask, stream_messages, stream_prompt};

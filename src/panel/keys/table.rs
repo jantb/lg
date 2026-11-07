@@ -1909,6 +1909,11 @@ pub const SECTIONS: &[Section] = &[
                 footer: Some(("h", "resolved")),
             },
             Binding {
+                key: "C",
+                help: "Ask Claude whether the point holds",
+                footer: Some(("C", "ask Claude")),
+            },
+            Binding {
                 key: "e",
                 help: "Go to its code in the editor",
                 footer: Some(("e", "edit")),
@@ -1937,6 +1942,24 @@ pub const SECTIONS: &[Section] = &[
                 key: "Esc / q",
                 help: "Back to the pull requests",
                 footer: Some(("Esc", "back")),
+            },
+        ],
+        footer_meta: None,
+        footer_order: &[],
+    },
+    Section {
+        title: "GitHub conversations: chat",
+        pane: None,
+        bindings: &[
+            Binding {
+                key: "Ctrl-]",
+                help: "Back to the conversations; the chat stays",
+                footer: Some(("Ctrl-]", "back to the conversations")),
+            },
+            Binding {
+                key: "any other key",
+                help: "Goes to Claude, Esc and Ctrl-C included",
+                footer: None,
             },
         ],
         footer_meta: None,
@@ -2374,7 +2397,23 @@ pub const MODAL_FOOTERS: &[ModalFooter] = &[
         section: "GitHub conversations",
         prefix: "Conversations ",
         tone: Tone::Normal,
-        order: &["j/k", "Enter / r", "Space", "e", "i", "h", "o", "Esc / q"],
+        order: &[
+            "j/k",
+            "C",
+            "Enter / r",
+            "Space",
+            "e",
+            "i",
+            "h",
+            "o",
+            "Esc / q",
+        ],
+    },
+    ModalFooter {
+        section: "GitHub conversations: chat",
+        prefix: "Chat ",
+        tone: Tone::Normal,
+        order: &["Ctrl-]"],
     },
     ModalFooter {
         section: "GitHub reply",

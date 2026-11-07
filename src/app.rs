@@ -47,6 +47,7 @@ mod refresh;
 mod render;
 pub(crate) mod session;
 mod spawn;
+mod threads_chat;
 mod watch;
 mod workflow;
 
@@ -374,6 +375,7 @@ impl App {
                 clock.input();
                 if self.state.session_input_active()
                     || crate::panel::guided::chat_has_keyboard(&self.state)
+                    || crate::panel::github::threads_chat_has_keyboard(&self.state)
                 {
                     // What was typed echoes back in a moment.
                     clock.shown_live(Instant::now());

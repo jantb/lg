@@ -15,6 +15,10 @@ use super::{Mode, Tab, draw, inbox};
 /// picks a tab or an owner, steps the filter or shows and hides drafts, and a
 /// click in the list selects what it lands on.
 pub fn handle_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) {
+    if matches!(state.github.mode, Mode::Threads(_)) {
+        super::threads::chat::mouse(state, area, m);
+        return;
+    }
     if state.github.mode != Mode::Browse {
         return;
     }

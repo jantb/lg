@@ -303,6 +303,9 @@ pub enum PendingAction {
     GuidedChat {
         focus: bool,
     },
+    /// Start the Claude chat beside a pull request's conversations, handed
+    /// the one selected.
+    ThreadsChat,
     CopyToClipboard {
         label: String,
         text: String,

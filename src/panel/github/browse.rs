@@ -261,6 +261,9 @@ pub fn handle_paste(state: &mut AppState, text: &str) -> bool {
     if state.modal != Modal::GitHub {
         return false;
     }
+    if matches!(state.github.mode, Mode::Threads(_)) {
+        return threads::paste(state, text);
+    }
     let one_line = || text.replace(['\r', '\n'], " ");
     match &mut state.github.mode {
         Mode::Compose { text: typed, .. } => typed.insert_str(&one_line()),
@@ -270,7 +273,6 @@ pub fn handle_paste(state: &mut AppState, text: &str) -> bool {
             CreateField::Base => form.base.insert_str(one_line().trim()),
             CreateField::Draft => return false,
         },
-        Mode::Threads(view) => return threads::paste(view, text),
         Mode::Browse if state.github.tab == Tab::Repositories => {
             state.github.query.insert_str(one_line().trim());
             state.github.repo_idx = 0;

@@ -218,6 +218,55 @@ pub(super) fn draw_conversation(view: &ThreadsView, area: Rect, frame: &mut Fram
     );
 }
 
+/// Claude beside the conversations, with what it is on and how to reach it.
+pub(super) fn draw_chat(
+    state: &crate::state::AppState,
+    view: &ThreadsView,
+    id: crate::session::SessionId,
+    area: Rect,
+    frame: &mut Frame,
+) {
+    let (Some(session), Some(chat)) = (state.sessions.get(id), &state.github.threads_chat) else {
+        return;
+    };
+    let on_another = view.selected().is_some_and(|t| t.id != chat.thread);
+    let (title, hint) = if chat.focused {
+        (
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+            "  Ctrl-] back to the conversations",
+        )
+    } else if on_another {
+        (
+            Style::default().fg(Color::Gray),
+            "  C hands it the selected one",
+        )
+    } else {
+        (Style::default().fg(Color::Gray), "  C or click to type")
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!("Claude \u{b7} {}", chat.location), title),
+            Span::styled(hint, LABEL),
+        ])),
+        Rect { height: 1, ..area },
+    );
+    let screen = Rect {
+        y: area.y + 1,
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+    crate::term::render_screen(session.screen(), screen, frame.buffer_mut());
+    if chat.focused
+        && let Some((row, col)) = session.cursor_position()
+        && row < screen.height
+        && col < screen.width
+    {
+        frame.set_cursor_position((screen.x + col, screen.y + row));
+    }
+}
+
 /// The bottom line: the keys, or the reply being written with its cursor.
 pub(super) fn bottom_line(view: &ThreadsView, area: Rect, frame: &mut Frame) -> Line<'static> {
     let Some(text) = &view.reply else {

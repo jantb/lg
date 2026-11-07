@@ -29,6 +29,10 @@ pub mod threads;
 mod work;
 
 pub use draw::render;
+pub use threads::chat::{
+    chat_has_keyboard as threads_chat_has_keyboard, chat_on_screen as threads_chat_on_screen,
+    fit_chat as fit_threads_chat,
+};
 
 pub use browse::{handle_key, handle_paste};
 pub use load::{after_action, load_pull_requests, load_repositories, open, open_create, poll};
@@ -187,6 +191,9 @@ pub struct GitHub {
     /// Replies and resolutions sent and not yet answered. They run side by
     /// side, so going through a dozen conversations never waits on GitHub.
     pub thread_writes: Vec<Pending<threads::Written>>,
+    /// The Claude chat going through a pull request's conversations, kept
+    /// when they are left so it is there on coming back.
+    pub threads_chat: Option<threads::chat::ThreadsChat>,
 
     pub repos: Vec<Repository>,
     pub repo_idx: usize,

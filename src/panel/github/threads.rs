@@ -136,6 +136,10 @@ fn current(state: &mut AppState) -> Option<&mut ThreadsView> {
 }
 
 pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) {
+    if chat::chat_has_keyboard(state) {
+        chat::key(state, key);
+        return;
+    }
     let replying = current(state).is_some_and(|v| v.reply.is_some());
     if replying {
         reply_key(state, key);
@@ -188,6 +192,7 @@ fn browse_key(state: &mut AppState, key: KeyEvent) {
             Some(url) if !url.is_empty() => dispatch(state, GitHubAction::OpenInBrowser { url }),
             _ => state.set_status("nothing to open", false),
         },
+        KeyCode::Char('C') => chat::ask(state),
         KeyCode::Char('e') => go_to_code(state, false),
         KeyCode::Char('i') => go_to_code(state, true),
         _ => {}
@@ -280,8 +285,15 @@ fn reply_key(state: &mut AppState, key: KeyEvent) {
     }
 }
 
-/// Text pasted into a reply, on one line as the reply is written.
-pub(super) fn paste(view: &mut ThreadsView, text: &str) -> bool {
+/// Text pasted into the chat when it has the keyboard, or else into a reply,
+/// on one line as the reply is written.
+pub(super) fn paste(state: &mut AppState, text: &str) -> bool {
+    if chat::paste(state, text) {
+        return true;
+    }
+    let Some(view) = current(state) else {
+        return false;
+    };
     match view.reply.as_mut() {
         Some(reply) => {
             reply.insert_str(&text.replace(['\r', '\n'], " "));
@@ -449,6 +461,8 @@ fn left_to_resolve(unresolved: usize) -> String {
         n => format!(" \u{b7} {n} left to resolve"),
     }
 }
+
+pub mod chat;
 
 #[cfg(test)]
 mod tests;

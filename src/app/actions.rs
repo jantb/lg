@@ -63,6 +63,7 @@ impl App {
         match action {
             PendingAction::GenerateMessage => self.generate_message(),
             PendingAction::GuidedChat { focus } => self.open_guided_chat(focus),
+            PendingAction::ThreadsChat => self.open_threads_chat(),
 
             PendingAction::Commit => self.commit(),
             PendingAction::AmendCommit => self.amend(),

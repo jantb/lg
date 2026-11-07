@@ -357,3 +357,54 @@ fn a_file_gone_from_the_checkout_is_not_opened() {
         .unwrap_or_default();
     assert!(status.contains("src/gone.rs"), "{status}");
 }
+
+#[test]
+fn shift_c_starts_a_claude_chat_on_the_selected_conversation() {
+    let (_dir, mut state) = checked_out(&["src/a.rs"], vec![thread("A", "src/a.rs", false)]);
+    handle_key(&mut state, key(KeyCode::Char('C'))).unwrap();
+    assert_eq!(
+        state.pending_action,
+        Some(crate::state::PendingAction::ThreadsChat)
+    );
+}
+
+#[test]
+fn no_chat_is_started_where_claude_cannot_read_the_pull_requests_code() {
+    let (_dir, mut state) = checked_out(&["src/a.rs"], vec![thread("A", "src/a.rs", false)]);
+    state.branch = Some("main".into());
+    handle_key(&mut state, key(KeyCode::Char('C'))).unwrap();
+    assert_eq!(state.pending_action, None);
+    let status = state
+        .status
+        .as_ref()
+        .map(|s| s.text.as_str())
+        .unwrap_or_default();
+    assert!(status.contains("not checked out"), "{status}");
+}
+
+#[test]
+fn claude_is_handed_where_the_conversation_is_its_diff_and_every_comment() {
+    let mut a = thread("A", "src/a.rs", false);
+    a.outdated = true;
+    a.comments.push(ThreadComment {
+        author: "me".into(),
+        body: "it is on purpose".into(),
+        created_at: String::new(),
+    });
+    let brief = super::chat::brief(&a);
+    assert!(
+        brief.starts_with("Conversation on src/a.rs:10 (outdated"),
+        "{brief}"
+    );
+    assert!(brief.contains("+new"), "{brief}");
+    assert!(brief.contains("bob wrote:\nabout src/a.rs"), "{brief}");
+    assert!(brief.contains("me wrote:\nit is on purpose"), "{brief}");
+}
+
+#[test]
+fn without_a_chat_nothing_takes_the_keyboard_from_the_conversations() {
+    let mut state = with_threads(vec![thread("A", "src/a.rs", false)]);
+    assert!(!crate::panel::github::threads_chat_has_keyboard(&state));
+    handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
+    assert_eq!(selected(&state).as_deref(), Some("A"));
+}

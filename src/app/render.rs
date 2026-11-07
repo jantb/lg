@@ -115,6 +115,7 @@ fn prepare(state: &mut AppState, area: Rect) {
     sync_selection_scroll_offsets(state, &rects, area);
     resize_focused_session(state, rects.main);
     panel::guided::fit_chat(state, area);
+    panel::github::fit_threads_chat(state, area);
 }
 
 /// Draw one frame. Returns the text of a selection whose copy is due, read

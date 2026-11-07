@@ -80,6 +80,44 @@ pub(super) fn columns(tab: Tab) -> &'static [Constraint] {
     }
 }
 
+/// How the conversations split the body: the list and the selected one, and
+/// with a chat going, Claude beside them with the most room.
+pub(super) fn thread_columns(chat: bool) -> &'static [Constraint] {
+    if chat {
+        &[
+            Constraint::Percentage(22),
+            Constraint::Percentage(33),
+            Constraint::Min(30),
+        ]
+    } else {
+        columns(Tab::PullRequests)
+    }
+}
+
+/// The chat's pane beside the conversations, title row included, measured
+/// the way [`render`] lays it out.
+pub(in crate::panel::github) fn thread_chat_area(area: Rect) -> Option<Rect> {
+    let inner = ui::modal_inner(modal_area(area));
+    if too_small(inner) {
+        return None;
+    }
+    let body = ui::modal_row_areas(inner, &ROWS).0[1];
+    ui::modal_column_areas(body, thread_columns(true))
+        .0
+        .get(2)
+        .copied()
+}
+
+/// The chat's terminal: its pane below the title row.
+pub(in crate::panel::github) fn thread_chat_screen(area: Rect) -> Option<Rect> {
+    let pane = thread_chat_area(area)?;
+    Some(Rect {
+        y: pane.y + 1,
+        height: pane.height.saturating_sub(1),
+        ..pane
+    })
+}
+
 /// The search line above the repository list, and the list under it.
 pub(super) fn repo_list_areas(area: Rect) -> [Rect; 2] {
     ratatui::layout::Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(area)

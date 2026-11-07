@@ -72,7 +72,8 @@ pub(crate) fn forward_paste(state: &mut AppState, text: &str) -> bool {
 pub(crate) fn pump(state: &mut AppState) -> SessionPump {
     let shown = state.session_view();
     // The review's chat is on screen too.
-    let chat = crate::panel::guided::chat_on_screen(state);
+    let chat = crate::panel::guided::chat_on_screen(state)
+        .or_else(|| crate::panel::github::threads_chat_on_screen(state));
     let report = state.sessions.pump();
     let mut pumped = SessionPump {
         shown_changed: report
