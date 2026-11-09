@@ -1,4 +1,4 @@
-//! The mouse over the modal: tabs, filters and owners in the header, rows in
+//! The mouse over GitHub: tabs, filters and owners in the header, rows in
 //! the lists.
 
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};

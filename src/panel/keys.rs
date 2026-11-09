@@ -82,6 +82,7 @@ pub fn active_section(pane: Pane, keys: MainKeys) -> Option<&'static Section> {
         Pane::Main => match keys {
             MainKeys::Session => "Session",
             MainKeys::Diff => "Diff pane",
+            MainKeys::GitHub => "GitHub",
         },
     })
 }

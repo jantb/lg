@@ -1,4 +1,4 @@
-//! What the modal is showing: the selected pull request, the repositories on
+//! What GitHub is showing: the selected pull request, the repositories on
 //! show, and where a clone would go.
 
 use std::path::{Path, PathBuf};

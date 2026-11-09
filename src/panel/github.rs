@@ -34,7 +34,7 @@ pub use threads::chat::{
     fit_chat as fit_threads_chat,
 };
 
-pub use browse::{handle_key, handle_paste};
+pub use browse::{handle_key, handle_paste, typing};
 pub use load::{after_action, load_pull_requests, load_repositories, open, open_create, poll};
 pub use lookup::{
     clone_destination, clone_parent, clone_request, is_current_branch, is_mine, selected_pr,
@@ -65,7 +65,7 @@ impl Tab {
     }
 }
 
-/// What the modal is doing with the selected pull request, if anything
+/// What GitHub is doing with the selected pull request, if anything
 /// beyond showing it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Mode {

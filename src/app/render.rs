@@ -115,7 +115,7 @@ fn prepare(state: &mut AppState, area: Rect) {
     sync_selection_scroll_offsets(state, &rects, area);
     resize_focused_session(state, rects.main);
     panel::guided::fit_chat(state, area);
-    panel::github::fit_threads_chat(state, area);
+    panel::github::fit_threads_chat(state, rects.main);
 }
 
 /// Draw one frame. Returns the text of a selection whose copy is due, read
@@ -138,7 +138,11 @@ fn draw(frame: &mut Frame, state: &AppState) -> Option<String> {
         panel::branches::render(state, rects.branches, frame, focused_pane == Pane::Branches);
         panel::commits::render(state, rects.commits, frame, focused_pane == Pane::Commits);
     }
-    panel::main::render(state, rects.main, frame, focused_pane == Pane::Main);
+    if state.github_view() {
+        panel::github::render(state, rects.main, frame, focused_pane == Pane::Main);
+    } else {
+        panel::main::render(state, rects.main, frame, focused_pane == Pane::Main);
+    }
 
     footer::draw(frame, rects.footer, state);
 
@@ -160,7 +164,6 @@ fn draw(frame: &mut Frame, state: &AppState) -> Option<String> {
         Modal::DeleteBranch => panel::delete_branch::render(state, area, frame),
         Modal::Worktree => panel::worktree::render(state, area, frame),
         Modal::ConfirmDestructive => panel::confirm::render(state, area, frame),
-        Modal::GitHub => panel::github::render(state, area, frame),
         Modal::GuidedReview => panel::guided::render(state, area, frame),
         Modal::Stash => panel::stash::render(state, area, frame),
         Modal::StatusDetails => panel::details::render(state, area, frame),

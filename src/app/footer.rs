@@ -36,7 +36,6 @@ fn modal_section(modal: Modal) -> Option<&'static str> {
         Modal::DeleteBranch => "Delete branch",
         Modal::Worktree => "New worktree",
         Modal::ConfirmDestructive => "Confirm prompts",
-        Modal::GitHub => "GitHub",
         Modal::GuidedReview => "Guided review",
         Modal::Stash => "Stash",
         Modal::StatusDetails => "Error details",
@@ -62,25 +61,8 @@ fn tone_color(tone: Tone) -> Color {
 /// so it never offers a key the modal is not listening for. On the GitHub
 /// repositories tab, say, letters are typed into the search.
 fn modal_footer_title(state: &AppState, modal: Modal) -> Option<&'static str> {
-    use crate::panel::github::{Mode as GitHubMode, Tab};
     use crate::panel::guided::Mode as GuidedMode;
     Some(match modal {
-        Modal::GitHub => match (&state.github.mode, state.github.tab) {
-            (GitHubMode::Compose { .. }, _) => "GitHub review text",
-            (GitHubMode::Merge(_), _) => "GitHub merge",
-            (GitHubMode::Create(_), _) => "GitHub new pull request",
-            (GitHubMode::ConfirmClose, _) => "GitHub close",
-            (GitHubMode::Threads(_), _)
-                if crate::panel::github::threads_chat_has_keyboard(state) =>
-            {
-                "GitHub conversations: chat"
-            }
-            (GitHubMode::Threads(view), _) if view.reply.is_some() => "GitHub reply",
-            (GitHubMode::Threads(_), _) => "GitHub conversations",
-            (GitHubMode::Browse, Tab::Repositories) => "GitHub repositories",
-            (GitHubMode::Browse, Tab::Inbox) => "GitHub inbox",
-            (GitHubMode::Browse, Tab::PullRequests) => "GitHub",
-        },
         Modal::GuidedReview => match state.guided.as_deref() {
             Some(guided) => match &guided.mode {
                 GuidedMode::Browse => "Guided review",
@@ -99,8 +81,39 @@ fn modal_footer_title(state: &AppState, modal: Modal) -> Option<&'static str> {
     })
 }
 
+/// The help section GitHub's keys come from right now. Like a modal with
+/// modes, it has a set per mode, and the footer follows the mode so it never
+/// offers a key GitHub is not listening for. On the repositories tab, say,
+/// letters are typed into the search.
+fn github_footer_title(state: &AppState) -> &'static str {
+    use crate::panel::github::{Mode as GitHubMode, Tab};
+    match (&state.github.mode, state.github.tab) {
+        (GitHubMode::Compose { .. }, _) => "GitHub review text",
+        (GitHubMode::Merge(_), _) => "GitHub merge",
+        (GitHubMode::Create(_), _) => "GitHub new pull request",
+        (GitHubMode::ConfirmClose, _) => "GitHub close",
+        (GitHubMode::Threads(_), _) if crate::panel::github::threads_chat_has_keyboard(state) => {
+            "GitHub conversations: chat"
+        }
+        (GitHubMode::Threads(view), _) if view.reply.is_some() => "GitHub reply",
+        (GitHubMode::Threads(_), _) => "GitHub conversations",
+        (GitHubMode::Browse, Tab::Repositories) => "GitHub repositories",
+        (GitHubMode::Browse, Tab::Inbox) => "GitHub inbox",
+        (GitHubMode::Browse, Tab::PullRequests) => "GitHub",
+    }
+}
+
 fn modal_footer_spans(state: &AppState, modal: Modal) -> Option<Vec<Span<'static>>> {
-    let title = modal_footer_title(state, modal)?;
+    footer_spans_for(state, modal, modal_footer_title(state, modal)?)
+}
+
+/// The footer built from `title`'s keys, for `modal` or for a view in the
+/// main pane when `modal` is [`Modal::None`].
+fn footer_spans_for(
+    state: &AppState,
+    modal: Modal,
+    title: &'static str,
+) -> Option<Vec<Span<'static>>> {
     let section = keys::section(title)?;
     let footer = keys::modal_footer(title)?;
     let keys_shown: Vec<&'static str> = if modal == Modal::Flow && !state.branch_actions_available()
@@ -133,6 +146,9 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     let left_spans = match state.modal {
         Modal::None if state.session_view().is_some() && state.focus == Pane::Main => {
             session_spans(state)
+        }
+        Modal::None if state.github_has_keyboard() => {
+            footer_spans_for(state, Modal::None, github_footer_title(state)).unwrap_or_default()
         }
         // Keys go into the filter while it is typed, so its keys are the
         // only ones worth offering.
@@ -472,7 +488,6 @@ mod tests {
             Modal::DeleteBranch,
             Modal::Worktree,
             Modal::ConfirmDestructive,
-            Modal::GitHub,
             Modal::Stash,
         ];
         let state = AppState::new();
@@ -498,6 +513,16 @@ mod tests {
             modal_section(Modal::None).is_none(),
             "no modal is open, so there is no modal footer"
         );
+        // GitHub sits in the main pane rather than over it, and its footer
+        // comes from the same table.
+        let section = keys::section("GitHub").expect("GitHub is in the key table");
+        let footer = keys::modal_footer("GitHub").expect("GitHub has a footer");
+        for key in footer.order {
+            assert!(
+                keys::footer_entry(section, key).is_some(),
+                "GitHub prints {key:?}, which its own section does not document"
+            );
+        }
     }
 
     /// A long error used to take half the bar whatever the hints needed, and
@@ -538,7 +563,12 @@ mod tests {
     }
 
     fn footer_text(state: &AppState) -> String {
-        modal_footer_spans(state, state.modal)
+        let spans = if state.github_has_keyboard() {
+            footer_spans_for(state, Modal::None, github_footer_title(state))
+        } else {
+            modal_footer_spans(state, state.modal)
+        };
+        spans
             .unwrap_or_default()
             .iter()
             .map(|span| span.content.as_ref())
@@ -577,7 +607,7 @@ mod tests {
     #[test]
     fn the_github_footer_follows_the_tab_and_the_form() {
         let mut state = AppState::new();
-        state.modal = Modal::GitHub;
+        state.show_github();
 
         let prs = footer_text(&state);
         for hint in ["D draft", "X close", "o browser", "v guided review"] {
@@ -617,7 +647,7 @@ mod tests {
         let status = bar(&state);
         assert!(status.contains("H github/clone"), "{status}");
 
-        state.modal = Modal::GitHub;
+        state.show_github();
         let github = bar(&state);
         assert!(github.contains("Tab clone repo"), "{github}");
     }

@@ -141,8 +141,6 @@ pub enum Modal {
     DeleteBranch,
     Worktree,
     ConfirmDestructive,
-    /// Pull requests of the checkout on screen, and repositories to clone.
-    GitHub,
     /// A branch or pull request walked one hunk at a time.
     GuidedReview,
     /// The stash: its entries, and a new one being named.

@@ -243,10 +243,6 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
             panel::details::handle_key(host.state_mut(), k, area)?;
             return Ok(());
         }
-        Modal::GitHub => {
-            panel::github::handle_key(host.state_mut(), k)?;
-            return Ok(());
-        }
         Modal::GuidedReview => {
             let typing = host
                 .state()
@@ -265,6 +261,21 @@ pub(super) fn dispatch_key<H: AppHost>(host: &mut H, k: KeyEvent) -> Result<()> 
             return Ok(());
         }
         Modal::None => {}
+    }
+
+    // GitHub in the main pane takes the keys while it has the focus, its
+    // letters included. Only the keys that move the focus to another pane, and
+    // the help, are left to lg — and not while something is being typed.
+    if host.state().github_has_keyboard() {
+        let to_lg = !panel::github::typing(host.state())
+            && !k
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && matches!(k.code, KeyCode::Char('1'..='4' | '?'));
+        if !to_lg {
+            panel::github::handle_key(host.state_mut(), k)?;
+            return Ok(());
+        }
     }
 
     // A list filter being typed takes every key, letters lg would otherwise

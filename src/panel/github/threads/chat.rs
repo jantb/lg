@@ -12,7 +12,7 @@ use ratatui::layout::Rect;
 
 use crate::github::ReviewThread;
 use crate::session::SessionId;
-use crate::state::{AppState, Modal, PendingAction};
+use crate::state::{AppState, PendingAction};
 
 use super::super::Mode;
 use super::current;
@@ -65,14 +65,13 @@ pub fn session(state: &AppState) -> Option<SessionId> {
 }
 
 pub fn chat_on_screen(state: &AppState) -> Option<SessionId> {
-    (state.modal == Modal::GitHub)
-        .then(|| session(state))
-        .flatten()
+    state.github_view().then(|| session(state)).flatten()
 }
 
 /// Then every key, Ctrl-C and Esc included, goes to Claude.
 pub fn chat_has_keyboard(state: &AppState) -> bool {
-    chat_on_screen(state).is_some()
+    state.github_has_keyboard()
+        && chat_on_screen(state).is_some()
         && state
             .github
             .threads_chat

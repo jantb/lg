@@ -1,4 +1,4 @@
-//! Where the modal and its parts sit on screen, and what a click there lands
+//! Where GitHub and its parts sit in the main pane, and what a click there lands
 //! on.
 
 use ratatui::layout::{Constraint, Position, Rect};
@@ -11,17 +11,6 @@ use crate::ui;
 
 use super::header::header_spans;
 use super::{ROWS, inbox};
-
-/// Nearly the whole screen, so long titles and descriptions fit, but clear of
-/// the footer, where the status line reports what the last action did, and
-/// no wider than a line is still comfortable to read across.
-pub(super) fn modal_area(area: Rect) -> Rect {
-    ui::centered(
-        area,
-        area.width.saturating_sub(4).min(220),
-        area.height.saturating_sub(2),
-    )
-}
 
 pub(super) fn too_small(inner: Rect) -> bool {
     inner.width < 40 || inner.height < 8
@@ -54,7 +43,7 @@ pub(in crate::panel::github) fn header_click(
     column: u16,
     row: u16,
 ) -> Option<HeaderClick> {
-    let inner = ui::modal_inner(modal_area(area));
+    let inner = ui::modal_inner(area);
     if too_small(inner) {
         return None;
     }
@@ -105,7 +94,7 @@ pub(in crate::panel::github) struct ThreadPanes {
 }
 
 pub(in crate::panel::github) fn thread_panes(area: Rect, chat: bool) -> Option<ThreadPanes> {
-    let inner = ui::modal_inner(modal_area(area));
+    let inner = ui::modal_inner(area);
     if too_small(inner) {
         return None;
     }
@@ -152,7 +141,7 @@ pub(in crate::panel::github) fn list_click(
     column: u16,
     row: u16,
 ) -> Option<usize> {
-    let inner = ui::modal_inner(modal_area(area));
+    let inner = ui::modal_inner(area);
     if too_small(inner) {
         return None;
     }

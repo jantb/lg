@@ -8,7 +8,7 @@ use crate::github::{
     ThreadCount,
 };
 use crate::panel::github::{Mode, handle_key, handle_paste, poll};
-use crate::state::{AppState, Modal};
+use crate::state::AppState;
 
 use super::{Pending, ThreadsView, Written};
 
@@ -105,12 +105,12 @@ fn thread(id: &str, path: &str, resolved: bool) -> ReviewThread {
     }
 }
 
-/// The modal open on pull request #7, its conversations just read.
+/// GitHub open on pull request #7, its conversations just read.
 fn with_threads(threads: Vec<ReviewThread>) -> AppState {
     SENT.with(|sent| sent.borrow_mut().clear());
     let mut state = AppState::new();
     state.repo_root = Some("/work/app".into());
-    state.modal = Modal::GitHub;
+    state.show_github();
     state.github.prs = vec![pr(7)];
     state.github.owners = Some(Owners {
         login: "me".into(),
@@ -284,7 +284,7 @@ fn escape_goes_back_to_the_pull_requests() {
     let mut state = with_threads(vec![thread("A", "a.rs", false)]);
     handle_key(&mut state, key(KeyCode::Esc)).unwrap();
     assert_eq!(state.github.mode, Mode::Browse);
-    assert_eq!(state.modal, Modal::GitHub);
+    assert!(state.github_view());
 }
 
 /// The conversations of #7, with its branch checked out in a checkout that
