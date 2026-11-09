@@ -7,8 +7,8 @@
 //! the pull request's branch is checked out. It outlives leaving the
 //! conversations: going back to them finds it where it was.
 
-use ratatui::crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::layout::{Position, Rect};
+use ratatui::crossterm::event::KeyEvent;
+use ratatui::layout::Rect;
 
 use crate::github::ReviewThread;
 use crate::session::SessionId;
@@ -93,7 +93,7 @@ pub fn fit_chat(state: &mut AppState, area: Rect) {
     }
 }
 
-fn set_focus(state: &mut AppState, focused: bool) {
+pub(super) fn set_focus(state: &mut AppState, focused: bool) {
     if let Some(chat) = state.github.threads_chat.as_mut() {
         chat.focused = focused;
     }
@@ -180,25 +180,4 @@ pub(super) fn paste(state: &mut AppState, text: &str) -> bool {
         session.send(&crate::term::encode_paste(text, bracketed));
     }
     true
-}
-
-/// A click in the chat gives it the keyboard, one elsewhere takes it back; the
-/// wheel over it scrolls what Claude has said.
-pub(in crate::panel::github) fn mouse(state: &mut AppState, area: Rect, m: &MouseEvent) {
-    let Some(id) = session(state) else {
-        return;
-    };
-    let Some(screen) = super::super::draw::thread_chat_area(area) else {
-        return;
-    };
-    let inside = screen.contains(Position::new(m.column, m.row));
-    match m.kind {
-        MouseEventKind::Down(MouseButton::Left) => set_focus(state, inside),
-        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if inside => {
-            if let Some(session) = state.sessions.get_mut(id) {
-                session.scroll(m.kind == MouseEventKind::ScrollUp, 3);
-            }
-        }
-        _ => {}
-    }
 }

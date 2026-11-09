@@ -16,7 +16,7 @@ use super::{Mode, Tab, draw, inbox};
 /// click in the list selects what it lands on.
 pub fn handle_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) {
     if matches!(state.github.mode, Mode::Threads(_)) {
-        super::threads::chat::mouse(state, area, m);
+        super::threads::handle_mouse(state, area, m);
         return;
     }
     if state.github.mode != Mode::Browse {

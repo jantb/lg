@@ -408,3 +408,110 @@ fn without_a_chat_nothing_takes_the_keyboard_from_the_conversations() {
     handle_key(&mut state, key(KeyCode::Char('j'))).unwrap();
     assert_eq!(selected(&state).as_deref(), Some("A"));
 }
+
+mod mouse {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+
+    use super::*;
+    use crate::panel::github::draw::{HeaderClick, header_click, thread_panes};
+    use crate::panel::github::{Tab, handle_mouse};
+
+    const AREA: Rect = Rect::new(0, 0, 160, 40);
+
+    fn at(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn three() -> AppState {
+        with_threads(vec![
+            thread("A", "a.rs", false),
+            thread("B", "b.rs", false),
+            thread("C", "c.rs", false),
+        ])
+    }
+
+    #[test]
+    fn a_click_on_a_conversation_selects_it() {
+        let mut state = three();
+        let list = thread_panes(AREA, false).unwrap().list;
+        let click = MouseEventKind::Down(MouseButton::Left);
+        handle_mouse(&mut state, AREA, &at(click, list.x + 2, list.y + 2));
+        assert_eq!(selected(&state).as_deref(), Some("C"));
+        handle_mouse(&mut state, AREA, &at(click, list.x + 2, list.y + 9));
+        assert_eq!(selected(&state).as_deref(), Some("C"), "below the last row");
+    }
+
+    #[test]
+    fn the_wheel_moves_through_the_list_and_scrolls_the_conversation() {
+        let mut state = three();
+        let panes = thread_panes(AREA, false).unwrap();
+        let (list, talk) = (panes.list, panes.conversation);
+        handle_mouse(
+            &mut state,
+            AREA,
+            &at(MouseEventKind::ScrollDown, list.x + 1, list.y),
+        );
+        assert_eq!(selected(&state).as_deref(), Some("B"));
+        handle_mouse(
+            &mut state,
+            AREA,
+            &at(MouseEventKind::ScrollDown, talk.x + 1, talk.y + 1),
+        );
+        assert_eq!(view(&state).scroll, 3);
+        assert_eq!(selected(&state).as_deref(), Some("B"));
+        handle_mouse(
+            &mut state,
+            AREA,
+            &at(MouseEventKind::ScrollUp, talk.x + 1, talk.y + 1),
+        );
+        assert_eq!(view(&state).scroll, 0);
+    }
+
+    #[test]
+    fn a_tab_in_the_header_leaves_the_conversations_for_it() {
+        let mut state = three();
+        let (column, row) = (0..AREA.height)
+            .flat_map(|row| (0..AREA.width).map(move |column| (column, row)))
+            .find(|&(column, row)| {
+                header_click(&state, AREA, column, row) == Some(HeaderClick::Tab(Tab::Inbox))
+            })
+            .expect("the inbox tab is in the header");
+        handle_mouse(
+            &mut state,
+            AREA,
+            &at(MouseEventKind::Down(MouseButton::Left), column, row),
+        );
+        assert_eq!(state.github.mode, Mode::Browse);
+        assert_eq!(state.github.tab, Tab::Inbox);
+    }
+
+    #[test]
+    fn a_drag_over_the_conversation_selects_its_text() {
+        let mut state = three();
+        let talk = thread_panes(AREA, false).unwrap().conversation;
+        let (x, y) = (talk.x + 1, talk.y);
+        handle_mouse(
+            &mut state,
+            AREA,
+            &at(MouseEventKind::Down(MouseButton::Left), x, y),
+        );
+        handle_mouse(
+            &mut state,
+            AREA,
+            &at(MouseEventKind::Drag(MouseButton::Left), x + 6, y + 1),
+        );
+        assert!(state.selection.as_ref().is_some_and(|s| s.dragging));
+        handle_mouse(
+            &mut state,
+            AREA,
+            &at(MouseEventKind::Up(MouseButton::Left), x + 6, y + 1),
+        );
+        assert!(state.selection.is_some(), "a drag let go is kept to copy");
+    }
+}

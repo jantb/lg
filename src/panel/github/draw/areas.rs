@@ -94,18 +94,39 @@ pub(super) fn thread_columns(chat: bool) -> &'static [Constraint] {
     }
 }
 
-/// The chat's pane beside the conversations, title row included, measured
-/// the way [`render`] lays it out.
-pub(in crate::panel::github) fn thread_chat_area(area: Rect) -> Option<Rect> {
+/// Where the conversations are drawn, measured the way [`render`] lays them
+/// out: the list (below its count), the selected conversation, and the chat
+/// pane, title row included, when one is going.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::panel::github) struct ThreadPanes {
+    pub list: Rect,
+    pub conversation: Rect,
+    pub chat: Option<Rect>,
+}
+
+pub(in crate::panel::github) fn thread_panes(area: Rect, chat: bool) -> Option<ThreadPanes> {
     let inner = ui::modal_inner(modal_area(area));
     if too_small(inner) {
         return None;
     }
     let body = ui::modal_row_areas(inner, &ROWS).0[1];
-    ui::modal_column_areas(body, thread_columns(true))
-        .0
-        .get(2)
-        .copied()
+    let panes = ui::modal_column_areas(body, thread_columns(chat)).0;
+    Some(ThreadPanes {
+        list: thread_list_rows(panes[0]),
+        conversation: panes[1],
+        chat: panes.get(2).copied(),
+    })
+}
+
+/// The rows of the conversation list: its pane below the count.
+pub(super) fn thread_list_rows(pane: Rect) -> Rect {
+    ratatui::layout::Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas::<2>(pane)
+        [1]
+}
+
+/// The chat's pane beside the conversations, title row included.
+pub(in crate::panel::github) fn thread_chat_area(area: Rect) -> Option<Rect> {
+    thread_panes(area, true)?.chat
 }
 
 /// The chat's terminal: its pane below the title row.

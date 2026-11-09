@@ -27,9 +27,7 @@ mod pull_requests;
 mod repositories;
 mod threads;
 
-pub(super) use areas::{
-    HeaderClick, header_click, list_click, thread_chat_area, thread_chat_screen,
-};
+pub(super) use areas::{HeaderClick, header_click, list_click, thread_chat_screen, thread_panes};
 
 pub(super) const LABEL: Style = Style::new().fg(Color::DarkGray);
 

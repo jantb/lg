@@ -36,11 +36,11 @@ pub(super) fn count_spans(count: ThreadCount) -> Vec<Span<'static>> {
 }
 
 pub(super) fn draw_list(view: &ThreadsView, area: Rect, frame: &mut Frame, spinner: &str) {
-    let [head, list] = ratatui::layout::Layout::vertical([
-        ratatui::layout::Constraint::Length(2),
-        ratatui::layout::Constraint::Min(1),
-    ])
-    .areas(area);
+    let head = Rect {
+        height: 2.min(area.height),
+        ..area
+    };
+    let list = super::areas::thread_list_rows(area);
     let mut spans = vec![Span::styled(
         format!("#{} ", view.number),
         Style::default().fg(Color::Green),

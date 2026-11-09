@@ -80,7 +80,7 @@ impl ThreadsView {
         ThreadCount::of(&self.threads)
     }
 
-    fn select(&mut self, idx: usize) {
+    pub(super) fn select(&mut self, idx: usize) {
         let last = self.visible().len().saturating_sub(1);
         self.idx = idx.min(last);
         self.scroll = 0;
@@ -128,7 +128,7 @@ pub(super) fn load_counts(gh: &mut GitHub) {
     gh.counts_loading = Some(spawn_read(move || crate::github::thread_counts(&numbers)));
 }
 
-fn current(state: &mut AppState) -> Option<&mut ThreadsView> {
+pub(super) fn current(state: &mut AppState) -> Option<&mut ThreadsView> {
     match &mut state.github.mode {
         Mode::Threads(view) => Some(view),
         _ => None,
@@ -463,6 +463,9 @@ fn left_to_resolve(unresolved: usize) -> String {
 }
 
 pub mod chat;
+mod mouse;
+
+pub(super) use mouse::handle_mouse;
 
 #[cfg(test)]
 mod tests;
