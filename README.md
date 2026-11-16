@@ -62,8 +62,11 @@ agents safely.
   opens it at its line. Claude Code opens beside the review from the start
   and is told once what is open across the whole change, when the reads are
   in; walking the files tells it nothing more. When it finishes a turn, the
-  change is read again, so a file it fixed is reviewed anew and the lists
-  follow. Fix as you go: `f` hands
+  change is read again, but a file it fixed is not reviewed anew: the read
+  only says which of its findings are fixed and which stand, in their first
+  words, and raises nothing new except an issue on a line the fix changed;
+  the whole change is read again the same way. A finding you tick off stays
+  dismissed, through every read after. Fix as you go: `f` hands
   it the finding or note on the cursor line (on the overview, everything
   open), ready to send. Drag the divider left of it, or press `<` and `>`,
   to size it. The mode badge in the header (or `M`) walks the files
@@ -82,8 +85,9 @@ agents safely.
   together. `X` twice, or the reset
   button under the file list, starts the review over. For a pull request, `s`
   submits every note as inline comments in one review (comment, approve or
-  request changes). Progress and notes live in the git directory, so leaving
-  and coming back resumes where you stopped.
+  request changes). Progress, notes and the model's reads live in the git
+  directory, so leaving and coming back resumes where you stopped, with the
+  same findings and without reading again what has not changed.
 - **Conflict assistance.** An in-app conflict editor with model-suggested
   resolutions.
 - **Embedded sessions.** Run a coding agent (claude, codex or pi) or your own

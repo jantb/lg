@@ -240,8 +240,17 @@ impl Guided {
     }
 
     pub fn is_ticked(&self, finding: &TickedFinding) -> bool {
-        self.progress.ticked.contains(finding)
+        ticked_in(&self.progress.ticked, &finding.path, &finding.text)
     }
+}
+
+/// Whether the finding `text` in `path` is among `ticked`. A finding is
+/// known by its file and its words, never its line: one still standing after
+/// a fix keeps its words, but its line moves with the code around it.
+pub(super) fn ticked_in(ticked: &[TickedFinding], path: &str, text: &str) -> bool {
+    ticked
+        .iter()
+        .any(|tick| tick.path == path && tick.text == text)
 }
 
 pub(super) fn tick_at_cursor(state: &mut AppState) {
@@ -272,15 +281,17 @@ pub(super) fn toggle_ticks(state: &mut AppState, findings: Vec<TickedFinding>) {
     let Some(guided) = state.guided.as_mut() else {
         return;
     };
-    let ticked = &mut guided.progress.ticked;
-    if findings.iter().all(|finding| ticked.contains(finding)) {
-        ticked.retain(|finding| !findings.contains(finding));
+    if findings.iter().all(|finding| guided.is_ticked(finding)) {
+        guided
+            .progress
+            .ticked
+            .retain(|tick| !ticked_in(&findings, &tick.path, &tick.text));
     } else {
         let new: Vec<TickedFinding> = findings
             .into_iter()
-            .filter(|f| !ticked.contains(f))
+            .filter(|finding| !guided.is_ticked(finding))
             .collect();
-        ticked.extend(new);
+        guided.progress.ticked.extend(new);
     }
     if let Err(message) = guided.save() {
         state.set_status(message, true);

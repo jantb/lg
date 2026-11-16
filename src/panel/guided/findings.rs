@@ -153,7 +153,7 @@ pub fn place<'a>(
 
 /// The index in `step` of the line the prompt labelled `L{line}`: a line the
 /// new file has with that number, else a removed line the old file had it on.
-fn index_of(step: &GuidedFile, line: usize) -> Option<usize> {
+pub(super) fn index_of(step: &GuidedFile, line: usize) -> Option<usize> {
     step.lines
         .iter()
         .position(|l| l.new == Some(line))
@@ -164,7 +164,7 @@ fn index_of(step: &GuidedFile, line: usize) -> Option<usize> {
         })
 }
 
-fn without_markup(line: &str) -> &str {
+pub(super) fn without_markup(line: &str) -> &str {
     let line = line.trim();
     let line = line
         .strip_prefix("- ")
@@ -174,7 +174,7 @@ fn without_markup(line: &str) -> &str {
     line.trim_start_matches(['*', '`']).trim()
 }
 
-fn after_key<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+pub(super) fn after_key<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let head = line.get(..key.len())?;
     if !head.eq_ignore_ascii_case(key) {
         return None;
@@ -188,7 +188,7 @@ fn after_key<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 }
 
 /// `src/a.rs:L123 issue: text`: a finding that names its file.
-fn parse_cited(line: &str) -> Option<(String, Finding)> {
+pub(super) fn parse_cited(line: &str) -> Option<(String, Finding)> {
     let at = line
         .match_indices(":L")
         .map(|(at, _)| at)
@@ -201,7 +201,7 @@ fn parse_cited(line: &str) -> Option<(String, Finding)> {
 }
 
 /// `L123 issue: text`, tolerating the separators a model tends to vary.
-fn parse_finding(line: &str) -> Option<Finding> {
+pub(super) fn parse_finding(line: &str) -> Option<Finding> {
     let rest = line.strip_prefix('L')?;
     let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
     let number = rest[..digits].parse().ok()?;

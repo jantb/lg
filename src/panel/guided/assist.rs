@@ -3,9 +3,12 @@
 use crate::state::{AppState, PendingAction};
 
 use super::load::reload;
+use super::reads::{file_read_of, whole_read_of};
 use super::{ChatNews, Guided, OVERVIEW_KEY, WHOLE_CHANGE};
 
-/// Hands the model its earlier read of the file, so it can say what the edit fixed.
+/// Keeps the model's read of the file, or of the whole change, as the one the
+/// next read is set against: if the code changed since, the next read only
+/// says what the change fixed and broke; if not, it reads afresh.
 pub(super) fn review_again(state: &mut AppState) {
     if !state.ai_assist {
         state.set_status(crate::panel::commit::AI_OFF_NOTICE, false);
@@ -19,7 +22,19 @@ pub(super) fn review_again(state: &mut AppState) {
             if guided.chat.is_some() {
                 guided.owe_chat(WHOLE_CHANGE.to_string(), ChatNews::Redone);
             }
-            guided.final_key()
+            let key = guided.final_key();
+            if let Some(commentary) = guided
+                .commentary
+                .get(&key)
+                .filter(|c| c.done && c.error.is_none())
+            {
+                guided.earlier_whole = Some(whole_read_of(
+                    &guided.steps,
+                    &key,
+                    commentary.text.trim().to_string(),
+                ));
+            }
+            key
         } else {
             OVERVIEW_KEY.to_string()
         };
@@ -28,10 +43,13 @@ pub(super) fn review_again(state: &mut AppState) {
         return;
     };
     let (path, key) = (step.path.clone(), step.key());
-    if let Some(commentary) = guided.commentary.get(&key).filter(|c| c.done) {
-        guided
-            .earlier
-            .insert(path.clone(), commentary.text.trim().to_string());
+    if let Some(commentary) = guided
+        .commentary
+        .get(&key)
+        .filter(|c| c.done && c.error.is_none())
+    {
+        let read = file_read_of(step, commentary.text.trim().to_string());
+        guided.earlier.insert(path.clone(), read);
     }
     forget(guided, &[key]);
     if guided.chat.is_some() {

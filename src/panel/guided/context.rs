@@ -1,9 +1,12 @@
 //! What the model is shown of the change for a file, a concern or the whole
 //! of it.
 
+use std::collections::HashSet;
+
 use crate::git::guided::GuidedFile;
 
 use super::found::ticket_in;
+use super::take_in::{Carried, FileBasis, TakeIn, WholeBasis, changed_since};
 use super::{
     CONCERN_CONTEXT_BYTES, Guided, SOURCE_CONTEXT_LINES, Source, WHOLE_DIFF_BYTES, findings, plan,
 };
@@ -51,14 +54,89 @@ pub(super) fn file_context(guided: &Guided, index: usize) -> String {
         );
         out.push_str(&guided.brief);
     }
-    if let Some(earlier) = guided.earlier.get(&step.path) {
-        out.push_str(
-            "\nYour earlier read of this file, before the reviewer changed it. Give each finding \
-             the code now fixes as a `Fixed:` line, and repeat only what still stands:\n",
-        );
-        out.push_str(earlier);
+    match guided.file_take_in(index) {
+        TakeIn::FileDelta(basis) => out.push_str(&file_recheck(guided, &basis, step)),
+        _ => out.push_str(&dismissed(guided, std::slice::from_ref(&step.path))),
     }
     out
+}
+
+/// What a file the reviewer changed after its read is read again against:
+/// the earlier read's findings still open, by id, what was dismissed, and
+/// the lines changed since, the only ones a new issue may be on.
+fn file_recheck(guided: &Guided, basis: &FileBasis, step: &GuidedFile) -> String {
+    let mut out = String::from(
+        "\nYou read this file before the reviewer changed it. The findings of that read still \
+         open, each by its id, on the line lg finds it on now:\n",
+    );
+    out.push_str(&open_by_id(&basis.earlier, false));
+    out.push_str(&dismissed(guided, std::slice::from_ref(&step.path)));
+    let changed = cited_lines(step, &changed_since(&basis.changed_then, step));
+    if changed.is_empty() {
+        out.push_str("\nNo line was added or modified since that read.\n");
+    } else {
+        out.push_str(&format!(
+            "\nLines added or modified since that read, the only ones a new issue may be on: {changed}\n"
+        ));
+    }
+    out
+}
+
+/// The earlier findings that are still open, one `F<id>` line each.
+fn open_by_id(earlier: &[Carried], with_path: bool) -> String {
+    let mut out = String::new();
+    for carried in earlier {
+        let Some(id) = carried.id else {
+            continue;
+        };
+        let path = if with_path {
+            format!("{}:", carried.path)
+        } else {
+            String::new()
+        };
+        out.push_str(&format!(
+            "F{id} {path}L{} {}: {}\n",
+            carried.now,
+            carried.finding.severity.word(),
+            carried.finding.text
+        ));
+    }
+    if out.is_empty() {
+        out.push_str("(none)\n");
+    }
+    out
+}
+
+/// The findings the reviewer ticked off in `paths`, said to be decided.
+fn dismissed(guided: &Guided, paths: &[String]) -> String {
+    let ticked: Vec<_> = guided
+        .progress
+        .ticked
+        .iter()
+        .filter(|tick| paths.contains(&tick.path))
+        .collect();
+    if ticked.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "\nFindings the reviewer dismissed. They are decided: do not raise them again, in any wording:\n",
+    );
+    for tick in ticked {
+        out.push_str(&format!("- {}:L{}: {}\n", tick.path, tick.line, tick.text));
+    }
+    out
+}
+
+/// The diff lines at `indices` of `step` as the prompt numbers them, in diff order.
+fn cited_lines(step: &GuidedFile, indices: &HashSet<usize>) -> String {
+    let mut sorted: Vec<usize> = indices.iter().copied().collect();
+    sorted.sort_unstable();
+    sorted
+        .into_iter()
+        .filter_map(|at| step.lines[at].anchor())
+        .map(|(number, _)| format!("L{number}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The concern the plan puts `step` in, and the diffs of its other files, so
@@ -165,11 +243,66 @@ pub(super) fn final_contexts(guided: &Guided) -> Vec<String> {
     };
     let parts = diff_parts(guided, &groups);
     let count = parts.len();
+    let recheck = match guided.whole_take_in() {
+        TakeIn::WholeDelta(basis) => Some(basis),
+        _ => None,
+    };
     parts
         .iter()
         .enumerate()
-        .map(|(at, part)| final_part(guided, &part_note(at, count), &part.diff, &part.paths))
+        .map(|(at, part)| {
+            let mut out = final_part(guided, &part_note(at, count), &part.diff, &part.paths);
+            match &recheck {
+                Some(basis) => out.push_str(&whole_recheck(guided, basis, &part.paths)),
+                None => out.push_str(&dismissed(guided, &part.paths)),
+            }
+            out
+        })
         .collect()
+}
+
+/// What the files `paths` of a whole change the reviewer changed after its
+/// read are read again against: as [`file_recheck`], for each file that
+/// changed since.
+fn whole_recheck(guided: &Guided, basis: &WholeBasis, paths: &[String]) -> String {
+    let mut out = String::from(
+        "\nYou reviewed the whole change before the reviewer changed it. The findings of that \
+         review still open in these files, each by its id, on the line lg finds it on now:\n",
+    );
+    let here: Vec<Carried> = basis
+        .earlier
+        .iter()
+        .filter(|carried| paths.contains(&carried.path))
+        .cloned()
+        .collect();
+    out.push_str(&open_by_id(&here, true));
+    out.push_str(&dismissed(guided, paths));
+    let mut changed = String::new();
+    for step in guided
+        .steps
+        .iter()
+        .filter(|step| paths.contains(&step.path))
+    {
+        let then = basis.files.iter().find(|file| file.path == step.path);
+        if then.is_some_and(|then| then.key == step.key()) {
+            continue;
+        }
+        let since = changed_since(then.map_or(&[][..], |then| &then.changed), step);
+        let lines = cited_lines(step, &since);
+        if !lines.is_empty() {
+            changed.push_str(&format!("- {}: {lines}\n", step.path));
+        }
+    }
+    if changed.is_empty() {
+        out.push_str("\nNo file shown here changed since that review.\n");
+    } else {
+        out.push_str(
+            "\nFiles changed since that review, and the lines added or modified in each, the only \
+             places a new issue may be:\n",
+        );
+        out.push_str(&changed);
+    }
+    out
 }
 
 fn part_note(at: usize, count: usize) -> String {

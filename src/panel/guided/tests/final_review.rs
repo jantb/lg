@@ -43,7 +43,14 @@ fn the_final_review_is_shown_the_whole_change_and_what_is_still_open() {
     }
     assert!(context.contains("-1 stands in for missing"), "{context}");
     assert!(context.contains("y says less than x"), "{context}");
-    assert!(!context.contains("tail could say"), "{context}");
+    assert!(
+        !context.contains("nit: tail could say"),
+        "a ticked finding is not among what is open: {context}"
+    );
+    assert!(
+        context.contains("tail could say"),
+        "it is among what the reviewer dismissed: {context}"
+    );
 }
 
 /// The final step shows every file's diff with the findings across files

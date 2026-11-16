@@ -37,7 +37,8 @@ pub use stream::error_means_unreachable;
 
 use prompt::{
     build_commit_prompt, build_conventions_prompt, build_guided_final_prompt,
-    build_guided_overview_prompt, build_guided_step_system_prompt,
+    build_guided_final_recheck_prompt, build_guided_overview_prompt,
+    build_guided_step_recheck_system_prompt, build_guided_step_system_prompt,
 };
 pub use prompt::{
     build_guided_chat_file_read, build_guided_chat_prompt, build_guided_chat_redo,
@@ -138,6 +139,27 @@ pub fn stream_guided_step(overview: String, file: String, tx: Sender<GenMsg>) {
     );
 }
 
+/// A file read again after the reviewer changed it: what became of the
+/// findings still open, and what the edit broke on the lines it changed.
+pub fn stream_guided_step_recheck(overview: String, file: String, tx: Sender<GenMsg>) {
+    let messages = vec![
+        ChatMessage {
+            role: "system",
+            content: build_guided_step_recheck_system_prompt(&overview, &crate::settings::load()),
+        },
+        ChatMessage {
+            role: "user",
+            content: file,
+        },
+    ];
+    stream_messages(
+        messages,
+        ChatTask::new("lg-guided-recheck", GUIDED_STEP_NUM_PREDICT, false),
+        reply::REVIEW_CHAT,
+        tx,
+    );
+}
+
 /// What a guided review opens on: the plan its walk modes order the files by.
 pub fn stream_guided_overview(context: String, tx: Sender<GenMsg>) {
     stream_prompt(
@@ -153,6 +175,16 @@ pub fn stream_guided_final(context: String, tx: Sender<GenMsg>) {
     stream_prompt(
         build_guided_final_prompt(&context, &crate::settings::load()),
         ChatTask::new("lg-guided-final", GUIDED_FINAL_NUM_PREDICT, false),
+        reply::REVIEW_CHAT,
+        tx,
+    );
+}
+
+/// The whole change read again after the reviewer changed it.
+pub fn stream_guided_final_recheck(context: String, tx: Sender<GenMsg>) {
+    stream_prompt(
+        build_guided_final_recheck_prompt(&context, &crate::settings::load()),
+        ChatTask::new("lg-guided-final-recheck", GUIDED_FINAL_NUM_PREDICT, false),
         reply::REVIEW_CHAT,
         tx,
     );

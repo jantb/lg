@@ -1,6 +1,7 @@
 //! Reading the change again once it has been fixed.
 
 use super::*;
+use crate::panel::guided::context::file_context;
 use crate::panel::guided::load::apply_loaded;
 
 /// What `walk_with_findings` loads after a.rs's second hunk was edited, and
@@ -40,7 +41,7 @@ fn a_fixed_file_is_read_again_with_its_last_read_and_the_rest_stay_put() {
     );
     assert!(!guided.commentary.contains_key(&guided.steps[0].key()));
     assert!(
-        guided.earlier["a.rs"].contains("-1 stands in for missing"),
+        file_context(guided, 1).contains("-1 stands in for missing"),
         "the next read of a.rs hears what the last one found"
     );
     assert!(!guided.earlier.contains_key("b.rs"));

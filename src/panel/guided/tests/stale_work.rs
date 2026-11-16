@@ -46,11 +46,13 @@ fn work_on_a_version_the_change_no_longer_has_stops_holding_the_walk() {
     guided.asks.push(Ask {
         key: a_key.clone(),
         rx: read_rx,
+        take_in: take_in::TakeIn::AsWritten,
     });
     let (_final_tx, final_rx) = std::sync::mpsc::channel();
     guided.asks.push(Ask {
         key: guided.final_key(),
         rx: final_rx,
+        take_in: take_in::TakeIn::AsWritten,
     });
     let (_check_tx, check_rx) = std::sync::mpsc::channel();
     guided.checks.push(Check {
@@ -80,7 +82,11 @@ fn work_on_what_did_not_change_carries_on() {
     let guided = state.guided.as_mut().unwrap();
     let b_key = guided.steps[1].key();
     let (_tx, rx) = std::sync::mpsc::channel();
-    guided.asks.push(Ask { key: b_key, rx });
+    guided.asks.push(Ask {
+        key: b_key,
+        rx,
+        take_in: take_in::TakeIn::AsWritten,
+    });
 
     let loaded = after_a_fix(guided);
     apply_loaded(guided, loaded, false);

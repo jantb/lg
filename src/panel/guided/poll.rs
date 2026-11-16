@@ -8,6 +8,7 @@ use crate::state::{AppState, GenMsg, PendingAction, Poll, poll_once, stopped_une
 use super::chat::tell_chat_what_is_read;
 use super::context::{file_context, final_contexts, plan_contexts, step_context};
 use super::load::{apply_loaded, reload};
+use super::take_in::{FILE_NIT_BUDGET, TakeIn, take_in_first};
 use super::{
     Ask, CONCURRENT_CHECKS, CONCURRENT_CLAUDE, CONCURRENT_LOCAL, Check, Commentary, Guided, Mode,
     OVERVIEW, OVERVIEW_KEY, findings, work,
@@ -67,18 +68,19 @@ pub fn poll(state: &mut AppState) {
 
     let answered = drain_asks(guided);
     let final_key = guided.final_key();
-    if answered.contains(&final_key) {
+    if answered.keys.contains(&final_key) {
         notices.push((review_done(guided), false));
     }
     // Without a checkout there is no code to settle questions in.
     if let Some(root) = &root {
-        guided.check_queue.extend(answered);
+        guided.check_queue.extend(answered.to_check);
         while guided.checks.len() < CONCURRENT_CHECKS && !guided.check_queue.is_empty() {
             let key = guided.check_queue.remove(0);
             start_question_check(guided, root, &key);
         }
     }
-    drain_checks(guided, &mut notices);
+    let settled = drain_checks(guided, &mut notices);
+    keep_reads(guided, answered.keys.iter().chain(&settled), &mut notices);
     if ai {
         start_wanted_commentary(guided);
     }
@@ -148,8 +150,33 @@ fn review_done(guided: &Guided) -> String {
     )
 }
 
-/// The keys of the steps whose commentary came in whole.
-fn drain_asks(guided: &mut Guided) -> Vec<String> {
+/// Reads finished and settled are saved with the review as they come in,
+/// once each, so a review opened again starts from them.
+fn keep_reads<'a>(
+    guided: &mut Guided,
+    keys: impl Iterator<Item = &'a String>,
+    notices: &mut Vec<(String, bool)>,
+) {
+    if guided.progress_path.is_none() {
+        return;
+    }
+    let mut kept = false;
+    for key in keys {
+        kept |= guided.remember_read(key);
+    }
+    if kept && let Err(message) = guided.save() {
+        notices.push((message, true));
+    }
+}
+
+/// The steps whose commentary came in whole, and of those the first reads
+/// of a file, whose questions a check may settle.
+pub(super) struct Answered {
+    pub keys: Vec<String>,
+    pub to_check: Vec<String>,
+}
+
+pub(super) fn drain_asks(guided: &mut Guided) -> Answered {
     let mut finished = Vec::new();
     let mut answered = Vec::new();
     for (index, ask) in guided.asks.iter().enumerate() {
@@ -170,7 +197,7 @@ fn drain_asks(guided: &mut Guided) -> Vec<String> {
                     }
                     entry.done = true;
                     entry.thinking = false;
-                    answered.push(ask.key.clone());
+                    answered.push(index);
                     finished.push(index);
                     break;
                 }
@@ -194,10 +221,31 @@ fn drain_asks(guided: &mut Guided) -> Vec<String> {
             }
         }
     }
+    let mut out = Answered {
+        keys: Vec::new(),
+        to_check: Vec::new(),
+    };
     for index in finished.into_iter().rev() {
-        guided.asks.remove(index);
+        let ask = guided.asks.remove(index);
+        if !answered.contains(&index) {
+            continue;
+        }
+        let reply = guided
+            .commentary
+            .get(&ask.key)
+            .map(|c| c.text.clone())
+            .unwrap_or_default();
+        let text = guided.taken_in(&ask.key, &ask.take_in, &reply);
+        guided.let_go_of_earlier(&ask.take_in);
+        if let Some(commentary) = guided.commentary.get_mut(&ask.key) {
+            commentary.text = text;
+        }
+        if matches!(ask.take_in, TakeIn::FileFirst { .. }) {
+            out.to_check.insert(0, ask.key.clone());
+        }
+        out.keys.insert(0, ask.key);
     }
-    answered
+    out
 }
 
 /// Send the questions step `key`'s commentary raised to Claude, to be settled
@@ -234,9 +282,10 @@ fn start_question_check(guided: &mut Guided, root: &str, key: &str) {
     });
 }
 
-/// Put what each finished check settled back into its step's commentary. A
-/// check that failed puts the questions back as they were asked.
-pub(super) fn drain_checks(guided: &mut Guided, notices: &mut Vec<(String, bool)>) {
+/// Put what each finished check settled back into its step's commentary,
+/// held to the same bar as the read it settles. A check that failed puts the
+/// questions back as they were asked. The keys of the steps settled.
+pub(super) fn drain_checks(guided: &mut Guided, notices: &mut Vec<(String, bool)>) -> Vec<String> {
     let mut finished = Vec::new();
     for (index, check) in guided.checks.iter().enumerate() {
         let settled = match poll_once(&check.answer) {
@@ -251,16 +300,24 @@ pub(super) fn drain_checks(guided: &mut Guided, notices: &mut Vec<(String, bool)
                 check.questions.join("\n")
             }
         };
+        let path = guided
+            .steps
+            .iter()
+            .find(|step| step.key() == check.key)
+            .map(|step| step.path.as_str());
         if let Some(commentary) = guided.commentary.get_mut(&check.key) {
-            commentary.text = findings::with_settled(&commentary.text, &settled);
+            let text = findings::with_settled(&commentary.text, &settled);
+            commentary.text = take_in_first(&text, path, FILE_NIT_BUDGET, &guided.progress.ticked);
             commentary.done = true;
             commentary.checking = false;
         }
         finished.push(index);
     }
+    let mut keys = Vec::new();
     for index in finished.into_iter().rev() {
-        guided.checks.remove(index);
+        keys.insert(0, guided.checks.remove(index).key);
     }
+    keys
 }
 
 /// How many requests may run at once. The local server answers one request
@@ -326,23 +383,37 @@ pub(super) fn start_wanted_commentary(guided: &mut Guided) {
         if asked {
             continue;
         }
-        let (rx, prompt_bytes) = if index == OVERVIEW {
+        let (rx, prompt_bytes, take_in) = if index == OVERVIEW {
             let contexts = plan_contexts(guided);
             let bytes = contexts.iter().map(String::len).sum();
-            (work::ask_overview(contexts, concurrency()), bytes)
+            (
+                work::ask_overview(contexts, concurrency()),
+                bytes,
+                TakeIn::AsWritten,
+            )
         } else if index == guided.final_step() {
+            let take_in = guided.whole_take_in();
             let contexts = final_contexts(guided);
             let bytes = contexts.iter().map(String::len).sum();
-            (work::ask_final(contexts, concurrency()), bytes)
+            let rx = match take_in {
+                TakeIn::WholeDelta(_) => work::ask_final_recheck(contexts, concurrency()),
+                _ => work::ask_final(contexts, concurrency()),
+            };
+            (rx, bytes, take_in)
         } else {
             // The walk's first brief, so the cached prompt stays the same.
             let shared = guided
                 .shared_brief
                 .get_or_insert_with(|| guided.brief.clone())
                 .clone();
+            let take_in = guided.file_take_in(index);
             let context = file_context(guided, index);
             let bytes = shared.len() + context.len();
-            (work::ask_step(shared, context), bytes)
+            let rx = match take_in {
+                TakeIn::FileDelta(_) => work::ask_step_recheck(shared, context),
+                _ => work::ask_step(shared, context),
+            };
+            (rx, bytes, take_in)
         };
         guided.commentary.insert(
             key.clone(),
@@ -352,7 +423,7 @@ pub(super) fn start_wanted_commentary(guided: &mut Guided) {
                 ..Commentary::default()
             },
         );
-        guided.asks.push(Ask { key, rx });
+        guided.asks.push(Ask { key, rx, take_in });
         slots -= 1;
     }
 }

@@ -14,7 +14,9 @@ mod overview;
 mod parts;
 mod questions;
 mod refresh;
+mod reopen;
 mod repository;
+mod rereads;
 mod reset;
 mod review_chat;
 mod source;
@@ -235,4 +237,55 @@ pub(super) fn row_of(rows: &[String], text: &str) -> usize {
     rows.iter()
         .position(|row| row.contains(text))
         .unwrap_or_else(|| panic!("{text} is not listed: {rows:#?}"))
+}
+
+/// The model answers the read of step `index`, a file counted from one or
+/// the final step, with `reply`, the read asked for as the walk asks for it
+/// now; then a frame goes by, with AI assist off so no other read starts.
+pub(super) fn answer(state: &mut AppState, index: usize, reply: &str) {
+    state.ai_assist = false;
+    let guided = state.guided.as_mut().unwrap();
+    let (key, take_in) = if index == guided.final_step() {
+        (guided.final_key(), guided.whole_take_in())
+    } else {
+        (guided.steps[index - 1].key(), guided.file_take_in(index))
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    guided.commentary.insert(key.clone(), Commentary::default());
+    guided.asks.push(Ask { key, rx, take_in });
+    tx.send(crate::state::GenMsg::Done {
+        text: reply.to_string(),
+        stats: crate::llm::GenStats::default(),
+    })
+    .unwrap();
+    poll(state);
+}
+
+/// `walk_with_findings` saved where no other test saves, with nothing ticked.
+pub(super) fn walk_with_findings_saved_as(branch: &str) -> AppState {
+    let mut state = walk_with_findings();
+    let guided = state.guided.as_mut().unwrap();
+    saved_as(
+        guided,
+        Source::Branch {
+            branch: branch.into(),
+            base_ref: "main".into(),
+        },
+    );
+    guided.progress = GuidedProgress {
+        reviewed: guided.progress.reviewed.clone(),
+        ..GuidedProgress::default()
+    };
+    state
+}
+
+/// The text of every finding the walk shows in `path`, and whether it is ticked off.
+pub(super) fn shown_in(state: &AppState, path: &str) -> Vec<(String, bool)> {
+    let guided = state.guided.as_deref().unwrap();
+    guided
+        .findings_in_order()
+        .into_iter()
+        .filter(|(open, _)| guided.steps[open.step - 1].path == path)
+        .map(|(open, ticked)| (open.finding.text, ticked))
+        .collect()
 }

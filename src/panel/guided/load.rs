@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use crate::git::guided::GuidedFile;
 use crate::state::{AppState, Modal, PendingAction};
 
+use super::reads::{file_read_of, whole_read_of};
 use super::{Guided, Loaded, OVERVIEW, OVERVIEW_KEY, Overview, Source, work};
 
 /// Walk the branch on screen against main, or on main itself, what has not
@@ -232,7 +233,7 @@ pub(super) fn apply_loaded(guided: &mut Guided, loaded: Loaded, first_load: bool
     let was_final = guided.on_final();
     let (cursor, side_scroll) = (guided.cursor, guided.side_scroll);
     // A file changed since it was read takes its last read along, so the
-    // next one can say what the change fixed.
+    // next one is set against it: what the change fixed, and what it broke.
     for old in &guided.steps {
         let changed = loaded
             .steps
@@ -241,18 +242,33 @@ pub(super) fn apply_loaded(guided: &mut Guided, loaded: Loaded, first_load: bool
         if let Some(read) = guided
             .commentary
             .get(&old.key())
-            .filter(|c| changed && c.done && c.error.is_none())
+            .filter(|c| changed && (c.done || c.checking) && c.error.is_none())
         {
-            guided
-                .earlier
-                .insert(old.path.clone(), read.text.trim().to_string());
+            guided.earlier.insert(
+                old.path.clone(),
+                file_read_of(old, read.text.trim().to_string()),
+            );
         }
     }
+    let final_before = guided.final_key();
+    let whole_before = guided
+        .commentary
+        .get(&final_before)
+        .filter(|c| c.done && c.error.is_none())
+        .map(|c| whole_read_of(&guided.steps, &final_before, c.text.trim().to_string()));
     // A fresh read keeps a pull request's commit, which only the load knows.
     guided.source = loaded.source;
     guided.steps = loaded.steps;
     guided.overview = loaded.overview.text;
     guided.brief = loaded.overview.brief;
+    if let Some(whole) = whole_before
+        && guided.final_key() != final_before
+    {
+        guided.earlier_whole = Some(whole);
+    }
+    if first_load {
+        guided.restore_reads();
+    }
     drop_stale_work(guided);
     if was_final {
         guided.current = guided.final_step();

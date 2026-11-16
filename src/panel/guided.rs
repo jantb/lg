@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
-use crate::git::guided::{GuidedFile, GuidedNote, GuidedProgress, WalkMode};
+use crate::git::guided::{FileRead, GuidedFile, GuidedNote, GuidedProgress, WalkMode, WholeRead};
 use crate::panel::text_input::TextInput;
 use crate::state::{DiffViewMode, GenMsg};
 
@@ -37,6 +37,8 @@ mod notes;
 mod plan;
 mod poll;
 mod progress;
+mod reads;
+mod take_in;
 mod tree;
 mod work;
 
@@ -193,6 +195,7 @@ struct Ask {
     /// The step whose commentary it fills in.
     key: String,
     rx: Receiver<GenMsg>,
+    take_in: take_in::TakeIn,
 }
 
 /// A step's questions out with a headless Claude run to be settled in the
@@ -266,8 +269,11 @@ pub struct Guided {
     /// Steps whose commentary was asked for and failed, so they are not asked
     /// again every frame.
     failed: HashSet<String>,
-    /// The model's last read of each file `r` sent back, for the next read to say what is fixed.
-    earlier: HashMap<String, String>,
+    /// The model's last finished read of each file that changed since, or
+    /// that `r` sent back, by path: what the next read of it is set against.
+    earlier: HashMap<String, FileRead>,
+    /// The same for the read of the whole change.
+    earlier_whole: Option<WholeRead>,
     /// The note `x` was pressed on once; pressing it again deletes it.
     pub(super) delete_armed: Option<usize>,
     /// Reset was asked for once; asking again resets the review.
@@ -349,6 +355,7 @@ impl Guided {
             check_queue: Vec::new(),
             failed: HashSet::new(),
             earlier: HashMap::new(),
+            earlier_whole: None,
             delete_armed: None,
             reset_armed: false,
             list_scroll: None,

@@ -58,6 +58,7 @@ pub(super) fn reset_review(state: &mut AppState) {
     guided.commentary.clear();
     guided.failed.clear();
     guided.earlier.clear();
+    guided.earlier_whole = None;
     guided.asks.clear();
     guided.checks.clear();
     guided.check_queue.clear();

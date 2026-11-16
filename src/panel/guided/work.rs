@@ -120,9 +120,21 @@ pub(super) fn ask_step(overview: String, file: String) -> Receiver<GenMsg> {
     rx
 }
 
+/// A file read again against its earlier read, after the reviewer changed it.
+pub(super) fn ask_step_recheck(overview: String, file: String) -> Receiver<GenMsg> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    crate::git::spawn_pinned(move || crate::llm::stream_guided_step_recheck(overview, file, tx));
+    rx
+}
+
 /// The model's read of the whole change across files, once the walk is through them.
 pub(super) fn ask_final(contexts: Vec<String>, at_once: usize) -> Receiver<GenMsg> {
     ask_in_parts(contexts, at_once, crate::llm::stream_guided_final)
+}
+
+/// The whole change read again against its earlier read, after the reviewer changed it.
+pub(super) fn ask_final_recheck(contexts: Vec<String>, at_once: usize) -> Receiver<GenMsg> {
+    ask_in_parts(contexts, at_once, crate::llm::stream_guided_final_recheck)
 }
 
 /// Each of `contexts` asked of the model with `ask`, `at_once` at a time, and

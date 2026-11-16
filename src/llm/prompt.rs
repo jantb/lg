@@ -39,25 +39,66 @@ pub fn build_guided_step_system_prompt(overview: &str, settings: &RepoSettings) 
          around them. Review the file's change as a whole, not each hunk on its own.\n\
          Reply in exactly this shape, one item a line, and nothing else:\n\
          Summary: <what the change to the file does, in one or two sentences, in terms of behavior rather than lines>\n\
-         Fixed: <a finding from your earlier read that the code now fixes, only when one is given>\n\
-         L<n> issue: <what is wrong and why it matters>\n\
-         L<n> nit: <a smaller point>\n\
+         L<n> issue: <the input or state, and the wrong outcome it leads to>\n\
+         L<n> nit: <the repo style rule below it breaks, and what to change>\n\
          L<n> question: <what the code shown cannot settle, asked as a question>\n\
          Verdict: ok|nit|issue\n\
          Write one `L<n>` line per finding, most severe first, where <n> is the number the diff\n\
-         shows for the line it is about. A finding is a bug, an unhandled case, a broken\n\
-         contract, an invariant the change can break on some path, a missing test, a sentinel\n\
-         value (-1, 0, MAX, an empty string standing in for \"none\") that can collide with a\n\
-         real value or leak into arithmetic, indexing or display, or a concrete violation of\n\
-         the repo style below. A missing comment is never a finding.\n\
+         shows for the line it is about.\n\
+         An issue names the concrete input or state and the wrong outcome it leads to: a bug, an\n\
+         unhandled case, a broken contract or invariant, a sentinel value (-1, 0, MAX, an empty\n\
+         string standing in for \"none\") that can collide with a real value or leak into\n\
+         arithmetic, indexing or display. If you cannot name the input and the outcome, it is not\n\
+         an issue.\n\
+         A nit is only a concrete violation of the repo style below that a reviewer would ask to\n\
+         have changed before merging. Give at most three nits, the ones most worth the reviewer's\n\
+         time; a preference, or a name you would have picked differently, is not a nit.\n\
+         A missing test is a finding only when the change adds behaviour no test exercises. A\n\
+         missing comment is never a finding.\n\
+         Findings the reviewer dismissed are listed with the file when there are any. They are\n\
+         decided: never raise one again, in any wording.\n\
          Ask a question rather than guess when the answer depends on code not shown; a question\n\
          does not change the verdict. Leave out the `L` lines when there is nothing to flag.\n\
-         Keep each line under 25 words. Keep the words Summary, Fixed, Verdict, issue, nit and\n\
+         Keep each line under 25 words. Keep the words Summary, Verdict, issue, nit and\n\
          question in English. Do not restate the diff, use code fences, or invent code that is not shown.\n\n\
          {}\n\n\
          {}\n\
          Change overview:\n{overview}",
         review_style(settings, overview),
+        crate::settings::language_instruction(settings)
+    )
+}
+
+/// What a file the reviewer changed after its read is read again with: not a
+/// fresh review, only what became of the findings still open and whether the
+/// edit broke something on the lines it changed. The same for every such
+/// read of a walk, as [`build_guided_step_system_prompt`] is.
+pub fn build_guided_step_recheck_system_prompt(overview: &str, settings: &RepoSettings) -> String {
+    format!(
+        "You are walking a reviewer through a change one file at a time, and you have read this\n\
+         file before. The reviewer has changed it since. The overview of the whole change is below;\n\
+         each message gives the file's diff as it is now, the findings of your earlier read that are\n\
+         still open, each with an id such as F1, the findings the reviewer dismissed, and the lines\n\
+         changed since your earlier read.\n\
+         Do not review the file afresh. Say what became of each open finding, and whether the\n\
+         latest edit broke something on a line it changed.\n\
+         Reply in exactly this shape, one item a line, and nothing else:\n\
+         Summary: <what the latest edit did, in one sentence>\n\
+         Fixed: F<k>\n\
+         Stands: F<k> L<n>\n\
+         L<n> issue: <the input or state, and the wrong outcome the latest edit leads to>\n\
+         Verdict: ok|nit|issue\n\
+         Give every open finding exactly one line: `Fixed:` when the code now fixes it, `Stands:`\n\
+         when it still holds, with <n> the number the diff now shows for its line. Do not reword a\n\
+         finding: name it by its id only.\n\
+         Raise an `L<n> issue` only for a bug the latest edit introduced, on a line listed as\n\
+         changed since your earlier read, naming the input or state and the wrong outcome.\n\
+         Raise no nits and no questions, and nothing on a line that did not change. Findings the\n\
+         reviewer dismissed are decided: never raise one again, in any wording.\n\
+         Keep each line under 25 words. Keep the words Summary, Fixed, Stands, Verdict and issue in\n\
+         English. Do not restate the diff, use code fences, or invent code that is not shown.\n\n\
+         {}\n\
+         Change overview:\n{overview}",
         crate::settings::language_instruction(settings)
     )
 }
@@ -69,8 +110,11 @@ pub fn build_guided_chat_prompt(title: &str, review: &str, settings: &RepoSettin
          the whole change is below, or follows once lg has read it all. The reviewer will hand\n\
          you findings to fix as they go.\n\
          Read the code they point at, but change nothing until the reviewer says what to fix, one\n\
-         at a time or all at once. Keep each change minimal, match the surrounding style, and never\n\
-         commit or otherwise change git state. Start by saying in two or three lines what is open.\n\n\
+         at a time or all at once. Fix issues before nits, and fix findings that belong together in\n\
+         one go. Change nothing beyond what a finding asks for. Keep each change minimal, match the\n\
+         surrounding style, and never commit or otherwise change git state. Run the repository's\n\
+         own checks, its tests and linter, before saying a fix is done. Start by saying in two or\n\
+         three lines what is open.\n\n\
          {}\n\n\
          {}\n\
          {review}",
@@ -165,20 +209,62 @@ pub fn build_guided_final_prompt(context: &str, settings: &RepoSettings) -> Stri
          debugging or dead code, and whether the tests cover the change as a whole.\n\
          What the file-by-file reads raised is listed after the diff. Repeat one only when the\n\
          wider context changes it: makes it worse, settles it, or shows it is part of a pattern.\n\
+         Findings the reviewer dismissed are listed too. They are decided: never raise one again,\n\
+         in any wording.\n\
          Reply in exactly this shape, one item a line, and nothing else:\n\
          Summary: <the change as a whole and whether it hangs together, in two to four sentences>\n\
-         <path>:L<n> issue: <what is wrong, seen in the whole change, and why it matters>\n\
-         <path>:L<n> nit: <a smaller point>\n\
+         <path>:L<n> issue: <the input or state, and the wrong outcome it leads to across the change>\n\
+         <path>:L<n> nit: <the repo style rule below it breaks, and what to change>\n\
          <path>:L<n> question: <what the diff cannot settle, asked as a question>\n\
          Verdict: ok|nit|issue\n\
          <path> is the file as the diff names it and <n> the number the diff shows for the line.\n\
+         An issue names the concrete input or state and the wrong outcome it leads to: a bug, an\n\
+         unhandled case, a broken contract or invariant, a sentinel value that collides with a real\n\
+         one. If you cannot name the input and the outcome, it is not an issue.\n\
+         A nit is only a concrete violation of the repo style below that a reviewer would ask to\n\
+         have changed before merging. Give at most five nits across the whole change, the ones most\n\
+         worth the reviewer's time.\n\
+         A missing test is a finding only when the change adds behaviour no test exercises. A\n\
+         missing comment is never a finding.\n\
          Leave out the finding lines when there is nothing to flag. Keep each line under 30 words.\n\
-         Keep the words Summary, Verdict, issue, nit and question in English. A missing comment is\n\
-         never a finding. Do not restate the diff, use code fences, or invent code that is not shown.\n\n\
+         Keep the words Summary, Verdict, issue, nit and question in English. Do not restate the\n\
+         diff, use code fences, or invent code that is not shown.\n\n\
          {}\n\n\
          {}\n\
          {context}",
         review_style(settings, context),
+        crate::settings::language_instruction(settings)
+    )
+}
+
+/// The whole change read again after the reviewer changed it: what became of
+/// the findings still open, and whether an edit broke something across files
+/// on the lines it changed.
+pub fn build_guided_final_recheck_prompt(context: &str, settings: &RepoSettings) -> String {
+    format!(
+        "You reviewed this whole change as one change before, and the reviewer has changed it\n\
+         since. Below are the diff as it is now, the findings of your earlier review that are still\n\
+         open, each with an id such as F1, the findings the reviewer dismissed, and the files\n\
+         changed since with the lines changed in each.\n\
+         Do not review the change afresh. Say what became of each open finding, and whether an edit\n\
+         since broke something across files on a line it changed.\n\
+         Reply in exactly this shape, one item a line, and nothing else:\n\
+         Summary: <the change as a whole now, in one or two sentences>\n\
+         Fixed: F<k>\n\
+         Stands: F<k> <path>:L<n>\n\
+         <path>:L<n> issue: <the input or state, and the wrong outcome the edit leads to>\n\
+         Verdict: ok|nit|issue\n\
+         Give every open finding exactly one line: `Fixed:` when the code now fixes it, `Stands:`\n\
+         when it still holds, with <n> the number the diff now shows for its line. Do not reword a\n\
+         finding: name it by its id only.\n\
+         Raise an issue only for a bug an edit since introduced, in a file listed as changed, on a\n\
+         line listed as changed in it, naming the input or state and the wrong outcome. Raise no\n\
+         nits and no questions. Findings the reviewer dismissed are decided: never raise one again,\n\
+         in any wording.\n\
+         Keep each line under 30 words. Keep the words Summary, Fixed, Stands, Verdict and issue in\n\
+         English. Do not restate the diff, use code fences, or invent code that is not shown.\n\n\
+         {}\n\
+         {context}",
         crate::settings::language_instruction(settings)
     )
 }
@@ -363,6 +449,54 @@ mod tests {
                 "language notes are part of the built-in guide, not of the checkout's"
             );
         }
+    }
+
+    #[test]
+    fn a_file_read_asks_for_at_most_three_nits() {
+        let prompt = build_guided_step_system_prompt("", &RepoSettings::default());
+
+        assert!(prompt.contains("at most three nits"), "{prompt}");
+    }
+
+    #[test]
+    fn a_read_of_the_whole_change_asks_for_at_most_five_nits() {
+        let prompt = build_guided_final_prompt("", &RepoSettings::default());
+
+        assert!(prompt.contains("at most five nits"), "{prompt}");
+    }
+
+    #[test]
+    fn an_issue_must_name_the_input_and_the_wrong_outcome() {
+        let prompt = build_guided_step_system_prompt("", &RepoSettings::default());
+
+        assert!(
+            prompt.contains("concrete input or state and the wrong outcome"),
+            "{prompt}"
+        );
+    }
+
+    #[test]
+    fn a_file_read_again_raises_no_nits_and_no_questions() {
+        let prompt = build_guided_step_recheck_system_prompt("", &RepoSettings::default());
+
+        assert!(prompt.contains("no nits and no questions"), "{prompt}");
+    }
+
+    #[test]
+    fn the_review_chat_fixes_issues_before_nits() {
+        let prompt = build_guided_chat_prompt("a branch", "", &RepoSettings::default());
+
+        assert!(prompt.contains("issues before nits"), "{prompt}");
+    }
+
+    #[test]
+    fn the_review_chat_runs_the_checks_before_saying_a_fix_is_done() {
+        let prompt = build_guided_chat_prompt("a branch", "", &RepoSettings::default());
+
+        assert!(
+            prompt.contains("checks, its tests and linter, before saying a fix is done"),
+            "{prompt}"
+        );
     }
 
     fn no_sides() -> crate::git::ConflictSides {

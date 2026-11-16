@@ -101,10 +101,23 @@ fn ticking_findings_off_settles_the_file() {
     assert_eq!(guided.open_in_file("a.rs", findings::Severity::Question), 1);
 }
 
+/// `r` on a file that has not changed since its read reads it afresh, told
+/// what the reviewer dismissed but not set against what was found before.
 #[test]
-fn r_reviews_the_file_again_with_what_was_said_before() {
+fn r_reads_a_file_unchanged_since_its_read_afresh_told_what_was_dismissed() {
     let mut state = walk_with_findings();
     state.ai_assist = true;
+    state
+        .guided
+        .as_mut()
+        .unwrap()
+        .progress
+        .ticked
+        .push(TickedFinding {
+            path: "a.rs".into(),
+            line: 3,
+            text: "tail could say what it ends.".into(),
+        });
     // Already loading, so the test starts no read of its own.
     let (_reading, rx) = std::sync::mpsc::channel();
     state.guided.as_mut().unwrap().loading = Some(rx);
@@ -113,25 +126,24 @@ fn r_reviews_the_file_again_with_what_was_said_before() {
 
     let guided = state.guided.as_ref().unwrap();
     assert!(!guided.commentary.contains_key(&guided.steps[0].key()));
-    assert!(file_context(guided, 1).contains("-1 stands in for missing"));
+    let context = file_context(guided, 1);
+    assert!(
+        context.contains("tail could say what it ends."),
+        "{context}"
+    );
+    assert!(!context.contains("-1 stands in for missing"), "{context}");
 
     let guided = state.guided.as_mut().unwrap();
     assert!(!guided.has_read("a.rs"));
     guided.loading = None;
     let key = guided.steps[0].key();
-    guided.commentary.insert(
-        key,
-        commentary("Summary: Same.\nFixed: the index sentinel.\nVerdict: ok"),
-    );
+    guided
+        .commentary
+        .insert(key, commentary("Summary: Same.\nVerdict: ok"));
     assert!(guided.has_read("a.rs"));
     assert!(
         guided.has_read("gone.rs"),
         "a file the change no longer has"
-    );
-    assert!(
-        guided
-            .chat_brief("a.rs")
-            .contains("fixed: the index sentinel.")
     );
 }
 

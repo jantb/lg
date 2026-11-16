@@ -307,13 +307,61 @@ pub struct GuidedNote {
     pub quote: String,
 }
 
-/// A finding of the model's the reviewer ticked off as dealt with: the file,
-/// the line it cited and what it said, which together tell it from any other.
+/// A finding of the model's the reviewer ticked off as dealt with. The file
+/// and what it said tell it from any other; the line it cited is kept for
+/// showing, since a finding still standing after a fix keeps its words but
+/// not always its line.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TickedFinding {
     pub path: String,
     pub line: usize,
     pub text: String,
+}
+
+/// One file's change as a read of it saw it: enough to tell later which
+/// lines an edit changed since, and where a finding's line has moved to.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ReadStep {
+    pub path: String,
+    /// The step that was read, by [`GuidedFile::key`].
+    pub key: String,
+    /// Every line the change added or removed, sign included.
+    #[serde(default)]
+    pub changed: Vec<String>,
+    /// The diff line each line number a finding cited was, sign included.
+    #[serde(default)]
+    pub quotes: Vec<(usize, String)>,
+}
+
+/// The model's finished read of one file, in the shape the walk shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FileRead {
+    pub step: ReadStep,
+    pub text: String,
+}
+
+/// The model's finished read of the whole change, with every file as it saw it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct WholeRead {
+    /// The final step it read, by its key.
+    pub key: String,
+    pub text: String,
+    #[serde(default)]
+    pub files: Vec<ReadStep>,
+}
+
+/// The model's finished reads, kept so a review opened again shows what it
+/// found without asking again, and asks only about what changed since.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GuidedReads {
+    /// The latest read of each file.
+    #[serde(default)]
+    pub files: Vec<FileRead>,
+    #[serde(default)]
+    pub whole: Option<WholeRead>,
+    /// The plan the walk is ordered by.
+    #[serde(default)]
+    pub plan: Option<String>,
 }
 
 /// How a guided review orders its files, all from the same plan the model
@@ -353,8 +401,8 @@ impl WalkMode {
 }
 
 /// What a guided review remembers between visits: which steps were looked at,
-/// the notes written along the way, the findings ticked off, and how the walk
-/// is ordered.
+/// the notes written along the way, the findings ticked off, how the walk
+/// is ordered, and what the model read.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GuidedProgress {
     #[serde(default)]
@@ -365,6 +413,8 @@ pub struct GuidedProgress {
     pub ticked: Vec<TickedFinding>,
     #[serde(default)]
     pub walk: WalkMode,
+    #[serde(default)]
+    pub reads: GuidedReads,
 }
 
 /// Where the progress of the review named `key` is kept: inside the git
@@ -559,6 +609,24 @@ new file mode 100644
                 text: "-1 is used as an index".into(),
             }],
             walk: WalkMode::Issues,
+            reads: GuidedReads {
+                files: vec![FileRead {
+                    step: ReadStep {
+                        path: "src/a.rs".into(),
+                        key: "src/a.rs#1".into(),
+                        changed: vec!["-old line".into(), "+new line".into()],
+                        quotes: vec![(11, "+new line".into())],
+                    },
+                    text: "Summary: Renames.\nL11 issue: -1 is used as an index\nVerdict: issue"
+                        .into(),
+                }],
+                whole: Some(WholeRead {
+                    key: "final#1".into(),
+                    text: "Summary: Hangs together.\nVerdict: ok".into(),
+                    files: Vec::new(),
+                }),
+                plan: Some("Summary: A rename.".into()),
+            },
         };
         let text = serde_json::to_string(&progress).unwrap();
 
@@ -566,6 +634,17 @@ new file mode 100644
             serde_json::from_str::<GuidedProgress>(&text).unwrap(),
             progress
         );
+    }
+
+    /// A review saved before reads were kept still opens with its ticks and notes.
+    #[test]
+    fn progress_saved_before_reads_were_kept_still_loads() {
+        let text = r#"{"reviewed":["src/a.rs#1"],"notes":[],"ticked":[{"path":"src/a.rs","line":12,"text":"-1 is used as an index"}],"walk":"Concerns"}"#;
+
+        let progress: GuidedProgress = serde_json::from_str(text).unwrap();
+
+        assert_eq!(progress.ticked[0].text, "-1 is used as an index");
+        assert_eq!(progress.reads, GuidedReads::default());
     }
 
     #[test]
