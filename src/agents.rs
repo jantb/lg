@@ -91,7 +91,7 @@ pub fn spawn(
     })?;
     let sandboxed = agent.sandboxed();
     let mut spawn = match kind(agent) {
-        SessionKind::Claude => crate::session::claude_spawn(cwd, sandboxed, hooks, None),
+        SessionKind::Claude => crate::session::claude_spawn(cwd, sandboxed, None, None),
         SessionKind::Codex => crate::session::codex_spawn(cwd, sandboxed, None),
         SessionKind::Pi => crate::session::pi_spawn(cwd, sandboxed, None),
         SessionKind::Terminal => crate::session::shell_spawn(cwd),
@@ -109,6 +109,13 @@ pub fn spawn(
     }
     if agent.confinement == Confinement::Direct {
         spawn.args.clear();
+    }
+    // Added after the clearing above: "no sandbox" drops the permission flags,
+    // not the channel the session reports its activity through.
+    if let Some(settings) = hooks {
+        spawn
+            .args
+            .extend(crate::session::hook_settings_args(settings));
     }
     spawn.args.extend(agent.args.clone());
     if !agent.model.is_empty() && agent.adapter != Adapter::Terminal {

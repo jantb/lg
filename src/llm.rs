@@ -43,9 +43,8 @@ pub use prompt::{
     build_guided_chat_file_read, build_guided_chat_prompt, build_guided_chat_redo,
     build_guided_question_check_prompt, build_threads_chat_next, build_threads_chat_prompt,
 };
-use reply::{finalize, finalize_conflict_hunk, finalize_review_chat, parse_conventions};
+use reply::parse_conventions;
 use stream::{ChatMessage, ChatTask, stream_messages, stream_prompt};
-use think::strip_think_tags;
 
 /// The commit message is written without a budget. A message cut off at one
 /// reads as a finished message and gets committed as it stands, and the length
@@ -73,7 +72,7 @@ pub fn stream_commit_message(diff: String, tx: Sender<GenMsg>) {
     stream_prompt(
         build_commit_prompt(&diff, &settings),
         ChatTask::new("lg-commit", COMMIT_NUM_PREDICT, false),
-        |raw| crate::settings::subject_first(&finalize(raw)),
+        reply::COMMIT,
         tx,
     );
 }
@@ -89,7 +88,7 @@ pub fn suggest_repo_conventions(history: String, tx: Sender<crate::state::Settin
         stream_prompt(
             build_conventions_prompt(&history),
             ChatTask::new("lg-conventions", CONVENTIONS_NUM_PREDICT, false),
-            |raw| strip_think_tags(raw).trim().to_string(),
+            reply::CONVENTIONS,
             gen_tx,
         );
     });
@@ -134,7 +133,7 @@ pub fn stream_guided_step(overview: String, file: String, tx: Sender<GenMsg>) {
     stream_messages(
         messages,
         ChatTask::new("lg-guided-step", GUIDED_STEP_NUM_PREDICT, false),
-        finalize_review_chat,
+        reply::REVIEW_CHAT,
         tx,
     );
 }
@@ -144,7 +143,7 @@ pub fn stream_guided_overview(context: String, tx: Sender<GenMsg>) {
     stream_prompt(
         build_guided_overview_prompt(&context, &crate::settings::load()),
         ChatTask::new("lg-guided-overview", GUIDED_OVERVIEW_NUM_PREDICT, false),
-        finalize_review_chat,
+        reply::REVIEW_CHAT,
         tx,
     );
 }
@@ -154,7 +153,7 @@ pub fn stream_guided_final(context: String, tx: Sender<GenMsg>) {
     stream_prompt(
         build_guided_final_prompt(&context, &crate::settings::load()),
         ChatTask::new("lg-guided-final", GUIDED_FINAL_NUM_PREDICT, false),
-        finalize_review_chat,
+        reply::REVIEW_CHAT,
         tx,
     );
 }
@@ -173,7 +172,7 @@ pub fn stream_conflict_hunk(prompt: String, tx: Sender<GenMsg>) {
     stream_prompt(
         prompt,
         ChatTask::new("lg-conflict", CONFLICT_HUNK_NUM_PREDICT, false),
-        finalize_conflict_hunk,
+        reply::CONFLICT_HUNK,
         tx,
     );
 }

@@ -3,6 +3,7 @@
 //! files are best read in, how risky each is, and which are safe to skim.
 //! Every walk mode orders the same files from it.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -41,6 +42,31 @@ pub struct Plan {
     pub watch: Vec<String>,
     /// Lines that fit no part of the shape, kept so nothing said is lost.
     pub rest: Vec<String>,
+}
+
+/// The plan last read, with the answer and the paths it was read from, so
+/// asking again for the same answer and paths does not parse it again.
+#[derive(Default)]
+pub struct PlanCache(RefCell<Option<(String, Vec<String>, Plan)>>);
+
+impl PlanCache {
+    /// [`read`], answered from the last read when it had the same `text` and `paths`.
+    pub fn read(&self, text: &str, paths: &[&str]) -> Plan {
+        let mut last = self.0.borrow_mut();
+        if let Some((read_text, read_paths, plan)) = last.as_ref()
+            && read_text == text
+            && read_paths
+                .iter()
+                .map(String::as_str)
+                .eq(paths.iter().copied())
+        {
+            return plan.clone();
+        }
+        let plan = read(text, paths);
+        let paths = paths.iter().map(|path| path.to_string()).collect();
+        *last = Some((text.to_string(), paths, plan.clone()));
+        plan
+    }
 }
 
 /// The concern a file the model left out of every concern lands in.

@@ -68,7 +68,8 @@ async fn run_spenn_api_client(
         .args(args)
         .current_dir(project_root)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
 
     let child = command
         .spawn()

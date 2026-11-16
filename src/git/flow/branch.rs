@@ -18,16 +18,16 @@ pub fn checkout_branch(name: &str) -> Result<String> {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let combined = format!("{stdout}{stderr}");
     if out.status.success() {
-        pop_stash_with_index_if_needed(stashed)?;
-        Ok(checkout_output_with_stash_notice(combined, stashed))
+        stashed.pop_with_index()?;
+        Ok(checkout_output_with_stash_notice(combined, &stashed))
     } else {
-        restore_stash_after_failed_checkout(stashed)?;
+        restore_stash_after_failed_checkout(&stashed)?;
         Err(anyhow::anyhow!("git checkout failed: {}", combined.trim()))
     }
 }
 
 pub fn checkout_remote_branch(remote_ref: &str) -> Result<String> {
-    let stashed = stash_uncommitted_changes("lg: auto-stash before remote checkout")?;
+    let stashed = AutoStash::take("lg: auto-stash before remote checkout")?;
     let out = git_command(&["switch", "--track", remote_ref])
         .output()
         .with_context(|| format!("failed to spawn git switch --track {remote_ref}"))?;
@@ -35,10 +35,10 @@ pub fn checkout_remote_branch(remote_ref: &str) -> Result<String> {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let combined = format!("{stdout}{stderr}");
     if out.status.success() {
-        pop_stash_with_index_if_needed(stashed)?;
-        Ok(checkout_output_with_stash_notice(combined, stashed))
+        stashed.pop_with_index()?;
+        Ok(checkout_output_with_stash_notice(combined, &stashed))
     } else {
-        restore_stash_after_failed_checkout(stashed)?;
+        restore_stash_after_failed_checkout(&stashed)?;
         Err(anyhow::anyhow!("git switch failed: {}", combined.trim()))
     }
 }
@@ -52,15 +52,39 @@ pub fn flow_reset_branch_from_main_with_progress(
     target_branch: &str,
     progress: &mut impl FnMut(),
 ) -> Result<String> {
-    let configured_base = crate::preferences::base_branch();
-    let configured_remote = crate::preferences::remote();
     ensure_no_conflict_in_progress()?;
+    // Checking the target out carries uncommitted edits along, and the hard
+    // reset there would throw them away.
+    if has_uncommitted_changes()? {
+        anyhow::bail!(
+            "stash or commit local changes before resetting {target_branch}: the reset would discard them"
+        );
+    }
     progress();
     run(&["fetch"])?;
-    if current_branch != target_branch {
-        progress();
-        run(&["checkout", target_branch])?;
+    if current_branch == target_branch {
+        return reset_branch_from_main(target_branch, progress);
     }
+    progress();
+    run(&["checkout", target_branch])?;
+    let reset = reset_branch_from_main(target_branch, progress);
+    progress();
+    let back = run(&["checkout", current_branch]);
+    match (reset, back) {
+        (Ok(summary), Ok(_)) => Ok(summary),
+        (Ok(_), Err(back)) => Err(back),
+        (Err(err), Ok(_)) => Err(err),
+        (Err(err), Err(back)) => Err(anyhow::anyhow!(
+            "{err:#}\n{current_branch} could not be checked out again: {back:#}"
+        )),
+    }
+}
+
+/// Reset the checked-out `target_branch` to the remote main and push it over
+/// its remote branch as last seen.
+fn reset_branch_from_main(target_branch: &str, progress: &mut impl FnMut()) -> Result<String> {
+    let configured_base = crate::preferences::base_branch();
+    let configured_remote = crate::preferences::remote();
     // Where the remote branch is now, read before anything moves: the push
     // below may only overwrite exactly that, so a commit someone pushed to it
     // since the fetch is refused rather than thrown away.
@@ -92,10 +116,6 @@ pub fn flow_reset_branch_from_main_with_progress(
     let lease = format!("--force-with-lease=refs/heads/{remote_branch}:{expected}");
     let refspec = format!("refs/heads/{target_branch}:refs/heads/{remote_branch}");
     run(&["push", &lease, &push_remote, &refspec])?;
-    if current_branch != target_branch {
-        progress();
-        run(&["checkout", current_branch])?;
-    }
     progress();
     delete_safety_ref(&safety_ref)?;
     Ok(format!(
@@ -149,13 +169,17 @@ pub fn flow_create_feature_branch(current_branch: &str, new_branch: &str) -> Res
     if !is_valid_branch_name(new_branch) {
         anyhow::bail!("invalid branch name: {new_branch}");
     }
-    let stashed = stash_uncommitted_changes(AUTO_STASH_NEW_BRANCH)?;
-    create_feature_branch(current_branch, new_branch, stashed).map_err(|err| {
-        restore_auto_stash_after_failure(err, stashed, AUTO_STASH_NEW_BRANCH, current_branch)
+    let stashed = AutoStash::take(AUTO_STASH_NEW_BRANCH)?;
+    create_feature_branch(current_branch, new_branch, &stashed).map_err(|err| {
+        restore_auto_stash_after_failure(err, &stashed, AUTO_STASH_NEW_BRANCH, current_branch)
     })
 }
 
-fn create_feature_branch(current_branch: &str, new_branch: &str, stashed: bool) -> Result<String> {
+fn create_feature_branch(
+    current_branch: &str,
+    new_branch: &str,
+    stashed: &AutoStash,
+) -> Result<String> {
     let configured_base = crate::preferences::base_branch();
     let configured_remote = crate::preferences::remote();
     run(&["fetch"])?;
@@ -166,7 +190,7 @@ fn create_feature_branch(current_branch: &str, new_branch: &str, stashed: bool) 
         format!("{configured_remote}/{configured_base}")
     };
     run(&["checkout", "--no-track", "-b", new_branch, &start_point])?;
-    pop_stash_if_needed(stashed)?;
+    stashed.pop()?;
     let upstream = push_new_feature_branch_upstream(new_branch)?;
     Ok(if let Some(upstream) = upstream {
         format!("created {new_branch} from {start_point}, tracking {upstream}")
@@ -390,16 +414,14 @@ fn apply_patch_to_index(patch: &str) -> Result<()> {
     }
 }
 
-pub(super) fn restore_stash_after_failed_checkout(stashed: bool) -> Result<()> {
-    if stashed {
-        pop_stash_with_index_if_needed(true)
-            .context("checkout failed after auto-stash; stash was not restored")?;
-    }
-    Ok(())
+pub(super) fn restore_stash_after_failed_checkout(stashed: &AutoStash) -> Result<()> {
+    stashed
+        .pop_with_index()
+        .context("checkout failed after auto-stash; stash was not restored")
 }
 
-fn checkout_output_with_stash_notice(mut output: String, stashed: bool) -> String {
-    if stashed {
+fn checkout_output_with_stash_notice(mut output: String, stashed: &AutoStash) -> String {
+    if stashed.is_taken() {
         output.push_str("applied stashed local changes after checkout\n");
     }
     output

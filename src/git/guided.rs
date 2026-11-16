@@ -2,13 +2,13 @@
 //! line numbered on the side it belongs to, so a note can be pinned to a line
 //! that GitHub will accept a comment on.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// What one line of a file's diff is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LineKind {
     Context,
     Added,
@@ -20,7 +20,7 @@ pub enum LineKind {
 }
 
 /// One line of a file's diff, with its number in the old file, the new one, or both.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HunkLine {
     pub kind: LineKind,
     /// The line as the diff has it, sign included.
@@ -61,7 +61,7 @@ impl Side {
 }
 
 /// One step of the walk: every hunk of one file, each opened by its header line.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GuidedFile {
     pub path: String,
     pub lines: Vec<HunkLine>,
@@ -211,7 +211,7 @@ fn hunk_line(line: &super::patch::PatchLine) -> HunkLine {
 }
 
 /// A note written during a guided review, pinned to one line of one file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GuidedNote {
     pub path: String,
     pub line: usize,
@@ -228,7 +228,7 @@ pub struct GuidedNote {
 
 /// A finding of the model's the reviewer ticked off as dealt with: the file,
 /// the line it cited and what it said, which together tell it from any other.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TickedFinding {
     pub path: String,
     pub line: usize,
@@ -237,7 +237,7 @@ pub struct TickedFinding {
 
 /// How a guided review orders its files, all from the same plan the model
 /// reads at the start: switching between them loses nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum WalkMode {
     /// Grouped by what each part of the change is for. A review saved while
     /// the map and triage walks were still there comes back to this.
@@ -274,7 +274,7 @@ impl WalkMode {
 /// What a guided review remembers between visits: which steps were looked at,
 /// the notes written along the way, the findings ticked off, and how the walk
 /// is ordered.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GuidedProgress {
     #[serde(default)]
     pub reviewed: Vec<String>,
@@ -291,6 +291,11 @@ pub struct GuidedProgress {
 /// sees the same notes on the same pull request.
 pub fn progress_path(key: &str) -> Result<PathBuf> {
     let dir = super::common_git_dir().context("locate the git directory")?;
+    Ok(progress_path_in(&dir, key))
+}
+
+/// [`progress_path`] in the common git directory `git_dir`.
+pub fn progress_path_in(git_dir: &Path, key: &str) -> PathBuf {
     let slug: String = key
         .chars()
         .map(|ch| {
@@ -301,23 +306,30 @@ pub fn progress_path(key: &str) -> Result<PathBuf> {
             }
         })
         .collect();
-    Ok(dir.join("lg").join("guided").join(format!("{slug}.json")))
+    git_dir
+        .join("lg")
+        .join("guided")
+        .join(format!("{slug}.json"))
 }
 
 pub fn load_progress(key: &str) -> GuidedProgress {
     progress_path(key)
+        .map(|path| load_progress_at(&path))
+        .unwrap_or_default()
+}
+
+pub fn load_progress_at(path: &Path) -> GuidedProgress {
+    std::fs::read_to_string(path)
         .ok()
-        .and_then(|path| std::fs::read_to_string(path).ok())
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
 }
 
-pub fn save_progress(key: &str, progress: &GuidedProgress) -> Result<()> {
-    let path = progress_path(key)?;
+pub fn save_progress(path: &Path, progress: &GuidedProgress) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     }
-    std::fs::write(&path, serde_json::to_vec_pretty(progress)?)
+    std::fs::write(path, serde_json::to_vec_pretty(progress)?)
         .with_context(|| format!("write {}", path.display()))
 }
 

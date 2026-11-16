@@ -166,3 +166,58 @@ fn discard_checkout_flow_resets_current_branch_from_remote_and_cleans_worktree()
         "local-only commit should not remain on branch: {log_text}"
     );
 }
+
+/// A repository with `origin`, a pushed `develop` holding one commit of its
+/// own, and the user on `feature` off main.
+fn repo_with_develop_and_feature() -> (TempDir, TempDir) {
+    let (dir, bare) = repo_with_origin();
+    git_ok(dir.path(), &["checkout", "-b", "develop"]);
+    fs::write(dir.path().join("develop.txt"), "develop\n").unwrap();
+    stage_in(dir.path(), "develop.txt");
+    commit_in(dir.path(), "develop commit");
+    git_ok(dir.path(), &["push", "-u", "origin", "develop"]);
+    git_ok(dir.path(), &["checkout", "main"]);
+    git_ok(dir.path(), &["checkout", "-b", "feature"]);
+    (dir, bare)
+}
+
+/// Checking the deploy branch out carries uncommitted edits along, and the
+/// hard reset there would then throw them away.
+#[test]
+fn reset_flow_refuses_to_start_over_uncommitted_work() {
+    let (dir, bare) = repo_with_develop_and_feature();
+    fs::write(dir.path().join("notes.txt"), "work in progress\n").unwrap();
+
+    let _cwd = CwdGuard::new(dir.path());
+    let result = lg::git::flow_reset_branch_from_main("feature", "develop");
+
+    assert!(result.is_err(), "the reset is refused: {result:?}");
+    assert_eq!(head_branch(dir.path()), "feature");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("notes.txt")).unwrap(),
+        "work in progress\n"
+    );
+    let remote_log = stdout_of(bare.path(), &["log", "--oneline", "develop"]);
+    assert!(remote_log.contains("develop commit"), "{remote_log}");
+}
+
+#[test]
+fn reset_flow_that_fails_on_the_deploy_branch_returns_to_the_branch_it_started_on() {
+    let (dir, _bare) = repo_with_develop_and_feature();
+    git_ok(
+        dir.path(),
+        &[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "/nonexistent/remote",
+        ],
+    );
+
+    let _cwd = CwdGuard::new(dir.path());
+    let result = lg::git::flow_reset_branch_from_main("feature", "develop");
+
+    assert!(result.is_err(), "the push fails: {result:?}");
+    assert_eq!(head_branch(dir.path()), "feature");
+}

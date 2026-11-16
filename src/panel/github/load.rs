@@ -157,8 +157,16 @@ pub fn poll(state: &mut AppState) {
                 if info.is_some() {
                     gh.repo = info;
                 }
+                let selected = gh.prs.get(gh.pr_idx).map(|pr| pr.number);
                 gh.prs = prs;
-                gh.pr_idx = gh.pr_idx.min(gh.prs.len().saturating_sub(1));
+                let still_listed =
+                    selected.and_then(|number| gh.prs.iter().position(|pr| pr.number == number));
+                gh.pr_idx = still_listed.unwrap_or(gh.pr_idx.min(gh.prs.len().saturating_sub(1)));
+                // The close being confirmed was asked about the selected pull
+                // request; with that one gone, the selection is another one.
+                if still_listed.is_none() && gh.mode == Mode::ConfirmClose {
+                    gh.mode = Mode::Browse;
+                }
                 gh.prs_error = None;
                 put_mine_first(gh);
                 threads::load_counts(gh);
@@ -175,6 +183,8 @@ pub fn poll(state: &mut AppState) {
             Ok(repos) => {
                 gh.repos = repos;
                 gh.repos_error = None;
+                let visible = visible_repos(gh).len();
+                gh.repo_idx = gh.repo_idx.min(visible.saturating_sub(1));
             }
             Err(err) => gh.repos_error = Some(err),
         }
@@ -191,8 +201,6 @@ pub fn poll(state: &mut AppState) {
         }
         None => {}
     }
-    let visible = visible_repos(&state.github).len();
-    state.github.repo_idx = state.github.repo_idx.min(visible.saturating_sub(1));
     if create && state.github_view() && state.github.mode == Mode::Browse {
         start_create(state);
     }

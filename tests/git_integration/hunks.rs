@@ -118,3 +118,31 @@ fn staging_the_hunk_of_an_untracked_file_adds_the_file() {
     let staged = stdout_of(dir.path(), &["diff", "--cached", "--name-only"]);
     assert_eq!(staged.trim(), "fresh.txt");
 }
+
+/// Diff settings the user chose for their own terminal: the pane still has
+/// to read hunks it can stage.
+#[test]
+fn hunks_stage_whatever_the_users_diff_settings() {
+    use lg::git::hunk::{HunkOp, HunkSide, apply_hunk};
+    let dir = thirty_lines_repo();
+    git_ok(dir.path(), &["config", "diff.mnemonicPrefix", "true"]);
+    git_ok(dir.path(), &["config", "color.ui", "always"]);
+    edit_two_places(dir.path());
+    fs::write(dir.path().join("fresh.txt"), "new\n").unwrap();
+
+    let text = lg::git::with_repo(dir.path(), lg::git::all_diffs).expect("all diffs");
+    let worktree = side_hunks(&lg::git::hunk::shown_hunks(&text, true), HunkSide::Worktree);
+    let notes: Vec<_> = worktree.iter().filter(|h| h.path == "notes.txt").collect();
+    let fresh: Vec<_> = worktree.iter().filter(|h| h.path == "fresh.txt").collect();
+    assert!(!notes.is_empty() && !fresh.is_empty(), "{text}");
+    lg::git::with_repo(dir.path(), || apply_hunk(HunkOp::Stage, notes[0])).unwrap();
+    lg::git::with_repo(dir.path(), || apply_hunk(HunkOp::Stage, fresh[0])).unwrap();
+
+    let staged = stdout_of(dir.path(), &["diff", "--cached", "--name-only"]);
+    assert!(staged.contains("notes.txt"), "{staged}");
+    assert!(staged.contains("fresh.txt"), "{staged}");
+    // What a commit message is written from is plain text too.
+    let text = lg::git::with_repo(dir.path(), lg::git::staged_diff).expect("staged diff");
+    assert!(text.contains("+++ b/notes.txt\n"), "{text}");
+    assert!(!text.contains('\x1b'), "{text}");
+}

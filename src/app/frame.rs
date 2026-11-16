@@ -85,6 +85,10 @@ pub(super) struct FrameClock {
     pending: bool,
     /// When the session on screen last wrote or was typed into.
     shown_live_at: Option<Instant>,
+    /// The sessions' activity as last looked at, and as the last frame drew
+    /// it.
+    activity_seen: u64,
+    activity_drawn: u64,
 }
 
 impl FrameClock {
@@ -96,6 +100,16 @@ impl FrameClock {
     /// Something worth drawing changed on its own.
     pub(super) fn changed(&mut self) {
         self.pending = true;
+    }
+
+    /// The sessions' activity as of now. A session can fall quiet while the
+    /// loop waits for input, so it is held against what the last frame drew
+    /// rather than against the start of this pass.
+    pub(super) fn sessions_activity(&mut self, signature: u64) {
+        self.activity_seen = signature;
+        if signature != self.activity_drawn {
+            self.pending = true;
+        }
     }
 
     /// The session on screen wrote something, or was typed into.
@@ -125,6 +139,7 @@ impl FrameClock {
         self.last_draw = Some(now);
         self.urgent = false;
         self.pending = false;
+        self.activity_drawn = self.activity_seen;
     }
 
     /// How long to wait for input at `now`: until the next frame is owed or
@@ -253,6 +268,30 @@ mod tests {
         clock.shown_live(now);
         assert!(clock.is_shown_live(now + Duration::from_millis(10)));
         assert!(!clock.is_shown_live(now + Duration::from_millis(SESSION_LIVE_MS + 1)));
+    }
+
+    #[test]
+    fn a_session_that_fell_quiet_while_the_loop_waited_is_redrawn() {
+        let mut state = AppState::new();
+        state.decorative_animations = false;
+        let pace = pace(&state, false, false);
+        let working = 1;
+        let idle = 2;
+        let now = Instant::now();
+        let mut clock = FrameClock::default();
+        clock.sessions_activity(working);
+        clock.drawn(now);
+
+        clock.sessions_activity(working);
+        assert!(!clock.due(now + Duration::from_secs(1), pace));
+
+        clock.sessions_activity(idle);
+        let later = now + Duration::from_secs(2);
+        assert!(clock.due(later, pace), "the dot still says working");
+        clock.drawn(later);
+
+        clock.sessions_activity(idle);
+        assert!(!clock.due(later + Duration::from_secs(1), pace));
     }
 
     #[test]

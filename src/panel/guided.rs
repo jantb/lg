@@ -15,6 +15,7 @@
 //! where the review stopped.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use crate::git::guided::{GuidedFile, GuidedNote, GuidedProgress, WalkMode};
@@ -42,7 +43,7 @@ mod work;
 pub use chat::{chat_has_keyboard, chat_on_screen, fit_chat};
 pub use draw::render;
 pub use keys::{handle_key, handle_paste};
-pub use load::{open_branch, open_pull_request, reload};
+pub use load::{leave_repository, open_branch, open_pull_request, reload};
 pub use mouse::handle_mouse;
 pub use notes::after_submit;
 pub use poll::poll;
@@ -143,7 +144,7 @@ impl Source {
 }
 
 /// What the model said, or is saying, about one step.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Hash)]
 pub struct Commentary {
     pub text: String,
     pub thinking: bool,
@@ -284,6 +285,8 @@ pub struct Guided {
     pub final_pick: usize,
     /// The pick moved since the last draw, which scrolls the whole change to it.
     pub final_reveal: std::cell::Cell<bool>,
+    final_lines: draw::FinalLinesCache,
+    plan_read: plan::PlanCache,
     pub chat: Option<crate::session::SessionId>,
     pub chat_file: Option<String>,
     /// The chat as wide as it was dragged or sized; until then, three fifths
@@ -297,6 +300,10 @@ pub struct Guided {
     /// what changed after the running one began is not missed.
     reload_owed: bool,
     chat_owed: Vec<(String, ChatNews)>,
+    /// The common git directory of the repository the walk was opened in,
+    /// which every worktree of it shares.
+    repository: Option<PathBuf>,
+    progress_path: Option<PathBuf>,
 }
 
 /// What the chat is told about a file once lg has read all of it.
@@ -308,8 +315,19 @@ pub enum ChatNews {
 }
 
 impl Guided {
+    /// A walk over `source` in the repository git commands point at now.
     pub(crate) fn new(source: Source) -> Self {
-        let progress = crate::git::guided::load_progress(&source.progress_key());
+        Self::in_repository(source, crate::git::common_git_dir().ok())
+    }
+
+    fn in_repository(source: Source, repository: Option<PathBuf>) -> Self {
+        let progress_path = repository
+            .as_deref()
+            .map(|dir| crate::git::guided::progress_path_in(dir, &source.progress_key()));
+        let progress = progress_path
+            .as_deref()
+            .map(crate::git::guided::load_progress_at)
+            .unwrap_or_default();
         Self {
             source,
             steps: Vec::new(),
@@ -337,6 +355,8 @@ impl Guided {
             final_max: std::cell::Cell::new(0),
             final_pick: 0,
             final_reveal: std::cell::Cell::new(false),
+            final_lines: Default::default(),
+            plan_read: Default::default(),
             chat: None,
             chat_file: None,
             chat_width: None,
@@ -344,6 +364,8 @@ impl Guided {
             chat_busy: false,
             reload_owed: false,
             chat_owed: Vec::new(),
+            repository,
+            progress_path,
         }
     }
 
@@ -383,7 +405,7 @@ impl Guided {
             .get(OVERVIEW_KEY)
             .filter(|c| c.done && c.error.is_none())?;
         let paths: Vec<&str> = self.steps.iter().map(|step| step.path.as_str()).collect();
-        Some(plan::read(&commentary.text, &paths))
+        Some(self.plan_read.read(&commentary.text, &paths))
     }
 
     pub fn walk(&self) -> WalkMode {
@@ -559,33 +581,24 @@ impl Guided {
             || !self.check_queue.is_empty()
     }
 
-    /// The notes that belong on `step`: those written on it, and those pinned
-    /// to a line it still shows.
-    pub fn notes_for(&self, step: &GuidedFile) -> Vec<(usize, &GuidedNote)> {
-        let key = step.key();
+    /// The notes on `step`'s file, each where [`note_place`] puts it.
+    pub fn notes_for(&self, step: &GuidedFile) -> Vec<(usize, &GuidedNote, NotePlace)> {
         self.progress
             .notes
             .iter()
             .enumerate()
-            .filter(|(_, note)| {
-                note.path == step.path
-                    && (note.step == key
-                        || step
-                            .lines
-                            .iter()
-                            .any(|line| line.anchor() == Some((note.line, note.side))))
-            })
+            .filter(|(_, note)| note.path == step.path)
+            .map(|(index, note)| (index, note, note_place(step, note)))
             .collect()
     }
 
     /// The note pinned to the line under the cursor, if there is one.
     pub fn note_at_cursor(&self) -> Option<usize> {
         let step = self.step()?;
-        let anchor = step.lines.get(self.cursor)?.anchor()?;
-        self.progress
-            .notes
-            .iter()
-            .position(|note| note.path == step.path && (note.line, note.side) == anchor)
+        self.notes_for(step)
+            .into_iter()
+            .find(|(_, _, place)| *place == NotePlace::At(self.cursor))
+            .map(|(index, _, _)| index)
     }
 
     fn visit_order(&self, mode: DiffViewMode) -> Vec<usize> {
@@ -603,9 +616,42 @@ impl Guided {
     }
 
     fn save(&self) -> Result<(), String> {
-        crate::git::guided::save_progress(&self.source.progress_key(), &self.progress)
+        let path = self
+            .progress_path
+            .as_deref()
+            .ok_or("could not save review progress: no git directory to keep it in")?;
+        crate::git::guided::save_progress(path, &self.progress)
             .map_err(|e| format!("could not save review progress: {e:#}"))
     }
+}
+
+/// Where a note on a file goes in the file's diff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotePlace {
+    /// Under this line of the diff.
+    At(usize),
+    /// No line of the diff is the one it was written on.
+    Moved,
+}
+
+/// A note is pinned to the line it quotes, wherever the line has moved to,
+/// the one nearest where it was written when the text comes up more than
+/// once; with that line gone it is moved, never put on whatever line took
+/// its number.
+pub fn note_place(step: &GuidedFile, note: &GuidedNote) -> NotePlace {
+    let written_on = |line: &crate::git::guided::HunkLine| match line.anchor() {
+        // A note saved before quotes were kept has only its number to go by.
+        Some(anchor) if note.quote.is_empty() => anchor == (note.line, note.side),
+        Some((_, side)) => side == note.side && line.text == note.quote,
+        None => false,
+    };
+    step.lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| written_on(line))
+        .filter_map(|(at, line)| line.anchor().map(|(number, _)| (at, number)))
+        .min_by_key(|(_, number)| number.abs_diff(note.line))
+        .map_or(NotePlace::Moved, |(at, _)| NotePlace::At(at))
 }
 
 /// A finding not yet ticked off, in the file it is about.

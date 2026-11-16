@@ -247,7 +247,7 @@ pub(in crate::panel::guided) fn finding_at(
         if inside(diff, column, row) {
             let lines = final_diff_lines(guided, mode, diff.width);
             let scroll = guided.final_scroll.get().min(guided.final_max.get());
-            return ticked_at(lines.findings, usize::from(scroll + row - diff.y));
+            return ticked_at(lines.findings.clone(), usize::from(scroll + row - diff.y));
         }
         if inside(commentary, column, row) {
             let lines = final_commentary_lines(state, guided, commentary.width);

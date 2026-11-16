@@ -130,10 +130,9 @@ pub(super) fn log_commits(text: &str) -> Vec<(usize, String)> {
         .collect()
 }
 
-/// The rows of the drawn log each of `lines` starts on. The log is wrapped by
-/// the paragraph that draws it, so the lines above count for every row they
-/// wrap onto.
-fn log_rows(state: &AppState, lines: &[usize]) -> Vec<usize> {
+/// The rows of the log drawn `width` wide each of `lines` starts on, with
+/// the lines above counting for every row they wrap onto.
+fn log_rows(state: &AppState, width: u16, lines: &[usize]) -> Vec<usize> {
     let mut rows = Vec::with_capacity(lines.len());
     let mut wanted = lines.iter().peekable();
     let mut row = 0usize;
@@ -144,7 +143,7 @@ fn log_rows(state: &AppState, lines: &[usize]) -> Vec<usize> {
         if wanted.peek().is_none() {
             break;
         }
-        row += super::wrapped_line_count([text], state.diff_viewport_width);
+        row += super::log_line_rows(text, width).len();
     }
     rows
 }
@@ -156,7 +155,7 @@ fn anchor_rows(state: &AppState) -> Vec<usize> {
             .into_iter()
             .map(|(line, _)| line)
             .collect();
-        log_rows(state, &lines)
+        log_rows(state, state.diff_viewport_width, &lines)
     } else {
         hunk_rows(state, state.diff_viewport_width)
     }
@@ -263,10 +262,16 @@ pub(super) fn cursor_row(state: &AppState, width: u16) -> Option<usize> {
     hunk_rows(state, width).get(at).copied()
 }
 
-/// The line of the branch log to draw the cursor on.
-pub(super) fn cursor_log_line(state: &AppState) -> Option<usize> {
+/// The rows of the branch log drawn `width` wide to draw the cursor on: those
+/// its commit's line wraps onto.
+pub(super) fn cursor_log_rows(state: &AppState, width: u16) -> Option<std::ops::Range<usize>> {
     let at = current_anchor(state)?;
-    log_commits(&state.diff_text).get(at).map(|(line, _)| *line)
+    let line = log_commits(&state.diff_text)
+        .get(at)
+        .map(|(line, _)| *line)?;
+    let start = *log_rows(state, width, &[line]).first()?;
+    let text = state.diff_text.lines().nth(line)?;
+    Some(start..start + super::log_line_rows(text, width).len())
 }
 
 /// The pane's title addition: which hunk of how many the cursor is on.

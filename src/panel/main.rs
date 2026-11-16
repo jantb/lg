@@ -1,10 +1,6 @@
 use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{
-    Frame,
-    layout::Rect,
-    widgets::{Paragraph, Wrap},
-};
+use ratatui::{Frame, layout::Rect, widgets::Paragraph};
 
 use crate::{
     config::DIFF_PAGE,
@@ -108,40 +104,33 @@ fn render_main_content(state: &AppState, area: Rect, frame: &mut Frame, focused:
     let max_offset = max_scroll_offset(state);
     let offset = state.diff_offset.min(max_offset);
 
-    let para = if matches!(state.diff_source, DiffSource::Branch(_)) {
-        // The log is wrapped by the paragraph, so its rows are whole lines; the
-        // ones above the window still count towards where it starts.
-        let mut lines = with_diff_rows(state, viewport_width, <[_]>::to_vec);
-        if focused
-            && let Some(line) = hunks::cursor_log_line(state)
-            && let Some(row) = lines.get_mut(line)
-        {
-            mark_cursor(row);
-        }
-        Paragraph::new(lines).scroll((offset, 0))
+    // The rows come pre-wrapped to the pane, one row per screen line, so the
+    // window on screen is a slice of them.
+    let mut rows = visible_diff_rows(
+        state,
+        viewport_width,
+        offset as usize,
+        area.height.saturating_sub(2) as usize,
+    );
+    let cursor_rows = if !focused {
+        None
+    } else if hunks::log_shown(state) {
+        hunks::cursor_log_rows(state, viewport_width)
+    } else if hunks::hunks_shown(state) {
+        hunks::cursor_row(state, viewport_width).map(|row| row..row + 1)
     } else {
-        // Diff rows come pre-wrapped to the pane, one row per screen line, so
-        // the window on screen is a slice of them.
-        let mut rows = visible_diff_rows(
-            state,
-            viewport_width,
-            offset as usize,
-            area.height.saturating_sub(2) as usize,
-        );
-        if focused
-            && hunks::hunks_shown(state)
-            && let Some(row) = hunks::cursor_row(state, viewport_width)
-            && let Some(row) = row
-                .checked_sub(offset as usize)
-                .and_then(|at| rows.get_mut(at))
+        None
+    };
+    for row in cursor_rows.into_iter().flatten() {
+        if let Some(row) = row
+            .checked_sub(offset as usize)
+            .and_then(|at| rows.get_mut(at))
         {
             mark_cursor(row);
         }
-        Paragraph::new(rows)
-    };
-    let para = para.block(block).wrap(Wrap { trim: false });
+    }
 
-    frame.render_widget(para, area);
+    frame.render_widget(Paragraph::new(rows).block(block), area);
 }
 
 /// Draw the hunk or commit cursor on its row.
@@ -293,8 +282,8 @@ fn visible_diff_rows(
     })
 }
 
-/// Hand `f` the main pane's highlighted rows at `width`: a diff wrapped to the
-/// pane one row per screen line, or the branch log a line per row. The whole
+/// Hand `f` the main pane's highlighted rows at `width`, a diff or the branch
+/// log wrapped to the pane one row per screen line. The whole
 /// text is highlighted only when it, the width or the view has changed since
 /// it last was — the rows on screen and the count that bounds scrolling both
 /// come from the one highlighting pass.
@@ -308,8 +297,7 @@ fn with_diff_rows<R>(
     let key = (
         crate::state::DiffRowCountKey {
             text_version: state.diff_text_version,
-            // The log is not wrapped here, so its rows do not depend on width.
-            viewport_width: if log_view { 0 } else { width },
+            viewport_width: width,
             view_mode: if side_by_side {
                 DiffViewMode::SideBySide
             } else {
@@ -325,7 +313,7 @@ fn with_diff_rows<R>(
         let rows = if log_view {
             log_render_lines(&state.diff_text)
                 .into_iter()
-                .map(|line| owned_line(ui::highlight_log_line(line)))
+                .flat_map(|line| log_line_rows(line, width))
                 .collect()
         } else if side_by_side {
             ui::highlight_side_by_side_diff_text(&state.diff_text, width)
@@ -340,16 +328,9 @@ fn with_diff_rows<R>(
         .unwrap_or_default())
 }
 
-fn owned_line(line: ratatui::text::Line<'_>) -> ratatui::text::Line<'static> {
-    ratatui::text::Line {
-        spans: line
-            .spans
-            .into_iter()
-            .map(|span| ratatui::text::Span::styled(span.content.into_owned(), span.style))
-            .collect(),
-        style: line.style,
-        alignment: line.alignment,
-    }
+/// The rows one line of the branch log takes in a pane `width` wide.
+fn log_line_rows(line: &str, width: u16) -> Vec<ratatui::text::Line<'static>> {
+    ui::word_wrap(ui::highlight_log_line(line), width as usize)
 }
 
 pub fn max_scroll_offset(state: &AppState) -> u16 {
@@ -383,12 +364,6 @@ pub fn rendered_line_count(state: &AppState) -> usize {
 }
 
 fn count_rendered_lines(state: &AppState) -> usize {
-    if matches!(state.diff_source, DiffSource::Branch(_)) {
-        return wrapped_line_count(
-            log_render_lines(&state.diff_text),
-            state.diff_viewport_width,
-        );
-    }
     // The rows the pane draws, counted: highlighting them once serves both.
     with_diff_rows(state, state.diff_viewport_width, <[_]>::len)
 }
@@ -399,17 +374,6 @@ fn side_by_side_diff_enabled(state: &AppState) -> bool {
 
 fn diff_view_toggle_available(state: &AppState) -> bool {
     !matches!(state.diff_source, DiffSource::Branch(_))
-}
-
-fn wrapped_line_count<'a>(lines: impl IntoIterator<Item = &'a str>, viewport_width: u16) -> usize {
-    let lines = lines.into_iter();
-    if viewport_width == 0 {
-        return lines.count();
-    }
-    let width = viewport_width.max(1) as usize;
-    lines
-        .map(|line| line.chars().count().max(1).div_ceil(width))
-        .sum()
 }
 
 fn log_render_lines(text: &str) -> Vec<&str> {
@@ -424,8 +388,14 @@ fn log_render_lines(text: &str) -> Vec<&str> {
 fn selected_diff_open_path(state: &AppState) -> Option<String> {
     match &state.diff_source {
         DiffSource::File(path) => Some(path.clone()),
+        // The hunk cursor is kept on screen, so its file is the one in view.
         DiffSource::All | DiffSource::Folder(_) | DiffSource::Commit(_) => {
-            diff_path_at_offset(&state.diff_text, state.diff_offset)
+            match hunks::current(state) {
+                Some((_, shown)) => {
+                    crate::language::is_source_path(&shown.path).then_some(shown.path)
+                }
+                None => diff_path_at_offset(&state.diff_text, state.diff_offset),
+            }
         }
         DiffSource::None | DiffSource::Branch(_) => None,
     }

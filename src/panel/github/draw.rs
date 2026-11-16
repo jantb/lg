@@ -11,7 +11,7 @@ use crate::panel::keys;
 use crate::state::{AppState, SPINNER_FRAMES};
 use crate::ui::{self, palette};
 
-use super::lookup::selected_pr;
+use super::lookup::{selected_pr, visible_repos};
 use super::{Compose, Mode, Tab};
 use areas::{columns, thread_columns, too_small};
 use forms::{draw_create, draw_merge};
@@ -82,8 +82,9 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
         (_, Tab::Repositories) => {
             let (panes, gaps) = ui::modal_columns(frame, rows[1], columns(Tab::Repositories));
             dividers.extend(gaps);
-            draw_repo_list(state, panes[0], frame);
-            draw_repo_detail(state, panes[1], frame);
+            let visible = visible_repos(&state.github);
+            draw_repo_list(state, &visible, panes[0], frame);
+            draw_repo_detail(state, &visible, panes[1], frame);
         }
     }
     draw_bottom(state, rows[2], frame);
@@ -123,8 +124,7 @@ pub(super) fn truncate(text: &str, width: usize) -> String {
 fn draw_bottom(state: &AppState, area: Rect, frame: &mut Frame) {
     let hints = |section: &str| ui::key_hints(&keys::footer_pairs(section));
     let line = match (&state.github.mode, state.github.tab) {
-        (Mode::Compose { kind, text }, _) => {
-            let number = selected_pr(state).map(|pr| pr.number).unwrap_or(0);
+        (Mode::Compose { kind, number, text }, _) => {
             let prompt = format!("{} #{number}: ", kind.label());
             let keys = keys::footer_pairs("GitHub review text")
                 .iter()

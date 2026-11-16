@@ -2,6 +2,7 @@
 //! model's commentary and answers, and Claude's fixes. Each answers on a
 //! channel of its own, which [`super::poll::poll`] reads.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -145,25 +146,35 @@ where
             contexts.into_iter().enumerate().collect::<Vec<_>>(),
         ));
         let ask = Arc::new(ask);
+        // Whoever asked is gone once a send to them fails: the walk moved on.
+        let listening = Arc::new(AtomicBool::new(true));
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         for _ in 0..at_once.clamp(1, count) {
-            let (queue, ask, done_tx, tx) =
-                (queue.clone(), ask.clone(), done_tx.clone(), tx.clone());
+            let (queue, ask, done_tx, tx, listening) = (
+                queue.clone(),
+                ask.clone(),
+                done_tx.clone(),
+                tx.clone(),
+                listening.clone(),
+            );
             crate::git::spawn_pinned(move || {
-                loop {
+                while listening.load(Ordering::SeqCst) {
                     let next = queue.lock().ok().and_then(|mut queue| queue.pop());
                     let Some((at, context)) = next else {
                         break;
                     };
-                    let _ = done_tx.send((at, answer_of(&*ask, context, &tx)));
+                    let answer = answer_of(&*ask, context, &tx, &listening);
+                    let _ = done_tx.send((at, answer));
                 }
             });
         }
         drop(done_tx);
         let mut answers: Vec<Option<Result<(String, GenStats), String>>> = vec![None; count];
         for (at, answer) in done_rx {
-            if let Ok((text, _)) = &answer {
-                let _ = tx.send(GenMsg::Output(format!("{text}\n")));
+            if let Ok((text, _)) = &answer
+                && tx.send(GenMsg::Output(format!("{text}\n"))).is_err()
+            {
+                listening.store(false, Ordering::SeqCst);
             }
             answers[at] = Some(answer);
         }
@@ -208,7 +219,12 @@ where
 }
 
 /// What one part's read came to, its thinking passed on to `tx` meanwhile.
-fn answer_of<F>(ask: &F, context: String, tx: &Sender<GenMsg>) -> Result<(String, GenStats), String>
+fn answer_of<F>(
+    ask: &F,
+    context: String,
+    tx: &Sender<GenMsg>,
+    listening: &AtomicBool,
+) -> Result<(String, GenStats), String>
 where
     F: Fn(String, Sender<GenMsg>),
 {
@@ -218,7 +234,9 @@ where
     for message in part_rx {
         match message {
             GenMsg::Thinking(_) => {
-                let _ = tx.send(GenMsg::Thinking(String::new()));
+                if tx.send(GenMsg::Thinking(String::new())).is_err() {
+                    listening.store(false, Ordering::SeqCst);
+                }
             }
             GenMsg::Done { text, stats } => answer = Ok((text, stats)),
             GenMsg::Error(message) => answer = Err(message),
@@ -331,6 +349,41 @@ mod tests {
         }));
 
         assert!(read.unwrap().contains("Part of the module is fine."));
+    }
+
+    /// A read nobody waits for any more, the walk having moved on, asks the
+    /// model for none of the parts it has not started.
+    #[test]
+    fn a_read_in_parts_nobody_is_waiting_for_asks_for_no_more_parts() {
+        use std::sync::atomic::AtomicUsize;
+        let asked = Arc::new(AtomicUsize::new(0));
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let go = Mutex::new(go_rx);
+        let counted = asked.clone();
+        let contexts = (0..4).map(|part| part.to_string()).collect();
+        let rx = ask_in_parts(contexts, 1, move |_, tx| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let _ = go.lock().unwrap().recv();
+            let _ = tx.send(GenMsg::Thinking(String::new()));
+            let _ = tx.send(GenMsg::Done {
+                text: "Verdict: ok".to_string(),
+                stats: GenStats::default(),
+            });
+        });
+        while asked.load(Ordering::SeqCst) == 0 {
+            std::thread::yield_now();
+        }
+
+        drop(rx);
+        for _ in 0..4 {
+            let _ = go_tx.send(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        assert!(
+            asked.load(Ordering::SeqCst) < 4,
+            "every part was still asked"
+        );
     }
 
     #[test]

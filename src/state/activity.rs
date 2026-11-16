@@ -21,6 +21,13 @@ impl StatusMsg {
     }
 }
 
+fn read_history(path: &std::path::Path) -> Vec<StatusMsg> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|data| serde_json::from_slice::<Vec<StatusMsg>>(&data).ok())
+        .unwrap_or_default()
+}
+
 impl AppState {
     /// Read the animation clock. Called once per frame; the clock follows wall
     /// time rather than counting frames, which is what keeps a spinner at one
@@ -441,18 +448,36 @@ impl AppState {
     }
 
     pub fn enable_history(&mut self) {
+        self.save_history();
         self.history_file = crate::preferences::scope_path(crate::preferences::Scope::Repository)
             .ok()
             .map(|p| p.with_file_name("activity.json"));
         if let Some(path) = &self.history_file {
-            self.status_history = std::fs::read(path)
-                .ok()
-                .and_then(|data| serde_json::from_slice::<Vec<StatusMsg>>(&data).ok())
-                .unwrap_or_default();
+            self.status_history = read_history(path);
             if self.status_history.len() > 500 {
                 self.status_history.drain(..self.status_history.len() - 500);
             }
         }
+    }
+
+    /// Write the status history where the next start reads it from. Not
+    /// synced to disk: it is an activity log, and a message lost to a crash
+    /// costs nothing.
+    pub fn save_history(&self) {
+        let Some(path) = &self.history_file else {
+            return;
+        };
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        let Ok(data) = serde_json::to_vec(&self.status_history) else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(parent).and_then(|()| {
+            let mut file = tempfile::NamedTempFile::new_in(parent)?;
+            std::io::Write::write_all(&mut file, &data)?;
+            file.persist(path).map(|_| ()).map_err(|err| err.error)
+        });
     }
 
     /// Report a commit message the model could not write.
@@ -488,11 +513,6 @@ impl AppState {
         self.status_history.push(status.clone());
         if status.is_error {
             self.last_error = Some(status.clone());
-        }
-        if let Some(path) = &self.history_file
-            && let Ok(data) = serde_json::to_vec(&self.status_history)
-        {
-            let _ = crate::preferences::atomic_write(path, &data);
         }
         self.status = Some(status);
     }
@@ -676,5 +696,42 @@ mod tests {
             (state.animation_ms / crate::config::ANIMATION_STEP_MS) as usize,
             "the two readings of the clock must agree"
         );
+    }
+
+    fn history_in(dir: &std::path::Path) -> AppState {
+        let mut state = AppState::new();
+        state.history_file = Some(dir.join("activity.json"));
+        state
+    }
+
+    fn texts(history: &[StatusMsg]) -> Vec<&str> {
+        history.iter().map(|status| status.text.as_str()).collect()
+    }
+
+    #[test]
+    fn a_status_message_waits_for_the_history_to_be_saved_before_touching_the_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = history_in(dir.path());
+
+        state.set_status("one", false);
+        state.set_status("two", true);
+
+        assert!(!dir.path().join("activity.json").exists());
+        assert_eq!(texts(&state.status_history), ["one", "two"]);
+    }
+
+    #[test]
+    fn a_saved_history_is_read_back_at_the_next_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = history_in(dir.path());
+        state.set_status("one", false);
+        state.set_status("two", true);
+
+        state.save_history();
+
+        let path = dir.path().join("activity.json");
+        let read = read_history(&path);
+        assert_eq!(texts(&read), ["one", "two"]);
+        assert!(read[1].is_error);
     }
 }

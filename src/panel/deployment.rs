@@ -6,7 +6,7 @@
 //! each of them is. The picture on the left carries the first two — a marker
 //! walks the route a promotion would take — and the pane on the right spells
 //! out the third for whichever environment is selected.
-use crate::state::{AppState, Modal, PendingAction};
+use crate::state::{AppState, BranchView, Modal, PendingAction};
 use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
@@ -81,17 +81,15 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         KeyCode::Home | KeyCode::Char('g') if choosing => select(state, 0, count),
         KeyCode::End | KeyCode::Char('G') if choosing => select(state, usize::MAX, count),
         KeyCode::Char('a') => {
-            let selected = state
-                .branches
-                .get(state.branches_list.idx)
-                .map(|b| b.name.clone())
-                .or_else(|| state.branch.clone());
-            if let Some(branch) = selected {
+            if let Some((remote, branch)) = branch_to_assign(state) {
                 let index = state.environment_view.selected;
                 super::settings::open(state, super::settings::Category::Branches);
-                if let Some(e) = state.settings_hub.draft["environments"].get_mut(index) {
-                    e["branch"] = branch.into();
-                }
+                super::settings::assign_environment_branch(
+                    &mut state.settings_hub,
+                    index,
+                    remote.as_deref(),
+                    &branch,
+                );
                 state.settings_hub.notice =
                     "Assignment is staged. Ctrl-S saves the mapping without moving any branch."
                         .into();
@@ -101,6 +99,21 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// The branch selected in the branch list, as the remote it lives on when
+/// the remote view shows it and the name an environment deploys; the branch
+/// checked out when nothing is selected there.
+fn branch_to_assign(state: &AppState) -> Option<(Option<String>, String)> {
+    match state.selected_branch_ref() {
+        Some(name) if state.branch_view == BranchView::Remote => state
+            .remote_branches
+            .iter()
+            .find(|b| b.name == name)
+            .map(|b| (Some(b.remote.clone()), b.local_name.clone())),
+        Some(name) => Some((None, name.to_string())),
+        None => state.branch.clone().map(|branch| (None, branch)),
+    }
 }
 
 /// A click on a stage selects its environment, a second click on the selected

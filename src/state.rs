@@ -236,6 +236,9 @@ pub struct AppState {
     /// A refresh asked for while one was running, and how much it has to read.
     pub refresh_pending: Option<RefreshScope>,
     pub refresh_pending_diff: bool,
+    /// The files the pending refresh is for, when it reads only files and
+    /// every request for it said which. Empty: the whole status is read.
+    pub refresh_pending_changed: Vec<std::path::PathBuf>,
     pub release_status_job: Option<ReleaseStatusJob>,
     pub nested_detail_job: Option<NestedDetailJob>,
     pub settings_suggest_job: Option<SettingsSuggestJob>,
@@ -417,6 +420,7 @@ impl AppState {
             refresh_job: None,
             refresh_pending: None,
             refresh_pending_diff: false,
+            refresh_pending_changed: Vec::new(),
             release_status_job: None,
             nested_detail_job: None,
             settings_suggest_job: None,
@@ -500,5 +504,195 @@ impl AppState {
         let flow_len = usize::from(self.branch_actions_available()) * FlowAction::ALL.len();
         clamp_idx(&mut self.flow_list.idx, flow_len);
         self.clamp_filtered();
+    }
+
+    /// What the lists have selected, by what it is rather than where it is,
+    /// to find again once the lists have been read anew.
+    pub fn selected_items(&self) -> SelectedItems {
+        SelectedItems {
+            file_row: self
+                .tree_rows()
+                .get(self.files_list.idx)
+                .map(|row| row.path.clone()),
+            branch: self
+                .branches
+                .get(self.branches_list.idx)
+                .map(|branch| branch.name.clone()),
+            remote_branch: self
+                .visible_remote_branches()
+                .nth(self.remote_branches_list.idx)
+                .map(|branch| branch.name.clone()),
+            commit: self
+                .commits
+                .get(self.commits_list.idx)
+                .filter(|commit| !commit.is_graph_row())
+                .map(|commit| commit.sha.clone()),
+        }
+    }
+
+    /// Put each list's selection back on the item `before` named, wherever
+    /// the lists now hold it. A selection whose item is gone is clamped, as
+    /// is every other index. Keys act on the selected row without asking, so
+    /// a selection left at its old position would act on whatever moved
+    /// into it.
+    pub fn reselect(&mut self, before: &SelectedItems) {
+        if let Some(idx) = before
+            .file_row
+            .as_ref()
+            .and_then(|path| self.tree_rows().iter().position(|row| row.path == *path))
+        {
+            self.files_list.idx = idx;
+        }
+        if let Some(idx) = before
+            .branch
+            .as_ref()
+            .and_then(|name| self.branches.iter().position(|branch| branch.name == *name))
+        {
+            self.branches_list.idx = idx;
+        }
+        if let Some(idx) = before.remote_branch.as_ref().and_then(|name| {
+            self.visible_remote_branches()
+                .position(|branch| branch.name == *name)
+        }) {
+            self.remote_branches_list.idx = idx;
+        }
+        if let Some(idx) = before.commit.as_ref().and_then(|sha| {
+            self.commits
+                .iter()
+                .position(|commit| !commit.is_graph_row() && commit.sha == *sha)
+        }) {
+            self.commits_list.idx = idx;
+        }
+        self.clamp();
+    }
+}
+
+/// What each list had selected, named by identity: the file tree row's path,
+/// the branch names, the commit's sha.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SelectedItems {
+    file_row: Option<String>,
+    branch: Option<String>,
+    remote_branch: Option<String>,
+    commit: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn branch(name: &str) -> Branch {
+        Branch {
+            name: name.into(),
+            is_current: false,
+            upstream: None,
+            upstream_gone: false,
+            ahead: 0,
+            behind: 0,
+            behind_main: 0,
+            last_commit_unix: None,
+        }
+    }
+
+    fn branches(names: &[&str]) -> Vec<Branch> {
+        names.iter().map(|name| branch(name)).collect()
+    }
+
+    fn files(paths: &[&str]) -> Vec<FileEntry> {
+        paths
+            .iter()
+            .map(|path| FileEntry {
+                path: (*path).into(),
+                x: ' ',
+                y: 'M',
+            })
+            .collect()
+    }
+
+    fn commits(shas: &[&str]) -> Vec<Commit> {
+        shas.iter()
+            .map(|sha| Commit {
+                sha: (*sha).into(),
+                author: String::new(),
+                author_short: String::new(),
+                parents: Vec::new(),
+                is_first_parent: true,
+                subject: String::new(),
+            })
+            .collect()
+    }
+
+    fn selected_file(state: &AppState) -> Option<String> {
+        state
+            .tree_rows()
+            .get(state.files_list.idx)
+            .map(|row| row.path.clone())
+    }
+
+    /// Branches are listed most recent first, so a commit on another branch
+    /// moves it above the one selected. Enter must still check out the
+    /// branch that was highlighted.
+    #[test]
+    fn a_branch_moving_in_the_list_stays_selected() {
+        let mut state = AppState::new();
+        state.focus = Pane::Branches;
+        state.branches = branches(&["a", "b", "c", "feat-b"]);
+        state.branches_list.idx = 3;
+
+        let before = state.selected_items();
+        state.branches = branches(&["feat-b", "a", "b", "c"]);
+        state.reselect(&before);
+
+        assert_eq!(state.selected_branch_ref(), Some("feat-b"));
+    }
+
+    #[test]
+    fn a_file_appearing_above_the_selected_one_leaves_the_selection_on_it() {
+        let mut state = AppState::new();
+        state.files = files(&["b.rs", "c.rs"]);
+        state.files_list.idx = state
+            .tree_rows()
+            .iter()
+            .position(|row| row.path == "c.rs")
+            .unwrap();
+
+        let before = state.selected_items();
+        state.files = files(&["a.rs", "b.rs", "c.rs"]);
+        state.reselect(&before);
+
+        assert_eq!(selected_file(&state).as_deref(), Some("c.rs"));
+    }
+
+    #[test]
+    fn a_new_commit_on_top_leaves_the_selection_on_the_same_commit() {
+        let mut state = AppState::new();
+        state.commits = commits(&["s2", "s1"]);
+        state.commits_list.idx = 1;
+
+        let before = state.selected_items();
+        state.commits = commits(&["s3", "s2", "s1"]);
+        state.reselect(&before);
+
+        assert_eq!(
+            state
+                .commits
+                .get(state.commits_list.idx)
+                .map(|c| c.sha.as_str()),
+            Some("s1")
+        );
+    }
+
+    #[test]
+    fn a_selected_branch_that_is_gone_leaves_a_branch_selected() {
+        let mut state = AppState::new();
+        state.focus = Pane::Branches;
+        state.branches = branches(&["a", "b"]);
+        state.branches_list.idx = 1;
+
+        let before = state.selected_items();
+        state.branches = branches(&["a"]);
+        state.reselect(&before);
+
+        assert_eq!(state.selected_branch_ref(), Some("a"));
     }
 }

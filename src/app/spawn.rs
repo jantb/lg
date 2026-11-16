@@ -14,7 +14,8 @@ pub(super) fn git_job_running(state: &AppState) -> bool {
         || state.workflow_job.is_some()
 }
 
-fn operation_block_reason(state: &AppState, kind: OperationKind) -> Option<&'static str> {
+/// The git job other than a fetch that keeps another from starting, named.
+fn writing_job_running(state: &AppState) -> Option<&'static str> {
     if state.push_job.is_some() {
         Some("push in progress")
     } else if state.checkout_job.is_some() {
@@ -23,6 +24,28 @@ fn operation_block_reason(state: &AppState, kind: OperationKind) -> Option<&'sta
         Some(job.label)
     } else if state.workflow_job.is_some() {
         Some("workflow in progress")
+    } else {
+        None
+    }
+}
+
+/// Whether a running git job keeps `label` from starting; when one does, the
+/// status names it rather than the key doing nothing.
+pub(super) fn blocked_by_git_job(state: &mut AppState, label: &str) -> bool {
+    let reason = writing_job_running(state)
+        .or_else(|| state.fetch_job.is_some().then_some("fetch in progress"));
+    match reason {
+        Some(reason) => {
+            state.set_status(blocked_operation_status(label, reason), true);
+            true
+        }
+        None => false,
+    }
+}
+
+fn operation_block_reason(state: &AppState, kind: OperationKind) -> Option<&'static str> {
+    if let Some(reason) = writing_job_running(state) {
+        Some(reason)
     } else if state.fetch_job.is_some()
         && !matches!(
             kind,
@@ -40,7 +63,7 @@ fn operation_block_reason(state: &AppState, kind: OperationKind) -> Option<&'sta
     }
 }
 
-fn blocked_operation_status(label: &str, reason: &str) -> String {
+pub(super) fn blocked_operation_status(label: &str, reason: &str) -> String {
     format!("{label} blocked: {reason}")
 }
 
@@ -142,18 +165,7 @@ fn load_new_file_text(source: &DiffSource) -> String {
 /// or pull asked for during one waits for it and then starts, rather than
 /// being dropped without a word as it used to be. Anything else is named.
 fn wait_or_block(state: &mut AppState, what: QueuedAfterFetch) -> bool {
-    let blocker = if state.push_job.is_some() {
-        Some("push in progress")
-    } else if state.checkout_job.is_some() {
-        Some("checkout in progress")
-    } else if let Some(job) = &state.operation_job {
-        Some(job.label)
-    } else if state.workflow_job.is_some() {
-        Some("workflow in progress")
-    } else {
-        None
-    };
-    if let Some(reason) = blocker {
+    if let Some(reason) = writing_job_running(state) {
         state.set_status(blocked_operation_status(what.label(), reason), true);
         return true;
     }
@@ -221,8 +233,7 @@ pub(super) fn spawn_push(state: &mut AppState) {
 /// like any push. The lease is the remote commit the confirmation named, so a
 /// remote branch someone pushed to since is refused rather than overwritten.
 pub(super) fn spawn_force_push(state: &mut AppState, plan: crate::git::ForcePushPlan) {
-    if git_job_running(state) {
-        state.set_status("force push blocked: another git job is running", true);
+    if blocked_by_git_job(state, "force push") {
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
@@ -389,7 +400,7 @@ pub(crate) fn load_repo_settings_into_state(state: &mut AppState) {
 }
 
 pub(crate) fn checkout_branch_async(state: &mut AppState, branch: String) {
-    if git_job_running(state) {
+    if blocked_by_git_job(state, "checkout") {
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
@@ -417,7 +428,7 @@ pub(crate) fn checkout_branch_async(state: &mut AppState, branch: String) {
 }
 
 pub(crate) fn checkout_remote_branch_async(state: &mut AppState, remote_ref: String) {
-    if git_job_running(state) {
+    if blocked_by_git_job(state, "checkout") {
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
@@ -450,7 +461,7 @@ pub(crate) fn checkout_nested_branch_async(
     repo_path: String,
     branch: String,
 ) {
-    if git_job_running(state) {
+    if blocked_by_git_job(state, "checkout") {
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
@@ -498,7 +509,7 @@ pub(crate) fn checkout_nested_remote_branch_async(
     repo_path: String,
     remote_ref: String,
 ) {
-    if git_job_running(state) {
+    if blocked_by_git_job(state, "checkout") {
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
@@ -705,6 +716,34 @@ mod tests {
         let status = state.status.as_ref().expect("a status");
         assert!(status.is_error);
         assert_eq!(status.text, "push blocked: checkout in progress");
+    }
+
+    /// The periodic fetch used to swallow Enter on a branch without a word.
+    #[test]
+    fn a_checkout_during_a_fetch_says_what_blocks_it() {
+        let checkouts: [fn(&mut AppState); 4] = [
+            |state| checkout_branch_async(state, "feature/demo".into()),
+            |state| checkout_remote_branch_async(state, "origin/feature/demo".into()),
+            |state| checkout_nested_branch_async(state, "libs/inner".into(), "main".into()),
+            |state| {
+                checkout_nested_remote_branch_async(
+                    state,
+                    "libs/inner".into(),
+                    "origin/main".into(),
+                )
+            },
+        ];
+        for checkout in checkouts {
+            let mut state = AppState::new();
+            state.fetch_job = Some(fetching());
+
+            checkout(&mut state);
+
+            assert!(state.checkout_job.is_none(), "nothing runs under the fetch");
+            let status = state.status.as_ref().expect("a status");
+            assert!(status.is_error);
+            assert!(status.text.contains("fetch"), "{}", status.text);
+        }
     }
 
     #[test]

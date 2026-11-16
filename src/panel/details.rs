@@ -12,7 +12,7 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Wrap},
+    widgets::Paragraph,
 };
 
 use crate::state::{AppState, Modal, PendingAction};
@@ -46,15 +46,14 @@ pub fn popup_area(area: Rect) -> Rect {
     ui::centered(area, width, height)
 }
 
-/// Lines the text takes at the popup's width once wrapped.
-fn content_lines(state: &AppState, area: Rect) -> u16 {
+/// The rows the text takes at the popup's width once wrapped.
+fn content_rows(state: &AppState, area: Rect) -> Vec<Line<'static>> {
     let width = popup_area(area).width.saturating_sub(2).max(1) as usize;
-    let text = details_text(state).unwrap_or_default();
-    let rows: usize = text
+    details_text(state)
+        .unwrap_or_default()
         .lines()
-        .map(|line| line.chars().count().div_ceil(width).max(1))
-        .sum();
-    u16::try_from(rows).unwrap_or(u16::MAX)
+        .flat_map(|line| ui::word_wrap(Line::raw(line), width))
+        .collect()
 }
 
 fn viewport(area: Rect) -> u16 {
@@ -62,7 +61,8 @@ fn viewport(area: Rect) -> u16 {
 }
 
 fn max_offset(state: &AppState, area: Rect) -> u16 {
-    content_lines(state, area).saturating_sub(viewport(area))
+    let rows = u16::try_from(content_rows(state, area).len()).unwrap_or(u16::MAX);
+    rows.saturating_sub(viewport(area))
 }
 
 pub fn scroll(state: &mut AppState, area: Rect, down: bool, amount: u16) {
@@ -91,14 +91,13 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     .alignment(Alignment::Right);
     let block = ui::bordered(title).title_bottom(hint);
     let inner = ui::modal_frame_with(frame, popup, block);
-    let text = details_text(state).unwrap_or_default();
-    let offset = state.details_offset.min(max_offset(state, area));
-    frame.render_widget(
-        Paragraph::new(text.to_string())
-            .wrap(Wrap { trim: false })
-            .scroll((offset, 0)),
-        inner,
-    );
+    let offset = state.details_offset.min(max_offset(state, area)) as usize;
+    let rows: Vec<Line<'static>> = content_rows(state, area)
+        .into_iter()
+        .skip(offset)
+        .take(inner.height as usize)
+        .collect();
+    frame.render_widget(Paragraph::new(rows), inner);
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent, area: Rect) -> Result<()> {
@@ -173,5 +172,33 @@ mod tests {
 
         assert_eq!(state.details_offset, max_offset(&state, area));
         assert!(state.details_offset > 0);
+    }
+
+    #[test]
+    fn the_last_line_of_a_word_wrapped_error_can_be_scrolled_into_view() {
+        let area = Rect::new(0, 0, 80, 12);
+        let mut state = AppState::new();
+        let wrapping = format!("{} {} {}", "a".repeat(40), "b".repeat(40), "c".repeat(40));
+        let mut lines = vec![wrapping; 10];
+        lines.push("the reason it failed".to_string());
+        state.set_status(lines.join("\n"), true);
+        open(&mut state);
+
+        handle_key(&mut state, KeyEvent::from(KeyCode::Char('G')), area).unwrap();
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
+                .unwrap();
+        terminal
+            .draw(|frame| render(&state, frame.area(), frame))
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("the reason it failed"), "{screen}");
     }
 }

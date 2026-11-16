@@ -388,3 +388,25 @@ fn a_minus_diff_file_shows_as_changed_without_its_contents() {
     assert!(diff.contains("secrets.env"), "file should show: {diff}");
     assert!(!diff.contains("hunter2"), "contents must not reach: {diff}");
 }
+
+/// A file moved and then added with `--intent-to-add` is a rename in the
+/// worktree column: its old path is the rename's source, not a file of its
+/// own.
+#[test]
+fn a_worktree_rename_lists_only_the_new_path() {
+    let dir = init_repo();
+    fs::write(dir.path().join("old.txt"), "same content\n").unwrap();
+    stage_in(dir.path(), "old.txt");
+    commit_in(dir.path(), "base");
+    fs::rename(dir.path().join("old.txt"), dir.path().join("new.txt")).unwrap();
+    git_ok(dir.path(), &["add", "--intent-to-add", "new.txt"]);
+
+    let out = git(dir.path(), &["status", "-z", "--porcelain=v1"]);
+    let entries = lg::git::parse_porcelain_xy(&out.stdout);
+    let (unstaged, staged) = lg::git::parse_porcelain(&out.stdout);
+
+    let paths: Vec<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
+    assert_eq!(paths, ["new.txt"], "{entries:?}");
+    assert_eq!(unstaged, ["new.txt"]);
+    assert!(staged.is_empty(), "{staged:?}");
+}

@@ -16,33 +16,11 @@ pub(super) const AUTO_STASH_NEW_BRANCH: &str = "lg flow: auto-stash before branc
 
 const AUTO_STASH_TAGS: [&str; 2] = ["lg flow: auto-stash", "lg: auto-stash"];
 
-pub(super) fn stash_before_branch_change(target: &str, message: &str) -> Result<bool> {
+pub(super) fn stash_before_branch_change(target: &str, message: &str) -> Result<AutoStash> {
     if head_branch().is_ok_and(|current| current == target) {
-        return Ok(false);
+        return Ok(AutoStash::default());
     }
-    stash_uncommitted_changes(message)
-}
-
-pub(super) fn stash_uncommitted_changes(message: &str) -> Result<bool> {
-    let stashed = has_uncommitted_changes()?;
-    if stashed {
-        run(&["stash", "push", "-u", "-m", message])?;
-    }
-    Ok(stashed)
-}
-
-pub(super) fn pop_stash_if_needed(stashed: bool) -> Result<()> {
-    if stashed {
-        run(&["stash", "pop"])?;
-    }
-    Ok(())
-}
-
-pub(super) fn pop_stash_with_index_if_needed(stashed: bool) -> Result<()> {
-    if stashed {
-        run(&["stash", "pop", "--index"])?;
-    }
-    Ok(())
+    AutoStash::take(message)
 }
 
 /// Undo the auto-stash a failed flow took, and say in the error what became
@@ -55,15 +33,12 @@ pub(super) fn pop_stash_with_index_if_needed(stashed: bool) -> Result<()> {
 /// the whole message by then.
 pub(super) fn restore_auto_stash_after_failure(
     err: anyhow::Error,
-    stashed: bool,
+    stash: &AutoStash,
     message: &str,
     branch: &str,
 ) -> anyhow::Error {
-    if !stashed {
-        return err;
-    }
     // The flow may have popped it already and failed on a later step.
-    if !matches!(newest_stash_subject(), Some(subject) if subject.contains(message)) {
+    if !stash.is_still_stashed() {
         return err;
     }
     if merge_or_rebase_in_progress() {
@@ -80,7 +55,7 @@ pub(super) fn restore_auto_stash_after_failure(
             "your uncommitted changes are stashed as \"{message}\" and {branch} could not be checked out again: {back:#}\n{err:#}"
         );
     }
-    match pop_stash_with_index_if_needed(true) {
+    match stash.pop_with_index() {
         Ok(()) => anyhow::anyhow!("{err:#}\nrestored your uncommitted changes"),
         Err(pop) => anyhow::anyhow!(
             "your uncommitted changes are stashed as \"{message}\" and could not be restored: {pop:#}\n{err:#}"
@@ -97,8 +72,8 @@ pub(super) fn restore_auto_stash_after_conflict() -> Option<String> {
     if !AUTO_STASH_TAGS.iter().any(|tag| subject.contains(tag)) {
         return None;
     }
-    match pop_stash_with_index_if_needed(true) {
-        Ok(()) => Some(format!("restored \"{subject}\"")),
+    match run(&["stash", "pop", "--index"]) {
+        Ok(_) => Some(format!("restored \"{subject}\"")),
         Err(err) => Some(format!("could not restore \"{subject}\": {err:#}")),
     }
 }

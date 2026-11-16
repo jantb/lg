@@ -792,3 +792,91 @@ fn the_list_names_each_author_and_the_user_as_you() {
         "{rows:#?}"
     );
 }
+
+/// A list that arrives while the user looks at it, with a new pull request
+/// sorted above the selected one.
+fn refresh_with(state: &mut AppState, prs: Vec<PullRequest>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    state.github.prs_loading = Some(rx);
+    tx.send(Ok((None, prs))).unwrap();
+    poll(state);
+}
+
+#[test]
+fn a_refreshed_list_keeps_the_selection_on_the_same_pull_request() {
+    let mut state = with_prs(vec![pr(11, "a"), pr(12, "b")]);
+    state.github.pr_idx = 1;
+
+    refresh_with(&mut state, vec![pr(13, "c"), pr(11, "a"), pr(12, "b")]);
+
+    assert_eq!(selected_pr(&state).map(|pr| pr.number), Some(12));
+}
+
+#[test]
+fn a_comment_goes_to_the_pull_request_it_was_written_for_when_that_one_leaves_the_list() {
+    let mut state = with_prs(vec![pr(11, "a"), pr(12, "b")]);
+    state.github.pr_idx = 1;
+    handle_key(&mut state, key(KeyCode::Char('c'))).unwrap();
+    type_text(&mut state, "looks good");
+
+    refresh_with(&mut state, vec![pr(11, "a")]);
+    handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+
+    assert_eq!(
+        github_action(&state),
+        Some(GitHubAction::Comment {
+            number: 12,
+            body: "looks good".into()
+        })
+    );
+}
+
+#[test]
+fn an_approval_goes_to_the_pull_request_it_was_started_on_after_a_refresh() {
+    let mut state = with_prs(vec![pr(11, "a"), pr(12, "b")]);
+    state.github.pr_idx = 1;
+    handle_key(&mut state, key(KeyCode::Char('a'))).unwrap();
+
+    refresh_with(&mut state, vec![pr(13, "c"), pr(11, "a"), pr(12, "b")]);
+    handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+
+    assert!(
+        matches!(
+            github_action(&state),
+            Some(GitHubAction::Review { number: 12, .. })
+        ),
+        "{:?}",
+        state.pending_action
+    );
+}
+
+#[test]
+fn a_close_confirmed_after_a_refresh_closes_the_pull_request_it_asked_about() {
+    let mut state = with_prs(vec![pr(11, "a"), pr(12, "b")]);
+    state.github.pr_idx = 1;
+    handle_key(&mut state, key(KeyCode::Char('X'))).unwrap();
+
+    refresh_with(&mut state, vec![pr(13, "c"), pr(11, "a"), pr(12, "b")]);
+    handle_key(&mut state, key(KeyCode::Char('y'))).unwrap();
+
+    assert_eq!(
+        github_action(&state),
+        Some(GitHubAction::Close { number: 12 })
+    );
+}
+
+#[test]
+fn a_close_never_lands_on_another_pull_request_when_the_one_asked_about_is_gone() {
+    let mut state = with_prs(vec![pr(11, "a"), pr(12, "b")]);
+    state.github.pr_idx = 1;
+    handle_key(&mut state, key(KeyCode::Char('X'))).unwrap();
+
+    refresh_with(&mut state, vec![pr(11, "a")]);
+    handle_key(&mut state, key(KeyCode::Char('y'))).unwrap();
+
+    assert!(
+        !matches!(github_action(&state), Some(GitHubAction::Close { number }) if number != 12),
+        "{:?}",
+        state.pending_action
+    );
+}

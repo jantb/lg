@@ -213,13 +213,7 @@ fn is_untracked(path: &str) -> Result<bool> {
 /// plain `a/` and `b/` prefixes `git apply` expects whatever the user's diff
 /// settings are.
 fn current_file_patch(shown: &ShownHunk) -> Result<FilePatch> {
-    let mut args = vec![
-        "diff",
-        "--no-color",
-        "--no-ext-diff",
-        "--src-prefix=a/",
-        "--dst-prefix=b/",
-    ];
+    let mut args = super::diff::PLAIN_DIFF.to_vec();
     if shown.side == HunkSide::Staged {
         args.push("--cached");
     }

@@ -29,10 +29,11 @@ pub(crate) fn build_sbpl(
 
     let request = resolver::RenderRequest::project(&profile, proxy_enabled)
         .with_aliases(project_root_aliases);
+    let sbpl = resolver::render(&request)?;
     // Write active.sb for reference/debugging even though execution no longer reads it.
     // Non-fatal: terrarium mcp may run inside an inherited sandbox where ~/.terrarium/ is not writable.
-    let _ = resolver::write_active(&request, project_root);
-    Ok((resolver::render(&request)?, proxy_enabled))
+    let _ = resolver::write_active(&sbpl, project_root);
+    Ok((sbpl, proxy_enabled))
 }
 
 /// The project's saved profile, or a `none`-preset default when it has none —

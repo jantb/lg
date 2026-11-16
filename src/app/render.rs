@@ -179,11 +179,17 @@ fn draw(frame: &mut Frame, state: &AppState) -> Option<String> {
 
 /// Keep the program's window the same size as the pane it is drawn in. The
 /// resize also makes it repaint, which is how a session that was in the
-/// background comes back looking right.
+/// background comes back looking right. A session that is also the review
+/// chat is sized by the chat, which is drawn over the pane.
 fn resize_focused_session(state: &mut AppState, main: Rect) {
     let Some(id) = state.session_view() else {
         return;
     };
+    if panel::guided::chat_on_screen(state) == Some(id)
+        || panel::github::threads_chat_on_screen(state) == Some(id)
+    {
+        return;
+    }
     let (rows, cols) = crate::session::size_for_pane(main);
     if let Some(session) = state.sessions.get_mut(id) {
         session.resize(rows, cols);
@@ -203,5 +209,89 @@ fn sync_selection_scroll_offsets(state: &mut AppState, rects: &ui::LayoutRects, 
         Modal::Flow => panel::flow::sync_scroll_offset(state, area),
         Modal::Conflict => panel::conflict::sync_scroll_offset(state, area),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use ratatui::backend::TestBackend;
+
+    use super::*;
+    use crate::panel::guided::{Guided, Source};
+
+    fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+        let started = Instant::now();
+        while !done() {
+            assert!(started.elapsed() < Duration::from_secs(10), "{what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The review chat can also be the session the main pane shows, under
+    /// the review. Only the chat is on screen, so only its size counts:
+    /// a program told of a new size on every frame repaints on every frame.
+    #[test]
+    fn a_review_chat_also_shown_in_the_main_pane_is_resized_only_once() {
+        let winches = tempfile::NamedTempFile::new().unwrap();
+        let script = format!(
+            "trap 'echo x >> {}' WINCH; echo ready; while :; do sleep 0.02; done",
+            winches.path().display()
+        );
+        let spawn = crate::term::Spawn {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), script],
+            cwd: std::env::temp_dir(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+        };
+        let spec = crate::session::SessionSpec {
+            label: "review chat".into(),
+            cwd: std::env::temp_dir(),
+            sandboxed: false,
+            kind: crate::session::SessionKind::Claude,
+            prompt: None,
+        };
+        let mut app = HeadlessApp::new(TestBackend::new(120, 40)).unwrap();
+        let state = &mut app.state;
+        let id = state.sessions.start_with(spec, &spawn, (24, 80)).unwrap();
+        wait_for("the chat never started", || {
+            state.sessions.pump();
+            state
+                .sessions
+                .get(id)
+                .is_some_and(|session| session.screen().contents().contains("ready"))
+        });
+        let mut guided = Guided::new(Source::Branch {
+            branch: "render-test-branch".into(),
+            base_ref: "main".into(),
+        });
+        guided.steps = crate::git::guided::parse_files(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n",
+        );
+        guided.chat = Some(id);
+        state.guided = Some(Box::new(guided));
+        state.main_view = crate::state::MainView::Session(id);
+        state.modal = Modal::GuidedReview;
+
+        app.render().unwrap();
+        let winched = || {
+            std::fs::read_to_string(winches.path())
+                .unwrap()
+                .lines()
+                .count()
+        };
+        wait_for("the chat was never told its size", || winched() > 0);
+        std::thread::sleep(Duration::from_millis(200));
+        let after_first_frame = winched();
+        for _ in 0..5 {
+            app.render().unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        let after_more_frames = winched();
+        app.state.sessions.close_all();
+
+        assert_eq!(after_more_frames, after_first_frame);
     }
 }

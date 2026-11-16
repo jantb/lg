@@ -1,6 +1,7 @@
 //! Laying a diff out in two columns with line numbers, and wrapping rows to the pane.
 
 use super::*;
+use crate::ui::wrap::{char_columns, text_columns};
 
 pub(super) const DIFF_ADDED_BG: Color = Color::Rgb(24, 54, 34);
 pub(super) const DIFF_REMOVED_BG: Color = Color::Rgb(60, 28, 38);
@@ -16,6 +17,35 @@ pub(super) const DIFF_NUMBER_GUTTER: usize = SIDE_NUMBER_WIDTH * 2 + 2;
 pub(super) struct DiffLineNumbers {
     pub(super) old_line: u32,
     pub(super) new_line: u32,
+    /// Lines the hunk header says are still to come on each side.
+    old_owed: usize,
+    new_owed: usize,
+}
+
+impl DiffLineNumbers {
+    fn next_old(&mut self) -> u32 {
+        let number = self.old_line;
+        self.old_line = self.old_line.saturating_add(1);
+        self.old_owed = self.old_owed.saturating_sub(1);
+        number
+    }
+
+    fn next_new(&mut self) -> u32 {
+        let number = self.new_line;
+        self.new_line = self.new_line.saturating_add(1);
+        self.new_owed = self.new_owed.saturating_sub(1);
+        number
+    }
+
+    /// What `line` is in the hunk. An empty line is a context line that lost
+    /// its leading space only while the hunk still has lines to come; past
+    /// that it is the gap lg leaves between the staged and unstaged diffs.
+    pub(super) fn content_kind(&self, line: &str) -> Option<DiffContentKind> {
+        if line.is_empty() && (self.old_owed == 0 || self.new_owed == 0) {
+            return None;
+        }
+        diff_content_kind(line)
+    }
 }
 
 /// What happened to a line of a diff.
@@ -65,9 +95,9 @@ impl SideBySideDiffRenderer {
             self.syntax = Some(next);
         }
 
-        if let Some((old_line, new_line)) = parse_hunk_line_numbers(line) {
+        if let Some(numbers) = parse_hunk_line_numbers(line) {
             self.flush_change_run();
-            self.numbers = Some(DiffLineNumbers { old_line, new_line });
+            self.numbers = Some(numbers);
             self.in_hunk = true;
             self.push_full_line(line);
             return;
@@ -80,16 +110,14 @@ impl SideBySideDiffRenderer {
         }
 
         if self.in_hunk
-            && let Some(kind) = diff_content_kind(line)
             && let Some(mut numbers) = self.numbers
+            && let Some(kind) = numbers.content_kind(line)
         {
             match kind {
                 DiffContentKind::Context => {
                     self.flush_change_run();
-                    let old = numbers.old_line;
-                    let new = numbers.new_line;
-                    numbers.old_line = numbers.old_line.saturating_add(1);
-                    numbers.new_line = numbers.new_line.saturating_add(1);
+                    let old = numbers.next_old();
+                    let new = numbers.next_new();
                     let text = line.strip_prefix(' ').unwrap_or(line).to_string();
                     self.lines.extend(render_side_by_side_rows(
                         Some(&SideDiffCell {
@@ -107,8 +135,7 @@ impl SideBySideDiffRenderer {
                     ));
                 }
                 DiffContentKind::Added => {
-                    let number = numbers.new_line;
-                    numbers.new_line = numbers.new_line.saturating_add(1);
+                    let number = numbers.next_new();
                     self.pending_added.push(SideDiffCell {
                         number,
                         text: line.strip_prefix('+').unwrap_or(line).to_string(),
@@ -119,8 +146,7 @@ impl SideBySideDiffRenderer {
                     if !self.pending_added.is_empty() {
                         self.flush_change_run();
                     }
-                    let number = numbers.old_line;
-                    numbers.old_line = numbers.old_line.saturating_add(1);
+                    let number = numbers.next_old();
                     self.pending_removed.push(SideDiffCell {
                         number,
                         text: line.strip_prefix('-').unwrap_or(line).to_string(),
@@ -159,12 +185,14 @@ impl SideBySideDiffRenderer {
     }
 }
 
-pub(super) fn parse_hunk_line_numbers(line: &str) -> Option<(u32, u32)> {
+pub(super) fn parse_hunk_line_numbers(line: &str) -> Option<DiffLineNumbers> {
     let hunk = crate::git::patch::parse_hunk_header(line)?;
-    Some((
-        u32::try_from(hunk.old_start).ok()?,
-        u32::try_from(hunk.new_start).ok()?,
-    ))
+    Some(DiffLineNumbers {
+        old_line: u32::try_from(hunk.old_start).ok()?,
+        new_line: u32::try_from(hunk.new_start).ok()?,
+        old_owed: hunk.old_len,
+        new_owed: hunk.new_len,
+    })
 }
 
 pub(super) fn diff_content_kind(line: &str) -> Option<DiffContentKind> {
@@ -189,10 +217,8 @@ pub(super) fn add_diff_line_numbers<'a>(
 ) -> Line<'a> {
     let (old, new, old_style, new_style) = match kind {
         DiffContentKind::Context => {
-            let old = numbers.old_line;
-            let new = numbers.new_line;
-            numbers.old_line = numbers.old_line.saturating_add(1);
-            numbers.new_line = numbers.new_line.saturating_add(1);
+            let old = numbers.next_old();
+            let new = numbers.next_new();
             (
                 Some(old),
                 Some(new),
@@ -201,8 +227,7 @@ pub(super) fn add_diff_line_numbers<'a>(
             )
         }
         DiffContentKind::Added => {
-            let new = numbers.new_line;
-            numbers.new_line = numbers.new_line.saturating_add(1);
+            let new = numbers.next_new();
             (
                 None,
                 Some(new),
@@ -211,8 +236,7 @@ pub(super) fn add_diff_line_numbers<'a>(
             )
         }
         DiffContentKind::Removed => {
-            let old = numbers.old_line;
-            numbers.old_line = numbers.old_line.saturating_add(1);
+            let old = numbers.next_old();
             (
                 Some(old),
                 None,
@@ -422,7 +446,7 @@ pub(super) fn push_capped_span(
 pub(super) fn spans_width(spans: &[Span<'_>]) -> usize {
     spans
         .iter()
-        .map(|span| span.content.as_ref().chars().count())
+        .map(|span| text_columns(span.content.as_ref()))
         .sum()
 }
 
@@ -471,14 +495,6 @@ pub(super) fn wrap_line(line: Line<'_>, width: usize, gutter: usize) -> Vec<Line
     lines
 }
 
-/// How many rows [`wrap_line`] would produce for a line of `total` columns.
-pub(super) fn wrapped_row_count(total: usize, gutter: usize, width: usize) -> usize {
-    if width == 0 || gutter >= width || total <= width {
-        return 1;
-    }
-    total.saturating_sub(gutter).div_ceil(width - gutter).max(1)
-}
-
 /// Split spans at a column, cutting the span that straddles it in two.
 pub(super) fn split_spans_at(
     spans: Vec<Span<'static>>,
@@ -488,7 +504,7 @@ pub(super) fn split_spans_at(
     let mut tail = Vec::new();
     let mut used = 0usize;
     for span in spans {
-        let len = span.content.chars().count();
+        let len = text_columns(span.content.as_ref());
         if used >= column {
             tail.push(span);
         } else if used + len <= column {
@@ -517,25 +533,22 @@ pub(super) fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Spa
     let mut used = 0usize;
     for span in spans {
         let style = span.style;
-        let mut rest = span.content.into_owned();
-        loop {
-            let len = rest.chars().count();
-            if used + len <= width {
-                if len > 0 {
-                    row.push(Span::styled(rest, style));
-                    used += len;
+        let text = span.content.as_ref();
+        let mut start = 0usize;
+        for (at, ch) in text.char_indices() {
+            let columns = char_columns(ch);
+            if used > 0 && used + columns > width {
+                if at > start {
+                    row.push(Span::styled(text[start..at].to_string(), style));
                 }
-                break;
-            }
-            if used == width {
                 rows.push(std::mem::take(&mut row));
                 used = 0;
-                continue;
+                start = at;
             }
-            let (head, tail) = split_text_at(&rest, width - used);
-            row.push(Span::styled(head, style));
-            used = width;
-            rest = tail;
+            used += columns;
+        }
+        if start < text.len() {
+            row.push(Span::styled(text[start..].to_string(), style));
         }
     }
     rows.push(row);
@@ -543,9 +556,13 @@ pub(super) fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Spa
 }
 
 pub(super) fn split_text_at(text: &str, column: usize) -> (String, String) {
+    let mut used = 0usize;
     let split = text
         .char_indices()
-        .nth(column)
-        .map_or(text.len(), |(idx, _)| idx);
+        .find(|(_, ch)| {
+            used += char_columns(*ch);
+            used > column
+        })
+        .map_or(text.len(), |(at, _)| at);
     (text[..split].to_string(), text[split..].to_string())
 }

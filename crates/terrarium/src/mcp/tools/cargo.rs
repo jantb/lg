@@ -98,6 +98,11 @@ impl CargoTools {
         let mut args = vec!["test"];
         let filter_holder;
         if let Some(filter) = input.filter {
+            if filter.starts_with('-') {
+                return Err(ToolCallError::InvalidParams(
+                    "filter must not start with '-'".to_string(),
+                ));
+            }
             filter_holder = filter;
             args.push(filter_holder.as_str());
         }
@@ -363,5 +368,30 @@ test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s";
 
         assert_eq!(parse_cargo_test_summary(output), (5, 1));
+    }
+
+    #[tokio::test]
+    async fn a_test_filter_that_looks_like_a_flag_is_refused() {
+        let project =
+            std::env::temp_dir().join(format!("cargo_flag_filter_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&project).unwrap();
+        // Unparseable, so an unguarded run fails fast instead of building anything.
+        std::fs::write(project.join("Cargo.toml"), "[").unwrap();
+        let tools = CargoTools {
+            project_root: project.clone(),
+        };
+
+        let result = tools
+            .call(
+                "cargo_test",
+                Some(serde_json::json!({"filter": "--release"})),
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(ToolCallError::InvalidParams(_))),
+            "a filter starting with '-' must not reach cargo as a flag, got: {result:?}"
+        );
+        let _ = std::fs::remove_dir_all(&project);
     }
 }

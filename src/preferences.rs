@@ -13,8 +13,8 @@ pub use cache::{
 pub(crate) use layers::merge;
 pub use layers::{Loaded, Scope, base_dir, default_folder, scope_path};
 pub use save::{
-    atomic_write, clear_fields, import_document, reset_category, reset_folder, save_category,
-    save_fields, save_folder,
+    atomic_write, changed_parts, clear_fields, import_document, reset_category, reset_folder,
+    save_category, save_changes, save_fields, save_folder_changes,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

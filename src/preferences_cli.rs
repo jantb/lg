@@ -56,18 +56,20 @@ pub fn run(args: &[String]) -> Result<()> {
             let mut config = serde_json::to_value(&loaded.config)?;
             let pointer = format!("/{category}/{}", field.replace('.', "/"));
             *config.pointer_mut(&pointer).context("unknown setting")? = value;
+            let path: Vec<&str> = field.split('.').collect();
+            let changes = only_field(&config[category], &path);
             if scope(args)? == Scope::Folder {
                 let i = args
                     .iter()
                     .position(|a| a == "--folder")
                     .context("folder scope needs --folder PATH")?;
-                preferences::save_folder(
+                preferences::save_folder_changes(
                     Path::new(args.get(i + 1).context("missing folder path")?),
                     category,
-                    config[category].clone(),
+                    changes,
                 )?;
             } else {
-                preferences::save_category(scope(args)?, category, config[category].clone())?;
+                preferences::save_changes(scope(args)?, category, changes)?;
             }
             println!("Saved {category}.{field} at {} scope", scope(args)?.label());
         }
@@ -80,6 +82,17 @@ pub fn run(args: &[String]) -> Result<()> {
         ),
     }
     Ok(())
+}
+/// The field at `path` of `category`, nested as it sits there, with nothing
+/// else beside it. A list on the way is taken whole, since a file can only
+/// replace one.
+fn only_field(category: &serde_json::Value, path: &[&str]) -> serde_json::Value {
+    match (category.as_object(), path.split_first()) {
+        (Some(table), Some((key, rest))) => serde_json::json!({
+            *key: only_field(&table[*key], rest)
+        }),
+        _ => category.clone(),
+    }
 }
 fn scope(args: &[String]) -> Result<Scope> {
     match args

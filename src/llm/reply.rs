@@ -4,6 +4,38 @@ use super::think::strip_think_tags;
 
 const REVIEW_CHAT_MAX_CHARS: usize = 12_000;
 
+/// How a task turns a model's finished reply into its result.
+///
+/// A local model may write its reasoning into the reply as `<think>` tags, so
+/// its reply goes through `local`, which takes them out. Claude delivers its
+/// reasoning apart, so its answer goes through `claude` as written, and an
+/// answer that talks about the tags keeps what it says.
+#[derive(Clone, Copy)]
+pub struct Finalizer {
+    pub local: fn(&str) -> String,
+    pub claude: fn(&str) -> String,
+}
+
+pub const COMMIT: Finalizer = Finalizer {
+    local: |raw| crate::settings::subject_first(&finalize(raw)),
+    claude: |answer| crate::settings::subject_first(&finalize_answer(answer)),
+};
+
+pub const CONVENTIONS: Finalizer = Finalizer {
+    local: |raw| strip_think_tags(raw).trim().to_string(),
+    claude: |answer| answer.trim().to_string(),
+};
+
+pub const REVIEW_CHAT: Finalizer = Finalizer {
+    local: finalize_review_chat,
+    claude: review_chat_answer,
+};
+
+pub const CONFLICT_HUNK: Finalizer = Finalizer {
+    local: finalize_conflict_hunk,
+    claude: conflict_hunk_answer,
+};
+
 /// Pulls the reported language and every reported shape out of the reply, in the
 /// order given. A missing or malformed line is skipped, so the caller keeps
 /// whatever it already had.
@@ -35,8 +67,11 @@ pub fn parse_conventions(raw: &str) -> (Option<String>, Vec<String>) {
 }
 
 pub fn finalize(raw: &str) -> String {
-    let cleaned = strip_think_tags(raw);
-    let mut lines: Vec<String> = cleaned
+    finalize_answer(&strip_think_tags(raw))
+}
+
+fn finalize_answer(answer: &str) -> String {
+    let mut lines: Vec<String> = answer
         .trim()
         .trim_matches('"')
         .lines()
@@ -57,7 +92,11 @@ pub fn finalize(raw: &str) -> String {
 }
 
 pub fn finalize_review_chat(raw: &str) -> String {
-    strip_think_tags(raw)
+    review_chat_answer(&strip_think_tags(raw))
+}
+
+fn review_chat_answer(answer: &str) -> String {
+    answer
         .trim()
         .trim_matches('"')
         .lines()
@@ -75,8 +114,11 @@ pub fn finalize_review_chat(raw: &str) -> String {
 /// Indentation inside the block is left exactly as it came, because it is the
 /// answer rather than formatting around it.
 pub fn finalize_conflict_hunk(raw: &str) -> String {
-    let cleaned = strip_think_tags(raw);
-    let mut lines: Vec<&str> = cleaned.lines().collect();
+    conflict_hunk_answer(&strip_think_tags(raw))
+}
+
+fn conflict_hunk_answer(answer: &str) -> String {
+    let mut lines: Vec<&str> = answer.lines().collect();
     while lines.first().is_some_and(|line| line.trim().is_empty()) {
         lines.remove(0);
     }
@@ -138,6 +180,33 @@ mod tests {
     #[test]
     fn a_conflict_resolution_without_a_fence_is_taken_as_written() {
         assert_eq!(finalize_conflict_hunk("CANNOT RESOLVE"), "CANNOT RESOLVE\n");
+    }
+
+    #[test]
+    fn a_claude_review_that_talks_about_think_tags_is_kept_whole() {
+        let answer = "`strip_think_tags` drops text after an unterminated `<think>`, \
+                      so a reply cut off mid-reasoning loses its answer.";
+
+        let shown = (REVIEW_CHAT.claude)(answer);
+
+        assert!(shown.contains("loses its answer"), "{shown}");
+    }
+
+    #[test]
+    fn a_claude_commit_message_that_mentions_think_tags_is_kept_whole() {
+        let answer = "fix(llm): keep answers that mention </think>\n\nClaude sends no inline <think> blocks.";
+
+        let message = (COMMIT.claude)(answer);
+
+        assert!(message.starts_with("fix(llm): keep answers"), "{message}");
+        assert!(message.contains("no inline <think> blocks"), "{message}");
+    }
+
+    #[test]
+    fn a_claude_conflict_resolution_that_mentions_think_tags_is_kept_whole() {
+        let answer = "const OPEN: &str = \"<think>\";\nconst CLOSE: &str = \"</think>\";\n";
+
+        assert_eq!((CONFLICT_HUNK.claude)(answer), answer);
     }
 
     #[test]

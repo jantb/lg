@@ -159,9 +159,8 @@ fn hidden_project_state_rule() -> Rule {
     }
 }
 
-/// Renders a request and writes it to the project's global `active.sb` path.
-pub fn write_active(request: &RenderRequest<'_>, project_root: &Path) -> Result<String> {
-    let content = render(request)?;
+/// Writes rendered SBPL to the project's global `active.sb` path and returns that path.
+pub fn write_active(content: &str, project_root: &Path) -> Result<String> {
     let sb_path = crate::config::project::active_sb_path(project_root);
     if let Some(parent) = sb_path.parent() {
         use std::os::unix::fs::DirBuilderExt;
@@ -170,7 +169,7 @@ pub fn write_active(request: &RenderRequest<'_>, project_root: &Path) -> Result<
             .mode(0o700)
             .create(parent)?;
     }
-    std::fs::write(&sb_path, &content)?;
+    std::fs::write(&sb_path, content)?;
     Ok(sb_path.display().to_string())
 }
 
@@ -276,7 +275,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let _guard = crate::config::global::override_home_for_tests(base.join("home"));
         let profile = ProjectProfile::new("test", Some("none".to_string()));
-        write_active(&RenderRequest::project(&profile, false), &dir).unwrap();
+        let rendered = render(&RenderRequest::project(&profile, false)).unwrap();
+        write_active(&rendered, &dir).unwrap();
         assert!(crate::config::project::active_sb_path(&dir).exists());
         std::fs::remove_dir_all(&base).unwrap();
     }
@@ -288,9 +288,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let _guard = crate::config::global::override_home_for_tests(base.join("home"));
         let profile = ProjectProfile::new("test", Some("none".to_string()));
-        let path = write_active(&RenderRequest::project(&profile, false), &dir).unwrap();
-        let file_content = std::fs::read_to_string(&path).unwrap();
         let rendered = render(&RenderRequest::project(&profile, false)).unwrap();
+        let path = write_active(&rendered, &dir).unwrap();
+        let file_content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(file_content, rendered);
         std::fs::remove_dir_all(&base).unwrap();
     }

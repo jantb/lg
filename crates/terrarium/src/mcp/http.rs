@@ -68,6 +68,13 @@ async fn handle_http_post(
     if !origin_allowed(&headers) {
         return (StatusCode::FORBIDDEN, "forbidden origin").into_response();
     }
+    if !declares_json_body(&headers) {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Content-Type must be application/json",
+        )
+            .into_response();
+    }
 
     let request_protocol = headers
         .get(PROTOCOL_VERSION_HEADER)
@@ -112,6 +119,17 @@ fn json_response(payload: Value, protocol_version: &str) -> Response {
     response
 }
 
+/// A browser can send a cross-origin POST without a CORS preflight only with a
+/// form or `text/plain` body (or none declared), so requiring JSON keeps web
+/// pages from reaching the tools.
+fn declares_json_body(headers: &HeaderMap) -> bool {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
+}
+
 /// Guards against DNS-rebinding from a browser: a request with no `Origin` is a
 /// direct client, anything else must name loopback.
 fn origin_allowed(headers: &HeaderMap) -> bool {
@@ -124,11 +142,7 @@ fn origin_allowed(headers: &HeaderMap) -> bool {
 
     matches!(
         origin,
-        "null"
-            | "http://localhost"
-            | "https://localhost"
-            | "http://127.0.0.1"
-            | "https://127.0.0.1"
+        "http://localhost" | "https://localhost" | "http://127.0.0.1" | "https://127.0.0.1"
     ) || origin.starts_with("http://localhost:")
         || origin.starts_with("https://localhost:")
         || origin.starts_with("http://127.0.0.1:")
@@ -151,6 +165,60 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(ORIGIN, HeaderValue::from_static("http://127.0.0.1:3000"));
         assert!(origin_allowed(&headers));
+    }
+
+    const PING: &str = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+
+    async fn post(headers: &[(axum::http::HeaderName, &'static str)]) -> Response {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("temp")
+            .join(format!("mcp_http_post_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let _home = crate::config::global::override_home_for_tests(root.join("home"));
+        let state = build_state(root.clone()).unwrap();
+        let mut map = HeaderMap::new();
+        for (name, value) in headers {
+            map.insert(name.clone(), HeaderValue::from_static(value));
+        }
+        let response =
+            handle_http_post(State(state), map, Bytes::from_static(PING.as_bytes())).await;
+        let _ = std::fs::remove_dir_all(&root);
+        response
+    }
+
+    #[tokio::test]
+    async fn json_client_without_origin_is_answered() {
+        let plain = post(&[(CONTENT_TYPE, "application/json")]).await;
+        let with_charset = post(&[(CONTENT_TYPE, "application/json; charset=utf-8")]).await;
+
+        assert_eq!(plain.status(), StatusCode::OK);
+        assert_eq!(with_charset.status(), StatusCode::OK);
+    }
+
+    /// A sandboxed iframe or `data:` page sends `Origin: null`.
+    #[tokio::test]
+    async fn opaque_browser_origin_is_refused() {
+        let response = post(&[(CONTENT_TYPE, "application/json"), (ORIGIN, "null")]).await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Browsers send these without a CORS preflight, so they must not reach a tool.
+    #[tokio::test]
+    async fn body_not_declared_as_json_is_refused() {
+        let text_plain = post(&[(CONTENT_TYPE, "text/plain")]).await;
+        let undeclared = post(&[]).await;
+
+        assert!(
+            text_plain.status().is_client_error(),
+            "{}",
+            text_plain.status()
+        );
+        assert!(
+            undeclared.status().is_client_error(),
+            "{}",
+            undeclared.status()
+        );
     }
 
     #[tokio::test]

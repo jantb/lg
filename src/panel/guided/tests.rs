@@ -9,13 +9,16 @@ mod file_findings;
 mod final_review;
 mod issues;
 mod list;
+mod moved_notes;
 mod overview;
 mod parts;
 mod questions;
 mod refresh;
+mod repository;
 mod reset;
 mod review_chat;
 mod source;
+mod stale_work;
 mod walk_modes;
 
 pub(super) use super::poll::*;
@@ -203,6 +206,13 @@ pub(super) fn walk_with_plan() -> AppState {
     state.guided = Some(Box::new(guided));
     state.modal = Modal::GuidedReview;
     state
+}
+
+/// The walk becomes one over `source`, its progress saved where that walk
+/// keeps it, so what one test saves another does not read back.
+pub(super) fn saved_as(guided: &mut Guided, source: Source) {
+    guided.progress_path = Guided::new(source.clone()).progress_path;
+    guided.source = source;
 }
 
 /// The step list's rows as drawn, its own columns only.

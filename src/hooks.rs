@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::session::SessionActivity;
 
@@ -33,38 +34,55 @@ const HOOK_EVENTS: &[(&str, SessionActivity)] = &[
 /// match everything by having none.
 const TOOL_HOOKS: &[&str] = &["PreToolUse", "PostToolUse"];
 
-/// Everything one session needs to report what it is doing.
+/// Everything one session needs to report what it is doing. Each session has
+/// a channel of its own, which goes away with it.
 pub struct HookChannel {
     /// Settings file to start claude with, holding hooks that report here.
     pub settings: PathBuf,
     /// Read side of the file those hooks append to.
     pub events: HookEvents,
+    dir: PathBuf,
 }
+
+impl Drop for HookChannel {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Channels this lg has handed out, so that two sessions in one checkout never
+/// share one.
+static CHANNELS_OPENED: AtomicU64 = AtomicU64::new(0);
 
 /// Give the session about to run in `cwd` a settings file whose hooks report to
 /// a file only that session writes, and open the read side of it.
 pub fn install(cwd: &Path) -> Result<HookChannel> {
-    let dir = channel_dir(cwd)?;
+    let name = format!(
+        "{}-{}",
+        std::process::id(),
+        CHANNELS_OPENED.fetch_add(1, Ordering::Relaxed)
+    );
+    let dir = channel_dir(cwd)?.join(name);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
 
-    // Truncate on the way in: whatever the last session in this checkout left
-    // behind describes a turn that is over.
+    // Created empty: a channel left behind by an lg that died under the same
+    // pid describes a turn that is over.
     let events_path = dir.join("events");
     File::create(&events_path).with_context(|| format!("create {}", events_path.display()))?;
     let file =
         File::open(&events_path).with_context(|| format!("read {}", events_path.display()))?;
 
-    let settings = dir.join("settings.json");
-    std::fs::write(&settings, settings_json(&events_path))
-        .with_context(|| format!("write {}", settings.display()))?;
-
-    Ok(HookChannel {
-        settings,
+    let channel = HookChannel {
+        settings: dir.join("settings.json"),
         events: HookEvents {
             file,
             pending: String::new(),
         },
-    })
+        dir,
+    };
+    std::fs::write(&channel.settings, settings_json(&events_path))
+        .with_context(|| format!("write {}", channel.settings.display()))?;
+    Ok(channel)
 }
 
 /// Where a session's hook file and the settings pointing at it live: under the
@@ -240,6 +258,26 @@ mod tests {
         );
         assert_eq!(HookEvent::parse("SubagentStop"), None);
         assert_eq!(HookEvent::parse(""), None);
+    }
+
+    /// Every session gets a channel of its own, and a closed session takes its
+    /// channel with it rather than leaving it in the git directory for good.
+    #[test]
+    fn a_closed_session_leaves_no_hook_channel_behind() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo.path())
+            .status()
+            .expect("run git init");
+        assert!(status.success(), "git init");
+
+        let channel = install(repo.path()).expect("install");
+        assert!(channel.settings.exists(), "claude is handed its settings");
+
+        let settings = channel.settings.clone();
+        drop(channel);
+        assert!(!settings.exists(), "{}", settings.display());
     }
 
     #[test]

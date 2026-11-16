@@ -175,9 +175,9 @@ fn browse_pull_requests(state: &mut AppState, key: KeyEvent) {
         },
         KeyCode::Char('v') => crate::panel::guided::open_pull_request(state, &pr),
         KeyCode::Char('t') => threads::open(state, number, pr.title.clone(), pr.head.clone()),
-        KeyCode::Char('a') if still_open(state) => compose(state, Compose::Approve),
-        KeyCode::Char('x') if still_open(state) => compose(state, Compose::RequestChanges),
-        KeyCode::Char('c') => compose(state, Compose::Comment),
+        KeyCode::Char('a') if still_open(state) => compose(state, Compose::Approve, number),
+        KeyCode::Char('x') if still_open(state) => compose(state, Compose::RequestChanges, number),
+        KeyCode::Char('c') => compose(state, Compose::Comment, number),
         KeyCode::Char('m') if still_open(state) => start_merge(state, &pr),
         KeyCode::Char('D') if still_open(state) => dispatch(
             state,
@@ -235,11 +235,11 @@ fn browse_repositories(state: &mut AppState, key: KeyEvent) {
 }
 
 fn clone_selected(state: &mut AppState) {
-    let Some(repo) = clone_request(state) else {
+    let Some(repo) = clone_request(&state.github, &visible_repos(&state.github)) else {
         state.set_status("pick a repository, or type owner/name", false);
         return;
     };
-    let Some(dir) = clone_destination(state) else {
+    let Some(dir) = clone_destination(state, &repo) else {
         state.set_status(format!("no folder to clone {repo} into"), true);
         return;
     };

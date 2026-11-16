@@ -3,15 +3,16 @@
 use anyhow::Result;
 
 use crate::state::{
-    AppState, CheckoutMsg, CommitLogMsg, DiffMsg, FetchMsg, GenMsg, Modal, OperationKind,
-    OperationMsg, PushMsg, RefreshMsg, RefreshScope, ReleaseStatusMsg, SettingsSuggestMsg,
-    WorkflowMsg,
+    AppState, CheckoutMsg, CommitLogMsg, DiffMsg, DiffSource, FetchMsg, GenMsg, Modal,
+    OperationKind, OperationMsg, PushMsg, RefreshMsg, RefreshScope, ReleaseStatusMsg,
+    SettingsSuggestMsg, WorkflowMsg,
 };
 
-use super::super::{App, selected_commit_ref, spawn_push};
+use super::super::{App, selected_commit_ref, selected_diff_source, spawn_push};
+use super::start::load_selected_diff;
 use super::{
     drain_job, drain_messages, first_status_line, join_worker, open_conflict_modal_if_needed,
-    stopped_status, take_finished, tick_spinner,
+    stopped_status, take_finished, take_finished_here, tick_spinner,
 };
 
 impl App {
@@ -86,9 +87,16 @@ impl App {
                 }
             }
         }
+        let selected = self.state.selected_items();
         self.state.files = files;
-        self.state.clamp();
-        if refresh_diff {
+        self.state.reselect(&selected);
+        // Only the working tree was read again, and a commit's diff or a
+        // branch's log reads the same whatever it holds.
+        let shows_history = matches!(
+            selected_diff_source(&self.state),
+            DiffSource::Commit(_) | DiffSource::Branch(_)
+        );
+        if refresh_diff && !shows_history {
             self.start_diff_job(true);
         }
     }
@@ -120,6 +128,7 @@ impl App {
             self.state.enable_history();
         }
         self.state.workspace_root = snapshot.workspace_root;
+        let selected = self.state.selected_items();
         if let Some(files) = snapshot.files {
             self.state.files = files;
         }
@@ -144,6 +153,9 @@ impl App {
         if self.state.branch != branch_before || repo_changed {
             self.clear_release_status(None);
         }
+        // The branch selected decides which log is shown, so it is found
+        // again before that is worked out.
+        self.state.reselect(&selected);
         let selected_ref = selected_commit_ref(&self.state);
         if let Some(commits) = snapshot.commits
             && selected_ref.as_deref() == self.state.branch.as_deref()
@@ -156,7 +168,7 @@ impl App {
         if let Some(error) = snapshot.errors.into_iter().next() {
             self.state.set_status(error, true);
         }
-        self.state.clamp();
+        self.state.reselect(&selected);
         if selected_ref.as_deref() != self.state.commits_ref.as_deref() {
             self.sync_commit_log_to_selection();
         }
@@ -167,43 +179,33 @@ impl App {
     }
 
     pub(in crate::app) fn drain_refresh_job(&mut self) {
-        let Some((mut job, msg)) = take_finished(&mut self.state.refresh_job) else {
+        let Some((mut job, read)) = take_finished_here(&mut self.state.refresh_job) else {
             return;
         };
         let pending_refresh = self.state.refresh_pending.take();
         let pending_diff = self.state.refresh_pending_diff;
+        let pending_changed = std::mem::take(&mut self.state.refresh_pending_changed);
         self.state.defer_thread_join(job.handle.take());
         self.state.refresh_pending_diff = false;
-        match msg {
-            Ok(RefreshMsg::Done(snapshot)) => {
+        match read {
+            Some(Ok(RefreshMsg::Done(snapshot))) => {
                 self.apply_refresh_snapshot(*snapshot, job.refresh_diff);
             }
-            Err(stopped) => self.state.set_status(stopped, true),
+            Some(Err(stopped)) => self.state.set_status(stopped, true),
+            None => {}
         }
         if let Some(scope) = pending_refresh {
-            self.start_scoped_refresh(scope, Vec::new(), pending_diff, scope > RefreshScope::Files);
+            self.start_scoped_refresh(
+                scope,
+                pending_changed,
+                pending_diff,
+                scope > RefreshScope::Files,
+            );
         }
     }
 
     pub(in crate::app) fn drain_diff_job(&mut self) {
-        let Some((mut job, msg)) = take_finished(&mut self.state.diff_job) else {
-            return;
-        };
-        self.state.defer_thread_join(job.handle.take());
-        let DiffMsg::Done { source, text } = match msg {
-            Ok(msg) => msg,
-            Err(stopped) => {
-                self.state.set_status(stopped, true);
-                return;
-            }
-        };
-        if source == self.state.diff_source {
-            self.state.set_diff_text(text);
-            crate::panel::main::settle_cursor(&mut self.state);
-        } else {
-            // Worker finished a stale selection. Kick off the right one.
-            self.start_diff_job(true);
-        }
+        take_in_diff(&mut self.state);
     }
 
     pub(in crate::app) fn drain_release_status_job(&mut self) {
@@ -250,10 +252,19 @@ impl App {
     }
 
     pub(in crate::app) fn drain_commit_log_job(&mut self) {
-        let Some((mut job, msg)) = take_finished(&mut self.state.commit_log_job) else {
+        let Some((mut job, read)) = take_finished_here(&mut self.state.commit_log_job) else {
             return;
         };
         self.state.defer_thread_join(job.handle.take());
+        let Some(msg) = read else {
+            // The log of a branch in the checkout lg has left; read the one
+            // shown here instead.
+            if self.state.commits_ref.as_deref() == Some(job.branch.as_str()) {
+                self.state.commits_ref = None;
+                self.sync_commit_log_to_selection();
+            }
+            return;
+        };
         {
             match msg {
                 Err(stopped) => self.state.set_status(stopped, true),
@@ -288,7 +299,7 @@ impl App {
             Ok(FetchMsg::Error(e)) => self.state.set_status(first_status_line(&e), true),
             Err(stopped) => self.state.set_status(stopped, true),
         }
-        self.start_refresh_with_status(false, false);
+        self.start_scoped_refresh(RefreshScope::Repository, Vec::new(), false, false);
         super::super::spawn::release_queued_after_fetch(&mut self.state);
     }
 
@@ -308,7 +319,7 @@ impl App {
             Ok(PushMsg::Error(e)) | Err(e) => self.state.set_status(e, true),
         }
         crate::panel::environments::reload_nested_repo_detail(&mut self.state);
-        self.start_refresh(true);
+        self.start_refresh_reading(RefreshScope::Repository);
         Ok(())
     }
 
@@ -411,7 +422,7 @@ impl App {
         if kind == OperationKind::Stash && self.state.modal == Modal::Stash {
             self.state.stash.reload();
         }
-        self.start_refresh(true);
+        self.start_refresh_reading(refresh_scope_after(&self.state, kind));
         Ok(())
     }
 
@@ -495,7 +506,10 @@ impl App {
                         self.state.conflict.log = e.clone();
                         self.state.modal = Modal::Conflict;
                         self.state.set_status("merge conflicts detected", true);
-                        self.start_refresh(true);
+                        self.start_refresh_reading(including_workspace_row(
+                            &self.state,
+                            RefreshScope::Repository,
+                        ));
                         return Ok(());
                     }
                     if matches!(self.state.modal, Modal::Conflict) {
@@ -508,7 +522,10 @@ impl App {
                     self.state.set_status(first_status_line(&e), true);
                 }
             }
-            self.start_refresh(true);
+            self.start_refresh_reading(including_workspace_row(
+                &self.state,
+                RefreshScope::Repository,
+            ));
         }
         Ok(())
     }
@@ -656,6 +673,67 @@ impl App {
     }
 }
 
+/// Put the diff a finished diff job read on screen, when it is still the one
+/// wanted there.
+fn take_in_diff(state: &mut AppState) {
+    let Some((mut job, read)) = take_finished_here(&mut state.diff_job) else {
+        return;
+    };
+    state.defer_thread_join(job.handle.take());
+    match read {
+        Some(Ok(DiffMsg::Done { source, text })) if source == state.diff_source => {
+            state.set_diff_text(text);
+            crate::panel::main::settle_cursor(state);
+            if job.read_again {
+                load_selected_diff(state, true);
+            }
+        }
+        Some(Err(stopped)) => state.set_status(stopped, true),
+        // Worker finished a stale selection, or one in the checkout lg has
+        // left. Kick off the right one.
+        Some(Ok(_)) | None => load_selected_diff(state, true),
+    }
+}
+
+/// How much to read again once an operation of `kind` has finished: what it
+/// can have changed, and no more.
+fn refresh_scope_after(state: &AppState, kind: OperationKind) -> RefreshScope {
+    let changed = match kind {
+        OperationKind::Index
+        | OperationKind::StageAllAndCommit
+        | OperationKind::FileSystem
+        | OperationKind::Stash => RefreshScope::Files,
+        OperationKind::Commit
+        | OperationKind::MergeUpstream
+        | OperationKind::GitHub
+        | OperationKind::OpenPullRequest
+        | OperationKind::SubmitReview => RefreshScope::Repository,
+        // Worktrees are added, removed and landed as working-tree operations,
+        // and a clone lands beside this checkout: the workspace scan is what
+        // finds either.
+        OperationKind::WorkingTree | OperationKind::Clone => RefreshScope::Workspace,
+    };
+    including_workspace_row(state, changed)
+}
+
+/// `changed`, widened to the workspace scan when the checkout on screen is a
+/// row of the workspace tree: that row shows its branch and whether it has
+/// changes, and only the scan reads it.
+fn including_workspace_row(state: &AppState, changed: RefreshScope) -> RefreshScope {
+    let listed_in_workspace = state
+        .repo_root
+        .as_deref()
+        .zip(state.workspace_root.as_deref())
+        .is_some_and(|(repo, workspace)| {
+            !crate::git::same_dir(std::path::Path::new(repo), std::path::Path::new(workspace))
+        });
+    if listed_in_workspace {
+        RefreshScope::Workspace
+    } else {
+        changed
+    }
+}
+
 /// Applies derived conventions only while the settings modal is still open.
 /// An automatic scan fills only rows the user has not touched; one the user
 /// asked for replaces the message shape. The rows are locked while it runs,
@@ -738,6 +816,108 @@ mod tests {
         // Whether or not this machine has writing settings saved, the row
         // already filled in is not replaced.
         assert_eq!(state.settings_comment_style_input, "plain imperative");
+    }
+
+    /// A file that changes again while its diff is still being read: the
+    /// refresh that notices asks for the diff again, and the text read
+    /// before the change must not be the last word.
+    #[test]
+    fn a_diff_asked_for_again_while_it_loads_is_read_again() {
+        let mut state = AppState::default();
+        state.focus = crate::state::Pane::Main;
+        let source = crate::state::DiffSource::File("src/lib.rs".into());
+        state.diff_source = source.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        state.diff_job = Some(crate::state::DiffJob {
+            rx,
+            handle: None,
+            spinner: 0,
+            source: source.clone(),
+            checkout: crate::git::repo_dir(),
+            read_again: false,
+        });
+
+        load_selected_diff(&mut state, true);
+        tx.send(DiffMsg::Done {
+            source: source.clone(),
+            text: "before the change".into(),
+        })
+        .unwrap();
+        drop(tx);
+        take_in_diff(&mut state);
+
+        let reading = state.diff_job.as_ref().map(|job| &job.source);
+        assert_eq!(reading, Some(&source), "the file is being read again");
+    }
+
+    fn single_checkout() -> AppState {
+        let mut state = AppState::default();
+        state.repo_root = Some("/work/repo".into());
+        state.workspace_root = Some("/work/repo".into());
+        state
+    }
+
+    #[test]
+    fn staging_discarding_or_stashing_reads_only_the_files_again() {
+        let state = single_checkout();
+        for kind in [
+            OperationKind::Index,
+            OperationKind::StageAllAndCommit,
+            OperationKind::FileSystem,
+            OperationKind::Stash,
+        ] {
+            assert_eq!(
+                refresh_scope_after(&state, kind),
+                RefreshScope::Files,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_operation_that_moves_head_or_refs_reads_the_repository_again() {
+        let state = single_checkout();
+        for kind in [
+            OperationKind::Commit,
+            OperationKind::MergeUpstream,
+            OperationKind::WorkingTree,
+            OperationKind::GitHub,
+            OperationKind::OpenPullRequest,
+            OperationKind::SubmitReview,
+            OperationKind::Clone,
+        ] {
+            assert!(
+                refresh_scope_after(&state, kind) >= RefreshScope::Repository,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn adding_removing_or_cloning_checkouts_rescans_the_workspace() {
+        let state = single_checkout();
+        for kind in [OperationKind::WorkingTree, OperationKind::Clone] {
+            assert_eq!(
+                refresh_scope_after(&state, kind),
+                RefreshScope::Workspace,
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// The workspace tree's row for a nested checkout shows its branch and
+    /// whether it has changes, and only the workspace scan reads that row.
+    #[test]
+    fn a_checkout_listed_in_the_workspace_tree_has_its_row_read_again() {
+        let mut state = single_checkout();
+        state.repo_root = Some("/work/repo/libs/inner".into());
+        for kind in [OperationKind::Commit, OperationKind::FileSystem] {
+            assert_eq!(
+                refresh_scope_after(&state, kind),
+                RefreshScope::Workspace,
+                "{kind:?}"
+            );
+        }
     }
 
     #[test]

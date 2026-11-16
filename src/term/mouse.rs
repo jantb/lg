@@ -32,7 +32,14 @@ pub fn encode_wheel(
     let row = row.max(1);
     Some(match encoding {
         MouseProtocolEncoding::Sgr => format!("\x1b[<{button};{column};{row}M").into_bytes(),
-        // The older encodings carry each coordinate in one byte, so anything
+        MouseProtocolEncoding::Utf8 => {
+            let mut report = String::from("\x1b[M");
+            for field in [u16::from(button), column, row] {
+                report.push(utf8_field(field));
+            }
+            report.into_bytes()
+        }
+        // The default encoding carries each coordinate in one byte, so anything
         // past the 223rd cell cannot be expressed and is reported at the edge.
         _ => vec![
             0x1b,
@@ -47,6 +54,15 @@ pub fn encode_wheel(
 
 fn offset_byte(value: u16) -> u8 {
     u8::try_from(value.saturating_add(32)).unwrap_or(u8::MAX)
+}
+
+/// Mode 1005 stops at what two UTF-8 bytes hold, so a field past that is
+/// reported at the edge, as the default encoding does at its own limit.
+const UTF8_FIELD_MAX: u16 = 0x7ff;
+
+fn utf8_field(value: u16) -> char {
+    let offset = value.saturating_add(32).min(UTF8_FIELD_MAX);
+    char::from_u32(u32::from(offset)).unwrap_or(char::REPLACEMENT_CHARACTER)
 }
 
 #[cfg(test)]
@@ -120,6 +136,28 @@ mod tests {
         .expect("encoded");
         assert_eq!(bytes[3], 97, "wheel down");
         assert_eq!(bytes[4], u8::MAX, "clamped rather than wrapped");
+    }
+
+    /// Mode 1005 carries a field past 95 as a UTF-8 character; a raw byte at or
+    /// above 0x80 there is not one, and the program misreads the whole event.
+    #[test]
+    fn utf8_mode_writes_a_far_cell_as_a_utf8_character() {
+        let bytes = encode_wheel(
+            true,
+            200,
+            100,
+            MouseProtocolMode::Press,
+            MouseProtocolEncoding::Utf8,
+        )
+        .expect("encoded");
+        let text = String::from_utf8(bytes).expect("valid UTF-8");
+        let fields: Vec<u32> = text
+            .strip_prefix("\x1b[M")
+            .expect("a mouse report")
+            .chars()
+            .map(|field| field as u32 - 32)
+            .collect();
+        assert_eq!(fields, vec![u32::from(WHEEL_UP), 200, 100]);
     }
 
     #[test]

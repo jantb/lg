@@ -50,10 +50,7 @@ pub fn highlight_diff_text_wrapped(text: &str, width: u16) -> Vec<Line<'static>>
 /// [`highlight_diff_text_wrapped`] actually draws, or the tail of a diff with
 /// long lines cannot be scrolled to.
 pub fn diff_text_line_count(text: &str, width: u16) -> usize {
-    unified_diff_lines(text)
-        .iter()
-        .map(|(line, gutter)| wrapped_row_count(spans_width(&line.spans), *gutter, width as usize))
-        .sum()
+    highlight_diff_text_wrapped(text, width).len()
 }
 
 /// One diff line, wrapped to `width`. For callers that render diff bodies a
@@ -71,18 +68,18 @@ pub fn highlight_diff_line_wrapped_for_path(
 fn unified_diff_lines(text: &str) -> Vec<(Line<'_>, usize)> {
     let mut syntax = None;
     let mut line_numbers = None;
-    text.split('\n')
+    text.lines()
         .map(|line| {
             if let Some(next) = diff_line_syntax(line) {
                 syntax = Some(next);
             }
-            if let Some((old_line, new_line)) = parse_hunk_line_numbers(line) {
-                line_numbers = Some(DiffLineNumbers { old_line, new_line });
+            if let Some(numbers) = parse_hunk_line_numbers(line) {
+                line_numbers = Some(numbers);
                 return (highlight_diff_line_for_syntax(line, syntax), 0);
             }
             let highlighted = highlight_diff_line_for_syntax(line, syntax);
             if let Some(numbers) = line_numbers.as_mut()
-                && let Some(kind) = diff_content_kind(line)
+                && let Some(kind) = numbers.content_kind(line)
             {
                 return (
                     add_diff_line_numbers(highlighted, numbers, kind),

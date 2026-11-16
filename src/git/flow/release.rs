@@ -27,19 +27,19 @@ pub fn flow_release_current_with_progress(
     ensure_no_conflict_in_progress()?;
     ensure_feature_branch(current_branch)?;
     progress();
-    let stashed = stash_uncommitted_changes(AUTO_STASH_RELEASE)?;
+    let stashed = AutoStash::take(AUTO_STASH_RELEASE)?;
     progress();
     let safety_ref = create_safety_ref("release-current")?;
     if let Err(err) = release_current_branch(current_branch, target_branch, progress) {
         return Err(restore_auto_stash_after_failure(
             err,
-            stashed,
+            &stashed,
             AUTO_STASH_RELEASE,
             current_branch,
         ));
     }
     progress();
-    pop_stash_if_needed(stashed)?;
+    stashed.pop()?;
     delete_safety_ref(&safety_ref)?;
     Ok(format!(
         "released {current_branch} to {target_branch} -> {}",
@@ -144,17 +144,16 @@ pub(crate) fn update_release_branch_from_main_before_commit() -> Result<Option<S
         return Ok(None);
     }
 
-    let stashed =
-        stash_uncommitted_changes("lg: auto-stash before updating release branch from main")?;
+    let stashed = AutoStash::take("lg: auto-stash before updating release branch from main")?;
     let update = merge_remote_main_into_current_release_branch(&current_branch);
     match update {
         Ok(message) => {
-            pop_stash_with_index_if_needed(stashed)?;
+            stashed.pop_with_index()?;
             Ok(message)
         }
         Err(err) => {
             if !git_path_exists("MERGE_HEAD").unwrap_or(false) {
-                restore_stash_after_failed_checkout(stashed)?;
+                restore_stash_after_failed_checkout(&stashed)?;
             }
             Err(err)
         }

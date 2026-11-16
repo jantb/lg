@@ -540,6 +540,25 @@ pub(super) fn environment_id(hub: &Settings, field: &Field) -> Option<String> {
         .as_str()
         .map(str::to_string)
 }
+/// Stage `branch` as what the environment at `index` deploys, pushed to
+/// `remote` when given, wired as choosing it in its branch field would be.
+pub(in crate::panel) fn assign_environment_branch(
+    hub: &mut Settings,
+    index: usize,
+    remote: Option<&str>,
+    branch: &str,
+) {
+    let Some(environment) = hub.draft["environments"].get_mut(index) else {
+        return;
+    };
+    if let Some(remote) = remote {
+        environment["remote"] = remote.into();
+    }
+    environment["branch"] = branch.into();
+    if let Some(id) = environment["id"].as_str().map(str::to_string) {
+        wire_environment(hub, &id, branch);
+    }
+}
 /// Makes a newly assigned environment branch a release target: protected
 /// from feature-branch actions, and reachable by a feature promotion, so the
 /// flow actions work without further setup.

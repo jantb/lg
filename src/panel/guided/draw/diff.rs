@@ -4,10 +4,10 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::git::guided::{GuidedFile, HunkLine, LineKind, Side, TickedFinding};
+use crate::git::guided::{GuidedFile, HunkLine, LineKind, TickedFinding};
 use crate::panel::guided::findings::Finding;
 use crate::panel::guided::layout::Row;
-use crate::panel::guided::{Guided, findings, layout};
+use crate::panel::guided::{Guided, NotePlace, findings, layout};
 use crate::state::DiffViewMode;
 use crate::ui;
 use crate::ui::DiffContentKind;
@@ -94,13 +94,11 @@ pub(super) fn push_diff(
         }));
         for at in row.lines() {
             let here = Some(at) == cursor;
-            if let Some(anchor) = step.lines[at].anchor() {
-                for (_, note) in notes
-                    .iter()
-                    .filter(|(_, note)| (note.line, note.side) == anchor)
-                {
-                    lines.extend(note_lines(&note.body, &lead));
-                }
+            for (_, note, _) in notes
+                .iter()
+                .filter(|(_, _, place)| *place == NotePlace::At(at))
+            {
+                lines.extend(note_lines(&note.body, &lead));
             }
             for inline in flagged.iter().filter(|inline| inline.at == at) {
                 let first = lines.len();
@@ -120,10 +118,9 @@ pub(super) fn push_diff(
         }
     }
     // Notes pinned to lines this diff no longer shows, said once at the end.
-    let shown: Vec<(usize, Side)> = step.lines.iter().filter_map(|l| l.anchor()).collect();
-    for (_, note) in notes
+    for (_, note, _) in notes
         .iter()
-        .filter(|(_, n)| !shown.contains(&(n.line, n.side)))
+        .filter(|(_, _, place)| *place == NotePlace::Moved)
     {
         lines.push(Line::from(vec![
             Span::styled(format!("  \u{270e} L{} (moved) ", note.line), NOTE),

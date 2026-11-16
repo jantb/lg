@@ -135,6 +135,28 @@ fn github_takes_mouse(
     }
 }
 
+/// Route one mouse event and tell whether what is on screen may have changed.
+/// A pointer that only moves changes nothing but what it hovers, and terminals
+/// report every cell it crosses.
+pub(super) fn route_mouse<H: AppHost>(host: &mut H, m: MouseEvent) -> Result<bool> {
+    if m.kind != MouseEventKind::Moved {
+        dispatch_mouse(host, m)?;
+        return Ok(true);
+    }
+    let before = hovered(host.state());
+    dispatch_mouse(host, m)?;
+    Ok(hovered(host.state()) != before)
+}
+
+fn hovered(state: &AppState) -> Option<(usize, crate::state::MergeAction)> {
+    state
+        .conflict
+        .preview
+        .as_ref()
+        .and_then(|preview| preview.editor.as_ref().ok())
+        .and_then(|editor| editor.hovered)
+}
+
 /// Route one mouse event. Modals get it first, then the pane dividers, then
 /// whichever pane it landed in.
 pub(super) fn dispatch_mouse<H: AppHost>(host: &mut H, m: MouseEvent) -> Result<()> {

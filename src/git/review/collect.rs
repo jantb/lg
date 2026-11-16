@@ -1,7 +1,6 @@
 //! Collecting the branch diff from git, untracked files included.
 
 use anyhow::Result;
-use std::path::Path;
 
 use crate::git::attrs::suppress_generated_diff;
 use crate::git::{git_command, run};
@@ -96,9 +95,7 @@ fn untracked_file_diff(path: &str) -> Result<String> {
 fn untracked_no_index_diff(path: &str, args: &[&str]) -> Result<String> {
     let out = git_command(args).output()?;
     if out.status.success() || out.status.code() == Some(1) {
-        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-        normalize_no_index_path(&mut text, path);
-        Ok(text)
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr);
         Err(anyhow::anyhow!(
@@ -107,15 +104,6 @@ fn untracked_no_index_diff(path: &str, args: &[&str]) -> Result<String> {
             stderr.trim()
         ))
     }
-}
-
-fn normalize_no_index_path(diff: &mut String, path: &str) {
-    let Some(file_name) = Path::new(path).file_name().and_then(|name| name.to_str()) else {
-        return;
-    };
-    let from = format!("b/{file_name}");
-    let to = format!("b/{path}");
-    *diff = diff.replace(&from, &to);
 }
 
 #[cfg(test)]

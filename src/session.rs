@@ -23,8 +23,8 @@ mod registry;
 mod spawn;
 use reading::*;
 pub use registry::{EndedSession, PumpReport, Sessions};
-pub(crate) use spawn::nested_claude_markers;
 pub use spawn::{claude_spawn, codex_spawn, pi_spawn, shell_spawn};
+pub(crate) use spawn::{hook_settings_args, nested_claude_markers};
 
 /// How many lines of scrolled-off output each session keeps.
 const SCROLLBACK: usize = 1000;
@@ -185,7 +185,7 @@ pub struct Session {
     pub sandboxed: bool,
     pub kind: SessionKind,
     pub status: SessionStatus,
-    launch: Option<(SessionSpec, Spawn)>,
+    launch: Option<(SessionSpec, registry::Launcher)>,
     /// Output arrived while this session was not the one being shown.
     pub attention: bool,
     /// What claude last reported through its hooks. Starts idle: a session that
@@ -196,7 +196,7 @@ pub struct Session {
     /// session at once without re-reading five screens a frame.
     asking: bool,
     /// Hooks reporting in, for a session started with them.
-    events: Option<crate::hooks::HookEvents>,
+    events: Option<crate::hooks::HookChannel>,
     /// When the program last wrote to its screen, for the kinds that have no
     /// hooks to say what they are doing.
     last_output: Option<std::time::Instant>,
@@ -421,7 +421,7 @@ impl Session {
         for event in self
             .events
             .as_mut()
-            .map_or_else(Vec::new, |events| events.drain())
+            .map_or_else(Vec::new, |channel| channel.events.drain())
         {
             self.activity = event.activity;
             // The dot moved, even if nothing was drawn.

@@ -41,7 +41,7 @@ pub(super) fn review_again(state: &mut AppState) {
     reload(state);
 }
 
-fn forget(guided: &mut Guided, keys: &[String]) {
+pub(super) fn forget(guided: &mut Guided, keys: &[String]) {
     guided.asks.retain(|ask| !keys.contains(&ask.key));
     guided.checks.retain(|check| !keys.contains(&check.key));
     guided.check_queue.retain(|key| !keys.contains(key));

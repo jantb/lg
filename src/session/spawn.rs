@@ -69,8 +69,7 @@ pub fn claude_spawn(
     // After the `--` a sandboxed session goes through: these are claude's
     // arguments, not terrarium's.
     if let Some(settings) = settings {
-        args.push("--settings".to_string());
-        args.push(settings.to_string_lossy().into_owned());
+        args.extend(hook_settings_args(settings));
     }
     if let Some(prompt) = opening_prompt(prompt) {
         args.push(prompt.to_string());
@@ -82,6 +81,14 @@ pub fn claude_spawn(
         env: session_env(),
         env_remove: nested_claude_markers(),
     }
+}
+
+/// The arguments that start claude with the hook settings at `settings`.
+pub(crate) fn hook_settings_args(settings: &Path) -> [String; 2] {
+    [
+        "--settings".to_string(),
+        settings.to_string_lossy().into_owned(),
+    ]
 }
 
 /// How to launch codex in `cwd`.

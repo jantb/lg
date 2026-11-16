@@ -1,13 +1,11 @@
 //! The reviewer's notes: writing them on lines, the summary of all of them,
 //! and for a pull request submitting them as one review.
 
-use std::collections::HashSet;
-
 use crate::git::guided::{GuidedNote, Side};
 use crate::panel::text_input::TextInput;
 use crate::state::{AppState, PendingAction};
 
-use super::{Guided, Mode, Source};
+use super::{Guided, Mode, NotePlace, Source, note_place};
 
 /// Save the note being written on the cursor line.
 pub(super) fn commit_note(state: &mut AppState) {
@@ -104,21 +102,22 @@ pub(super) fn submit(state: &mut AppState) {
         return;
     };
     let event = crate::github::ReviewEvent::ALL[event % crate::github::ReviewEvent::ALL.len()];
-    let shown: HashSet<(String, usize, Side)> = guided
-        .steps
-        .iter()
-        .flat_map(|step| {
-            step.lines
-                .iter()
-                .filter_map(|line| line.anchor())
-                .map(|(n, side)| (step.path.clone(), n, side))
-        })
-        .collect();
-    let (comments, stale): (Vec<_>, Vec<_>) = guided
-        .progress
-        .notes
-        .iter()
-        .partition(|note| shown.contains(&(note.path.clone(), note.line, note.side)));
+    let mut comments = Vec::new();
+    let mut stale = Vec::new();
+    for note in &guided.progress.notes {
+        let pinned = guided
+            .steps
+            .iter()
+            .filter(|step| step.path == note.path)
+            .find_map(|step| match note_place(step, note) {
+                NotePlace::At(at) => step.lines[at].anchor(),
+                NotePlace::Moved => None,
+            });
+        match pinned {
+            Some((line, side)) => comments.push((note, line, side)),
+            None => stale.push(note),
+        }
+    }
     if comments.is_empty() && body.trim().is_empty() && event != crate::github::ReviewEvent::Approve
     {
         guided.mode = Mode::Summary {
@@ -142,10 +141,10 @@ pub(super) fn submit(state: &mut AppState) {
     }
     let comments = comments
         .into_iter()
-        .map(|note| crate::github::LineComment {
+        .map(|(note, line, side)| crate::github::LineComment {
             path: note.path.clone(),
-            line: note.line,
-            side: note.side.github(),
+            line,
+            side: side.github(),
             body: note.body.clone(),
         })
         .collect();

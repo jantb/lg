@@ -10,10 +10,8 @@
 
 use anyhow::Result;
 use std::collections::{BTreeSet, HashMap};
-use std::io::Write;
-use std::process::Stdio;
 
-use super::git_command;
+use super::run_with_input;
 
 /// The line standing in for a suppressed file's patch.
 ///
@@ -95,29 +93,20 @@ where
         stdin.push('\0');
     }
 
-    let mut child = git_command(&[
-        "check-attr",
-        "-z",
-        "--stdin",
-        "diff",
-        "linguist-generated",
-        "linguist-vendored",
-    ])
-    .stdin(Stdio::piped())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::null())
-    .spawn()?;
-    child
-        .stdin
-        .take()
-        .map(|mut pipe| pipe.write_all(stdin.as_bytes()))
-        .transpose()?;
-    let out = child.wait_with_output()?;
-    if !out.status.success() {
-        return Ok(HashMap::new());
-    }
-
-    Ok(parse_check_attr(&String::from_utf8_lossy(&out.stdout)))
+    let answered = run_with_input(
+        &[
+            "check-attr",
+            "-z",
+            "--stdin",
+            "diff",
+            "linguist-generated",
+            "linguist-vendored",
+        ],
+        &stdin,
+    );
+    Ok(answered
+        .map(|out| parse_check_attr(&String::from_utf8_lossy(&out.stdout)))
+        .unwrap_or_default())
 }
 
 /// `path\0attr\0value\0` triples, in the order the attributes were asked for.

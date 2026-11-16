@@ -594,3 +594,199 @@ fn resizing_moves_the_parsed_screen_too() {
     session.resize(10, 40);
     assert_eq!(session.screen().size(), (10, 40));
 }
+
+/// A checkout with a stand-in for claude: a script that records the arguments
+/// of every launch and then waits to be closed, so a test can fire the hooks
+/// the session was really started with.
+struct FakeClaude {
+    repo: tempfile::TempDir,
+    _bin: tempfile::TempDir,
+    launches: PathBuf,
+    profile: crate::preferences::Agent,
+}
+
+impl FakeClaude {
+    fn new(confinement: crate::preferences::Confinement) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = tempfile::tempdir().expect("repo dir");
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo.path())
+            .status()
+            .expect("run git init");
+        assert!(status.success(), "git init");
+        let bin = tempfile::tempdir().expect("bin dir");
+        let launches = bin.path().join("launches");
+        let script = bin.path().join("claude");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n{{ printf 'launch\\n'; printf '%s\\n' \"$@\"; printf 'end\\n'; }} >> '{}'\nexec sleep 30\n",
+                launches.display()
+            ),
+        )
+        .expect("write script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod script");
+        let profile = crate::preferences::Agent {
+            name: "Claude".into(),
+            adapter: crate::preferences::Adapter::Claude,
+            executable: script.to_string_lossy().into_owned(),
+            confinement,
+            ..Default::default()
+        };
+        Self {
+            repo,
+            _bin: bin,
+            launches,
+            profile,
+        }
+    }
+
+    fn spec(&self, label: &str) -> SessionSpec {
+        SessionSpec {
+            label: label.to_string(),
+            cwd: self.repo.path().to_path_buf(),
+            sandboxed: false,
+            kind: SessionKind::Claude,
+            prompt: None,
+        }
+    }
+
+    /// The arguments of launch number `nth`, counting from one, once it has
+    /// happened.
+    fn launch_args(&self, nth: usize) -> Vec<String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let text = std::fs::read_to_string(&self.launches).unwrap_or_default();
+            let launches: Vec<Vec<String>> = text
+                .split("launch\n")
+                .skip(1)
+                .filter_map(|launch| launch.strip_suffix("end\n"))
+                .map(|args| args.lines().map(str::to_string).collect())
+                .collect();
+            if let Some(args) = launches.get(nth - 1) {
+                return args.clone();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "launch {nth} never happened"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+/// Run the hook claude would run for `event`, from the settings it was given.
+fn fire_hook(args: &[String], event: &str) {
+    let settings = args
+        .iter()
+        .position(|arg| arg == "--settings")
+        .and_then(|at| args.get(at + 1))
+        .unwrap_or_else(|| panic!("claude was started without hook settings: {args:?}"));
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(settings).expect("read settings"))
+            .expect("settings json");
+    let command = settings["hooks"][event][0]["hooks"][0]["command"]
+        .as_str()
+        .expect("a hook command");
+    let status = std::process::Command::new("/bin/sh")
+        .args(["-c", command])
+        .status()
+        .expect("run hook");
+    assert!(status.success(), "hook {event} failed");
+}
+
+/// Pump until `id` reads as `want`, or a few seconds have passed.
+fn settles_to(sessions: &mut Sessions, id: SessionId, want: SessionActivity) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        sessions.pump();
+        if sessions.get(id).map(Session::activity) == Some(want) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    false
+}
+
+/// The guided review chat runs a second claude in the checkout the main one
+/// runs in. Each has to hear only its own turn, or one finishing marks the
+/// other idle while it still works.
+#[cfg(unix)]
+#[test]
+fn two_claude_sessions_in_one_checkout_each_hear_only_their_own_hooks() {
+    let claude = FakeClaude::new(crate::preferences::Confinement::Agent);
+    let mut sessions = Sessions::new();
+    let main = sessions
+        .start_profile(claude.spec("main · Claude"), &claude.profile, (24, 80))
+        .expect("start main");
+    let main_args = claude.launch_args(1);
+    let chat = sessions
+        .start_profile(claude.spec("review chat · main"), &claude.profile, (24, 80))
+        .expect("start chat");
+    claude.launch_args(2);
+
+    fire_hook(&main_args, "UserPromptSubmit");
+
+    assert!(settles_to(&mut sessions, main, SessionActivity::Working));
+    assert_eq!(
+        sessions.get(chat).map(Session::activity),
+        Some(SessionActivity::Idle),
+        "the chat did not start a turn"
+    );
+}
+
+/// Picking an agent that is already running only shows it again; what it
+/// had reported until then still stands.
+#[cfg(unix)]
+#[test]
+fn reselecting_a_running_claude_keeps_what_it_reported() {
+    let claude = FakeClaude::new(crate::preferences::Confinement::Agent);
+    let mut sessions = Sessions::new();
+    let id = sessions
+        .start_profile(claude.spec("main · Claude"), &claude.profile, (24, 80))
+        .expect("start");
+    fire_hook(&claude.launch_args(1), "UserPromptSubmit");
+
+    let again = sessions
+        .start_profile(claude.spec("main · Claude"), &claude.profile, (24, 80))
+        .expect("reselect");
+
+    assert_eq!(again, id);
+    assert!(settles_to(&mut sessions, id, SessionActivity::Working));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_claude_profile_without_a_sandbox_still_reports_its_activity() {
+    let claude = FakeClaude::new(crate::preferences::Confinement::Direct);
+    let mut sessions = Sessions::new();
+    let id = sessions
+        .start_profile(claude.spec("main · Claude"), &claude.profile, (24, 80))
+        .expect("start");
+
+    fire_hook(&claude.launch_args(1), "UserPromptSubmit");
+
+    assert!(settles_to(&mut sessions, id, SessionActivity::Working));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_restarted_claude_session_still_reports_its_activity() {
+    let claude = FakeClaude::new(crate::preferences::Confinement::Agent);
+    let mut sessions = Sessions::new();
+    let first = sessions
+        .start_profile(claude.spec("main · Claude"), &claude.profile, (24, 80))
+        .expect("start");
+    claude.launch_args(1);
+
+    let restarted = sessions.restart(first).expect("restart");
+    fire_hook(&claude.launch_args(2), "UserPromptSubmit");
+
+    assert!(settles_to(
+        &mut sessions,
+        restarted,
+        SessionActivity::Working
+    ));
+}

@@ -326,6 +326,35 @@ mod tests {
         assert!(offered.contains(&RepoAction::RemoveWorktree), "{offered:?}");
     }
 
+    fn workspace_at(dir: &std::path::Path) -> AppState {
+        let mut state = AppState::new();
+        state.workspace_root = Some(dir.to_string_lossy().into_owned());
+        state
+    }
+
+    #[test]
+    fn a_plain_folder_is_offered_git_init() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(available(&workspace_at(dir.path())).contains(&RepoAction::GitInit));
+    }
+
+    #[test]
+    fn a_repository_and_a_folder_inside_one_are_not_offered_git_init() {
+        let dir = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let inside = dir.path().join("services/api");
+        std::fs::create_dir_all(&inside).unwrap();
+
+        assert!(!available(&workspace_at(dir.path())).contains(&RepoAction::GitInit));
+        assert!(!available(&workspace_at(&inside)).contains(&RepoAction::GitInit));
+    }
+
     /// Choosing an entry does the same as its letter used to: landing a
     /// worktree parks the merge behind the usual confirmation.
     #[test]

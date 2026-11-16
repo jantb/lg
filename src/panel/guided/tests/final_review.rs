@@ -97,16 +97,56 @@ fn the_final_step_pins_findings_across_files_into_the_whole_change() {
     );
 }
 
+/// What changes between two frames shows on the second: a note written and
+/// a finding ticked off since the whole change was last drawn.
+#[test]
+fn the_whole_change_shows_what_changed_since_it_was_last_drawn() {
+    let mut state = on_final_with_findings("guided-test-final-redraw");
+    let ticked = |rows: &[String]| {
+        rows.iter()
+            .any(|row| row.contains("\u{2713} callers of x are not updated"))
+    };
+    let before = screen(&state);
+    assert!(!ticked(&before));
+
+    let guided = state.guided.as_mut().unwrap();
+    guided.progress.notes.push(GuidedNote {
+        path: "b.rs".into(),
+        line: 1,
+        side: crate::git::guided::Side::Right,
+        body: "written between frames".into(),
+        step: guided.steps[1].key(),
+        quote: "+y".into(),
+    });
+    guided.progress.ticked.push(TickedFinding {
+        path: "b.rs".into(),
+        line: 1,
+        text: "callers of x are not updated.".into(),
+    });
+    let after = screen(&state);
+
+    assert!(
+        after
+            .iter()
+            .any(|row| row.contains("written between frames")),
+        "{after:#?}"
+    );
+    assert!(ticked(&after), "{after:#?}");
+}
+
 /// `walk_with_findings` on its final step, whose review cites a.rs and
 /// b.rs. Its progress is saved under `branch`, so what one test ticks off
 /// is not ticked in another.
 fn on_final_with_findings(branch: &str) -> AppState {
     let mut state = walk_with_findings();
     let guided = state.guided.as_mut().unwrap();
-    guided.source = Source::Branch {
-        branch: branch.into(),
-        base_ref: "main".into(),
-    };
+    saved_as(
+        guided,
+        Source::Branch {
+            branch: branch.into(),
+            base_ref: "main".into(),
+        },
+    );
     guided.progress = GuidedProgress {
         reviewed: guided.progress.reviewed.clone(),
         ..GuidedProgress::default()

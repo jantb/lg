@@ -6,17 +6,22 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, Paragraph, Wrap};
 
-use crate::panel::github::lookup::{clone_destination, clone_request, visible_repos};
+use crate::github::Repository;
+use crate::panel::github::lookup::{clone_destination, clone_request};
 use crate::state::AppState;
 use crate::ui::palette;
 
 use super::areas::repo_list_areas;
 use super::{LABEL, draw_placeholder, truncate};
 
-pub(super) fn draw_repo_list(state: &AppState, area: Rect, frame: &mut Frame) {
+pub(super) fn draw_repo_list(
+    state: &AppState,
+    visible: &[&Repository],
+    area: Rect,
+    frame: &mut Frame,
+) {
     let gh = &state.github;
     let [search, list_area] = repo_list_areas(area);
-    let visible = visible_repos(gh);
     let count = match (gh.repos.len(), gh.query.trim().is_empty()) {
         (0, _) => String::new(),
         (all, true) => format!("   {all} repositories"),
@@ -97,11 +102,16 @@ pub(super) fn draw_repo_list(state: &AppState, area: Rect, frame: &mut Frame) {
     frame.render_stateful_widget(list, list_area, &mut list_state);
 }
 
-pub(super) fn draw_repo_detail(state: &AppState, area: Rect, frame: &mut Frame) {
-    let Some(repo) = clone_request(state) else {
+pub(super) fn draw_repo_detail(
+    state: &AppState,
+    visible: &[&Repository],
+    area: Rect,
+    frame: &mut Frame,
+) {
+    let Some(repo) = clone_request(&state.github, visible) else {
         return;
     };
-    let description = visible_repos(&state.github)
+    let description = visible
         .get(state.github.repo_idx)
         .map(|listed| listed.description.clone())
         .unwrap_or_default();
@@ -118,7 +128,7 @@ pub(super) fn draw_repo_detail(state: &AppState, area: Rect, frame: &mut Frame) 
         lines.push(Line::from(description));
         lines.push(Line::from(""));
     }
-    match clone_destination(state) {
+    match clone_destination(state, &repo) {
         Some(dir) if dir.exists() => {
             lines.push(Line::from(Span::styled(
                 "Already cloned at",

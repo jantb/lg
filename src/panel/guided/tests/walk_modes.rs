@@ -198,10 +198,13 @@ fn a_click_on_the_walk_badge_switches_mode_and_keeps_what_was_done() {
     let guided = state.guided.as_mut().unwrap();
     // It reads back what it saved, which the other walks with the plan
     // would overwrite under the shared key.
-    guided.source = Source::Branch {
-        branch: "guided-test-walk-badge".into(),
-        base_ref: "main".into(),
-    };
+    saved_as(
+        guided,
+        Source::Branch {
+            branch: "guided-test-walk-badge".into(),
+            base_ref: "main".into(),
+        },
+    );
     let reviewed = guided.steps[0].key();
     guided.progress.reviewed.push(reviewed.clone());
     let badge = draw::walk_badge_area(state.guided.as_deref().unwrap(), AREA).unwrap();

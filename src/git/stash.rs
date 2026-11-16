@@ -6,8 +6,10 @@
 //! a different entry by the time it is acted on.
 
 use anyhow::Result;
+use std::path::{Path, PathBuf};
+use std::process::Output;
 
-use super::{run, run_combined};
+use super::{run, run_combined, run_in_dir};
 
 /// What lg's own stashes start with, so the list can tell them apart from the
 /// user's. A flow that stopped on a conflict, or a pull that failed, can leave
@@ -116,4 +118,104 @@ fn last_line(out: &str, fallback: &str) -> String {
         .unwrap_or(fallback)
         .trim()
         .to_string()
+}
+
+/// A stash lg takes on its own before an operation that needs a clean
+/// checkout, and puts back afterwards.
+///
+/// It remembers the stash commit git actually made rather than assuming one
+/// was made because `git status` showed changes: dirty content inside a
+/// submodule shows there, yet `git stash` has nothing to save, and popping
+/// `stash@{0}` then would take the user's own stash instead.
+#[derive(Debug, Default)]
+pub(crate) struct AutoStash {
+    dir: Option<PathBuf>,
+    commit: Option<String>,
+}
+
+impl AutoStash {
+    /// Stash every uncommitted change in the selected repository.
+    pub(crate) fn take(message: &str) -> Result<Self> {
+        Self::take_at(None, message)
+    }
+
+    /// Stash every uncommitted change in the repository at `dir`.
+    pub(crate) fn take_in(dir: &Path, message: &str) -> Result<Self> {
+        Self::take_at(Some(dir), message)
+    }
+
+    fn take_at(dir: Option<&Path>, message: &str) -> Result<Self> {
+        let mut stash = Self {
+            dir: dir.map(Path::to_path_buf),
+            commit: None,
+        };
+        if stash.git(&["status", "--porcelain"])?.stdout.is_empty() {
+            return Ok(stash);
+        }
+        let before = stash.newest_stash_commit();
+        stash.git(&["stash", "push", "-u", "-m", message])?;
+        let after = stash.newest_stash_commit();
+        stash.commit = after.filter(|after| before.as_ref() != Some(after));
+        Ok(stash)
+    }
+
+    /// Whether there was anything to stash.
+    pub(crate) fn is_taken(&self) -> bool {
+        self.commit.is_some()
+    }
+
+    /// Whether this stash is still in the list, not yet popped.
+    pub(crate) fn is_still_stashed(&self) -> bool {
+        self.stash_ref().is_some()
+    }
+
+    /// Put the stashed changes back and drop the stash.
+    pub(crate) fn pop(&self) -> Result<()> {
+        self.pop_with(&[])
+    }
+
+    /// Put the stashed changes back, staged ones staged again, and drop the
+    /// stash.
+    pub(crate) fn pop_with_index(&self) -> Result<()> {
+        self.pop_with(&["--index"])
+    }
+
+    fn pop_with(&self, flags: &[&str]) -> Result<()> {
+        if !self.is_taken() {
+            return Ok(());
+        }
+        let reference = self
+            .stash_ref()
+            .ok_or_else(|| anyhow::anyhow!("the auto-stash is no longer in the stash list"))?;
+        let mut args = vec!["stash", "pop"];
+        args.extend_from_slice(flags);
+        args.push(&reference);
+        self.git(&args)?;
+        Ok(())
+    }
+
+    /// `stash@{n}` for this stash, as the list stands now.
+    fn stash_ref(&self) -> Option<String> {
+        let commit = self.commit.as_deref()?;
+        let out = self.git(&["stash", "list", "--format=%H"]).ok()?;
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .position(|line| line.trim() == commit)
+            .map(|index| format!("stash@{{{index}}}"))
+    }
+
+    fn newest_stash_commit(&self) -> Option<String> {
+        let out = self
+            .git(&["rev-parse", "--quiet", "--verify", "refs/stash"])
+            .ok()?;
+        let commit = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!commit.is_empty()).then_some(commit)
+    }
+
+    fn git(&self, args: &[&str]) -> Result<Output> {
+        match &self.dir {
+            Some(dir) => run_in_dir(dir, args),
+            None => run(args),
+        }
+    }
 }

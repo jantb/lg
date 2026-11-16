@@ -171,12 +171,15 @@ fn pump_output(
     tx: Sender<PtyMsg>,
 ) {
     let mut buffer = vec![0u8; READ_BUFFER];
+    let mut listening = true;
     loop {
         match reader.read(&mut buffer) {
             Ok(0) => break,
             Ok(read) => {
-                if tx.send(PtyMsg::Output(buffer[..read].to_vec())).is_err() {
-                    return;
+                // Nobody reads the output of a closed session, but the process
+                // still has to be waited for once it is done writing.
+                if listening {
+                    listening = tx.send(PtyMsg::Output(buffer[..read].to_vec())).is_ok();
                 }
             }
             // A closed pty reads as an error on some platforms rather than as
@@ -333,6 +336,39 @@ mod tests {
         assert!(
             !outlived,
             "{grandchild} outlived the session it was started from"
+        );
+    }
+
+    /// A TUI told to hang up usually restores the terminal on its way out, and
+    /// those bytes arrive after lg has stopped listening. The process still has
+    /// to be reaped, or every closed session leaves a zombie behind.
+    #[cfg(unix)]
+    #[test]
+    fn a_session_that_writes_while_closing_is_still_reaped() {
+        let script = "trap 'sleep 0.3; printf restoring; exit 0' HUP; printf ready; \
+                      while :; do sleep 1; done";
+        let process = PtyProcess::start(&sh(script), (24, 80)).expect("start");
+        let pid = process.pid.expect("a pid") as i32;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut output = String::new();
+        while !output.contains("ready") && Instant::now() < deadline {
+            if let Ok(PtyMsg::Output(bytes)) = process.try_recv() {
+                output.push_str(&String::from_utf8_lossy(&bytes));
+            } else {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        assert!(output.contains("ready"), "never started: {output:?}");
+
+        drop(process);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while alive(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !alive(pid),
+            "{pid} was left unreaped after its session closed"
         );
     }
 

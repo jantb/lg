@@ -68,16 +68,19 @@ pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
 }
 
 /// The byte Ctrl+key sends: `Ctrl+a` is 1, up to `Ctrl+z` at 26, plus the
-/// handful of punctuation forms that have one.
+/// handful of punctuation forms that have one. The digits are xterm's aliases
+/// for those, and how crossterm reads them back off a terminal without the
+/// kitty protocol.
 fn control_byte(c: char) -> Option<u8> {
     let byte = match c.to_ascii_lowercase() {
         'a'..='z' => (c.to_ascii_lowercase() as u8) - b'a' + 1,
-        '@' | ' ' => 0,
-        '[' => 27,
-        '\\' => 28,
-        ']' => 29,
-        '^' => 30,
-        '_' | '?' => 31,
+        '@' | ' ' | '2' => 0,
+        '[' | '3' => 27,
+        '\\' | '4' => 28,
+        ']' | '5' => 29,
+        '^' | '6' => 30,
+        '_' | '?' | '/' | '7' => 31,
+        '8' => 127,
         _ => return None,
     };
     Some(byte)
@@ -181,6 +184,24 @@ mod tests {
             encode(with(KeyCode::Char(']'), KeyModifiers::CONTROL)),
             [29]
         );
+    }
+
+    /// Without the kitty protocol the host terminal sends Ctrl+\, Ctrl+^ and
+    /// Ctrl+_ as bytes that crossterm reads back as Ctrl+4, Ctrl+6 and Ctrl+7,
+    /// and a kitty terminal reports Ctrl+/ as itself. All of them still have to
+    /// reach the program as the control byte xterm sends: SIGQUIT, and
+    /// readline's undo.
+    #[test]
+    fn control_digits_and_slash_send_what_xterm_sends() {
+        let ctrl = |c| encode(with(KeyCode::Char(c), KeyModifiers::CONTROL));
+        assert_eq!(ctrl('\\'), [28]);
+        assert_eq!(ctrl('2'), [0]);
+        assert_eq!(ctrl('3'), [27]);
+        assert_eq!(ctrl('4'), [28]);
+        assert_eq!(ctrl('6'), [30]);
+        assert_eq!(ctrl('7'), [31]);
+        assert_eq!(ctrl('/'), [31]);
+        assert_eq!(ctrl('8'), [127]);
     }
 
     #[test]

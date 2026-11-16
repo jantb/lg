@@ -6,6 +6,7 @@
 //! large build log never floods a tool result.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::mcp::output;
 
@@ -21,11 +22,24 @@ pub(crate) fn truncate_text(text: &str, max_chars: usize) -> String {
     truncated
 }
 
-fn write_output_file(project_root: &Path, label: &str, text: &str) -> Option<PathBuf> {
+pub(crate) fn output_dir(project_root: &Path) -> std::io::Result<PathBuf> {
     let dir = crate::config::project::global_profile_dir(project_root).join("output");
-    crate::config::project::create_private_dir(&dir).ok()?;
+    crate::config::project::create_private_dir(&dir)?;
+    Ok(dir)
+}
+
+/// A log path in the output directory that no other run uses, including one
+/// started in the same second or by another server process.
+pub(crate) fn new_output_log_path(project_root: &Path, label: &str) -> std::io::Result<PathBuf> {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-    let path = dir.join(format!("{label}-{ts}.log"));
+    let pid = std::process::id();
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    Ok(output_dir(project_root)?.join(format!("{label}-{ts}-{pid}-{sequence}.log")))
+}
+
+fn write_output_file(project_root: &Path, label: &str, text: &str) -> Option<PathBuf> {
+    let path = new_output_log_path(project_root, label).ok()?;
     std::fs::write(&path, text).ok()?;
     Some(path)
 }

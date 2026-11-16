@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::state::{GitHubAction, OperationKind};
+use crate::state::{AppState, GitHubAction, OperationKind};
 
 use super::{App, spawn_operation};
 
@@ -101,21 +101,7 @@ impl App {
                     move || crate::github::create(&remote, &pr),
                 );
             }
-            GitHubAction::Clone { repo, dir } => {
-                let target = PathBuf::from(&dir);
-                spawn_operation(state, "cloning", OperationKind::Clone, move || {
-                    crate::github::clone(&repo, Path::new(&dir))
-                });
-                // Only remembered once the clone is actually under way; a
-                // blocked one must not send lg somewhere later.
-                if state
-                    .operation_job
-                    .as_ref()
-                    .is_some_and(|job| job.kind == OperationKind::Clone)
-                {
-                    state.github.clone_target = Some(target);
-                }
-            }
+            GitHubAction::Clone { repo, dir } => start_clone(state, repo, dir),
             GitHubAction::OpenInBrowser { url } => match crate::github::open_in_browser(&url) {
                 Ok(()) => state.set_status(format!("opened {url}"), false),
                 Err(err) => state.set_status(format!("{err:#}"), true),
@@ -163,5 +149,49 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+/// Start cloning `repo` into `dir`, which lg switches to once the clone lands.
+fn start_clone(state: &mut AppState, repo: String, dir: String) {
+    let target = PathBuf::from(&dir);
+    let operation_was_running = state.operation_job.is_some();
+    spawn_operation(state, "cloning", OperationKind::Clone, move || {
+        crate::github::clone(&repo, Path::new(&dir))
+    });
+    // Only remembered once this clone is actually under way; a blocked one
+    // must not send lg somewhere later, nor redirect a clone already running.
+    if !operation_was_running && state.operation_job.is_some() {
+        state.github.clone_target = Some(target);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::OperationJob;
+
+    #[test]
+    fn a_clone_asked_for_while_another_runs_leaves_the_running_one_where_it_lands() {
+        let mut state = AppState::new();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        state.operation_job = Some(OperationJob {
+            rx,
+            handle: None,
+            spinner: 0,
+            label: "cloning",
+            kind: OperationKind::Clone,
+            step: None,
+        });
+        let first = PathBuf::from("/tmp/lg-test-first-clone");
+        state.github.clone_target = Some(first.clone());
+
+        start_clone(
+            &mut state,
+            "owner/second".into(),
+            "/tmp/lg-test-second-clone".into(),
+        );
+
+        assert_eq!(state.github.clone_target, Some(first));
     }
 }

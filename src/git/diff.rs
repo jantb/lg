@@ -1,13 +1,28 @@
 use anyhow::Result;
 use std::path::Path;
 
-use std::process::Command;
+use std::process::{Command, Output};
 
 use super::attrs::suppress_generated_diff;
 use super::{git_command, git_command_in_dir, run};
 
+/// `git diff` as every diff lg parses is read: plain text with `a/` and `b/`
+/// prefixes, whatever colour, prefix or external diff tool the user set up for
+/// their own terminal. Hunk staging finds the file by those prefixes.
+pub(super) const PLAIN_DIFF: [&str; 5] = [
+    "diff",
+    "--no-color",
+    "--no-ext-diff",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+];
+
+fn plain_diff(args: &[&str]) -> Result<Output> {
+    run(&[&PLAIN_DIFF[..], args].concat())
+}
+
 pub fn staged_diff() -> Result<String> {
-    let out = run(&["diff", "--cached"])?;
+    let out = plain_diff(&["--cached"])?;
     Ok(suppress_generated_diff(&String::from_utf8_lossy(
         &out.stdout,
     )))
@@ -28,8 +43,8 @@ pub fn repo_root_at(dir: &Path) -> Option<String> {
 }
 
 pub fn all_diffs() -> Result<String> {
-    let cached_out = run(&["diff", "--cached"])?;
-    let worktree_out = run(&["diff"])?;
+    let cached_out = plain_diff(&["--cached"])?;
+    let worktree_out = plain_diff(&[])?;
     let cached = String::from_utf8_lossy(&cached_out.stdout).into_owned();
     let worktree = with_untracked_diffs(
         String::from_utf8_lossy(&worktree_out.stdout).into_owned(),
@@ -42,8 +57,8 @@ pub fn all_diffs() -> Result<String> {
 }
 
 pub fn file_diff(path: &str) -> Result<String> {
-    let cached_out = run(&["diff", "--cached", "--", path])?;
-    let worktree_out = run(&["diff", "--", path])?;
+    let cached_out = plain_diff(&["--cached", "--", path])?;
+    let worktree_out = plain_diff(&["--", path])?;
     let cached = String::from_utf8_lossy(&cached_out.stdout).into_owned();
     let worktree = with_untracked_diffs(
         String::from_utf8_lossy(&worktree_out.stdout).into_owned(),
@@ -62,8 +77,8 @@ pub fn folder_diff(prefix: &str) -> Result<String> {
     } else {
         format!("{prefix}/")
     };
-    let cached_out = run(&["diff", "--cached", "--", &spec])?;
-    let worktree_out = run(&["diff", "--", &spec])?;
+    let cached_out = plain_diff(&["--cached", "--", &spec])?;
+    let worktree_out = plain_diff(&["--", &spec])?;
     let cached = String::from_utf8_lossy(&cached_out.stdout).into_owned();
     let worktree = with_untracked_diffs(
         String::from_utf8_lossy(&worktree_out.stdout).into_owned(),
@@ -120,20 +135,48 @@ pub(super) fn label_commit_patch(text: &str) -> String {
 }
 
 fn with_untracked_diffs(mut diff: String, pathspec: &str) -> Result<String> {
-    for path in untracked_paths(pathspec)? {
-        let untracked = untracked_file_diff(&path)?;
-        if untracked.trim().is_empty() {
+    push_added_file_diffs(&mut diff, &untracked_paths(pathspec)?, untracked_file_diff)?;
+    Ok(diff)
+}
+
+/// What the pane will take of new files before the rest is left out. Past
+/// this much text there is nothing more to see, and every file read is a git
+/// process of its own.
+const MAX_NEW_DIFF_BYTES: usize = 256 * 1024;
+
+/// Append the diff adding each of `paths` would be, until they come to
+/// `MAX_NEW_DIFF_BYTES`, with a line saying how many files were left out.
+pub(super) fn push_added_file_diffs(
+    text: &mut String,
+    paths: &[String],
+    added_file_diff: impl Fn(&str) -> Result<String>,
+) -> Result<()> {
+    let start = text.len();
+    let mut shown = 0usize;
+    for path in paths {
+        if text.len() - start >= MAX_NEW_DIFF_BYTES {
+            break;
+        }
+        let diff = added_file_diff(path)?;
+        shown += 1;
+        if diff.trim().is_empty() {
             continue;
         }
-        if !diff.is_empty() && !diff.ends_with('\n') {
-            diff.push('\n');
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
         }
-        diff.push_str(&untracked);
-        if !diff.ends_with('\n') {
-            diff.push('\n');
+        text.push_str(&diff);
+        if !text.ends_with('\n') {
+            text.push('\n');
         }
     }
-    Ok(diff)
+    if shown < paths.len() {
+        text.push_str(&format!(
+            "\n... {} more file(s) not shown\n",
+            paths.len() - shown
+        ));
+    }
+    Ok(())
 }
 
 fn untracked_paths(pathspec: &str) -> Result<Vec<String>> {
@@ -154,10 +197,7 @@ fn untracked_paths(pathspec: &str) -> Result<Vec<String>> {
 }
 
 fn untracked_file_diff(path: &str) -> Result<String> {
-    no_index_diff(
-        git_command(&["diff", "--no-index", "--", "/dev/null", path]),
-        path,
-    )
+    no_index_diff(git_command(&added_file_diff_args(path)), path)
 }
 
 /// A file with nothing to compare against, shown as the diff that adding it
@@ -165,10 +205,11 @@ fn untracked_file_diff(path: &str) -> Result<String> {
 /// lets a plain directory be shown this way too — so the directory is named
 /// outright rather than taken from whichever checkout is selected.
 pub(super) fn added_file_diff(dir: &Path, path: &str) -> Result<String> {
-    no_index_diff(
-        git_command_in_dir(dir, &["diff", "--no-index", "--", "/dev/null", path]),
-        path,
-    )
+    no_index_diff(git_command_in_dir(dir, &added_file_diff_args(path)), path)
+}
+
+fn added_file_diff_args(path: &str) -> Vec<&str> {
+    [&PLAIN_DIFF[..], &["--no-index", "--", "/dev/null", path]].concat()
 }
 
 /// A `--no-index` diff reports a difference with exit code 1, which for this
@@ -176,9 +217,7 @@ pub(super) fn added_file_diff(dir: &Path, path: &str) -> Result<String> {
 fn no_index_diff(mut command: Command, path: &str) -> Result<String> {
     let out = command.output()?;
     if out.status.success() || out.status.code() == Some(1) {
-        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-        normalize_no_index_path(&mut text, path);
-        Ok(text)
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr);
         Err(anyhow::anyhow!(
@@ -186,15 +225,6 @@ fn no_index_diff(mut command: Command, path: &str) -> Result<String> {
             stderr.trim()
         ))
     }
-}
-
-fn normalize_no_index_path(diff: &mut String, path: &str) {
-    let Some(file_name) = Path::new(path).file_name().and_then(|name| name.to_str()) else {
-        return;
-    };
-    let from = format!("b/{file_name}");
-    let to = format!("b/{path}");
-    *diff = diff.replace(&from, &to);
 }
 
 #[cfg(test)]

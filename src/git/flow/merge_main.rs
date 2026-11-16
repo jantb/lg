@@ -13,11 +13,11 @@ pub fn flow_merge_main_into_current(current_branch: &str) -> Result<String> {
 
 pub fn flow_merge_main_into_all_local_branches() -> Result<String> {
     let original_branch = head_branch().ok();
-    let stashed = stash_uncommitted_changes("lg: auto-stash before syncing all branches")?;
+    let stashed = AutoStash::take("lg: auto-stash before syncing all branches")?;
     let result = flow_merge_main_into_all_local_branches_clean(original_branch.as_deref());
 
     if result.is_err() && !conflicted_files().unwrap_or_default().is_empty() {
-        return result.map(|summary| summary_with_stash_notice(summary, stashed));
+        return result.map(|summary| summary_with_stash_notice(summary, &stashed));
     }
 
     if let Some(original) = original_branch.as_deref()
@@ -28,8 +28,8 @@ pub fn flow_merge_main_into_all_local_branches() -> Result<String> {
     {
         run_combined(&["checkout", original])?;
     }
-    pop_stash_with_index_if_needed(stashed)?;
-    result.map(|summary| summary_with_stash_notice(summary, stashed))
+    stashed.pop_with_index()?;
+    result.map(|summary| summary_with_stash_notice(summary, &stashed))
 }
 
 fn flow_merge_main_into_all_local_branches_clean(original_branch: Option<&str>) -> Result<String> {
@@ -137,14 +137,14 @@ pub fn flow_merge_main_into_current_with_progress(
 ) -> Result<String> {
     ensure_merge_main_branch(current_branch)?;
     progress();
-    let stashed = stash_uncommitted_changes(AUTO_STASH_MERGE_MAIN)?;
+    let stashed = AutoStash::take(AUTO_STASH_MERGE_MAIN)?;
     progress();
     let safety_ref = create_safety_ref("merge-main")?;
     match merge_main_into_current(current_branch, progress) {
         Ok(mut steps) => {
             progress();
-            pop_stash_if_needed(stashed)?;
-            if stashed {
+            stashed.pop()?;
+            if stashed.is_taken() {
                 steps.push("restored stashed changes".to_string());
             }
             progress();
@@ -153,7 +153,7 @@ pub fn flow_merge_main_into_current_with_progress(
         }
         Err(err) => Err(restore_auto_stash_after_failure(
             err,
-            stashed,
+            &stashed,
             AUTO_STASH_MERGE_MAIN,
             current_branch,
         )),

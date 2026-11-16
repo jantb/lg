@@ -1,10 +1,12 @@
 //! Opening a walk over the branch, what is not pushed or a pull request, and
 //! reading the change into it.
 
+use std::collections::HashSet;
+
 use crate::git::guided::GuidedFile;
 use crate::state::{AppState, Modal, PendingAction};
 
-use super::{Guided, Loaded, OVERVIEW, Overview, Source, work};
+use super::{Guided, Loaded, OVERVIEW, OVERVIEW_KEY, Overview, Source, work};
 
 /// Walk the branch on screen against main, or on main itself, what has not
 /// been pushed yet.
@@ -34,8 +36,10 @@ pub fn open_branch(state: &mut AppState) {
 /// Walk the checkout as `source` has it, or go back to that walk if it is the
 /// one already under way.
 fn open_local(state: &mut AppState, source: Source) {
+    let repository = crate::git::common_git_dir().ok();
     if let Some(guided) = state.guided.as_ref()
         && guided.source.progress_key() == source.progress_key()
+        && guided.repository == repository
     {
         // Back to the walk already under way, rebuilt in case the code moved.
         state.modal = Modal::GuidedReview;
@@ -46,10 +50,10 @@ fn open_local(state: &mut AppState, source: Source) {
         Source::Unpushed { .. } => "what is not pushed",
         _ => "the branch",
     };
-    let mut guided = Guided::new(source);
+    let mut guided = Guided::in_repository(source, repository);
     guided.chat_width = state.guided_chat_width;
     guided.loading = Some(work::load_local(&guided.source));
-    state.guided = Some(Box::new(guided));
+    replace_walk(state, guided);
     state.modal = Modal::GuidedReview;
     state.set_status(format!("reading {what} for a guided review\u{2026}"), false);
 }
@@ -114,12 +118,35 @@ pub fn open_pull_request(state: &mut AppState, pr: &crate::github::PullRequest) 
     guided.chat_width = state.guided_chat_width;
     guided.loading = Some(work::load_pull_request(pr.clone(), local));
     guided.pull_request = Some(pr.clone());
-    state.guided = Some(Box::new(guided));
+    replace_walk(state, guided);
     state.modal = Modal::GuidedReview;
     state.set_status(
         format!("reading #{} for a guided review\u{2026}", pr.number),
         false,
     );
+}
+
+/// `guided` takes the place of the walk under way, whose chat is closed:
+/// nothing tracks it once its walk is gone.
+fn replace_walk(state: &mut AppState, guided: Guided) {
+    close_walk(state);
+    state.guided = Some(Box::new(guided));
+}
+
+fn close_walk(state: &mut AppState) {
+    if let Some(chat) = state.guided.take().and_then(|old| old.chat) {
+        state.sessions.close(chat);
+    }
+}
+
+/// lg is moving to another repository: the walk is about the one being left,
+/// so it closes with its chat. Its notes and marks are kept on disk, and
+/// reopening the review there resumes them.
+pub fn leave_repository(state: &mut AppState) {
+    close_walk(state);
+    if state.modal == Modal::GuidedReview {
+        state.modal = Modal::None;
+    }
 }
 
 /// Open the pull request under review on GitHub. A walk over local changes has
@@ -226,6 +253,7 @@ pub(super) fn apply_loaded(guided: &mut Guided, loaded: Loaded, first_load: bool
     guided.steps = loaded.steps;
     guided.overview = loaded.overview.text;
     guided.brief = loaded.overview.brief;
+    drop_stale_work(guided);
     if was_final {
         guided.current = guided.final_step();
     } else if let Some((key, path)) = previous.clone() {
@@ -255,6 +283,26 @@ pub(super) fn apply_loaded(guided: &mut Guided, loaded: Loaded, first_load: bool
         guided.cursor = guided.step().map(GuidedFile::first_changed).unwrap_or(0);
         guided.side_scroll = 0;
     }
+}
+
+/// Reads and checks of a version the change no longer has are let go, so
+/// they stop holding the slots the reads of what is there now wait for.
+fn drop_stale_work(guided: &mut Guided) {
+    let current: HashSet<String> = guided
+        .steps
+        .iter()
+        .map(GuidedFile::key)
+        .chain([OVERVIEW_KEY.to_string(), guided.final_key()])
+        .collect();
+    let stale: Vec<String> = guided
+        .asks
+        .iter()
+        .map(|ask| ask.key.clone())
+        .chain(guided.checks.iter().map(|check| check.key.clone()))
+        .filter(|key| !current.contains(key))
+        .collect();
+    super::assist::forget(guided, &stale);
+    guided.check_queue.retain(|key| current.contains(key));
 }
 
 fn first_unreviewed(guided: &Guided) -> Option<usize> {

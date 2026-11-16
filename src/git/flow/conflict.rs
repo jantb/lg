@@ -3,7 +3,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use super::super::{head_branch, run, run_combined, run_in_dir, stage};
+use super::super::{head_branch, parse_porcelain_xy, run, run_combined, run_in_dir, stage};
 use super::*;
 
 mod hunks;
@@ -11,19 +11,23 @@ mod hunks;
 pub use hunks::{ConflictHunk, ConflictedFile, FilePart, holds_conflict_marker, marker_line};
 
 pub fn conflicted_files() -> Result<Vec<String>> {
-    let out = run(&["status", "--porcelain"])?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut files = Vec::new();
-    for line in text.lines() {
-        if line.len() < 4 {
-            continue;
-        }
-        let status = &line[..2];
-        if matches!(status, "DD" | "AU" | "UD" | "UA" | "DU" | "AA" | "UU") {
-            files.push(line[3..].to_string());
-        }
-    }
-    Ok(files)
+    let out = run(&["status", "-z", "--porcelain=v1"])?;
+    Ok(parse_porcelain_xy(&out.stdout)
+        .into_iter()
+        .filter(|entry| {
+            matches!(
+                (entry.x, entry.y),
+                ('D', 'D')
+                    | ('A', 'U')
+                    | ('U', 'D')
+                    | ('U', 'A')
+                    | ('D', 'U')
+                    | ('A', 'A')
+                    | ('U', 'U')
+            )
+        })
+        .map(|entry| entry.path)
+        .collect())
 }
 
 /// The commit one side of a conflict last touched a file in.

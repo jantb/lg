@@ -184,7 +184,13 @@ fn dir_name(path: &str) -> &str {
 /// — the only thing `git init` has to work on.
 pub(crate) fn init_available(state: &AppState) -> bool {
     selected_checkout(state)
-        .is_some_and(|(path, _)| crate::git::repo_root_at(std::path::Path::new(&path)).is_none())
+        .is_some_and(|(path, _)| !inside_a_work_tree(std::path::Path::new(&path)))
+}
+
+/// Looks for the `.git` that git itself would find, rather than asking git:
+/// the menu checks this on every frame it is drawn.
+fn inside_a_work_tree(path: &std::path::Path) -> bool {
+    path.ancestors().any(|dir| dir.join(".git").exists())
 }
 
 /// Make the selected folder a repository. In practice that is the workspace

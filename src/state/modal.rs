@@ -81,13 +81,7 @@ impl AppState {
             })
             .unwrap_or_else(|| crate::preferences::load().config.agents);
         self.agent_pick_sandboxed = sandboxed;
-        self.agent_pick_idx = crate::session::SessionKind::AGENTS
-            .iter()
-            .position(|kind| *kind == self.preferred_agent)
-            .unwrap_or(0);
-        if let Some(index) = self.agent_profiles.iter().position(|p| p.default) {
-            self.agent_pick_idx = index;
-        }
+        self.agent_pick_idx = agent_pick_on_open(&self.agent_profiles, self.preferred_agent);
         for profile in &mut self.agent_profiles {
             if !sandboxed || profile.adapter == crate::preferences::Adapter::Terminal {
                 profile.confinement = crate::preferences::default_confinement(profile.adapter);
@@ -724,5 +718,76 @@ impl AppState {
             DeleteBranchField::Force
         };
         self.modal = Modal::DeleteBranch;
+    }
+}
+
+/// Where the agent picker starts: the saved default profile, else the agent
+/// started last time.
+fn agent_pick_on_open(
+    profiles: &[crate::preferences::Agent],
+    preferred: crate::session::SessionKind,
+) -> usize {
+    if profiles.is_empty() {
+        return crate::session::SessionKind::AGENTS
+            .iter()
+            .position(|kind| *kind == preferred)
+            .unwrap_or(0);
+    }
+    profiles
+        .iter()
+        .position(|p| p.default)
+        .or_else(|| {
+            profiles
+                .iter()
+                .position(|p| crate::agents::kind(p) == preferred)
+        })
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::preferences::{Adapter, Agent};
+    use crate::session::SessionKind;
+
+    fn profile(name: &str, adapter: Adapter, default: bool) -> Agent {
+        Agent {
+            name: name.into(),
+            adapter,
+            default,
+            ..Agent::default()
+        }
+    }
+
+    #[test]
+    fn the_picker_opens_on_the_profile_of_the_agent_started_last_when_none_is_default() {
+        let profiles = [
+            profile("codex-custom", Adapter::Codex, false),
+            profile("claude", Adapter::Claude, false),
+        ];
+
+        let index = agent_pick_on_open(&profiles, SessionKind::Claude);
+
+        assert_eq!(profiles[index].name, "claude");
+    }
+
+    #[test]
+    fn the_saved_default_profile_wins_over_the_agent_started_last() {
+        let profiles = [
+            profile("codex-custom", Adapter::Codex, false),
+            profile("claude", Adapter::Claude, false),
+            profile("pi", Adapter::Pi, true),
+        ];
+
+        let index = agent_pick_on_open(&profiles, SessionKind::Claude);
+
+        assert_eq!(profiles[index].name, "pi");
+    }
+
+    #[test]
+    fn without_profiles_the_picker_opens_on_the_agent_started_last() {
+        let index = agent_pick_on_open(&[], SessionKind::Pi);
+
+        assert_eq!(SessionKind::AGENTS[index], SessionKind::Pi);
     }
 }

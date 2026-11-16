@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 
+use super::stash::AutoStash;
 use super::{counts_ahead_behind, run, run_combined};
 
 /// What a fetch of every remote came to.
@@ -160,7 +161,7 @@ pub fn pull() -> Result<String> {
         anyhow::bail!("current branch has no upstream to pull from");
     }
     let stale = fetch_before("pull");
-    let stashed = stash_uncommitted_changes("lg: auto-stash before pull")?;
+    let stashed = AutoStash::take("lg: auto-stash before pull")?;
     let res = if let Ok((ahead, behind)) = counts_ahead_behind()
         && ahead > 0
         && behind > 0
@@ -172,7 +173,7 @@ pub fn pull() -> Result<String> {
 
     match res {
         Ok(mut out) => {
-            if let Err(err) = pop_stash_with_index_if_needed(stashed) {
+            if let Err(err) = stashed.pop_with_index() {
                 if !out.is_empty() && !out.ends_with('\n') {
                     out.push('\n');
                 }
@@ -182,14 +183,14 @@ pub fn pull() -> Result<String> {
                 ));
                 anyhow::bail!("{}", with_fetch_warning(out, stale.as_deref()).trim_end());
             }
-            if stashed {
+            if stashed.is_taken() {
                 out.push_str("applied stashed local changes after pull\n");
             }
             Ok(with_fetch_warning(out, stale.as_deref()))
         }
         Err(err) => {
             let mut message = err.to_string();
-            if stashed {
+            if stashed.is_taken() {
                 message.push_str("\nauto-stashed local changes were left in stash");
             }
             Err(anyhow::anyhow!(
@@ -209,26 +210,6 @@ pub fn merge_upstream() -> Result<String> {
             with_fetch_warning(err.to_string(), stale.as_deref()).trim_end()
         )),
     }
-}
-
-fn has_uncommitted_changes() -> Result<bool> {
-    let out = run(&["status", "--porcelain"])?;
-    Ok(!out.stdout.is_empty())
-}
-
-fn stash_uncommitted_changes(message: &str) -> Result<bool> {
-    let stashed = has_uncommitted_changes()?;
-    if stashed {
-        run(&["stash", "push", "-u", "-m", message])?;
-    }
-    Ok(stashed)
-}
-
-fn pop_stash_with_index_if_needed(stashed: bool) -> Result<()> {
-    if stashed {
-        run(&["stash", "pop", "--index"])?;
-    }
-    Ok(())
 }
 
 /// What a push with `--force-with-lease` of the current branch would replace on

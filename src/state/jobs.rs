@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::thread::JoinHandle;
 
@@ -135,6 +136,31 @@ impl_background_job! {
     ConflictResolveJob => ConflictResolveMsg, "conflict resolution",
     WorkflowJob => WorkflowMsg, "branch action",
 }
+
+/// A job that reads the checkout lg had on screen when it started, and whose
+/// answer is about that checkout only.
+pub trait ReadsCheckout {
+    /// Where its git commands run: [`crate::git::repo_dir`] when it started.
+    fn checkout(&self) -> Option<&Path>;
+
+    /// Whether lg is still on that checkout, so what the job read belongs on
+    /// screen. After a switch it is about the checkout left behind.
+    fn is_for_current_checkout(&self) -> bool {
+        self.checkout() == crate::git::repo_dir().as_deref()
+    }
+}
+
+macro_rules! impl_reads_checkout {
+    ($($job:ident),+ $(,)?) => { $(
+        impl ReadsCheckout for $job {
+            fn checkout(&self) -> Option<&Path> {
+                self.checkout.as_deref()
+            }
+        }
+    )+ };
+}
+
+impl_reads_checkout!(RefreshJob, DiffJob, CommitLogJob);
 
 pub const SPINNER_FRAMES: &[&str] = &[
     "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
@@ -384,6 +410,7 @@ pub struct CommitLogJob {
     pub handle: Option<JoinHandle<()>>,
     pub spinner: usize,
     pub branch: String,
+    pub checkout: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -393,6 +420,7 @@ pub struct RefreshJob {
     pub spinner: usize,
     pub refresh_diff: bool,
     pub scope: RefreshScope,
+    pub checkout: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -406,6 +434,10 @@ pub struct DiffJob {
     pub handle: Option<JoinHandle<()>>,
     pub spinner: usize,
     pub source: DiffSource,
+    pub checkout: Option<PathBuf>,
+    /// The diff was asked for again while this job read it, so what it
+    /// read may be from before the change that asked.
+    pub read_again: bool,
 }
 
 /// How one pass of the local model over the conflicted files is going.

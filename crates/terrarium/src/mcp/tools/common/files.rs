@@ -149,7 +149,9 @@ pub(crate) async fn search_files(
         args.push("--glob".to_string());
         args.push(glob.clone());
     }
+    args.push("--regexp".to_string());
     args.push(input.pattern.clone());
+    args.push("--".to_string());
     args.push(search_path);
 
     let mut command = Command::new("rg");
@@ -494,6 +496,45 @@ mod tests {
         assert!(
             text.contains("linked/src/lib.rs"),
             "expected linked repo match in: {text}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn a_pattern_that_looks_like_a_flag_is_searched_for() {
+        let base = temp_dir(&format!(
+            "search_files_flag_pattern_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("notes.txt"), "build with --files enabled\n").unwrap();
+
+        let result = search_files(&base, Some(json!({"pattern": "--files"})))
+            .await
+            .unwrap();
+        let text = &result.content[0].text;
+
+        assert!(
+            text.contains("build with --files enabled"),
+            "expected the matching line in: {text}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn a_directory_whose_name_looks_like_a_flag_is_searched() {
+        let base = temp_dir(&format!("search_files_flag_path_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(base.join("-sub")).unwrap();
+        std::fs::write(base.join("-sub/lib.rs"), "needle\n").unwrap();
+
+        let result = search_files(&base, Some(json!({"path": "-sub", "pattern": "needle"})))
+            .await
+            .unwrap();
+        let text = &result.content[0].text;
+
+        assert!(
+            text.contains("lib.rs"),
+            "expected a match under -sub in: {text}"
         );
         let _ = std::fs::remove_dir_all(&base);
     }

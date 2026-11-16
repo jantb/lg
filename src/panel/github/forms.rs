@@ -10,9 +10,10 @@ use super::browse::{dispatch, select_pr};
 use super::lookup::{is_current_branch, selected_pr};
 use super::{Compose, CreateField, CreateForm, MergeForm, MergeRow, Mode};
 
-pub(super) fn compose(state: &mut AppState, kind: Compose) {
+pub(super) fn compose(state: &mut AppState, kind: Compose, number: u64) {
     state.github.mode = Mode::Compose {
         kind,
+        number,
         text: TextInput::default(),
     };
 }
@@ -82,10 +83,10 @@ pub(super) fn start_create(state: &mut AppState) {
 
 pub(super) fn compose_key(state: &mut AppState, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let Mode::Compose { kind, text } = &mut state.github.mode else {
+    let Mode::Compose { kind, number, text } = &mut state.github.mode else {
         return;
     };
-    let kind = *kind;
+    let (kind, number) = (*kind, *number);
     match key.code {
         KeyCode::Esc => state.github.mode = Mode::Browse,
         KeyCode::Char('u') if ctrl => text.clear(),
@@ -95,10 +96,6 @@ pub(super) fn compose_key(state: &mut AppState, key: KeyEvent) {
                 state.set_status("write something first; Esc cancels", false);
                 return;
             }
-            let Some(number) = selected_pr(state).map(|pr| pr.number) else {
-                state.github.mode = Mode::Browse;
-                return;
-            };
             state.github.mode = Mode::Browse;
             let action = match kind {
                 Compose::Approve => GitHubAction::Review {

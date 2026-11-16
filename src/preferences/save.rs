@@ -5,8 +5,10 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use super::Preferences;
-use super::cache::{invalidate, load};
-use super::layers::{Scope, checkout, folder_path, layers, merge, read_patch, scope_path};
+use super::cache::{configured_category, invalidate, load};
+use super::layers::{
+    DETECTED_CATEGORY, Scope, checkout, folder_path, layers, merge, read_patch, scope_path,
+};
 
 pub fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     use std::io::Write;
@@ -23,9 +25,64 @@ pub fn save_category(scope: Scope, category: &str, value: serde_json::Value) -> 
     save_at(scope_path(scope)?, None, category, value)
 }
 
-pub fn save_folder(folder: &Path, category: &str, value: serde_json::Value) -> Result<()> {
+/// Write `changes` — only the parts of `category` someone changed — into the
+/// file of `scope`, keeping whatever else that file already says. Whatever it
+/// does not say keeps coming from the broader files, the defaults and the
+/// environment, as before the save.
+pub fn save_changes(scope: Scope, category: &str, changes: serde_json::Value) -> Result<()> {
+    write_changes(scope_path(scope)?, None, category, changes)
+}
+
+/// [`save_changes`] into the file of the folder `folder`.
+pub fn save_folder_changes(
+    folder: &Path,
+    category: &str,
+    changes: serde_json::Value,
+) -> Result<()> {
     let folder = folder.canonicalize().context("folder must exist")?;
-    save_at(folder_path(&folder), Some(&folder), category, value)
+    write_changes(folder_path(&folder), Some(&folder), category, changes)
+}
+
+/// The parts of `edited` that differ from `original`, nested as they are, or
+/// `None` when nothing does. A list is taken whole: a file can only replace
+/// one, so a row deleted from it is only kept deleted that way.
+pub fn changed_parts(
+    original: &serde_json::Value,
+    edited: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    match (original.as_object(), edited.as_object()) {
+        (Some(before), Some(after)) => {
+            let changed: serde_json::Map<String, serde_json::Value> = after
+                .iter()
+                .filter_map(|(key, value)| {
+                    let part = match before.get(key) {
+                        Some(old) => changed_parts(old, value)?,
+                        None => value.clone(),
+                    };
+                    Some((key.clone(), part))
+                })
+                .collect();
+            (!changed.is_empty()).then_some(serde_json::Value::Object(changed))
+        }
+        _ => (original != edited).then(|| edited.clone()),
+    }
+}
+
+fn write_changes(
+    path: PathBuf,
+    folder: Option<&Path>,
+    category: &str,
+    changes: serde_json::Value,
+) -> Result<()> {
+    // Detected branches only hold while no file sets the category, so the
+    // first file to set it has to carry what was detected along.
+    let mut value = if category == DETECTED_CATEGORY && !configured_category(category) {
+        serde_json::to_value(load().config)?[category].take()
+    } else {
+        existing_category(&path, category)?
+    };
+    merge(&mut value, changes);
+    save_at(path, folder, category, value)
 }
 
 fn save_at(
@@ -71,12 +128,12 @@ pub fn save_fields(
     category: &str,
     fields: serde_json::Map<String, serde_json::Value>,
 ) -> Result<()> {
-    let path = deciding_file(fallback, category)?;
-    let mut value = existing_category(&path, category)?;
-    for (key, field) in fields {
-        value[key] = field;
-    }
-    save_at(path, None, category, value)
+    write_changes(
+        deciding_file(fallback, category)?,
+        None,
+        category,
+        serde_json::Value::Object(fields),
+    )
 }
 
 /// Take `keys` of `category` out of the file [`save_fields`] would write them

@@ -29,6 +29,7 @@ mod fields;
 mod input;
 pub use draw::render;
 use draw::*;
+pub(in crate::panel) use fields::assign_environment_branch;
 use fields::*;
 use input::*;
 pub use input::{handle_key, handle_mouse, handle_paste, poll};

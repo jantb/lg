@@ -72,7 +72,11 @@ pub enum Mode {
     #[default]
     Browse,
     /// Writing what goes with a review or a comment.
-    Compose { kind: Compose, text: TextInput },
+    Compose {
+        kind: Compose,
+        number: u64,
+        text: TextInput,
+    },
     /// Choosing how to merge.
     Merge(MergeForm),
     /// Asking before a pull request is closed.

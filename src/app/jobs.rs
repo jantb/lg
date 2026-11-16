@@ -2,7 +2,9 @@
 
 use std::thread::JoinHandle;
 
-use crate::state::{BackgroundJob, Drained, Modal, drain_receiver, stopped_unexpectedly};
+use crate::state::{
+    BackgroundJob, Drained, Modal, ReadsCheckout, drain_receiver, stopped_unexpectedly,
+};
 
 mod conflict;
 mod drain;
@@ -29,6 +31,20 @@ fn take_finished<J: BackgroundJob>(slot: &mut Option<J>) -> Option<(J, Result<J:
             None
         }
     }
+}
+
+/// The message a job ended with, or the status saying its worker died first.
+type Ended<J> = Result<<J as BackgroundJob>::Msg, String>;
+
+/// [`take_finished`] for a job that read one checkout. What it read comes back
+/// `None` when lg has moved to another checkout since: it is about the one
+/// left behind, and applying it would show — and act on — the wrong files.
+fn take_finished_here<J: BackgroundJob + ReadsCheckout>(
+    slot: &mut Option<J>,
+) -> Option<(J, Option<Ended<J>>)> {
+    let (job, msg) = take_finished(slot)?;
+    let here = job.is_for_current_checkout();
+    Some((job, here.then_some(msg)))
 }
 
 /// Everything a streaming job has sent since the last check. The job stays put:
@@ -128,7 +144,7 @@ fn open_conflict_modal_if_needed(state: &mut crate::state::AppState, log: String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{FetchJob, FetchMsg};
+    use crate::state::{FetchJob, FetchMsg, RefreshJob, RefreshMsg, RefreshScope, RefreshSnapshot};
     use std::sync::mpsc::Receiver;
 
     /// A worker that panics before it reports, the way a bug in one does.
@@ -177,6 +193,61 @@ mod tests {
         let (_, outcome) = take_finished(&mut slot).expect("finished");
 
         assert!(matches!(outcome, Ok(FetchMsg::Done(text)) if text == "fetched"));
+    }
+
+    fn finished_refresh_in(checkout: &str) -> Option<RefreshJob> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(RefreshMsg::Done(Box::new(RefreshSnapshot {
+            scope: RefreshScope::Repository,
+            repo_root: Some(checkout.into()),
+            workspace_root: None,
+            files: Some(Vec::new()),
+            branches: None,
+            remote_branches: None,
+            nested_repositories: None,
+            worktrees: None,
+            release_branches: Default::default(),
+            commits: None,
+            unpushed_shas: None,
+            branch: None,
+            remote_url: None,
+            ahead_behind: None,
+            commit_author: None,
+            decorative_animations: true,
+            errors: Vec::new(),
+        })))
+        .unwrap();
+        Some(RefreshJob {
+            rx,
+            handle: None,
+            spinner: 0,
+            refresh_diff: true,
+            scope: RefreshScope::Repository,
+            checkout: Some(checkout.into()),
+        })
+    }
+
+    /// A refresh still reading the checkout lg just left must not put that
+    /// checkout's files and branches on screen for the one it moved to.
+    #[test]
+    fn what_a_job_read_in_a_checkout_left_behind_is_not_handed_over() {
+        let mut slot = finished_refresh_in("/work/a");
+
+        let (_, read) = crate::git::with_repo("/work/b", || take_finished_here(&mut slot))
+            .expect("the job is over");
+
+        assert!(read.is_none(), "nothing from /work/a to apply");
+        assert!(slot.is_none(), "the slot is free for the next job");
+    }
+
+    #[test]
+    fn what_a_job_read_in_the_current_checkout_is_handed_over() {
+        let mut slot = finished_refresh_in("/work/a");
+
+        let (_, read) = crate::git::with_repo("/work/a", || take_finished_here(&mut slot))
+            .expect("the job is over");
+
+        assert!(matches!(read, Some(Ok(RefreshMsg::Done(_)))));
     }
 
     #[test]

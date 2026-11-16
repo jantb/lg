@@ -26,7 +26,7 @@ const WORKSPACE_DIR_DEPTH: usize = 3;
 
 /// Above this many changed files, asking git which of them are ignored costs
 /// more than just refreshing.
-const MAX_CHECKED_PATHS: usize = 4096;
+pub(super) const MAX_CHECKED_PATHS: usize = 4096;
 
 /// Where the watcher looks: the checkout, as spelled and as resolved, and the
 /// git directories it uses outside it.
@@ -145,12 +145,17 @@ fn classify_path(kind: EventKind, path: &Path, roots: &WatchRoots, nested: &[Pat
 
 /// Whether `kind` is a directory being created, removed or renamed. A removal
 /// that does not say what was removed may have been a directory.
+///
+/// A rename does not say what was renamed either, but a path it leaves behind
+/// is far more often an editor's temporary file than a directory: saving by
+/// renaming is every save. A repository renamed away is still caught as the
+/// nested repository it was.
 fn is_directory_coming_or_going(kind: EventKind, path: &Path) -> bool {
     match kind {
         EventKind::Create(CreateKind::Folder) | EventKind::Remove(RemoveKind::Folder) => true,
         EventKind::Remove(RemoveKind::Any | RemoveKind::Other) => true,
         EventKind::Create(CreateKind::Any | CreateKind::Other)
-        | EventKind::Modify(ModifyKind::Name(_)) => path.is_dir() || !path.exists(),
+        | EventKind::Modify(ModifyKind::Name(_)) => path.is_dir(),
         _ => false,
     }
 }
@@ -246,7 +251,10 @@ impl FileBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify::{Event, event::DataChange};
+    use notify::{
+        Event,
+        event::{DataChange, RenameMode},
+    };
 
     fn roots() -> WatchRoots {
         WatchRoots {
@@ -384,6 +392,39 @@ mod tests {
         let event = Event::new(EventKind::Create(CreateKind::Folder))
             .add_path(PathBuf::from("/repo/clone"));
         batch.add(&event, &roots(), &[], now);
+        assert_eq!(
+            settled(&mut batch, now).map(|due| due.scope),
+            Some(RefreshScope::Workspace)
+        );
+    }
+
+    /// Editors that save by writing a temporary file and renaming it over the
+    /// original leave a rename event for a path that is already gone.
+    #[test]
+    fn a_file_saved_by_renaming_a_temporary_file_reads_only_the_status_again() {
+        let mut batch = FileBatch::default();
+        let now = Instant::now();
+        for path in ["/repo/src/app/foo.rs.tmp", "/repo/src/app/foo.rs"] {
+            let event = Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Any)))
+                .add_path(PathBuf::from(path));
+            batch.add(&event, &roots(), &[], now);
+        }
+        assert_eq!(
+            settled(&mut batch, now).map(|due| due.scope),
+            Some(RefreshScope::Files)
+        );
+    }
+
+    #[test]
+    fn a_directory_renamed_into_the_checkout_rescans_the_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("clone")).unwrap();
+        let roots = WatchRoots::new(dir.path(), Vec::new());
+        let mut batch = FileBatch::default();
+        let now = Instant::now();
+        let event = Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Any)))
+            .add_path(dir.path().join("clone"));
+        batch.add(&event, &roots, &[], now);
         assert_eq!(
             settled(&mut batch, now).map(|due| due.scope),
             Some(RefreshScope::Workspace)

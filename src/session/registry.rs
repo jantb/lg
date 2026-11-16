@@ -27,6 +27,50 @@ impl EndedSession {
     }
 }
 
+/// What a session was started from, kept so that a restart starts it the
+/// same way.
+#[derive(Clone)]
+pub(super) enum Launcher {
+    /// Exactly this command line.
+    Fixed(Spawn),
+    /// lg's own claude.
+    Claude,
+    /// An agent from Settings.
+    Profile(crate::preferences::Agent),
+}
+
+impl Launcher {
+    /// The command line for a fresh start of `spec`, and the hook channel to
+    /// read when the program reports through one. The settings handed to claude
+    /// and the reader come from the same channel, so a session is never told
+    /// to report somewhere nobody reads.
+    ///
+    /// A checkout with nowhere to keep a hook file still gets a session; it just
+    /// has to do without claude saying what it is up to.
+    fn prepare(&self, spec: &SessionSpec) -> Result<(Spawn, Option<crate::hooks::HookChannel>)> {
+        let hooks = self
+            .reports_through_hooks()
+            .then(|| crate::hooks::install(&spec.cwd).ok())
+            .flatten();
+        let settings = hooks.as_ref().map(|channel| channel.settings.as_path());
+        let prompt = spec.prompt.as_deref();
+        let spawn = match self {
+            Self::Fixed(spawn) => spawn.clone(),
+            Self::Claude => claude_spawn(&spec.cwd, spec.sandboxed, settings, prompt),
+            Self::Profile(agent) => crate::agents::spawn(agent, &spec.cwd, settings, prompt)?,
+        };
+        Ok((spawn, hooks))
+    }
+
+    fn reports_through_hooks(&self) -> bool {
+        match self {
+            Self::Fixed(_) => false,
+            Self::Claude => true,
+            Self::Profile(agent) => agent.adapter == crate::preferences::Adapter::Claude,
+        }
+    }
+}
+
 /// Every live session, and which one is being shown.
 /// What one [`Sessions::pump`] did.
 #[derive(Debug, Default)]
@@ -199,40 +243,16 @@ impl Sessions {
         profile: &crate::preferences::Agent,
         size: (u16, u16),
     ) -> Result<SessionId> {
-        let hooks = if profile.adapter == crate::preferences::Adapter::Claude {
-            crate::hooks::install(&spec.cwd).ok()
-        } else {
-            None
-        };
-        let spawn = crate::agents::spawn(
-            profile,
-            &spec.cwd,
-            hooks.as_ref().map(|h| h.settings.as_path()),
-            spec.prompt.as_deref(),
-        )?;
-        let id = self.start_with(spec, &spawn, size)?;
-        if let Some(session) = self.get_mut(id) {
-            session.events = hooks.map(|h| h.events);
-        }
-        Ok(id)
+        self.launch(spec, Launcher::Profile(profile.clone()), size)
     }
 
-    /// Start claude, wired up to report what it is doing. A checkout with
-    /// nowhere to keep a hook file still gets a session; it just has to do
-    /// without claude saying what it is up to.
+    /// Start claude, wired up to report what it is doing.
     pub(super) fn start_claude(
         &mut self,
         spec: SessionSpec,
         size: (u16, u16),
     ) -> Result<SessionId> {
-        let hooks = crate::hooks::install(&spec.cwd).ok();
-        let settings = hooks.as_ref().map(|channel| channel.settings.as_path());
-        let spawn = claude_spawn(&spec.cwd, spec.sandboxed, settings, spec.prompt.as_deref());
-        let id = self.start_with(spec, &spawn, size)?;
-        if let Some(session) = self.get_mut(id) {
-            session.events = hooks.map(|channel| channel.events);
-        }
-        Ok(id)
+        self.launch(spec, Launcher::Claude, size)
     }
 
     /// Start a session running something other than claude. This is the seam a
@@ -241,6 +261,18 @@ impl Sessions {
         &mut self,
         spec: SessionSpec,
         spawn: &Spawn,
+        size: (u16, u16),
+    ) -> Result<SessionId> {
+        self.launch(spec, Launcher::Fixed(spawn.clone()), size)
+    }
+
+    /// Start what `launcher` describes, or show the agent already running
+    /// under `spec`. Nothing is prepared for an agent that is only being shown
+    /// again.
+    fn launch(
+        &mut self,
+        spec: SessionSpec,
+        launcher: Launcher,
         size: (u16, u16),
     ) -> Result<SessionId> {
         if let Some(existing) = self
@@ -258,12 +290,13 @@ impl Sessions {
             return Ok(existing);
         }
 
+        let (spawn, events) = launcher.prepare(&spec)?;
         let size = (size.0.max(1), size.1.max(1));
         let seq = self.next_seq(&spec.cwd, spec.kind);
-        let process = PtyProcess::start(spawn, size)?;
+        let process = PtyProcess::start(&spawn, size)?;
         let id = SessionId(self.next_id);
         self.next_id += 1;
-        let launch = Some((spec.clone(), spawn.clone()));
+        let launch = Some((spec.clone(), launcher));
         self.items.push(Session {
             id,
             label: spec.label,
@@ -276,7 +309,7 @@ impl Sessions {
             attention: false,
             activity: SessionActivity::Idle,
             asking: false,
-            events: None,
+            events,
             last_output: None,
             reading: Reading::default(),
             parser: vt100::Parser::new(size.0, size.1, SCROLLBACK),
@@ -304,12 +337,12 @@ impl Sessions {
         Ok(())
     }
     pub fn restart(&mut self, id: SessionId) -> Result<SessionId> {
-        let (spec, spawn) = self
+        let (spec, launcher) = self
             .get(id)
             .and_then(|s| s.launch.clone())
             .ok_or_else(|| anyhow::anyhow!("no saved launch command for this session"))?;
         self.close(id);
-        self.start_with(spec, &spawn, default_size())
+        self.launch(spec, launcher, default_size())
     }
 
     /// Stop a session and forget it. The next session in the list takes focus,

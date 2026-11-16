@@ -7,6 +7,7 @@ use crate::config::{
     deploy_branch_list, is_deploy_branch_name, is_protected_branch_name, protected_branch_list,
 };
 
+use super::stash::AutoStash;
 use super::{git_command, parse_worktree_list, run};
 
 mod branch;
@@ -43,8 +44,8 @@ use conflict::merge_or_rebase_in_progress;
 use safety::*;
 use stash::*;
 
-fn summary_with_stash_notice(mut summary: String, stashed: bool) -> String {
-    if stashed {
+fn summary_with_stash_notice(mut summary: String, stashed: &AutoStash) -> String {
+    if stashed.is_taken() {
         summary.push_str(", restored stashed changes");
     }
     summary

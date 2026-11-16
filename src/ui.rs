@@ -5,6 +5,7 @@ mod layout;
 mod log;
 pub mod palette;
 mod selection;
+mod wrap;
 
 pub use chrome::{
     animate_modal_border, bordered, draw_dividers, framed, framed_with_activity, key_hints,
@@ -26,3 +27,4 @@ pub use layout::{
 };
 pub use log::highlight_log_line;
 pub use selection::TextSelection;
+pub use wrap::word_wrap;

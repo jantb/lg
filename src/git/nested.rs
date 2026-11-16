@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use std::path::{Component, Path, PathBuf};
 
+use super::stash::AutoStash;
 use super::{git_command_in_dir, repo_root, run_in_dir, worktree::same_dir};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +106,9 @@ fn collect_nested_repo_dirs(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
         return;
     };
     for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
         let path = entry.path();
         if !path.is_dir() {
             continue;
@@ -114,6 +118,11 @@ fn collect_nested_repo_dirs(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
         }
         if path != root && path.join(".git").exists() {
             out.push(path);
+            continue;
+        }
+        // A symlinked repository is listed above, but a symlinked directory
+        // is not walked: one pointing back up the tree never ends.
+        if kind.is_symlink() {
             continue;
         }
         collect_nested_repo_dirs(root, &path, out);
@@ -190,9 +199,9 @@ fn nested_repo_has_changes(dir: &Path) -> Result<bool> {
 fn checkout_branch_in_dir(dir: &Path, branch: &str) -> Result<String> {
     let stashed = if nested_head_branch(dir).is_ok_and(|current| current.as_deref() == Some(branch))
     {
-        false
+        AutoStash::default()
     } else {
-        stash_uncommitted_changes_in_dir(dir, "lg: auto-stash before checkout")?
+        AutoStash::take_in(dir, "lg: auto-stash before checkout")?
     };
     let out = git_command_in_dir(dir, &["checkout", branch])
         .output()
@@ -201,16 +210,16 @@ fn checkout_branch_in_dir(dir: &Path, branch: &str) -> Result<String> {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let combined = format!("{stdout}{stderr}");
     if out.status.success() {
-        pop_stash_with_index_if_needed_in_dir(dir, stashed)?;
-        Ok(checkout_output_with_stash_notice(combined, stashed))
+        stashed.pop_with_index()?;
+        Ok(checkout_output_with_stash_notice(combined, &stashed))
     } else {
-        restore_stash_after_failed_checkout_in_dir(dir, stashed)?;
+        restore_stash_after_failed_checkout(&stashed)?;
         Err(anyhow::anyhow!("git checkout failed: {}", combined.trim()))
     }
 }
 
 fn checkout_remote_branch_in_dir(dir: &Path, remote_ref: &str) -> Result<String> {
-    let stashed = stash_uncommitted_changes_in_dir(dir, "lg: auto-stash before remote checkout")?;
+    let stashed = AutoStash::take_in(dir, "lg: auto-stash before remote checkout")?;
     let out = git_command_in_dir(dir, &["switch", "--track", remote_ref])
         .output()
         .with_context(|| {
@@ -223,39 +232,22 @@ fn checkout_remote_branch_in_dir(dir: &Path, remote_ref: &str) -> Result<String>
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let combined = format!("{stdout}{stderr}");
     if out.status.success() {
-        pop_stash_with_index_if_needed_in_dir(dir, stashed)?;
-        Ok(checkout_output_with_stash_notice(combined, stashed))
+        stashed.pop_with_index()?;
+        Ok(checkout_output_with_stash_notice(combined, &stashed))
     } else {
-        restore_stash_after_failed_checkout_in_dir(dir, stashed)?;
+        restore_stash_after_failed_checkout(&stashed)?;
         Err(anyhow::anyhow!("git switch failed: {}", combined.trim()))
     }
 }
 
-fn stash_uncommitted_changes_in_dir(dir: &Path, message: &str) -> Result<bool> {
-    let stashed = nested_repo_has_changes(dir)?;
-    if stashed {
-        run_in_dir(dir, &["stash", "push", "-u", "-m", message])?;
-    }
-    Ok(stashed)
+fn restore_stash_after_failed_checkout(stashed: &AutoStash) -> Result<()> {
+    stashed
+        .pop_with_index()
+        .context("checkout failed after auto-stash; stash was not restored")
 }
 
-fn pop_stash_with_index_if_needed_in_dir(dir: &Path, stashed: bool) -> Result<()> {
-    if stashed {
-        run_in_dir(dir, &["stash", "pop", "--index"])?;
-    }
-    Ok(())
-}
-
-fn restore_stash_after_failed_checkout_in_dir(dir: &Path, stashed: bool) -> Result<()> {
-    if stashed {
-        pop_stash_with_index_if_needed_in_dir(dir, true)
-            .context("checkout failed after auto-stash; stash was not restored")?;
-    }
-    Ok(())
-}
-
-fn checkout_output_with_stash_notice(mut output: String, stashed: bool) -> String {
-    if stashed {
+fn checkout_output_with_stash_notice(mut output: String, stashed: &AutoStash) -> String {
+    if stashed.is_taken() {
         output.push_str("applied stashed local changes after checkout\n");
     }
     output

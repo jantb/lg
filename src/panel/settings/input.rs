@@ -247,14 +247,16 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 && hub.draft.get("profile").is_some()
             {
                 crate::terrarium::save_profile(hub.draft["profile"].as_str().unwrap_or_default())?;
-            } else if hub.scope == Scope::Folder {
-                preferences::save_folder(
-                    std::path::Path::new(&hub.folder),
-                    hub.key(),
-                    hub.draft.clone(),
-                )?;
-            } else {
-                preferences::save_category(hub.scope, hub.key(), hub.draft.clone())?;
+            } else if let Some(changes) = preferences::changed_parts(&hub.original, &hub.draft) {
+                if hub.scope == Scope::Folder {
+                    preferences::save_folder_changes(
+                        std::path::Path::new(&hub.folder),
+                        hub.key(),
+                        changes,
+                    )?;
+                } else {
+                    preferences::save_changes(hub.scope, hub.key(), changes)?;
+                }
             }
             state.decorative_animations = preferences::animations_enabled();
             state.ai_assist = preferences::ai_enabled();
@@ -422,7 +424,12 @@ pub(super) fn handle(state: &mut AppState, key: KeyEvent) -> Result<()> {
                         return Ok(());
                     }
                     if pressed == 'R' {
-                        state.sessions.restart(id)?;
+                        let restarted = state.sessions.restart(id)?;
+                        if let Some(guided) = state.guided.as_mut()
+                            && guided.chat == Some(id)
+                        {
+                            guided.chat = Some(restarted);
+                        }
                     } else {
                         state.sessions.close(id);
                     }

@@ -1,12 +1,17 @@
 //! The final step: the whole changeset with the final review's findings under
 //! their lines, and its read of the change below.
 
+use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::git::guided::GuidedFile;
 use crate::panel::guided::findings::Finding;
 use crate::panel::guided::{Guided, Progress, findings};
 use crate::state::{AppState, DiffViewMode, SPINNER_FRAMES};
@@ -32,18 +37,21 @@ pub(super) fn draw_final(
     ui::draw_dividers(frame, &gaps);
     dividers.extend(gaps);
     let (diff, below) = (parts[0], parts[1]);
-    let DiffLines { lines, cursor, .. } = final_diff_lines(guided, mode, diff.width);
-    let max = (lines.len() as u16).saturating_sub(diff.height);
+    let built = final_diff_lines(guided, mode, diff.width);
+    let max = (built.lines.len() as u16).saturating_sub(diff.height);
     guided.final_max.set(max);
-    if guided.final_reveal.replace(false) && !cursor.is_empty() {
+    if guided.final_reveal.replace(false) && !built.cursor.is_empty() {
         guided.final_scroll.set(reveal(
             guided.final_scroll.get().min(max),
-            &cursor,
+            &built.cursor,
             diff.height,
         ));
     }
     let scroll = guided.final_scroll.get().min(max);
-    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), diff);
+    frame.render_widget(
+        Paragraph::new(built.lines.clone()).scroll((scroll, 0)),
+        diff,
+    );
 
     let commentary = match super::chat_session(state) {
         Some(id) => {
@@ -84,8 +92,45 @@ pub(super) fn final_areas(
     split_for_diff(area, rows, diff_room(guided, area))
 }
 
+/// The whole change as last built, and what it was built from, so the
+/// layout, the draw, the chat's size and the mouse share one build a frame.
+#[derive(Default)]
+pub(in crate::panel::guided) struct FinalLinesCache(RefCell<Option<(u64, Arc<DiffLines>)>>);
+
 /// Every file's diff in turn, each under its title.
-pub(super) fn final_diff_lines(guided: &Guided, mode: DiffViewMode, width: u16) -> DiffLines {
+pub(super) fn final_diff_lines(guided: &Guided, mode: DiffViewMode, width: u16) -> Arc<DiffLines> {
+    let inputs = final_inputs(guided, mode, width);
+    let mut cache = guided.final_lines.0.borrow_mut();
+    if let Some((built_from, lines)) = cache.as_ref()
+        && *built_from == inputs
+    {
+        return lines.clone();
+    }
+    let lines = Arc::new(build_final_diff_lines(guided, mode, width));
+    *cache = Some((inputs, lines.clone()));
+    lines
+}
+
+/// Everything [`build_final_diff_lines`] reads.
+fn final_inputs(guided: &Guided, mode: DiffViewMode, width: u16) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    matches!(mode, DiffViewMode::Unified).hash(&mut hasher);
+    width.hash(&mut hasher);
+    guided.final_pick.hash(&mut hasher);
+    guided.steps.hash(&mut hasher);
+    guided.progress.hash(&mut hasher);
+    for key in guided
+        .steps
+        .iter()
+        .map(GuidedFile::key)
+        .chain([guided.final_key()])
+    {
+        guided.commentary.get(&key).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn build_final_diff_lines(guided: &Guided, mode: DiffViewMode, width: u16) -> DiffLines {
     let mut out = DiffLines {
         lines: vec![Line::from(vec![
             Span::styled(

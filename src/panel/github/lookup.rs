@@ -27,12 +27,11 @@ pub fn visible_repos(gh: &GitHub) -> Vec<&Repository> {
 
 /// What Enter on the repositories tab would clone: the highlighted
 /// repository, or failing that whatever was typed, when it names one.
-pub fn clone_request(state: &AppState) -> Option<String> {
-    let visible = visible_repos(&state.github);
-    if let Some(repo) = visible.get(state.github.repo_idx) {
+pub fn clone_request(gh: &GitHub, visible: &[&Repository]) -> Option<String> {
+    if let Some(repo) = visible.get(gh.repo_idx) {
         return Some(repo.name.clone());
     }
-    let typed = state.github.query.trim();
+    let typed = gh.query.trim();
     typed.contains('/').then(|| typed.to_string())
 }
 
@@ -51,8 +50,8 @@ pub fn clone_parent(state: &AppState) -> Option<PathBuf> {
     Path::new(&checkout).parent().map(Path::to_path_buf)
 }
 
-pub fn clone_destination(state: &AppState) -> Option<PathBuf> {
-    crate::github::clone_dir(&clone_parent(state)?, &clone_request(state)?)
+pub fn clone_destination(state: &AppState, request: &str) -> Option<PathBuf> {
+    crate::github::clone_dir(&clone_parent(state)?, request)
 }
 
 /// Whether the signed-in user opened `pr`. Unknown until their login is read.

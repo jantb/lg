@@ -30,11 +30,7 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         return;
     }
 
-    let value_width = modal
-        .width
-        .saturating_sub(2)
-        .saturating_sub(LABEL_WIDTH)
-        .max(1) as usize;
+    let value_width = value_width(modal);
     let reuses_branch = branch_exists(state);
     let lines = vec![
         Line::from(vec![
@@ -97,6 +93,14 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     if let Some((x, y)) = active_field_cursor(state, modal) {
         frame.set_cursor_position(Position::new(x, y));
     }
+}
+
+fn value_width(modal: Rect) -> usize {
+    modal
+        .width
+        .saturating_sub(2)
+        .saturating_sub(LABEL_WIDTH)
+        .max(1) as usize
 }
 
 /// Whether the typed branch already exists locally, which decides whether the
@@ -163,8 +167,7 @@ fn active_field_cursor(state: &AppState, modal: Rect) -> Option<(u16, u16)> {
         WorktreeField::Base => (1, &state.worktree_form.base),
         WorktreeField::Path => (2, &state.worktree_form.path),
     };
-    let content_width = modal.width.saturating_sub(2);
-    let value_width = content_width.saturating_sub(LABEL_WIDTH + 1) as usize;
+    let value_width = value_width(modal);
     let len = value.char_len();
     let cursor = value.cursor.min(len);
     // A value too long for its row shows its tail behind an ellipsis.
@@ -254,4 +257,50 @@ fn submit(state: &mut AppState) {
 
     state.modal = Modal::None;
     state.pending_action = Some(PendingAction::CreateWorktree { path, branch, base });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn cursor_and_row_after_drawing(state: &AppState) -> (Position, String, u16) {
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| render(state, frame.area(), frame))
+            .unwrap();
+        let cursor = terminal.get_cursor_position().unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, cursor.y)].symbol().to_string())
+            .collect();
+        let last_value_column = (0..buffer.area.width)
+            .rev()
+            .find(|&x| buffer[(x, cursor.y)].symbol() == "Z")
+            .unwrap();
+        (cursor, row, last_value_column)
+    }
+
+    #[test]
+    fn the_cursor_follows_the_last_character_of_a_path_too_long_for_its_row() {
+        let mut state = AppState::new();
+        state.worktree_form.field = WorktreeField::Path;
+        state.worktree_form.path = TextInput::with_text(format!("/{}Z", "a".repeat(90)));
+
+        let (cursor, row, last_value_column) = cursor_and_row_after_drawing(&state);
+
+        assert!(row.contains('\u{2026}'), "the path should overflow: {row}");
+        assert_eq!(cursor.x, last_value_column + 1, "row: {row}");
+    }
+
+    #[test]
+    fn the_cursor_follows_the_last_character_of_a_path_that_fits() {
+        let mut state = AppState::new();
+        state.worktree_form.field = WorktreeField::Path;
+        state.worktree_form.path = TextInput::with_text("/short/Z");
+
+        let (cursor, row, last_value_column) = cursor_and_row_after_drawing(&state);
+
+        assert_eq!(cursor.x, last_value_column + 1, "row: {row}");
+    }
 }

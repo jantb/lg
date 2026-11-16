@@ -4,10 +4,15 @@ use crate::state::{
     WorkflowJob, WorkflowMsg,
 };
 
-use super::spawn::git_job_running;
+use super::spawn::{blocked_by_git_job, blocked_operation_status};
 
 pub(crate) fn run_flow_action(state: &mut AppState, action: FlowAction, input: Option<String>) {
-    if git_job_running(state) {
+    if blocked_by_git_job(state, action.label()) {
+        // The prompt cleared what was typed before asking for the run.
+        if let Some(name) = input.filter(|_| action.needs_input()) {
+            state.flow_input = Some(action);
+            state.flow_text.set(name);
+        }
         return;
     }
     let current = state.branch.clone().unwrap_or_default();
@@ -291,6 +296,9 @@ fn reset_steps(current: &str, target: &str) -> Vec<String> {
 
 pub(crate) fn validate_conflict_resolution(state: &mut AppState) {
     if state.workflow_job.is_some() {
+        let status =
+            blocked_operation_status("validate conflict resolution", "workflow in progress");
+        state.set_status(status, true);
         return;
     }
     let followup = state.conflict.followup.clone();
@@ -438,6 +446,8 @@ fn checkout_name(path: &str) -> &str {
 
 pub(crate) fn abort_conflict_operation(state: &mut AppState) {
     if state.workflow_job.is_some() {
+        let status = blocked_operation_status("abort merge", "workflow in progress");
+        state.set_status(status, true);
         return;
     }
     let return_branch = state
@@ -477,4 +487,61 @@ pub(crate) fn abort_conflict_operation(state: &mut AppState) {
         flow: None,
     });
     state.set_status("aborting git operation\u{2026}", false);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::FetchJob;
+
+    fn fetching() -> FetchJob {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        FetchJob {
+            rx,
+            handle: None,
+            spinner: 0,
+        }
+    }
+
+    /// The flow modal clears what was typed before starting the action, so a
+    /// start that cannot go ahead has to hand the name back.
+    #[test]
+    fn a_branch_name_typed_for_a_blocked_flow_is_kept() {
+        let mut state = AppState::new();
+        state.branch = Some("main".into());
+        state.fetch_job = Some(fetching());
+
+        run_flow_action(&mut state, FlowAction::NewFeature, Some("feat/x".into()));
+
+        assert!(state.workflow_job.is_none(), "nothing runs under the fetch");
+        assert_eq!(state.flow_input, Some(FlowAction::NewFeature));
+        assert_eq!(state.flow_text.as_str(), "feat/x");
+        let status = state.status.as_ref().expect("a status");
+        assert!(status.is_error);
+        assert!(status.text.contains("fetch"), "{}", status.text);
+    }
+
+    #[test]
+    fn a_conflict_step_behind_a_running_one_says_so() {
+        let steps: [fn(&mut AppState); 2] =
+            [validate_conflict_resolution, abort_conflict_operation];
+        for step in steps {
+            let mut state = AppState::new();
+            let (_tx, rx) = std::sync::mpsc::channel();
+            state.workflow_job = Some(WorkflowJob {
+                rx,
+                handle: None,
+                spinner: 0,
+                label: "abort merge".into(),
+                steps: Vec::new(),
+                current_step: None,
+                flow: None,
+            });
+
+            step(&mut state);
+
+            let status = state.status.as_ref().expect("a status");
+            assert!(status.is_error, "{}", status.text);
+        }
+    }
 }

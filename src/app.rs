@@ -87,6 +87,41 @@ pub struct App {
     /// Whether the terminal can spell keys out at all, asked once at startup
     /// because the answer costs a round trip.
     keys_can_disambiguate: bool,
+    history: HistorySaver,
+}
+
+/// How long the status history may sit unsaved while messages keep coming.
+const HISTORY_SAVE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Saves the status history now and then rather than on every message, which
+/// can come many to a second from the loop. It is only read back at the next
+/// start, so the last save happens on the way out.
+#[derive(Debug, Default)]
+struct HistorySaver {
+    saved_up_to: Option<chrono::DateTime<Utc>>,
+    last_save: Option<Instant>,
+}
+
+impl HistorySaver {
+    fn save_if_due(&mut self, state: &AppState, now: Instant) {
+        if self
+            .last_save
+            .is_some_and(|at| now.duration_since(at) < HISTORY_SAVE_INTERVAL)
+        {
+            return;
+        }
+        self.save(state, now);
+    }
+
+    fn save(&mut self, state: &AppState, now: Instant) {
+        let newest = state.status_history.last().map(|status| status.at);
+        if newest == self.saved_up_to {
+            return;
+        }
+        state.save_history();
+        self.saved_up_to = newest;
+        self.last_save = Some(now);
+    }
 }
 
 pub struct HeadlessApp<B: Backend> {
@@ -278,6 +313,7 @@ impl App {
                 - Duration::from_secs(BACKGROUND_FETCH_INTERVAL_SECS),
             session_keyboard: false,
             keys_can_disambiguate,
+            history: HistorySaver::default(),
         };
         app.state.workspace_root = roots
             .workspace
@@ -304,7 +340,6 @@ impl App {
             }
 
             let delivered = crate::state::deliveries();
-            let activity = self.state.sessions.activity_signature();
             let status = self.status_mark();
             self.drain_generation();
             self.drain_conflict_resolve_job();
@@ -325,14 +360,15 @@ impl App {
             self.maybe_start_periodic_fetch();
 
             let now = Instant::now();
+            self.history.save_if_due(&self.state, now);
             if refreshing
                 || crate::state::deliveries() != delivered
-                || self.state.sessions.activity_signature() != activity
                 || self.status_mark() != status
                 || sessions.ended_any
             {
                 clock.changed();
             }
+            clock.sessions_activity(self.state.sessions.activity_signature());
             if sessions.shown_changed {
                 clock.changed();
                 clock.shown_live(now);
@@ -351,9 +387,13 @@ impl App {
                 // spreading a wheel burst across frames made scrolling crawl
                 // along behind the trackpad.
                 let mut handled = 0usize;
+                let mut screen_may_change = false;
                 loop {
-                    match event::read()? {
-                        Event::Key(k) => self.handle_key(k)?,
+                    screen_may_change |= match event::read()? {
+                        Event::Key(k) => {
+                            self.handle_key(k)?;
+                            true
+                        }
                         Event::Mouse(m) => self.handle_mouse(m)?,
                         Event::Paste(text) => {
                             if !crate::panel::settings::handle_paste(&mut self.state, &text)
@@ -363,22 +403,24 @@ impl App {
                             {
                                 session::forward_paste(&mut self.state, &text);
                             }
+                            true
                         }
-                        Event::Resize(_, _) => {}
-                        _ => {}
-                    }
+                        _ => true,
+                    };
                     handled += 1;
                     if !keep_reading_events(&self.state, handled) || !event::poll(Duration::ZERO)? {
                         break;
                     }
                 }
-                clock.input();
-                if self.state.session_input_active()
-                    || crate::panel::guided::chat_has_keyboard(&self.state)
-                    || crate::panel::github::threads_chat_has_keyboard(&self.state)
-                {
-                    // What was typed echoes back in a moment.
-                    clock.shown_live(Instant::now());
+                if screen_may_change {
+                    clock.input();
+                    if self.state.session_input_active()
+                        || crate::panel::guided::chat_has_keyboard(&self.state)
+                        || crate::panel::github::threads_chat_has_keyboard(&self.state)
+                    {
+                        // What was typed echoes back in a moment.
+                        clock.shown_live(Instant::now());
+                    }
                 }
             }
 
@@ -436,6 +478,7 @@ impl Drop for App {
         restore_terminal(self.terminal.backend_mut());
         self.state.sessions.close_all();
         self.join_background_jobs();
+        self.history.save(&self.state, Instant::now());
     }
 }
 
@@ -474,6 +517,43 @@ mod tests {
         let mut state = AppState::new();
         state.should_quit = true;
         assert!(!keep_reading_events(&state, 1));
+    }
+
+    fn saved_texts(path: &std::path::Path) -> Vec<String> {
+        let data = std::fs::read(path).unwrap_or_default();
+        serde_json::from_slice::<Vec<crate::state::StatusMsg>>(&data)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|status| status.text)
+            .collect()
+    }
+
+    #[test]
+    fn a_stream_of_status_messages_is_saved_at_most_once_an_interval_and_all_of_it_on_quit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("activity.json");
+        let mut state = AppState::new();
+        state.history_file = Some(path.clone());
+        let mut saver = HistorySaver::default();
+        let now = Instant::now();
+
+        state.set_status("first", false);
+        saver.save_if_due(&state, now);
+        assert_eq!(saved_texts(&path), ["first"]);
+
+        state.set_status("second", false);
+        saver.save_if_due(&state, now + Duration::from_millis(10));
+        assert_eq!(saved_texts(&path), ["first"], "too soon to write again");
+
+        saver.save_if_due(&state, now + HISTORY_SAVE_INTERVAL);
+        assert_eq!(saved_texts(&path), ["first", "second"]);
+
+        state.set_status("last", true);
+        saver.save(
+            &state,
+            now + HISTORY_SAVE_INTERVAL + Duration::from_millis(1),
+        );
+        assert_eq!(saved_texts(&path), ["first", "second", "last"]);
     }
 
     #[test]

@@ -47,91 +47,154 @@ pub async fn start(config: ProxyConfig) -> crate::error::Result<u16> {
     Ok(port)
 }
 
-async fn handle(mut client: TcpStream, cfg: Arc<ProxyConfig>) -> std::io::Result<()> {
-    let first_line = read_line(&mut client).await?;
-    let parts: Vec<&str> = first_line.splitn(3, ' ').collect();
-    if parts.len() < 3 {
+/// How long a client may take to send its request line and headers.
+const HEADER_PHASE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Upper bound on a request line plus headers, so a client cannot grow the buffer forever.
+const MAX_REQUEST_HEAD_BYTES: usize = 64 * 1024;
+
+struct RequestHead {
+    method: String,
+    target: String,
+    version: String,
+    headers: Vec<String>,
+}
+
+async fn handle(client: TcpStream, cfg: Arc<ProxyConfig>) -> std::io::Result<()> {
+    handle_with_header_timeout(client, cfg, HEADER_PHASE_TIMEOUT).await
+}
+
+async fn handle_with_header_timeout(
+    mut client: TcpStream,
+    cfg: Arc<ProxyConfig>,
+    header_timeout: Duration,
+) -> std::io::Result<()> {
+    let Ok(head) = tokio::time::timeout(header_timeout, read_request_head(&mut client)).await
+    else {
         return Ok(());
-    }
-    let (method, target, version) = (parts[0], parts[1], parts[2]);
+    };
+    let Some(RequestHead {
+        method,
+        target,
+        version,
+        headers,
+    }) = head?
+    else {
+        return Ok(());
+    };
 
     if method.eq_ignore_ascii_case("CONNECT") {
         // target is host:port
-        let domain = target.split(':').next().unwrap_or(target).to_lowercase();
+        let domain = host_without_port(&target).to_lowercase();
         {
             let allowed = cfg.allowed_domains.read().await;
             if !is_allowed(&domain, &allowed) {
                 drop(allowed);
-                block(&mut client, &domain, method, target, &cfg.project_root).await?;
+                block(&mut client, &domain, &method, &target, &cfg.project_root).await?;
                 return Ok(());
             }
         }
-        drain_headers(&mut client).await?;
         client
             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             .await?;
-        let mut remote = TcpStream::connect(target).await?;
+        let mut remote = TcpStream::connect(&target).await?;
         tokio::io::copy_bidirectional(&mut client, &mut remote).await?;
     } else {
-        // Plain HTTP — buffer headers and detect Host.
-        let mut header_buf: Vec<u8> = Vec::new();
-        let mut host_header: Option<String> = None;
-        loop {
-            let line = read_line(&mut client).await?;
-            if line.is_empty() {
-                header_buf.extend_from_slice(b"\r\n");
-                break;
-            }
-            if host_header.is_none() && line.to_ascii_lowercase().starts_with("host:") {
-                host_header = Some(line["host:".len()..].trim().to_lowercase());
-            }
-            header_buf.extend_from_slice(line.as_bytes());
-            header_buf.extend_from_slice(b"\r\n");
-        }
-
-        let domain = domain_from_url(target)
-            .map(|d| d.to_lowercase())
-            .or_else(|| {
-                host_header
-                    .as_deref()
-                    .map(host_without_port)
-                    .map(str::to_string)
-            })
-            .unwrap_or_default();
+        let host_header = headers.iter().find_map(|line| header_value(line, "host"));
+        // The allowlist check and the dial must use the same authority, or a
+        // request can be checked against one host and sent to another.
+        let authority = authority_from_url(&target)
+            .or(host_header)
+            .unwrap_or_default()
+            .to_lowercase();
+        let domain = host_without_port(&authority);
 
         {
             let allowed = cfg.allowed_domains.read().await;
-            if !is_allowed(&domain, &allowed) {
+            if !is_allowed(domain, &allowed) {
                 drop(allowed);
-                block(&mut client, &domain, method, target, &cfg.project_root).await?;
+                block(&mut client, domain, &method, &target, &cfg.project_root).await?;
                 return Ok(());
             }
         }
 
-        let connect_target = match &host_header {
-            Some(h) if h.contains(':') => h.clone(),
-            Some(h) => format!("{h}:80"),
-            None => authority_from_url(target)
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("{domain}:80")),
+        let connect_target = if authority.contains(':') {
+            authority.clone()
+        } else {
+            format!("{authority}:80")
         };
 
         let mut remote = TcpStream::connect(&connect_target).await?;
         remote
-            .write_all(format!("{method} {target} {version}\r\n").as_bytes())
+            .write_all(single_request_head(&method, &target, &version, &headers).as_bytes())
             .await?;
-        remote.write_all(&header_buf).await?;
         tokio::io::copy_bidirectional(&mut client, &mut remote).await?;
     }
     Ok(())
 }
 
+/// Reads the request line and headers; `None` when the request line is malformed.
+async fn read_request_head(stream: &mut TcpStream) -> std::io::Result<Option<RequestHead>> {
+    let mut remaining = MAX_REQUEST_HEAD_BYTES;
+    let first_line = read_line(stream, &mut remaining).await?;
+    let parts: Vec<&str> = first_line.splitn(3, ' ').collect();
+    if parts.len() < 3 {
+        return Ok(None);
+    }
+    let mut headers = Vec::new();
+    loop {
+        let line = read_line(stream, &mut remaining).await?;
+        if line.is_empty() {
+            break;
+        }
+        headers.push(line);
+    }
+    Ok(Some(RequestHead {
+        method: parts[0].to_string(),
+        target: parts[1].to_string(),
+        version: parts[2].to_string(),
+        headers,
+    }))
+}
+
+/// The request as sent upstream. Later requests on the client connection may
+/// name other hosts, but the bytes after this one are piped to this upstream
+/// unchecked, so the upstream is told to close after answering this one.
+fn single_request_head(method: &str, target: &str, version: &str, headers: &[String]) -> String {
+    let mut head = format!("{method} {target} {version}\r\n");
+    for line in headers {
+        let hop_by_hop = header_value(line, "connection").is_some()
+            || header_value(line, "proxy-connection").is_some();
+        if !hop_by_hop {
+            head.push_str(line);
+            head.push_str("\r\n");
+        }
+    }
+    head.push_str("Connection: close\r\n\r\n");
+    head
+}
+
+fn header_value<'a>(line: &'a str, name: &str) -> Option<&'a str> {
+    let (field, value) = line.split_once(':')?;
+    field
+        .trim()
+        .eq_ignore_ascii_case(name)
+        .then(|| value.trim())
+}
+
 /// Reads bytes until `\r\n`, returning the line without the terminator.
-async fn read_line(stream: &mut TcpStream) -> std::io::Result<String> {
+/// Fails once more than `remaining` bytes have been read across calls.
+async fn read_line(stream: &mut TcpStream, remaining: &mut usize) -> std::io::Result<String> {
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
     loop {
+        if *remaining == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "request head too large",
+            ));
+        }
         stream.read_exact(&mut byte).await?;
+        *remaining -= 1;
         if byte[0] == b'\n' {
             if buf.last() == Some(&b'\r') {
                 buf.pop();
@@ -142,14 +205,7 @@ async fn read_line(stream: &mut TcpStream) -> std::io::Result<String> {
     }
 }
 
-async fn drain_headers(stream: &mut TcpStream) -> std::io::Result<()> {
-    loop {
-        if read_line(stream).await?.is_empty() {
-            return Ok(());
-        }
-    }
-}
-
+#[cfg(test)]
 fn domain_from_url(url: &str) -> Option<&str> {
     authority_from_url(url).map(host_without_port)
 }
@@ -384,6 +440,220 @@ mod tests {
         assert!(
             response.contains("200 OK"),
             "expected upstream response, got: {response}"
+        );
+    }
+
+    /// Serves every request on a connection with `body` until a request asks
+    /// for `Connection: close`, recording each request line it answered.
+    async fn keep_alive_upstream(body: &'static str) -> (u16, Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&seen);
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let recorded = Arc::clone(&recorded);
+                tokio::spawn(async move {
+                    let mut pending = Vec::new();
+                    let mut buf = [0u8; 1024];
+                    loop {
+                        while let Some(end) = pending.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head: Vec<u8> = pending.drain(..end + 4).collect();
+                            let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
+                            recorded
+                                .lock()
+                                .unwrap()
+                                .push(head.lines().next().unwrap_or_default().to_string());
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                                body.len()
+                            );
+                            if stream.write_all(response.as_bytes()).await.is_err()
+                                || head.contains("connection: close")
+                            {
+                                return;
+                            }
+                        }
+                        match stream.read(&mut buf).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => pending.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                });
+            }
+        });
+        (port, seen)
+    }
+
+    async fn spawn_proxy(allowed: &[&str], header_timeout: Duration) -> u16 {
+        let cfg = Arc::new(ProxyConfig {
+            allowed_domains: Arc::new(RwLock::new(allowed.iter().map(|d| d.to_string()).collect())),
+            project_root: PathBuf::from("/tmp"),
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let cfg = Arc::clone(&cfg);
+                tokio::spawn(async move {
+                    let _ = handle_with_header_timeout(stream, cfg, header_timeout).await;
+                });
+            }
+        });
+        port
+    }
+
+    /// Reads until the peer closes or `wait` passes; `None` means it never closed.
+    async fn read_until_closed(stream: &mut TcpStream, wait: Duration) -> Option<String> {
+        let mut received = Vec::new();
+        let mut buf = [0u8; 1024];
+        let outcome = tokio::time::timeout(wait, async {
+            loop {
+                match stream.read(&mut buf).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => received.extend_from_slice(&buf[..n]),
+                }
+            }
+        })
+        .await;
+        outcome
+            .ok()
+            .map(|_| String::from_utf8_lossy(&received).into_owned())
+    }
+
+    async fn send_through_proxy(proxy_port: u16, request: String) -> String {
+        let mut client = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
+        client.write_all(request.as_bytes()).await.unwrap();
+        client.shutdown().await.unwrap();
+        read_until_closed(&mut client, Duration::from_secs(5))
+            .await
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn plain_http_reaches_the_url_host_not_a_disagreeing_host_header() {
+        let (checked_port, _) = keep_alive_upstream("checked").await;
+        let (other_port, _) = keep_alive_upstream("other").await;
+        let proxy_port = spawn_proxy(&["127.0.0.1"], HEADER_PHASE_TIMEOUT).await;
+
+        let response = send_through_proxy(
+            proxy_port,
+            format!(
+                "GET http://127.0.0.1:{checked_port}/ HTTP/1.1\r\nHost: 127.0.0.1:{other_port}\r\n\r\n"
+            ),
+        )
+        .await;
+
+        assert!(
+            response.ends_with("checked"),
+            "expected the upstream named in the URL, got: {response}"
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_http_keeps_the_url_port_when_the_host_header_has_none() {
+        let (port, _) = keep_alive_upstream("upstream").await;
+        let proxy_port = spawn_proxy(&["127.0.0.1"], HEADER_PHASE_TIMEOUT).await;
+
+        let response = send_through_proxy(
+            proxy_port,
+            format!("GET http://127.0.0.1:{port}/ HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"),
+        )
+        .await;
+
+        assert!(
+            response.ends_with("upstream"),
+            "expected the upstream on the URL port, got: {response}"
+        );
+    }
+
+    #[tokio::test]
+    async fn origin_form_request_is_routed_by_its_host_header() {
+        let (port, _) = keep_alive_upstream("upstream").await;
+        let proxy_port = spawn_proxy(&["127.0.0.1"], HEADER_PHASE_TIMEOUT).await;
+
+        let response = send_through_proxy(
+            proxy_port,
+            format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"),
+        )
+        .await;
+
+        assert!(
+            response.ends_with("upstream"),
+            "expected the upstream named by Host, got: {response}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reused_connection_never_carries_a_second_request_to_the_first_upstream() {
+        let (first_port, first_seen) = keep_alive_upstream("first").await;
+        let (second_port, _) = keep_alive_upstream("second").await;
+        let proxy_port = spawn_proxy(&["127.0.0.1"], HEADER_PHASE_TIMEOUT).await;
+
+        let mut client = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
+        client
+            .write_all(
+                format!(
+                    "GET http://127.0.0.1:{first_port}/one HTTP/1.1\r\nHost: 127.0.0.1:{first_port}\r\nProxy-Connection: keep-alive\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut buf = [0u8; 512];
+        let n = tokio::time::timeout(Duration::from_secs(5), client.read(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&buf[..n]).ends_with("first"));
+
+        let _ = client
+            .write_all(
+                format!(
+                    "GET http://127.0.0.1:{second_port}/two HTTP/1.1\r\nHost: 127.0.0.1:{second_port}\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await;
+        let _ = read_until_closed(&mut client, Duration::from_secs(2)).await;
+
+        let seen = first_seen.lock().unwrap().clone();
+        assert!(
+            !seen.iter().any(|line| line.contains("/two")),
+            "the request for the second host reached the first upstream: {seen:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_endless_header_line_is_cut_off() {
+        let proxy_port = spawn_proxy(&["127.0.0.1"], HEADER_PHASE_TIMEOUT).await;
+        let mut client = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
+
+        let _ = client.write_all(&vec![b'a'; 1024 * 1024]).await;
+
+        assert!(
+            read_until_closed(&mut client, Duration::from_secs(5))
+                .await
+                .is_some(),
+            "the proxy kept reading a header line with no end"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_that_never_finishes_its_headers_is_disconnected() {
+        let proxy_port = spawn_proxy(&["127.0.0.1"], Duration::from_millis(200)).await;
+        let mut client = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
+
+        client
+            .write_all(b"GET http://127.0.0.1/ HTTP/1.1\r\n")
+            .await
+            .unwrap();
+
+        assert!(
+            read_until_closed(&mut client, Duration::from_secs(5))
+                .await
+                .is_some(),
+            "the proxy held a stalled connection open"
         );
     }
 

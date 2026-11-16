@@ -171,6 +171,9 @@ pub(super) fn layers(checkout: Option<&Checkout>) -> Vec<(Scope, PathBuf)> {
     paths
 }
 
+/// The category read off the checkout's branches until a file sets it.
+pub(super) const DETECTED_CATEGORY: &str = "branches";
+
 /// Missing configuration is fine. Invalid files remain visible and are never overwritten on load.
 pub(super) fn load_uncached(checkout: Option<&Checkout>) -> Loaded {
     let mut sources = BTreeMap::new();
@@ -236,8 +239,8 @@ pub(super) fn load_uncached(checkout: Option<&Checkout>) -> Loaded {
             Err(e) => errors.push(format!("{}: {e}", path.display())),
         }
     }
-    if !sources.contains_key("branches") {
-        config["branches"] = serialized(
+    if !sources.contains_key(DETECTED_CATEGORY) {
+        config[DETECTED_CATEGORY] = serialized(
             &mut errors,
             "detected branches",
             serde_json::to_value(detect_branches(&crate::git::local_branch_names())),

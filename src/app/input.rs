@@ -110,8 +110,9 @@ impl App {
         dispatch_key(self, k)
     }
 
-    pub(super) fn handle_mouse(&mut self, m: MouseEvent) -> Result<()> {
-        dispatch_mouse(self, m)
+    /// Returns whether what is on screen may have changed.
+    pub(super) fn handle_mouse(&mut self, m: MouseEvent) -> Result<bool> {
+        route_mouse(self, m)
     }
 }
 
@@ -248,6 +249,93 @@ mod tests {
         };
         handle_modal_mouse(&mut state, area, &wheel);
         assert_eq!(state.commit_files_scroll, 0);
+    }
+
+    fn pointer_moved_to(column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn moving_the_pointer_over_nothing_it_can_hover_asks_for_no_redraw() {
+        let mut app = HeadlessApp::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        app.render().unwrap();
+        for row in 0..30 {
+            for column in (0..100).step_by(7) {
+                assert!(
+                    !route_mouse(&mut app, pointer_moved_to(column, row)).unwrap(),
+                    "moving to {column},{row} redrew"
+                );
+            }
+        }
+        assert!(route_mouse(&mut app, left_click(5, 5)).unwrap());
+    }
+
+    fn git_in(root: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "Hover Test")
+            .env("GIT_AUTHOR_EMAIL", "hover@example.com")
+            .env("GIT_COMMITTER_NAME", "Hover Test")
+            .env("GIT_COMMITTER_EMAIL", "hover@example.com")
+            .output()
+            .unwrap();
+        assert!(output.status.success() || args[0] == "merge", "{args:?}");
+    }
+
+    fn conflicted_checkout(file: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_in(root, &["init", "-b", "main"]);
+        std::fs::write(root.join(file), "header\nbase\nfooter\n").unwrap();
+        git_in(root, &["add", "--", file]);
+        git_in(root, &["commit", "-m", "base"]);
+        git_in(root, &["checkout", "-b", "incoming"]);
+        std::fs::write(root.join(file), "header\nincoming\nfooter\n").unwrap();
+        git_in(root, &["commit", "-am", "incoming"]);
+        git_in(root, &["checkout", "main"]);
+        std::fs::write(root.join(file), "header\nlocal\nfooter\n").unwrap();
+        git_in(root, &["commit", "-am", "local"]);
+        git_in(root, &["merge", "incoming"]);
+        dir
+    }
+
+    #[test]
+    fn moving_the_pointer_onto_and_off_a_conflict_button_redraws_it() {
+        let file = "conflicted.txt";
+        let dir = conflicted_checkout(file);
+        let mut app = HeadlessApp::new(ratatui::backend::TestBackend::new(160, 42)).unwrap();
+        app.state.repo_root = Some(dir.path().to_string_lossy().into_owned());
+        app.state.set_conflicts(vec![file.into()]);
+        app.state.modal = Modal::Conflict;
+        app.render().unwrap();
+        let hovering = |app: &HeadlessApp<ratatui::backend::TestBackend>| {
+            app.state
+                .conflict
+                .preview
+                .as_ref()
+                .and_then(|preview| preview.editor.as_ref().ok())
+                .is_some_and(|editor| editor.hovered.is_some())
+        };
+
+        let button = (0..42)
+            .flat_map(|row| (0..160).map(move |column| (column, row)))
+            .find(|&(column, row)| {
+                let redrew = route_mouse(&mut app, pointer_moved_to(column, row)).unwrap();
+                hovering(&app) && redrew
+            });
+        assert!(button.is_some(), "no button lit up under the pointer");
+        assert!(
+            route_mouse(&mut app, pointer_moved_to(0, 0)).unwrap(),
+            "leaving the button redraws it unlit"
+        );
+        assert!(!hovering(&app));
     }
 
     #[test]

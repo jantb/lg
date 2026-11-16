@@ -17,10 +17,6 @@ use super::status::FileEntry;
 /// home directory by accident cannot walk for minutes.
 const MAX_NEW_FILES: usize = 5_000;
 
-/// What the pane will take for a folder of new files before the rest is left
-/// out. Past this much text there is nothing more to see.
-const MAX_NEW_DIFF_BYTES: usize = 256 * 1024;
-
 /// Every file in `dir`, reported as new.
 ///
 /// Repositories inside `dir` are left out along with the build output every
@@ -73,28 +69,9 @@ pub fn new_files_diff(dir: &Path, prefix: &str) -> Result<String> {
     paths.sort();
 
     let mut text = String::new();
-    let mut shown = 0usize;
-    for path in &paths {
-        if text.len() >= MAX_NEW_DIFF_BYTES {
-            break;
-        }
-        let diff = super::diff::added_file_diff(dir, path)?;
-        if diff.trim().is_empty() {
-            shown += 1;
-            continue;
-        }
-        text.push_str(&diff);
-        if !text.ends_with('\n') {
-            text.push('\n');
-        }
-        shown += 1;
-    }
-    if shown < paths.len() {
-        text.push_str(&format!(
-            "\n... {} more file(s) not shown\n",
-            paths.len() - shown
-        ));
-    }
+    super::diff::push_added_file_diffs(&mut text, &paths, |path| {
+        super::diff::added_file_diff(dir, path)
+    })?;
     Ok(text)
 }
 

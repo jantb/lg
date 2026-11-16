@@ -14,39 +14,14 @@ pub struct FileEntry {
 pub fn parse_porcelain(bytes: &[u8]) -> (Vec<String>, Vec<String>) {
     let mut unstaged = Vec::new();
     let mut staged = Vec::new();
-
-    // Records are NUL-separated. For rename/copy (R/C), the record contains
-    // "XY path" and the old path follows as a second NUL-terminated record.
-    let mut records: Vec<&[u8]> = bytes.split(|&b| b == 0).collect();
-    if records.last().map(|r| r.is_empty()).unwrap_or(false) {
-        records.pop();
-    }
-
-    let mut i = 0;
-    while i < records.len() {
-        let rec = records[i];
-        i += 1;
-
-        if rec.len() < 4 {
-            continue;
-        }
-
-        let x = rec[0] as char;
-        let y = rec[1] as char;
-        let path = String::from_utf8_lossy(&rec[3..]).into_owned();
-
-        if x == 'R' || x == 'C' {
-            i += 1;
-        }
-
+    for FileEntry { path, x, y } in parse_porcelain_xy(bytes) {
         if x != ' ' && x != '?' {
             staged.push(path.clone());
         }
         if y != ' ' && y != '.' {
-            unstaged.push(path.clone());
+            unstaged.push(path);
         }
     }
-
     (unstaged, staged)
 }
 
@@ -77,7 +52,9 @@ pub fn parse_porcelain_xy(bytes: &[u8]) -> Vec<FileEntry> {
         let y = rec[1] as char;
         let path = String::from_utf8_lossy(&rec[3..]).into_owned();
 
-        if x == 'R' || x == 'C' {
+        // A rename or copy, in either column, is followed by its source path
+        // as a record of its own.
+        if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
             i += 1;
         }
 

@@ -13,6 +13,7 @@ use crate::state::GenMsg;
 use super::provider::{
     LlmProvider, api_key, current_model, current_provider, endpoint_for_provider,
 };
+use super::reply::Finalizer;
 use super::stats::Tracked;
 use consume::{consume_stream, trace_line};
 
@@ -103,10 +104,7 @@ fn thinking_override() -> Option<bool> {
     }
 }
 
-pub fn stream_prompt<F>(prompt: String, task: ChatTask, finalizer: F, tx: Sender<GenMsg>)
-where
-    F: Fn(&str) -> String,
-{
+pub fn stream_prompt(prompt: String, task: ChatTask, finalizer: Finalizer, tx: Sender<GenMsg>) {
     stream_messages(
         vec![ChatMessage {
             role: "user",
@@ -121,12 +119,12 @@ where
 pub fn stream_messages(
     messages: Vec<ChatMessage>,
     task: ChatTask,
-    finalizer: impl Fn(&str) -> String,
+    finalizer: Finalizer,
     tx: Sender<GenMsg>,
 ) {
     let provider = current_provider();
     if provider == LlmProvider::Claude {
-        super::claude::stream_claude(messages, task, finalizer, tx);
+        super::claude::stream_claude(messages, task, finalizer.claude, tx);
         return;
     }
     let num_predict = task.num_predict;
@@ -172,7 +170,7 @@ pub fn stream_messages(
 
     consume_stream(
         BufReader::new(resp).lines(),
-        finalizer,
+        finalizer.local,
         &tx,
         &mut trace,
         start,
