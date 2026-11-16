@@ -104,14 +104,28 @@ pub fn push(remote: &str, branch: &str) -> Result<String> {
         }
     }
 
+    // A branch that tracks nothing starts tracking what it is pushed to, so a
+    // first push, or one after a push made without `-u`, leaves it with an
+    // upstream. One that already tracks something keeps it.
+    let args: &[&str] = if tracks_upstream(branch) {
+        &["push", remote, branch]
+    } else {
+        &["push", "--set-upstream", remote, branch]
+    };
     // Not timed: see `TIMED_SUBCOMMANDS`.
-    match run_combined(&["push", remote, branch]) {
+    match run_combined(args) {
         Ok(text) => Ok(with_fetch_warning(text, stale)),
         Err(err) => Err(anyhow::anyhow!(
             "{}",
             with_fetch_warning(err.to_string(), stale).trim()
         )),
     }
+}
+
+/// Whether `branch` has an upstream that still exists on its remote.
+fn tracks_upstream(branch: &str) -> bool {
+    let upstream = format!("{branch}@{{upstream}}");
+    run(&["rev-parse", "--verify", "--quiet", &upstream]).is_ok()
 }
 
 /// Push `branch` to `remote` and have it track what it was pushed to, for a

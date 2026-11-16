@@ -281,6 +281,79 @@ fn a_push_after_a_failed_fetch_says_its_remote_check_may_be_stale() {
     assert_eq!(String::from_utf8_lossy(&pushed.stdout).trim(), "second");
 }
 
+/// What `branch` tracks in `dir`, or an empty string when it tracks nothing.
+fn upstream_of(dir: &Path, branch: &str) -> String {
+    let out = git(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(upstream:short)",
+            &format!("refs/heads/{branch}"),
+        ],
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A repository with one commit on `main` and an empty `origin` it has not
+/// pushed to yet.
+fn unpushed_repo_with_origin() -> (TempDir, TempDir) {
+    let dir = init_repo();
+    fs::write(dir.path().join("README.md"), "main\n").unwrap();
+    stage_in(dir.path(), "README.md");
+    commit_in(dir.path(), "initial");
+    let bare = tempfile::tempdir().expect("bare tempdir");
+    git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+    git_ok(
+        dir.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    (dir, bare)
+}
+
+/// A branch pushed for the first time comes out tracking the branch it was
+/// pushed to, so later pushes and pulls know where it lives.
+#[test]
+fn a_first_push_leaves_the_branch_tracking_its_remote_branch() {
+    let (dir, bare) = unpushed_repo_with_origin();
+
+    lg::git::with_repo(dir.path(), || lg::git::push("origin", "main")).expect("first push");
+
+    assert_eq!(upstream_of(dir.path(), "main"), "origin/main");
+    let pushed = git(bare.path(), &["log", "--format=%s", "-1", "main"]);
+    assert_eq!(String::from_utf8_lossy(&pushed.stdout).trim(), "initial");
+}
+
+/// A branch that was pushed without an upstream gets one on its next push,
+/// even when there is nothing new to send.
+#[test]
+fn a_push_repairs_a_branch_that_was_pushed_without_an_upstream() {
+    let (dir, _bare) = unpushed_repo_with_origin();
+    git_ok(dir.path(), &["push", "origin", "main"]);
+    assert_eq!(upstream_of(dir.path(), "main"), "");
+
+    lg::git::with_repo(dir.path(), || lg::git::push("origin", "main")).expect("push");
+
+    assert_eq!(upstream_of(dir.path(), "main"), "origin/main");
+}
+
+/// A branch that already tracks a differently named remote branch keeps
+/// tracking it when pushed.
+#[test]
+fn a_push_keeps_the_upstream_a_branch_already_has() {
+    let (dir, _bare) = repo_with_origin();
+    git_ok(dir.path(), &["checkout", "-q", "-b", "feature/x"]);
+    git_ok(
+        dir.path(),
+        &["branch", "--set-upstream-to", "origin/main", "feature/x"],
+    );
+    fs::write(dir.path().join("x.txt"), "x\n").unwrap();
+    commit_all(dir.path(), "x");
+
+    lg::git::with_repo(dir.path(), || lg::git::push("origin", "feature/x")).expect("push");
+
+    assert_eq!(upstream_of(dir.path(), "feature/x"), "origin/main");
+}
+
 /// A feature branch pushed to `origin`, then amended locally so the two have
 /// diverged: one commit each side.
 fn diverged_feature() -> (TempDir, TempDir) {
