@@ -74,7 +74,7 @@ fn claude_code_base() -> Vec<Rule> {
         bare_allow("file-write-create", "Allow mkdir and new file creation"),
         // -- Claude Code config & state --
         rw_comment("HOME/.claude", "Claude Code config, sessions, skills"),
-        rw_comment(
+        ro_comment(
             "HOME/.terrarium",
             "terrarium config, sandbox profiles, instance registry",
         ),

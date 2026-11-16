@@ -133,6 +133,7 @@ fn finish(
     let mut rules = expand_rules_for_symlink_targets(&rules, params);
     rules.extend(claude_skills_symlink_rules(params));
     rules.push(hidden_project_state_rule());
+    rules.push(read_only_terrarium_state_rule());
     rules.extend(hidden_project_state_alias_rules(aliases, params));
     sbpl::render(&rules, params, proxy_enabled)
 }
@@ -155,6 +156,21 @@ fn hidden_project_state_rule() -> Rule {
         path_type: Some(PathType::Subpath),
         path_value: Some("PROJECT_ROOT/.terrarium".to_string()),
         comment: Some("Hide project-local terrarium state from sandboxed tools".to_string()),
+        source: RuleSource::Preset,
+    }
+}
+
+/// The profile, the proxy allowlist and the saved command live here, and the
+/// proxy re-reads the allowlist while the session runs: a sandbox that could
+/// write them could widen itself. Denied last, so neither the bare allowance
+/// to create files nor a rule the user added reopens it.
+fn read_only_terrarium_state_rule() -> Rule {
+    Rule {
+        action: RuleAction::Deny,
+        operation: "file-write*".to_string(),
+        path_type: Some(PathType::Subpath),
+        path_value: Some("HOME/.terrarium".to_string()),
+        comment: Some("Keep terrarium's own profiles and allowlist read-only".to_string()),
         source: RuleSource::Preset,
     }
 }
@@ -221,6 +237,33 @@ mod tests {
             .insert("CARGO_HOME".to_string(), "/my/.cargo".to_string());
         let output = render(&RenderRequest::project(&profile, false)).unwrap();
         assert!(output.contains("/my/project"));
+    }
+
+    #[test]
+    fn the_sandbox_cannot_write_terrariums_own_profiles_and_allowlist() {
+        let mut profile = ProjectProfile::new("test", Some("rust".to_string()));
+        profile
+            .params
+            .insert("PROJECT_ROOT".to_string(), "/my/project".to_string());
+        profile
+            .params
+            .insert("HOME".to_string(), "/Users/me".to_string());
+
+        let output = render(&RenderRequest::project(&profile, false)).unwrap();
+
+        let state = "(subpath \"/Users/me/.terrarium\")";
+        let write_rules: Vec<&str> = output
+            .split("\n(")
+            .filter(|rule| rule.contains(state) && rule.contains("file-write*"))
+            .collect();
+        assert!(!write_rules.is_empty(), "{output}");
+        assert!(
+            write_rules.iter().all(|rule| rule.starts_with("deny")),
+            "{write_rules:?}"
+        );
+        let last_allow = output.rfind("\n(allow").unwrap();
+        let deny = output.rfind("Keep terrarium's own profiles").unwrap();
+        assert!(deny > last_allow, "the deny must come after every allow");
     }
 
     #[test]
