@@ -1,5 +1,7 @@
 #[path = "git_integration/attrs.rs"]
 mod attrs;
+#[path = "git_integration/author.rs"]
+mod author;
 #[path = "git_integration/auto_stash.rs"]
 mod auto_stash;
 #[path = "git_integration/branches.rs"]

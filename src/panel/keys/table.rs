@@ -625,7 +625,7 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "Ctrl+A / Ctrl+E",
-                help: "Start or end of the line",
+                help: "Start or end of the message",
                 footer: None,
             },
             Binding {
@@ -962,8 +962,8 @@ pub const SECTIONS: &[Section] = &[
             },
             Binding {
                 key: "Enter",
-                help: "Save subtree rule",
-                footer: Some(("Enter", "save subtree")),
+                help: "Save repo-local author",
+                footer: Some(("Enter", "save local")),
             },
             Binding {
                 key: "Ctrl+L",

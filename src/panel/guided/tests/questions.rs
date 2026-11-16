@@ -21,7 +21,7 @@ fn checking(
     guided.checks.push(Check {
         key,
         questions: questions.iter().map(|q| q.to_string()).collect(),
-        answer: rx,
+        answer: rx.into(),
     });
     tx
 }

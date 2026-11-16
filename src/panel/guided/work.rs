@@ -163,7 +163,7 @@ where
                     let Some((at, context)) = next else {
                         break;
                     };
-                    let answer = answer_of(&*ask, context, &tx, &listening);
+                    let answer = answer_of(&ask, context, &tx, &listening);
                     let _ = done_tx.send((at, answer));
                 }
             });
@@ -218,29 +218,43 @@ where
     rx
 }
 
-/// What one part's read came to, its thinking passed on to `tx` meanwhile.
+/// What one part's read came to, a sign of life passed on to `tx` for each
+/// piece of it meanwhile. Once nobody is listening the part is let go, which
+/// stops the request at the next piece it sends.
 fn answer_of<F>(
-    ask: &F,
+    ask: &Arc<F>,
     context: String,
     tx: &Sender<GenMsg>,
     listening: &AtomicBool,
 ) -> Result<(String, GenStats), String>
 where
-    F: Fn(String, Sender<GenMsg>),
+    F: Fn(String, Sender<GenMsg>) + Send + Sync + 'static,
 {
     let (part_tx, part_rx) = std::sync::mpsc::channel();
-    ask(context, part_tx);
+    let ask = ask.clone();
+    crate::git::spawn_pinned(move || ask(context, part_tx));
     let mut answer = Err(stopped_unexpectedly("the model request"));
     for message in part_rx {
-        match message {
-            GenMsg::Thinking(_) => {
-                if tx.send(GenMsg::Thinking(String::new())).is_err() {
-                    listening.store(false, Ordering::SeqCst);
-                }
+        let alive = match message {
+            GenMsg::Thinking(_) => Some(GenMsg::Thinking(String::new())),
+            GenMsg::Output(_) => Some(GenMsg::Output(String::new())),
+            GenMsg::Done { text, stats } => {
+                answer = Ok((text, stats));
+                None
             }
-            GenMsg::Done { text, stats } => answer = Ok((text, stats)),
-            GenMsg::Error(message) => answer = Err(message),
-            GenMsg::Output(_) | GenMsg::Reset => {}
+            GenMsg::Error(message) => {
+                answer = Err(message);
+                None
+            }
+            GenMsg::Reset => None,
+        };
+        if let Some(alive) = alive
+            && tx.send(alive).is_err()
+        {
+            listening.store(false, Ordering::SeqCst);
+        }
+        if !listening.load(Ordering::SeqCst) {
+            return Err("nobody is waiting for the read any more".to_string());
         }
     }
     answer
@@ -248,14 +262,54 @@ where
 
 /// Claude Code reading the checkout at `root` to settle the questions
 /// `prompt` carries: the findings that still matter, one a line.
-pub(super) fn check_questions(root: String, prompt: String) -> Receiver<Result<String, String>> {
+pub(super) fn check_questions(root: String, prompt: String) -> Awaited<Result<String, String>> {
+    check_with(root, prompt, crate::llm::run_claude_check)
+}
+
+fn check_with<F>(root: String, prompt: String, run: F) -> Awaited<Result<String, String>>
+where
+    F: FnOnce(&std::path::Path, &str, &AtomicBool) -> anyhow::Result<String> + Send + 'static,
+{
     let (tx, rx) = std::sync::mpsc::channel();
+    let answer = Awaited::from(rx);
+    let wanted = answer.wanted.clone();
     crate::git::spawn_pinned(move || {
-        let result = crate::llm::run_claude_check(std::path::Path::new(&root), &prompt)
-            .map_err(|e| format!("{e:#}"));
+        let result =
+            run(std::path::Path::new(&root), &prompt, &wanted).map_err(|e| format!("{e:#}"));
         let _ = tx.send(result);
     });
-    rx
+    answer
+}
+
+/// The end of a channel an answer comes in on, which tells the work answering
+/// that nobody wants the answer once it is dropped: a channel alone says so
+/// only when the answer is sent, after all the work is done.
+pub(in crate::panel::guided) struct Awaited<T> {
+    rx: Receiver<T>,
+    wanted: Arc<AtomicBool>,
+}
+
+impl<T> From<Receiver<T>> for Awaited<T> {
+    fn from(rx: Receiver<T>) -> Self {
+        Self {
+            rx,
+            wanted: Arc::new(AtomicBool::new(true)),
+        }
+    }
+}
+
+impl<T> std::ops::Deref for Awaited<T> {
+    type Target = Receiver<T>;
+
+    fn deref(&self) -> &Receiver<T> {
+        &self.rx
+    }
+}
+
+impl<T> Drop for Awaited<T> {
+    fn drop(&mut self) {
+        self.wanted.store(false, Ordering::SeqCst);
+    }
 }
 
 #[cfg(test)]
@@ -383,6 +437,69 @@ mod tests {
         assert!(
             asked.load(Ordering::SeqCst) < 4,
             "every part was still asked"
+        );
+    }
+
+    /// A read nobody waits for any more stops the parts already being
+    /// written, not only the ones it has not started.
+    #[test]
+    fn a_read_in_parts_nobody_is_waiting_for_stops_the_parts_already_running() {
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+        let started_tx = Mutex::new(started_tx);
+        let stopped_tx = Mutex::new(stopped_tx);
+        let contexts = (0..3).map(|part| part.to_string()).collect();
+        let rx = ask_in_parts(contexts, 2, move |_, tx| {
+            let _ = started_tx.lock().unwrap().send(());
+            let begun = std::time::Instant::now();
+            while begun.elapsed() < std::time::Duration::from_secs(5) {
+                if tx.send(GenMsg::Output("more ".to_string())).is_err() {
+                    let _ = stopped_tx.lock().unwrap().send(());
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let _ = tx.send(GenMsg::Done {
+                text: "Verdict: ok".to_string(),
+                stats: GenStats::default(),
+            });
+        });
+        started_rx.recv().unwrap();
+
+        drop(rx);
+
+        assert!(
+            stopped_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .is_ok(),
+            "a running part was written to the end with nobody waiting"
+        );
+    }
+
+    /// A question check nobody waits for any more, the walk having moved on,
+    /// is stopped rather than left to run to the end.
+    #[test]
+    fn a_question_check_nobody_is_waiting_for_is_stopped() {
+        let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+        let answer = check_with(String::new(), String::new(), move |_, _, wanted| {
+            let started = std::time::Instant::now();
+            while started.elapsed() < std::time::Duration::from_secs(5) {
+                if !wanted.load(Ordering::SeqCst) {
+                    let _ = stopped_tx.send(());
+                    anyhow::bail!("stopped");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(String::new())
+        });
+
+        drop(answer);
+
+        assert!(
+            stopped_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .is_ok(),
+            "the check ran on with nobody waiting"
         );
     }
 

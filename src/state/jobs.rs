@@ -8,7 +8,7 @@ use crate::git::{
     Worktree,
 };
 
-use super::{DiffSource, FlowRun};
+use super::{AppState, DiffSource, FlowRun};
 
 mod generation;
 
@@ -84,6 +84,38 @@ pub fn drain_receiver<M>(rx: &Receiver<M>) -> Drained<M> {
 /// What to say about work whose worker ended before it answered.
 pub fn stopped_unexpectedly(name: &str) -> String {
     format!("{name} stopped unexpectedly")
+}
+
+/// Let go of a worker that only reads. Nothing it does has to be finished
+/// before lg exits, so quitting does not wait out a slow remote or a model
+/// still answering for it; a git child it started ends on its own.
+pub fn let_reader_go(handle: Option<JoinHandle<()>>) {
+    drop(handle);
+}
+
+impl AppState {
+    /// Hand over the worker handles of the running jobs that write — to the
+    /// repository, the working tree or a remote — for quitting to wait on.
+    /// One left out is a write the process can exit from under. The jobs that
+    /// only read are left out on purpose: see [`let_reader_go`].
+    pub fn take_writer_handles(&mut self) -> Vec<JoinHandle<()>> {
+        let mut handles = Vec::new();
+        macro_rules! take {
+            ($($job:ident),+ $(,)?) => { $(
+                if let Some(job) = self.$job.as_mut() {
+                    handles.extend(job.handle_mut().take());
+                }
+            )+ };
+        }
+        take!(
+            push_job,
+            checkout_job,
+            operation_job,
+            conflict_resolve_job,
+            workflow_job,
+        );
+        handles
+    }
 }
 
 /// A background job: the channel its worker reports on, the worker's handle, and

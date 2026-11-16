@@ -430,6 +430,11 @@ impl App {
                 clock.input();
             }
 
+            if crate::llm::models_arrived() {
+                self.state.llm_model = crate::llm::current_model();
+                clock.changed();
+            }
+
             // Expire stale status messages.
             if let Some(ref s) = self.state.status.clone() {
                 let lifetime = if s.is_error {

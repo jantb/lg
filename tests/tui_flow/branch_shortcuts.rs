@@ -339,6 +339,7 @@ fn delete_branch_modal_shows_remote_option_for_tracked_branch() {
         behind_main: 0,
         last_commit_unix: None,
     };
+    state.branches = vec![branch.clone()];
     state.open_delete_branch_modal(&branch);
 
     let backend = TestBackend::new(100, 18);
@@ -358,7 +359,7 @@ fn delete_branch_modal_shows_remote_option_for_tracked_branch() {
         .collect::<String>();
 
     assert!(
-        text.contains("delete remote (origin)"),
+        text.contains("delete remote origin/feature/tracked"),
         "tracked branch should show remote delete option: {text}"
     );
     assert!(

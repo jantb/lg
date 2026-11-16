@@ -3,7 +3,8 @@
 use anyhow::Result;
 
 use crate::git::attrs::suppress_generated_diff;
-use crate::git::{git_command, run};
+use crate::git::diff::{plain_diff, untracked_file_diff, untracked_paths};
+use crate::git::run;
 
 use super::truncate_review_text;
 
@@ -49,7 +50,7 @@ fn compact_commit_body(body: &str) -> String {
 }
 
 pub(super) fn worktree_review_diff(base: &str) -> Result<String> {
-    let out = run(&["diff", "--ignore-all-space", "--find-renames", base])?;
+    let out = plain_diff(&["--ignore-all-space", "--find-renames", base])?;
     let mut diff = String::from_utf8_lossy(&out.stdout).into_owned();
     for path in untracked_paths(".")? {
         let untracked = untracked_file_diff(&path)?;
@@ -68,41 +69,6 @@ fn append_review_diff_part(out: &mut String, part: &str) {
     out.push_str(part);
     if !out.ends_with('\n') {
         out.push('\n');
-    }
-}
-
-fn untracked_paths(pathspec: &str) -> Result<Vec<String>> {
-    let out = run(&[
-        "ls-files",
-        "--others",
-        "--exclude-standard",
-        "-z",
-        "--",
-        pathspec,
-    ])?;
-    Ok(out
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|entry| !entry.is_empty())
-        .map(|entry| String::from_utf8_lossy(entry).into_owned())
-        .collect())
-}
-
-fn untracked_file_diff(path: &str) -> Result<String> {
-    untracked_no_index_diff(path, &["diff", "--no-index", "--", "/dev/null", path])
-}
-
-fn untracked_no_index_diff(path: &str, args: &[&str]) -> Result<String> {
-    let out = git_command(args).output()?;
-    if out.status.success() || out.status.code() == Some(1) {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        Err(anyhow::anyhow!(
-            "git {} failed for {path}: {}",
-            args.join(" "),
-            stderr.trim()
-        ))
     }
 }
 

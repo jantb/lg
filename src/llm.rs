@@ -20,7 +20,7 @@ pub use prompt::{GIVE_UP_PHRASE, build_conflict_hunk_prompt};
 pub use provider::{
     LlmProvider, api_key, available_models, clear_saved_llm_settings, config_file_display,
     current_claude_model, current_endpoint, current_model, current_provider, endpoint_for_provider,
-    env_model_active, env_provider_active, prime_models_async, save_llm_settings,
+    env_model_active, env_provider_active, models_arrived, prime_models_async, save_llm_settings,
 };
 
 /// What an answer says when the server stopped it at the budget rather than at

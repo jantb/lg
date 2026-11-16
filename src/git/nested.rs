@@ -29,12 +29,55 @@ pub fn nested_repositories_at(root: &Path) -> Result<Vec<NestedRepo>> {
     collect_nested_repo_dirs(root, root, &mut dirs);
     dirs.sort();
 
-    let mut repos = dirs
+    let mut repos = parallel_map(&dirs, |dir| nested_repo_status(root, dir))
         .into_iter()
-        .map(|dir| nested_repo_status(root, &dir))
         .collect::<Result<Vec<_>>>()?;
     group_worktrees_under_their_repository(&mut repos);
     Ok(repos)
+}
+
+/// Each repository's checks are a few git processes that wait on the disk, so
+/// a workspace of many repositories is read a handful at a time rather than
+/// one after another. The bound keeps a large workspace from starting a
+/// process storm.
+const MAX_PARALLEL_STATUS: usize = 8;
+
+/// `f` over `items`, results in the order of `items`.
+fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(MAX_PARALLEL_STATUS)
+        .min(items.len());
+    if workers <= 1 {
+        return items.iter().map(f).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut results = std::thread::scope(|scope| {
+        let workers = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(item) = items.get(index) else {
+                            break done;
+                        };
+                        done.push((index, f(item)));
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        workers
+            .into_iter()
+            .flat_map(|worker| {
+                worker
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect::<Vec<_>>()
+    });
+    results.sort_by_key(|(index, _)| *index);
+    results.into_iter().map(|(_, result)| result).collect()
 }
 
 /// Put every linked worktree right after the repository it belongs to, so the
@@ -251,4 +294,19 @@ fn checkout_output_with_stash_notice(mut output: String, stashed: &AutoStash) ->
         output.push_str("applied stashed local changes after checkout\n");
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parallel_results_come_back_in_the_order_asked() {
+        let items: Vec<u64> = (0..50).collect();
+        let squares = parallel_map(&items, |n| {
+            std::thread::sleep(std::time::Duration::from_millis(50 - n));
+            n * n
+        });
+        assert_eq!(squares, items.iter().map(|n| n * n).collect::<Vec<_>>());
+    }
 }

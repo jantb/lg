@@ -556,7 +556,7 @@ fn start_nested_repo_detail(state: &mut AppState, path: String, opening: bool) {
     // A read already under way is for a repository no longer wanted, or for
     // this one as it was a moment ago; either way its answer is not needed.
     if let Some(mut job) = state.nested_detail_job.take() {
-        state.defer_thread_join(job.handle.take());
+        crate::state::let_reader_go(job.handle.take());
     }
     let root = state.workspace_root.clone();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -615,7 +615,7 @@ pub fn poll_nested_repo_detail(state: &mut AppState) {
     let Some(mut job) = state.nested_detail_job.take() else {
         return;
     };
-    state.defer_thread_join(job.handle.take());
+    crate::state::let_reader_go(job.handle.take());
     // Collapsed, or another repository expanded, while this was read.
     if state.nested_repo_detail_path.as_deref() != Some(job.path.as_str()) {
         return;

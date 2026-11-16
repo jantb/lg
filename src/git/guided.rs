@@ -69,6 +69,57 @@ pub struct GuidedFile {
     pub file_index: usize,
     /// The file is new, deleted, renamed or binary.
     pub file_note: Option<String>,
+    key_memo: KeyMemo,
+}
+
+/// The last [`GuidedFile::key`] worked out, with exactly what it was worked
+/// out from. The fields it reads are public and are changed after parsing, so
+/// a key is only reused when what it hashed is still there byte for byte:
+/// comparing is far cheaper than hashing again.
+#[derive(Default)]
+struct KeyMemo(std::sync::Mutex<Option<KeyMemoEntry>>);
+
+struct KeyMemoEntry {
+    path: String,
+    /// Every changed line's text followed by a newline: what the hash reads.
+    hashed: Vec<u8>,
+    key: String,
+}
+
+impl KeyMemo {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<KeyMemoEntry>> {
+        self.0.lock().unwrap_or_else(|err| err.into_inner())
+    }
+}
+
+impl Clone for KeyMemo {
+    fn clone(&self) -> Self {
+        let copy = self.lock().as_ref().map(|entry| KeyMemoEntry {
+            path: entry.path.clone(),
+            hashed: entry.hashed.clone(),
+            key: entry.key.clone(),
+        });
+        Self(std::sync::Mutex::new(copy))
+    }
+}
+
+/// A memo is not part of what a step is.
+impl PartialEq for KeyMemo {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for KeyMemo {}
+
+impl std::hash::Hash for KeyMemo {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
+}
+
+impl std::fmt::Debug for KeyMemo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("KeyMemo")
+    }
 }
 
 impl GuidedFile {
@@ -113,20 +164,49 @@ impl GuidedFile {
     /// text of what changed, not its position, so editing one file does not
     /// make the others look new.
     pub fn key(&self) -> String {
-        let mut hash = 0xcbf2_9ce4_8422_2325u64;
-        for line in self
-            .lines
-            .iter()
-            .filter(|line| matches!(line.kind, LineKind::Added | LineKind::Removed))
+        let mut memo = self.key_memo.lock();
+        if let Some(entry) = memo.as_ref()
+            && entry.path == self.path
+            && self.changed_bytes_are(&entry.hashed)
         {
-            for byte in line.text.bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(0x0100_0000_01b3);
-            }
-            hash ^= 0x0a;
+            return entry.key.clone();
+        }
+        let mut hashed = Vec::new();
+        for line in self.changed_lines() {
+            hashed.extend_from_slice(line.text.as_bytes());
+            hashed.push(b'\n');
+        }
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for &byte in &hashed {
+            hash ^= u64::from(byte);
             hash = hash.wrapping_mul(0x0100_0000_01b3);
         }
-        format!("{}#{hash:016x}", self.path)
+        let key = format!("{}#{hash:016x}", self.path);
+        *memo = Some(KeyMemoEntry {
+            path: self.path.clone(),
+            hashed,
+            key: key.clone(),
+        });
+        key
+    }
+
+    fn changed_lines(&self) -> impl Iterator<Item = &HunkLine> {
+        self.lines
+            .iter()
+            .filter(|line| matches!(line.kind, LineKind::Added | LineKind::Removed))
+    }
+
+    /// Whether the changed lines, each followed by a newline, are `bytes`.
+    fn changed_bytes_are(&self, bytes: &[u8]) -> bool {
+        let mut rest = bytes;
+        for line in self.changed_lines() {
+            let text = line.text.as_bytes();
+            match rest.strip_prefix(text).and_then(|r| r.strip_prefix(b"\n")) {
+                Some(after) => rest = after,
+                None => return false,
+            }
+        }
+        rest.is_empty()
     }
 }
 
@@ -165,6 +245,7 @@ pub fn parse_files(diff: &str) -> Vec<GuidedFile> {
                 lines,
                 file_index,
                 file_note,
+                key_memo: KeyMemo::default(),
             }
         })
         .collect();
@@ -431,6 +512,33 @@ new file mode 100644
             file(&before, "src/new.rs").key(),
             file(&after, "src/new.rs").key()
         );
+    }
+
+    /// Keys are what saved progress is filed under, so one worked out today
+    /// must be the one a walk saved before.
+    #[test]
+    fn a_file_has_the_key_its_saved_progress_is_filed_under() {
+        assert_eq!(
+            file(&parse_files(DIFF), "src/new.rs").key(),
+            "src/new.rs#948ff01b113cb086"
+        );
+    }
+
+    #[test]
+    fn a_key_follows_a_line_changed_after_it_was_asked_for() {
+        let mut step = file(&parse_files(DIFF), "src/new.rs").clone();
+        let before = step.key();
+        let end = step
+            .lines
+            .iter()
+            .position(|line| line.text == "+// end")
+            .unwrap();
+
+        step.lines[end].text = "+// the end".into();
+
+        let edited = parse_files(&DIFF.replace("+// end", "+// the end"));
+        assert_ne!(step.key(), before);
+        assert_eq!(step.key(), file(&edited, "src/new.rs").key());
     }
 
     #[test]

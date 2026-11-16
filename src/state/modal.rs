@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::git::Branch;
+use crate::git::{Branch, RemoteBranch};
 
 use super::{AppState, FlowAction};
 
@@ -61,9 +61,16 @@ impl AppState {
     /// earlier conflict's local pass had settled. A file resolved during the
     /// last conflict says nothing about a file of the same name in this one.
     pub fn set_conflicts(&mut self, conflicts: Vec<String>) {
+        let unsaved = self.conflict.preview.take().filter(|preview| {
+            conflicts.contains(&preview.path)
+                && preview.editor.as_ref().is_ok_and(|editor| editor.dirty())
+        });
+        self.conflict.idx = unsaved
+            .as_ref()
+            .and_then(|preview| conflicts.iter().position(|path| *path == preview.path))
+            .unwrap_or(0);
         self.conflict.files = conflicts;
-        self.conflict.preview = None;
-        self.conflict.idx = 0;
+        self.conflict.preview = unsaved;
         self.conflict.scroll_offset = 0;
         self.conflict.resolved.clear();
         self.conflict.model_notes.clear();
@@ -395,7 +402,7 @@ pub enum PendingAction {
     DeleteBranch {
         name: String,
         delete_local: bool,
-        delete_remote: bool,
+        delete_remote: Option<RemoteBranch>,
         force: bool,
     },
     SetBranchUpstream {
@@ -709,7 +716,7 @@ impl AppState {
         // The remote is offered when one is tracked, but left unticked: a
         // remote branch may be someone else's work too, and deleting it is
         // the half of this that cannot be taken back locally.
-        self.delete_branch.remote_available = branch.upstream.is_some() && !branch.upstream_gone;
+        self.delete_branch.remote_available = self.own_upstream(branch).is_some();
         self.delete_branch.remote = false;
         self.delete_branch.force = false;
         self.delete_branch.field = if self.delete_branch.remote_available {
@@ -718,6 +725,40 @@ impl AppState {
             DeleteBranchField::Force
         };
         self.modal = Modal::DeleteBranch;
+    }
+
+    /// The remote branch the delete modal would delete along with its branch.
+    pub fn delete_branch_upstream(&self) -> Option<RemoteBranch> {
+        let branch = self
+            .branches
+            .iter()
+            .find(|b| b.name == self.delete_branch.target)?;
+        self.own_upstream(branch)
+    }
+
+    /// The remote branch `branch` tracks, when it is that branch's alone to
+    /// delete. A branch started from `origin/main` tracks `origin/main`, and
+    /// one made from a colleague's branch tracks theirs: a protected name, or
+    /// one another local branch is named after or tracks, is somebody else's.
+    fn own_upstream(&self, branch: &Branch) -> Option<RemoteBranch> {
+        let name = branch
+            .upstream
+            .as_deref()
+            .filter(|_| !branch.upstream_gone)?;
+        let (remote, remote_branch) = name.split_once('/')?;
+        if crate::config::is_protected_branch_name(remote_branch) {
+            return None;
+        }
+        let claimed = self.branches.iter().any(|other| {
+            other.name != branch.name
+                && (other.name == remote_branch || other.upstream.as_deref() == Some(name))
+        });
+        (!claimed).then(|| RemoteBranch {
+            name: name.to_owned(),
+            remote: remote.to_owned(),
+            local_name: remote_branch.to_owned(),
+            last_commit_unix: None,
+        })
     }
 }
 

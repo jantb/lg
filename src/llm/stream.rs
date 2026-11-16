@@ -11,7 +11,7 @@ use crate::config::{LLM_NUM_PREDICT, LLM_TEMPERATURE, LLM_TOP_P};
 use crate::state::GenMsg;
 
 use super::provider::{
-    LlmProvider, api_key, current_model, current_provider, endpoint_for_provider,
+    LlmProvider, api_key, current_provider, endpoint_for_provider, request_model,
 };
 use super::reply::Finalizer;
 use super::stats::Tracked;
@@ -129,7 +129,7 @@ pub fn stream_messages(
     }
     let num_predict = task.num_predict;
     let start = Instant::now();
-    let model = current_model();
+    let model = request_model();
     let endpoint = endpoint_for_provider(provider);
     let prompt_bytes = messages
         .iter()

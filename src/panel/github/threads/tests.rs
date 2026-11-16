@@ -515,3 +515,22 @@ mod mouse {
         assert!(state.selection.is_some(), "a drag let go is kept to copy");
     }
 }
+
+#[test]
+fn a_reply_goes_to_the_conversation_it_was_started_on_after_a_refresh() {
+    let mut state = with_threads(vec![thread("A", "a.rs", false), thread("B", "b.rs", false)]);
+    handle_key(&mut state, key(KeyCode::Char('r'))).unwrap();
+    assert!(handle_paste(&mut state, "agreed"));
+
+    // Someone else resolved A meanwhile, so it is no longer listed.
+    arrive(
+        &mut state,
+        vec![thread("A", "a.rs", true), thread("B", "b.rs", false)],
+    );
+    handle_key(&mut state, key(KeyCode::Enter)).unwrap();
+
+    assert_eq!(
+        sent(),
+        [("A".to_string(), Some("agreed".to_string()), false)]
+    );
+}

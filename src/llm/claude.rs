@@ -350,8 +350,14 @@ const CHECK_TOOLS: &str = "Read,Grep,Glob";
 /// Have Claude Code read the code in `cwd` to answer `prompt`, and wait for
 /// its whole answer. It cannot change a file or run a command. Blocks, so it
 /// belongs on a thread.
-pub fn run_claude_check(cwd: &std::path::Path, prompt: &str) -> anyhow::Result<String> {
-    run_claude_headless(cwd, prompt, CHECK_TOOLS, &[])
+///
+/// Once `wanted` is false the run is stopped and its process reaped.
+pub fn run_claude_check(
+    cwd: &std::path::Path,
+    prompt: &str,
+    wanted: &AtomicBool,
+) -> anyhow::Result<String> {
+    run_claude_headless(cwd, prompt, CHECK_TOOLS, &[], wanted)
 }
 
 /// One `claude -p` run in `cwd` limited to `tools`, with no MCP servers and no
@@ -361,6 +367,7 @@ fn run_claude_headless(
     prompt: &str,
     tools: &str,
     extra_args: &[&str],
+    wanted: &AtomicBool,
 ) -> anyhow::Result<String> {
     use anyhow::Context;
     let agent = crate::agents::claude_profile();
@@ -388,20 +395,8 @@ fn run_claude_headless(
     if !model.is_empty() {
         command.args(["--model", &model]);
     }
-    let mut child = command
-        .current_dir(cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("start claude")?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let prompt = prompt.to_string();
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(prompt.as_bytes());
-        });
-    }
-    let out = child.wait_with_output().context("wait for claude")?;
+    command.current_dir(cwd);
+    let out = run_while_wanted(command, prompt, wanted)?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let result: Option<serde_json::Value> = stdout
         .lines()
@@ -428,6 +423,56 @@ fn run_claude_headless(
             last_lines(String::from_utf8_lossy(&out.stderr).trim(), 3)
         ),
     }
+}
+
+/// Run `command` with `prompt` on its stdin to the end, unless `wanted` turns
+/// false first: then the process is killed and reaped, and the run fails.
+fn run_while_wanted(
+    mut command: Command,
+    prompt: &str,
+    wanted: &AtomicBool,
+) -> anyhow::Result<std::process::Output> {
+    use anyhow::Context;
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("start claude")?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let prompt = prompt.to_string();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(prompt.as_bytes());
+        });
+    }
+    // Read on threads of their own, so neither pipe can fill and stall the
+    // run while this one watches whether it is still wanted.
+    fn read_all<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    }
+    let stdout = read_all(child.stdout.take());
+    let stderr = read_all(child.stderr.take());
+    let status = loop {
+        if !wanted.load(Ordering::SeqCst) {
+            stop(&mut child);
+            anyhow::bail!("claude was stopped: nobody is waiting for its answer");
+        }
+        if let Some(status) = child.try_wait().context("wait for claude")? {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
 }
 
 /// The system prompt, and everything else folded into one user turn.
@@ -752,6 +797,48 @@ mod tests {
 
         assert_eq!(models_from_initialize(&init), None);
         assert_eq!(models_from_initialize(&someone_elses), None);
+    }
+
+    /// A run nobody wants any more ends at once, and leaves no process behind,
+    /// not even an unreaped one.
+    #[test]
+    fn a_run_no_longer_wanted_is_stopped_and_leaves_no_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            &format!("echo $$ > '{}'; exec sleep 5", pid_file.display()),
+        ]);
+        let wanted = std::sync::Arc::new(AtomicBool::new(true));
+        let (done_tx, done_rx) = channel();
+        let running = wanted.clone();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(run_while_wanted(command, "", &running).is_ok());
+        });
+        let started = Instant::now();
+        let pid = loop {
+            if let Some(pid) = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+            {
+                break pid;
+            }
+            assert!(started.elapsed() < Duration::from_secs(5), "never started");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+
+        wanted.store(false, Ordering::SeqCst);
+        let answered = done_rx.recv_timeout(Duration::from_secs(2));
+
+        assert_eq!(answered, Ok(false), "the run was not stopped");
+        let still_there = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!still_there, "the stopped run left process {pid} behind");
     }
 
     #[test]

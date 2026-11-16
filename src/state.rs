@@ -40,6 +40,18 @@ pub struct ListCursor {
     pub scroll: usize,
 }
 
+/// What a branch log cache was built from: the text's version, plus its
+/// length and buffer, which also catch a text replaced without
+/// [`AppState::set_diff_text`].
+pub type LogTextKey = (u64, usize, usize);
+
+/// The commits of a branch log, as the line each starts on and its sha.
+pub type LogCommits = std::sync::Arc<Vec<(usize, String)>>;
+
+/// The row each line of a branch log starts on at a width, with the text and
+/// width they were counted for.
+pub type LogRowStarts = ((LogTextKey, u16), Vec<usize>);
+
 pub fn clamp_index(idx: usize, len: usize) -> Option<usize> {
     if len == 0 {
         None
@@ -132,6 +144,11 @@ pub struct AppState {
     /// The hunks of `diff_text`, read once per text.
     pub diff_hunks_cache:
         std::cell::RefCell<Option<(u64, std::sync::Arc<Vec<crate::git::hunk::ShownHunk>>)>>,
+    /// The commits of `diff_text` read as a branch log, read once per text.
+    pub log_commits_cache: std::cell::RefCell<Option<(LogTextKey, LogCommits)>>,
+    /// The row each line of the branch log starts on at a width, with the
+    /// row count last, so finding a commit's rows does not wrap the log above it.
+    pub log_row_starts_cache: std::cell::RefCell<Option<LogRowStarts>>,
 
     pub commit_message: String,
     pub commit_cursor: usize,
@@ -354,6 +371,8 @@ impl AppState {
             diff_hunk: HunkCursor::default(),
             log_commit: 0,
             diff_hunks_cache: Default::default(),
+            log_commits_cache: Default::default(),
+            log_row_starts_cache: Default::default(),
 
             commit_message: String::new(),
             commit_cursor: 0,

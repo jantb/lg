@@ -7,7 +7,7 @@ use crate::panel::text_input::TextInput;
 use crate::state::{AppState, GitHubAction};
 
 use super::browse::{dispatch, select_pr};
-use super::lookup::{is_current_branch, selected_pr};
+use super::lookup::is_current_branch;
 use super::{Compose, CreateField, CreateForm, MergeForm, MergeRow, Mode};
 
 pub(super) fn compose(state: &mut AppState, kind: Compose, number: u64) {
@@ -172,13 +172,11 @@ pub(super) fn merge_key(state: &mut AppState, key: KeyEvent) {
     }
 }
 
-pub(super) fn confirm_close_key(state: &mut AppState, key: KeyEvent) {
+pub(super) fn confirm_close_key(state: &mut AppState, number: u64, key: KeyEvent) {
     match key.code {
         KeyCode::Char('y' | 'Y') => {
             state.github.mode = Mode::Browse;
-            if let Some(number) = selected_pr(state).map(|pr| pr.number) {
-                dispatch(state, GitHubAction::Close { number });
-            }
+            dispatch(state, GitHubAction::Close { number });
         }
         KeyCode::Char('n' | 'N') | KeyCode::Esc => state.github.mode = Mode::Browse,
         _ => {}

@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use crate::git::hunk::{HunkOp, HunkSide, ShownHunk, shown_hunks};
-use crate::state::{AppState, DiffSource, HunkCursor, PendingAction};
+use crate::state::{AppState, DiffSource, HunkCursor, LogCommits, LogTextKey, PendingAction};
 
 /// Whether the text is lg's staged-over-worktree view, whose hunks can be
 /// staged and unstaged.
@@ -130,30 +130,68 @@ pub(super) fn log_commits(text: &str) -> Vec<(usize, String)> {
         .collect()
 }
 
+fn log_text_key(state: &AppState) -> LogTextKey {
+    (
+        state.diff_text_version,
+        state.diff_text.len(),
+        state.diff_text.as_ptr() as usize,
+    )
+}
+
+/// The commits of the pane's text read as a branch log, read once per text.
+fn shown_log_commits(state: &AppState) -> LogCommits {
+    let key = log_text_key(state);
+    let mut cache = state.log_commits_cache.borrow_mut();
+    if let Some((cached, commits)) = cache.as_ref()
+        && *cached == key
+    {
+        return Arc::clone(commits);
+    }
+    let commits = Arc::new(log_commits(&state.diff_text));
+    *cache = Some((key, Arc::clone(&commits)));
+    commits
+}
+
+/// Hand `f` the row each line of the log drawn `width` wide starts on, with
+/// the row count after the last line, wrapping the log only when the text or
+/// the width has changed since.
+fn with_log_row_starts<R>(state: &AppState, width: u16, f: impl FnOnce(&[usize]) -> R) -> R {
+    let key = (log_text_key(state), width);
+    let mut cache = state.log_row_starts_cache.borrow_mut();
+    if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {
+        let mut starts = vec![0usize];
+        let mut row = 0usize;
+        for text in state.diff_text.lines() {
+            row += super::log_line_rows(text, width).len();
+            starts.push(row);
+        }
+        *cache = Some((key, starts));
+    }
+    f(cache
+        .as_ref()
+        .map(|(_, starts)| starts.as_slice())
+        .unwrap_or_default())
+}
+
 /// The rows of the log drawn `width` wide each of `lines` starts on, with
 /// the lines above counting for every row they wrap onto.
 fn log_rows(state: &AppState, width: u16, lines: &[usize]) -> Vec<usize> {
-    let mut rows = Vec::with_capacity(lines.len());
-    let mut wanted = lines.iter().peekable();
-    let mut row = 0usize;
-    for (at, text) in state.diff_text.lines().enumerate() {
-        while wanted.next_if(|line| **line == at).is_some() {
-            rows.push(row);
-        }
-        if wanted.peek().is_none() {
-            break;
-        }
-        row += super::log_line_rows(text, width).len();
-    }
-    rows
+    with_log_row_starts(state, width, |starts| {
+        let line_count = starts.len() - 1;
+        lines
+            .iter()
+            .filter(|line| **line < line_count)
+            .map(|line| starts[*line])
+            .collect()
+    })
 }
 
 /// The rows of the pane each anchor — hunk or commit — starts on.
 fn anchor_rows(state: &AppState) -> Vec<usize> {
     if log_shown(state) {
-        let lines: Vec<usize> = log_commits(&state.diff_text)
-            .into_iter()
-            .map(|(line, _)| line)
+        let lines: Vec<usize> = shown_log_commits(state)
+            .iter()
+            .map(|(line, _)| *line)
             .collect();
         log_rows(state, state.diff_viewport_width, &lines)
     } else {
@@ -164,7 +202,7 @@ fn anchor_rows(state: &AppState) -> Vec<usize> {
 /// The anchor the cursor is on, counted from the top.
 fn current_anchor(state: &AppState) -> Option<usize> {
     if log_shown(state) {
-        let count = log_commits(&state.diff_text).len();
+        let count = shown_log_commits(state).len();
         (count > 0).then(|| state.log_commit.min(count - 1))
     } else {
         current(state).map(|(at, _)| at)
@@ -192,7 +230,7 @@ pub(super) fn step(state: &mut AppState, forward: bool) {
         return;
     };
     let count = rows.len().min(if log_shown(state) {
-        log_commits(&state.diff_text).len()
+        shown_log_commits(state).len()
     } else {
         hunks(state).len()
     });
@@ -266,18 +304,16 @@ pub(super) fn cursor_row(state: &AppState, width: u16) -> Option<usize> {
 /// its commit's line wraps onto.
 pub(super) fn cursor_log_rows(state: &AppState, width: u16) -> Option<std::ops::Range<usize>> {
     let at = current_anchor(state)?;
-    let line = log_commits(&state.diff_text)
-        .get(at)
-        .map(|(line, _)| *line)?;
-    let start = *log_rows(state, width, &[line]).first()?;
-    let text = state.diff_text.lines().nth(line)?;
-    Some(start..start + super::log_line_rows(text, width).len())
+    let line = shown_log_commits(state).get(at).map(|(line, _)| *line)?;
+    with_log_row_starts(state, width, |starts| {
+        Some(*starts.get(line)?..*starts.get(line + 1)?)
+    })
 }
 
 /// The pane's title addition: which hunk of how many the cursor is on.
 pub(super) fn title_note(state: &AppState) -> Option<String> {
     if log_shown(state) {
-        let commits = log_commits(&state.diff_text);
+        let commits = shown_log_commits(state);
         let at = current_anchor(state)?;
         return Some(format!("commit {}/{}", at + 1, commits.len()));
     }
@@ -397,7 +433,7 @@ pub(super) fn cherry_pick(state: &mut AppState) {
         );
         return;
     }
-    let commits = log_commits(&state.diff_text);
+    let commits = shown_log_commits(state);
     let Some(at) = current_anchor(state) else {
         state.set_status("no commit under the cursor", false);
         return;
@@ -437,5 +473,31 @@ mod tests {
             commits,
             vec![(0, "1a2b3c4".to_string()), (5, "5d6e7f8".to_string())]
         );
+    }
+
+    fn log_state(log: &str) -> AppState {
+        let mut state = AppState::new();
+        state.diff_source = DiffSource::Branch("feature".to_string());
+        state.set_diff_text(log.to_string());
+        state
+    }
+
+    #[test]
+    fn the_log_cursor_follows_a_replaced_log_and_a_changed_width() {
+        let mut state =
+            log_state("* commit 1a2b3c4\n| Author: A <a@b>\n|\n|     one\n|\n* commit 5d6e7f8\n");
+        state.log_commit = 1;
+        assert_eq!(cursor_log_rows(&state, 80), Some(5..6));
+
+        state.set_diff_text(
+            "* commit 1a2b3c4\n|     a subject long enough to wrap\n* commit 5d6e7f8\n* commit 9a9b9c9\n"
+                .to_string(),
+        );
+        assert_eq!(cursor_log_rows(&state, 80), Some(2..3));
+        assert_eq!(title_note(&state).as_deref(), Some("commit 2/3"));
+
+        let narrow = cursor_log_rows(&state, 12).expect("the commit is still there");
+        assert!(narrow.start > 2, "the wrapped line above pushes it down");
+        assert_eq!(narrow.len(), 2, "its own line wraps onto two rows");
     }
 }

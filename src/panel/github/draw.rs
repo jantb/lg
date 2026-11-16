@@ -11,7 +11,7 @@ use crate::panel::keys;
 use crate::state::{AppState, SPINNER_FRAMES};
 use crate::ui::{self, palette};
 
-use super::lookup::{selected_pr, visible_repos};
+use super::lookup::visible_repos;
 use super::{Compose, Mode, Tab};
 use areas::{columns, thread_columns, too_small};
 use forms::{draw_create, draw_merge};
@@ -145,9 +145,13 @@ fn draw_bottom(state: &AppState, area: Rect, frame: &mut Frame) {
                 Span::styled(if text.is_empty() { hint } else { String::new() }, LABEL),
             ])
         }
-        (Mode::ConfirmClose, _) => {
-            let (number, title) = selected_pr(state)
-                .map(|pr| (pr.number, pr.title.clone()))
+        (Mode::ConfirmClose { number }, _) => {
+            let title = state
+                .github
+                .prs
+                .iter()
+                .find(|pr| pr.number == *number)
+                .map(|pr| pr.title.as_str())
                 .unwrap_or_default();
             let mut spans = vec![Span::styled(
                 format!("Close #{number} \u{201c}{title}\u{201d} without merging?  "),

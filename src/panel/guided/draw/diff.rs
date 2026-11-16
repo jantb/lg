@@ -1,6 +1,10 @@
 //! A file's diff as the walk draws it, with its notes and the findings under
 //! their lines.
 
+use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -29,7 +33,56 @@ impl DiffLines {
     }
 }
 
+/// Lines as last built, and a hash of everything they were built from, so the
+/// layout, the draw, the chat's size and the mouse share one build a frame.
+#[derive(Default)]
+pub(in crate::panel::guided) struct LinesCache(RefCell<Option<(u64, Arc<DiffLines>)>>);
+
+impl LinesCache {
+    pub(super) fn get_or_build(
+        &self,
+        inputs: u64,
+        build: impl FnOnce() -> DiffLines,
+    ) -> Arc<DiffLines> {
+        let mut cache = self.0.borrow_mut();
+        if let Some((built_from, lines)) = cache.as_ref()
+            && *built_from == inputs
+        {
+            return lines.clone();
+        }
+        let lines = Arc::new(build());
+        *cache = Some((inputs, lines.clone()));
+        lines
+    }
+}
+
 pub(super) fn diff_lines(
+    guided: &Guided,
+    step: &GuidedFile,
+    mode: DiffViewMode,
+    width: u16,
+) -> Arc<DiffLines> {
+    guided
+        .step_lines
+        .get_or_build(step_inputs(guided, step, mode, width), || {
+            build_diff_lines(guided, step, mode, width)
+        })
+}
+
+/// Everything [`build_diff_lines`] reads.
+fn step_inputs(guided: &Guided, step: &GuidedFile, mode: DiffViewMode, width: u16) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    matches!(mode, DiffViewMode::Unified).hash(&mut hasher);
+    width.hash(&mut hasher);
+    step.hash(&mut hasher);
+    guided.cursor.hash(&mut hasher);
+    guided.progress.hash(&mut hasher);
+    guided.commentary.get(&step.key()).hash(&mut hasher);
+    guided.commentary.get(&guided.final_key()).hash(&mut hasher);
+    hasher.finish()
+}
+
+fn build_diff_lines(
     guided: &Guided,
     step: &GuidedFile,
     mode: DiffViewMode,

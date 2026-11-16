@@ -5,7 +5,7 @@ use anyhow::Result;
 use crate::state::{
     AppState, CheckoutMsg, CommitLogMsg, DiffMsg, DiffSource, FetchMsg, GenMsg, Modal,
     OperationKind, OperationMsg, PushMsg, RefreshMsg, RefreshScope, ReleaseStatusMsg,
-    SettingsSuggestMsg, WorkflowMsg,
+    SettingsSuggestMsg, WorkflowMsg, let_reader_go,
 };
 
 use super::super::{App, selected_commit_ref, selected_diff_source, spawn_push};
@@ -185,7 +185,7 @@ impl App {
         let pending_refresh = self.state.refresh_pending.take();
         let pending_diff = self.state.refresh_pending_diff;
         let pending_changed = std::mem::take(&mut self.state.refresh_pending_changed);
-        self.state.defer_thread_join(job.handle.take());
+        let_reader_go(job.handle.take());
         self.state.refresh_pending_diff = false;
         match read {
             Some(Ok(RefreshMsg::Done(snapshot))) => {
@@ -212,7 +212,7 @@ impl App {
         let Some((mut job, msg)) = take_finished(&mut self.state.release_status_job) else {
             return;
         };
-        self.state.defer_thread_join(job.handle.take());
+        let_reader_go(job.handle.take());
         {
             match msg {
                 Err(stopped) => self.state.set_status(stopped, true),
@@ -238,7 +238,7 @@ impl App {
         let Some((mut job, msg)) = take_finished(&mut self.state.settings_suggest_job) else {
             return;
         };
-        self.state.defer_thread_join(job.handle.take());
+        let_reader_go(job.handle.take());
         match msg {
             Err(stopped) => self.state.set_status(stopped, true),
             Ok(SettingsSuggestMsg::Done { language, shapes }) => {
@@ -255,7 +255,7 @@ impl App {
         let Some((mut job, read)) = take_finished_here(&mut self.state.commit_log_job) else {
             return;
         };
-        self.state.defer_thread_join(job.handle.take());
+        let_reader_go(job.handle.take());
         let Some(msg) = read else {
             // The log of a branch in the checkout lg has left; read the one
             // shown here instead.
@@ -291,7 +291,7 @@ impl App {
         let Some((mut job, msg)) = take_finished(&mut self.state.fetch_job) else {
             return;
         };
-        self.state.defer_thread_join(job.handle.take());
+        let_reader_go(job.handle.take());
         self.state.current_branch_releases_ref = None;
         match msg {
             Ok(FetchMsg::Done(s)) => self.state.set_status(s, false),
@@ -626,7 +626,7 @@ impl App {
             kept = false;
             self.state.set_status(stopped, true);
         }
-        self.state.defer_thread_join(handle);
+        let_reader_go(handle);
         kept
     }
 
@@ -655,21 +655,25 @@ impl App {
     }
 
     pub(in crate::app) fn join_background_jobs(&mut self) {
-        let mut handles = Vec::new();
-        handles.extend(self.state.take_deferred_threads());
-        handles.extend(self.state.take_job_handles());
+        wait_for_jobs_on_quit(&mut self.state);
+    }
+}
 
-        if !handles.is_empty() {
-            // The terminal has already been restored at this point, so tell the user
-            // why the process has not exited yet instead of appearing to hang.
-            eprintln!(
-                "lg: waiting for {} background job(s) to finish\u{2026}",
-                handles.len()
-            );
-        }
-        for handle in handles {
-            join_worker(Some(handle));
-        }
+fn wait_for_jobs_on_quit(state: &mut AppState) {
+    let mut handles = Vec::new();
+    handles.extend(state.take_deferred_threads());
+    handles.extend(state.take_writer_handles());
+
+    if !handles.is_empty() {
+        // The terminal has already been restored at this point, so tell the user
+        // why the process has not exited yet instead of appearing to hang.
+        eprintln!(
+            "lg: waiting for {} background job(s) to finish\u{2026}",
+            handles.len()
+        );
+    }
+    for handle in handles {
+        join_worker(Some(handle));
     }
 }
 
@@ -679,7 +683,7 @@ fn take_in_diff(state: &mut AppState) {
     let Some((mut job, read)) = take_finished_here(&mut state.diff_job) else {
         return;
     };
-    state.defer_thread_join(job.handle.take());
+    let_reader_go(job.handle.take());
     match read {
         Some(Ok(DiffMsg::Done { source, text })) if source == state.diff_source => {
             state.set_diff_text(text);
@@ -848,6 +852,81 @@ mod tests {
 
         let reading = state.diff_job.as_ref().map(|job| &job.source);
         assert_eq!(reading, Some(&source), "the file is being read again");
+    }
+
+    /// A worker that runs until `release` is dropped, or ten seconds pass.
+    fn held_worker() -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || {
+            let _ = held.recv_timeout(std::time::Duration::from_secs(10));
+        });
+        (release, handle)
+    }
+
+    fn quits_promptly(state: &mut AppState) -> bool {
+        let started = std::time::Instant::now();
+        wait_for_jobs_on_quit(state);
+        started.elapsed() < std::time::Duration::from_secs(5)
+    }
+
+    #[test]
+    fn quitting_does_not_wait_for_a_fetch_against_a_slow_remote() {
+        let mut state = AppState::default();
+        let (_still_fetching, rx) = std::sync::mpsc::channel();
+        let (_release, handle) = held_worker();
+        state.fetch_job = Some(crate::state::FetchJob {
+            rx,
+            handle: Some(handle),
+            spinner: 0,
+        });
+        assert!(quits_promptly(&mut state));
+    }
+
+    #[test]
+    fn quitting_does_not_wait_for_a_diff_worker_that_already_answered() {
+        let mut state = AppState::default();
+        let source = crate::state::DiffSource::File("src/lib.rs".into());
+        state.diff_source = source.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (_release, handle) = held_worker();
+        state.diff_job = Some(crate::state::DiffJob {
+            rx,
+            handle: Some(handle),
+            spinner: 0,
+            source: source.clone(),
+            checkout: crate::git::repo_dir(),
+            read_again: false,
+        });
+        tx.send(DiffMsg::Done {
+            source,
+            text: "the diff".into(),
+        })
+        .unwrap();
+        take_in_diff(&mut state);
+        assert!(quits_promptly(&mut state));
+    }
+
+    #[test]
+    fn quitting_waits_for_a_push_to_finish() {
+        let mut state = AppState::default();
+        let pushed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (_still_pushing, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn({
+            let pushed = std::sync::Arc::clone(&pushed);
+            move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                pushed.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        state.push_job = Some(crate::state::PushJob {
+            rx,
+            handle: Some(handle),
+            spinner: 0,
+            branch: "main".into(),
+            remote: "origin".into(),
+        });
+        wait_for_jobs_on_quit(&mut state);
+        assert!(pushed.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     fn single_checkout() -> AppState {

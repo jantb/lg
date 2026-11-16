@@ -109,8 +109,12 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         ])]
     };
     if state.delete_branch.remote_available {
+        let label = match state.delete_branch_upstream() {
+            Some(upstream) => format!("delete remote {}", upstream.name),
+            None => "delete remote".to_owned(),
+        };
         body.push(toggle_line(
-            "delete remote (origin)",
+            &label,
             state.delete_branch.remote,
             state.delete_branch.field == DeleteBranchField::Remote,
         ));
@@ -171,10 +175,22 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
                 state.set_status("nothing selected to delete", true);
                 return Ok(());
             }
+            let delete_remote = if state.delete_branch.remote {
+                let Some(upstream) = state.delete_branch_upstream() else {
+                    state.set_status(
+                        "the branch no longer tracks a remote branch of its own",
+                        true,
+                    );
+                    return Ok(());
+                };
+                Some(upstream)
+            } else {
+                None
+            };
             state.pending_action = Some(PendingAction::DeleteBranch {
                 name: state.delete_branch.target.clone(),
                 delete_local: state.delete_branch.local,
-                delete_remote: state.delete_branch.remote,
+                delete_remote,
                 force: state.delete_branch.force,
             });
         }

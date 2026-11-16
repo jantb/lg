@@ -1,5 +1,11 @@
 //! Aligning the three sides and working out where every row and button sits.
 
+use std::{
+    cell::RefCell,
+    hash::{DefaultHasher, Hash, Hasher},
+    rc::Rc,
+};
+
 use super::*;
 
 /// Align two sequences by unchanged lines. Bound the table so a generated
@@ -323,8 +329,39 @@ pub(super) fn document(editor: &MergeEditor, results: &[&str], rule_height: usiz
     Doc { rows, hunks }
 }
 
+thread_local! {
+    static LAID_OUT: RefCell<Option<(u64, Rc<Doc>)>> = const { RefCell::new(None) };
+}
+
+/// `document`, computed again only when something it reads has changed. The
+/// key is everything `document` reads, so no edit, undo, paste or applied
+/// resolution can leave a stale layout behind; nothing has to clear it.
+pub(super) fn laid_out(editor: &MergeEditor, results: &[&str], rule_height: usize) -> Rc<Doc> {
+    let mut hasher = DefaultHasher::new();
+    rule_height.hash(&mut hasher);
+    editor.editing.then_some(editor.selected).hash(&mut hasher);
+    for part in editor.parts() {
+        match part {
+            MergePart::Kept(text) => (0u8, text).hash(&mut hasher),
+            MergePart::Conflict(index) => (1u8, index).hash(&mut hasher),
+        }
+    }
+    for (hunk, result) in editor.hunks.iter().zip(results) {
+        (&hunk.source.ours, &hunk.source.theirs, result).hash(&mut hasher);
+    }
+    let key = hasher.finish();
+    LAID_OUT.with_borrow_mut(|cached| match cached {
+        Some((cached_key, doc)) if *cached_key == key => Rc::clone(doc),
+        _ => {
+            let doc = Rc::new(document(editor, results, rule_height));
+            *cached = Some((key, Rc::clone(&doc)));
+            doc
+        }
+    })
+}
+
 pub(super) struct View {
-    pub(super) doc: Doc,
+    pub(super) doc: Rc<Doc>,
     pub(super) scroll: usize,
     pub(super) horizontal: usize,
     pub(super) cursor_row: usize,
@@ -348,7 +385,7 @@ pub(super) fn view(editor: &MergeEditor, area: Rect, preview: Option<(usize, &st
     let rule_width = rule_areas(area)
         .first()
         .map_or(area.width, |rule| rule.width);
-    let doc = document(editor, &results, rule_height(rule_width));
+    let doc = laid_out(editor, &results, rule_height(rule_width));
     let hunk = editor.current();
     let (cursor_line, _) = hunk.cursor_position();
     let selected = &doc.hunks[editor.selected];

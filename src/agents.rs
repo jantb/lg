@@ -45,6 +45,29 @@ pub fn resolve(program: &str) -> Option<PathBuf> {
         .map(|p| p.join(program))
         .find(|p| executable(p))
 }
+
+/// [`resolve`] for drawing: a picker redrawn every animation frame would
+/// otherwise stat every PATH entry for every agent on every frame. Keyed on
+/// the program and PATH; the age limit is what lets an install or uninstall
+/// still show while the screen is open.
+pub fn resolve_for_display(program: &str) -> Option<PathBuf> {
+    use std::{cell::RefCell, collections::HashMap, ffi::OsString, time::Instant};
+    const FRESH_FOR: std::time::Duration = std::time::Duration::from_secs(1);
+    type Key = (String, Option<OsString>);
+    thread_local! {
+        static MEMO: RefCell<HashMap<Key, (Instant, Option<PathBuf>)>> =
+            RefCell::new(HashMap::new());
+    }
+    let key = (program.to_string(), std::env::var_os("PATH"));
+    let now = Instant::now();
+    MEMO.with_borrow_mut(|memo| {
+        memo.retain(|_, (at, _)| now.duration_since(*at) < FRESH_FOR);
+        memo.entry(key)
+            .or_insert_with(|| (now, resolve(program)))
+            .1
+            .clone()
+    })
+}
 /// The confinement mode in the words the picker and Settings show.
 pub fn confinement_label(confinement: Confinement) -> &'static str {
     match confinement {
@@ -65,7 +88,7 @@ pub fn describe(agent: &Agent) -> String {
     format!(
         "{} · {} · {} · {}",
         agent.name,
-        resolve(&agent.executable)
+        resolve_for_display(&agent.executable)
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| format!("{} not installed", agent.executable)),
         if agent.adapter == Adapter::Terminal {

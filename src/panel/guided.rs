@@ -201,7 +201,7 @@ struct Check {
     key: String,
     /// Put back as they were if the check fails.
     questions: Vec<String>,
-    answer: Receiver<Result<String, String>>,
+    answer: work::Awaited<Result<String, String>>,
 }
 
 /// What the keyboard is doing.
@@ -285,7 +285,8 @@ pub struct Guided {
     pub final_pick: usize,
     /// The pick moved since the last draw, which scrolls the whole change to it.
     pub final_reveal: std::cell::Cell<bool>,
-    final_lines: draw::FinalLinesCache,
+    final_lines: draw::LinesCache,
+    step_lines: draw::LinesCache,
     plan_read: plan::PlanCache,
     pub chat: Option<crate::session::SessionId>,
     pub chat_file: Option<String>,
@@ -356,6 +357,7 @@ impl Guided {
             final_pick: 0,
             final_reveal: std::cell::Cell::new(false),
             final_lines: Default::default(),
+            step_lines: Default::default(),
             plan_read: Default::default(),
             chat: None,
             chat_file: None,

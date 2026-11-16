@@ -5,7 +5,7 @@ use std::thread::JoinHandle;
 
 use chrono::{DateTime, Utc};
 
-use super::{AppState, BackgroundJob, CommitDraft, GenMsg, Generation, Modal, PendingAction};
+use super::{AppState, CommitDraft, GenMsg, Generation, Modal, PendingAction};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StatusMsg {
@@ -42,41 +42,6 @@ impl AppState {
     pub fn skip_animation(&mut self, by: std::time::Duration) {
         self.animation_started -= by;
         self.advance_animation();
-    }
-
-    /// Hand over every running job's worker handle so the caller can wait for
-    /// them. Every job field is listed here: one left out is a worker the
-    /// process can exit from under.
-    pub fn take_job_handles(&mut self) -> Vec<JoinHandle<()>> {
-        let mut handles = Vec::new();
-        macro_rules! take {
-            ($($job:ident),+ $(,)?) => { $(
-                if let Some(job) = self.$job.as_mut() {
-                    handles.extend(job.handle_mut().take());
-                }
-            )+ };
-        }
-        // Every checkout's generation, then the single-slot jobs.
-        for draft in &mut self.commit_drafts {
-            if let Some(generation) = draft.generation.as_mut() {
-                handles.extend(generation.handle_mut().take());
-            }
-        }
-        take!(
-            push_job,
-            checkout_job,
-            operation_job,
-            fetch_job,
-            refresh_job,
-            release_status_job,
-            nested_detail_job,
-            settings_suggest_job,
-            commit_log_job,
-            diff_job,
-            conflict_resolve_job,
-            workflow_job,
-        );
-        handles
     }
 
     /// Whether any background job is in flight. The event loop polls faster
@@ -325,7 +290,7 @@ impl AppState {
     /// a review or a commit message down with it.
     pub fn cancel_settings_suggest(&mut self) -> Option<&'static str> {
         let mut job = self.settings_suggest_job.take()?;
-        self.defer_thread_join(job.handle.take());
+        super::let_reader_go(job.handle.take());
         Some("convention scan cancelled")
     }
 
@@ -359,8 +324,7 @@ impl AppState {
         }
         let mut draft = self.commit_drafts.remove(i);
         if let Some(generation) = draft.generation.as_mut() {
-            let handle = generation.handle.take();
-            self.defer_thread_join(handle);
+            super::let_reader_go(generation.handle.take());
         }
         Some(draft)
     }

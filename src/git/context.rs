@@ -132,8 +132,15 @@ const BATCH_SSH_COMMAND: &str = "ssh -o BatchMode=yes";
 /// both `GIT_SSH` and `core.sshCommand`, so setting it over either would throw
 /// away a choice the user made.
 fn batch_ssh_for_remotes(command: &mut Command, dir: Option<&Path>, args: &[&str]) {
-    if subcommand(args).is_some_and(|sub| REMOTE_SUBCOMMANDS.contains(&sub)) && !ssh_configured(dir)
-    {
+    if subcommand(args).is_some_and(|sub| REMOTE_SUBCOMMANDS.contains(&sub)) {
+        batch_ssh(command, dir);
+    }
+}
+
+/// Keep ssh from prompting in whatever git `command` runs, unless the user
+/// chose how ssh runs.
+pub(crate) fn batch_ssh(command: &mut Command, dir: Option<&Path>) {
+    if !ssh_configured(dir) {
         command.env("GIT_SSH_COMMAND", BATCH_SSH_COMMAND);
     }
 }

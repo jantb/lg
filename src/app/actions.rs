@@ -217,12 +217,19 @@ impl App {
             PendingAction::ClearSettings => self.settle(
                 crate::llm::clear_saved_llm_settings().and_then(|()| crate::settings::clear()),
                 "settings reset failed",
-                |app, ()| {
+                |app, backups| {
                     app.reload_settings_state();
                     // The modal stays open so the re-detected conventions land
                     // in front of the user instead of behind a closed dialog.
                     super::spawn::suggest_repo_settings_if_unset(&mut app.state);
-                    app.state.set_status("reset settings to defaults", false);
+                    let status = match backups.first().and_then(|path| path.parent()) {
+                        Some(dir) => format!(
+                            "reset settings to defaults; old files kept as .bak in {}",
+                            dir.display()
+                        ),
+                        None => "reset settings to defaults".to_owned(),
+                    };
+                    app.state.set_status(status, false);
                 },
             ),
             PendingAction::EditCommitPrompt => self.edit_settings_file(
@@ -462,7 +469,13 @@ impl App {
         );
     }
 
-    fn delete_branch(&mut self, name: String, local: bool, remote: bool, force: bool) {
+    fn delete_branch(
+        &mut self,
+        name: String,
+        local: bool,
+        remote: Option<crate::git::RemoteBranch>,
+        force: bool,
+    ) {
         self.state.modal = Modal::None;
         spawn_operation(
             &mut self.state,
@@ -474,8 +487,9 @@ impl App {
                     let line = crate::git::delete_local_branch(&name, force)?;
                     report.push(format!("local: {line}"));
                 }
-                if remote {
-                    let line = crate::git::delete_remote_branch(&name)?;
+                if let Some(remote) = remote {
+                    let line =
+                        crate::git::delete_remote_branch(&remote.remote, &remote.local_name)?;
                     report.push(format!("remote: {line}"));
                 }
                 Ok(report.join(" | "))

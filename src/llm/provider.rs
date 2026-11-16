@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -107,7 +108,20 @@ pub fn api_key() -> Option<String> {
         .filter(|key| !key.is_empty())
 }
 
+/// The model requests ask for, as far as is known without waiting: a server
+/// that has not yet said what it serves leaves the default standing until
+/// [`prime_models_async`] hears back. Safe on the UI thread.
 pub fn current_model() -> String {
+    model_or(|| models().first().cloned())
+}
+
+/// The model a request is about to ask for. On a request thread, so it may
+/// wait for the server to say what it serves.
+pub(super) fn request_model() -> String {
+    model_or(first_available_mtplx_model)
+}
+
+fn model_or(served: impl FnOnce() -> Option<String>) -> String {
     if current_provider() == LlmProvider::Claude {
         return current_claude_model();
     }
@@ -117,7 +131,7 @@ pub fn current_model() -> String {
                 .then(|| crate::preferences::load().config.models.model)
         })
         .or_else(saved_model)
-        .or_else(first_available_mtplx_model)
+        .or_else(served)
         .unwrap_or_else(|| LLM_MODEL.to_owned())
 }
 
@@ -232,7 +246,17 @@ pub fn prime_models() {
     let fetched = fetch_models();
     if !fetched.is_empty() {
         *models() = fetched;
+        MODELS_ARRIVED.store(true, Ordering::SeqCst);
     }
+}
+
+/// Set when the server's list lands, until [`models_arrived`] is asked.
+static MODELS_ARRIVED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the server has said what it serves since this was last asked: the
+/// moment a model name shown from [`current_model`] may have changed.
+pub fn models_arrived() -> bool {
+    MODELS_ARRIVED.swap(false, Ordering::SeqCst)
 }
 
 pub fn prime_models_async() {

@@ -29,7 +29,7 @@ mod list;
 mod overview;
 mod panes;
 
-pub(super) use final_review::FinalLinesCache;
+pub(super) use diff::LinesCache;
 pub(super) use list::{
     RowTarget, list_width, reset_button_area, row_targets, scope_badge_area, steps_area,
     walk_badge_area,

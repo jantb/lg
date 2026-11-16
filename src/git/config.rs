@@ -22,12 +22,95 @@ pub struct IdeOpenCommand {
 }
 
 pub fn author_config() -> Result<AuthorConfig> {
-    Ok(AuthorConfig {
-        name: config_value(&["config", "--get", "user.name"])?,
-        email: config_value(&["config", "--get", "user.email"])?,
-        local_name: config_value(&["config", "--local", "--get", "user.name"])?,
-        local_email: config_value(&["config", "--local", "--get", "user.email"])?,
-    })
+    Ok(author_config_from(&config_snapshot()?))
+}
+
+pub fn author_config_from(config: &ConfigSnapshot) -> AuthorConfig {
+    AuthorConfig {
+        name: config.get("user.name"),
+        email: config.get("user.email"),
+        local_name: config.get_local("user.name"),
+        local_email: config.get_local("user.email"),
+    }
+}
+
+/// Every setting the checkout sees, read in one `git config` call, so a
+/// refresh that needs several of them does not start a process for each.
+#[derive(Debug, Clone, Default)]
+pub struct ConfigSnapshot {
+    entries: Vec<ConfigEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct ConfigEntry {
+    from_local_file: bool,
+    key: String,
+    value: String,
+}
+
+/// The settings this thread's checkout sees. A configuration git cannot read
+/// reads as empty, as `git config --get` answers nothing then either.
+pub fn config_snapshot() -> Result<ConfigSnapshot> {
+    let args = ["config", "--list", "-z", "--show-scope", "--show-origin"];
+    let out = git_command(&args)
+        .output()
+        .with_context(|| format!("failed to spawn git {}", args.join(" ")))?;
+    if !out.status.success() {
+        return Ok(ConfigSnapshot::default());
+    }
+    Ok(parse_config_snapshot(&out.stdout))
+}
+
+/// `git config --list -z --show-scope --show-origin`: scope, origin, then
+/// `key\nvalue` (or a bare `key`), each ended by a NUL.
+///
+/// `git config --local` reads the repository's config file alone, not what
+/// it includes, but the listing gives included values the including file's
+/// scope. The file is told apart by its origin instead: the first local entry
+/// always comes from the file itself, as an include is listed only after the
+/// `include.path` line that brought it in.
+fn parse_config_snapshot(raw: &[u8]) -> ConfigSnapshot {
+    let text = String::from_utf8_lossy(raw);
+    let mut fields = text.split('\0');
+    let mut local_origin: Option<String> = None;
+    let mut entries = Vec::new();
+    while let (Some(scope), Some(origin), Some(item)) =
+        (fields.next(), fields.next(), fields.next())
+    {
+        let (key, value) = item.split_once('\n').unwrap_or((item, ""));
+        let from_local_file = scope == "local"
+            && local_origin
+                .get_or_insert_with(|| origin.to_owned())
+                .as_str()
+                == origin;
+        entries.push(ConfigEntry {
+            from_local_file,
+            key: key.to_owned(),
+            value: value.to_owned(),
+        });
+    }
+    ConfigSnapshot { entries }
+}
+
+impl ConfigSnapshot {
+    /// What `git config --get key` answers: the last value set, if not empty.
+    pub fn get(&self, key: &str) -> Option<String> {
+        self.last(key, |_| true)
+    }
+
+    /// What `git config --local --get key` answers.
+    pub fn get_local(&self, key: &str) -> Option<String> {
+        self.last(key, |entry| entry.from_local_file)
+    }
+
+    fn last(&self, key: &str, keep: impl Fn(&ConfigEntry) -> bool) -> Option<String> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|entry| entry.key.eq_ignore_ascii_case(key) && keep(entry))
+            .map(|entry| entry.value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    }
 }
 
 pub fn add_to_gitignore(path: &str, is_dir: bool) -> Result<String> {

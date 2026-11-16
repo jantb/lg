@@ -223,7 +223,10 @@ fn draw_diff(
 ) {
     let diff = diff_lines(guided, step, mode, area.width);
     let scroll = diff.scroll(area.height);
-    frame.render_widget(Paragraph::new(diff.lines).scroll((scroll as u16, 0)), area);
+    frame.render_widget(
+        Paragraph::new(diff.lines.clone()).scroll((scroll as u16, 0)),
+        area,
+    );
 }
 
 pub(in crate::panel::guided) fn finding_at(
@@ -264,5 +267,5 @@ pub(in crate::panel::guided) fn finding_at(
     }
     let diff = diff_lines(guided, step, mode, area.width);
     let at = diff.scroll(area.height) + usize::from(row - area.y);
-    ticked_at(diff.findings, at)
+    ticked_at(diff.findings.clone(), at)
 }

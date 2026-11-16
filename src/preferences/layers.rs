@@ -171,8 +171,32 @@ pub(super) fn layers(checkout: Option<&Checkout>) -> Vec<(Scope, PathBuf)> {
     paths
 }
 
-/// The category read off the checkout's branches until a file sets it.
-pub(super) const DETECTED_CATEGORY: &str = "branches";
+pub(super) fn sets_branch_field(patch: &serde_json::Value, field: &str) -> bool {
+    patch
+        .get("branches")
+        .and_then(|branches| branches.get(field))
+        .is_some()
+}
+
+/// `config` with the file `patch` laid over it. Until some file has set
+/// promotions, `config` holds the detected ones, which lead to the detected
+/// environments; a file naming its own environments drops them, since they
+/// would point at environments it left out.
+pub(super) fn lay_over(
+    config: &serde_json::Value,
+    patch: &serde_json::Value,
+    promotions_from_file: bool,
+) -> serde_json::Value {
+    let mut layered = config.clone();
+    if !promotions_from_file
+        && sets_branch_field(patch, "environments")
+        && !sets_branch_field(patch, "promotions")
+    {
+        layered["branches"]["promotions"] = serde_json::json!([]);
+    }
+    merge(&mut layered, patch.clone());
+    layered
+}
 
 /// Missing configuration is fine. Invalid files remain visible and are never overwritten on load.
 pub(super) fn load_uncached(checkout: Option<&Checkout>) -> Loaded {
@@ -205,6 +229,12 @@ pub(super) fn load_uncached(checkout: Option<&Checkout>) -> Loaded {
             "Legacy checkout settings (preserved)".into(),
         );
     }
+    config["branches"] = serialized(
+        &mut errors,
+        "detected branches",
+        serde_json::to_value(detect_branches(&crate::git::local_branch_names())),
+    );
+    let mut promotions_from_file = false;
     for (scope, path) in layers(checkout) {
         if !path.exists() {
             continue;
@@ -214,13 +244,13 @@ pub(super) fn load_uncached(checkout: Option<&Checkout>) -> Loaded {
                 if let Some(object) = patch.as_object_mut() {
                     object.remove("folder");
                 }
-                let mut candidate = config.clone();
-                merge(&mut candidate, patch.clone());
+                let candidate = lay_over(&config, &patch, promotions_from_file);
                 match serde_json::from_value::<Preferences>(candidate.clone())
                     .and_then(|v| v.validate().map(|()| v).map_err(serde::de::Error::custom))
                 {
                     Ok(_) => {
                         config = candidate;
+                        promotions_from_file |= sets_branch_field(&patch, "promotions");
                         for key in patch
                             .as_object()
                             .into_iter()
@@ -238,13 +268,6 @@ pub(super) fn load_uncached(checkout: Option<&Checkout>) -> Loaded {
             }
             Err(e) => errors.push(format!("{}: {e}", path.display())),
         }
-    }
-    if !sources.contains_key(DETECTED_CATEGORY) {
-        config[DETECTED_CATEGORY] = serialized(
-            &mut errors,
-            "detected branches",
-            serde_json::to_value(detect_branches(&crate::git::local_branch_names())),
-        );
     }
     if let Ok(v) = std::env::var("LG_LLM_ENABLED") {
         let on = !matches!(

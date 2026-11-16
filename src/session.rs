@@ -351,6 +351,16 @@ impl Session {
         if self.parser.screen().size() == (rows, cols) {
             return;
         }
+        // vt100 shrinks by cutting rows off the bottom, which is where a shell's
+        // prompt and newest output are. A real terminal scrolls them up instead,
+        // into scrollback; a full-screen program redraws on its own.
+        let screen = self.parser.screen();
+        let cursor_row = screen.cursor_position().0;
+        if !screen.alternate_screen() && cursor_row >= rows {
+            let lines = cursor_row + 1 - rows;
+            self.parser
+                .process(format!("\x1b[{lines}S\x1b[{lines}A").as_bytes());
+        }
         self.parser.screen_mut().set_size(rows, cols);
         if let Some(process) = self.process.as_mut() {
             process.resize((rows, cols));

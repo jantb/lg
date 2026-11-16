@@ -80,7 +80,7 @@ pub enum Mode {
     /// Choosing how to merge.
     Merge(MergeForm),
     /// Asking before a pull request is closed.
-    ConfirmClose,
+    ConfirmClose { number: u64 },
     /// Writing a new pull request for the current branch.
     Create(CreateForm),
     /// Going through the selected pull request's conversations.

@@ -880,3 +880,18 @@ fn a_close_never_lands_on_another_pull_request_when_the_one_asked_about_is_gone(
         state.pending_action
     );
 }
+
+#[test]
+fn a_close_confirmed_after_the_selection_moved_closes_the_pull_request_it_asked_about() {
+    let mut state = with_prs(vec![pr(11, "a"), pr(12, "b")]);
+    state.github.pr_idx = 1;
+    handle_key(&mut state, key(KeyCode::Char('X'))).unwrap();
+
+    state.github.pr_idx = 0;
+    handle_key(&mut state, key(KeyCode::Char('y'))).unwrap();
+
+    assert_eq!(
+        github_action(&state),
+        Some(GitHubAction::Close { number: 12 })
+    );
+}

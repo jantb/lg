@@ -150,17 +150,27 @@ pub fn save(settings: &RepoSettings) -> Result<()> {
 }
 
 /// Removes this checkout's saved settings, returning it to the defaults.
-pub fn clear() -> Result<()> {
+///
+/// The prompt and style files may hold hand-written rules, so each is moved
+/// aside to a `.bak` beside it rather than deleted. Returns the backups made.
+pub fn clear() -> Result<Vec<PathBuf>> {
     crate::preferences::clear_fields(crate::preferences::Scope::Worktree, WRITING, &MODAL_FIELDS)?;
-    let dir = repo_settings_dir()?;
+    remove_settings_files(&repo_settings_dir()?)
+}
+
+fn remove_settings_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut backups = Vec::new();
     for file in SETTINGS_FILES {
         let path = dir.join(file);
         if path.exists() {
-            fs::remove_file(&path)
-                .with_context(|| format!("failed to remove {}", path.display()))?;
+            let backup = dir.join(format!("{file}.bak"));
+            fs::rename(&path, &backup).with_context(|| {
+                format!("failed to move {} to {}", path.display(), backup.display())
+            })?;
+            backups.push(backup);
         }
     }
-    Ok(())
+    Ok(backups)
 }
 
 pub fn settings_dir_display() -> String {
@@ -442,6 +452,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join(SETTINGS_FILE), render_settings(&settings)).unwrap();
         assert_eq!(load_from_dir(dir.path()), settings);
+    }
+
+    /// Resetting returns the checkout to the built-in prompt and guide, but
+    /// hand-written ones are kept beside where they were, to be restored.
+    #[test]
+    fn resetting_keeps_a_backup_of_the_custom_prompt_and_style() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(COMMIT_PROMPT_FILE), "House rules.\n").unwrap();
+        fs::write(dir.path().join(REVIEW_STYLE_FILE), "- No unwrap.\n").unwrap();
+
+        remove_settings_files(dir.path()).unwrap();
+
+        let settings = load_from_dir(dir.path());
+        assert!(!settings.commit_prompt_is_custom());
+        assert_eq!(settings.review_style, REVIEW_STYLE_GUIDE);
+        let backup = |name: &str| fs::read_to_string(dir.path().join(format!("{name}.bak")));
+        assert_eq!(backup(COMMIT_PROMPT_FILE).unwrap(), "House rules.\n");
+        assert_eq!(backup(REVIEW_STYLE_FILE).unwrap(), "- No unwrap.\n");
     }
 
     #[test]

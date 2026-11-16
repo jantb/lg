@@ -158,3 +158,26 @@ fn the_codebase_diff_reads_every_file_as_it_stands_untracked_ones_included() {
         codebase.diff
     );
 }
+
+/// The review parses the diff by its `a/` and `b/` headers, so the user's own
+/// diff settings for their terminal must not reach it.
+#[test]
+fn the_branch_diff_reads_the_same_whatever_the_users_diff_settings() {
+    let dir = thirty_lines_repo();
+    git_ok(dir.path(), &["checkout", "-b", "feature/settings"]);
+    git_ok(dir.path(), &["config", "diff.mnemonicPrefix", "true"]);
+    git_ok(dir.path(), &["config", "color.ui", "always"]);
+    edit_two_places(dir.path());
+    fs::write(dir.path().join("fresh.txt"), "brand new\n").unwrap();
+
+    let _cwd = CwdGuard::new(dir.path());
+    let diff = lg::git::branch_diff_against_main().unwrap().diff;
+
+    assert!(!diff.contains('\x1b'), "{diff:?}");
+    assert!(diff.contains("+line two\n"), "{diff}");
+    assert!(
+        diff.contains("diff --git a/fresh.txt b/fresh.txt\n"),
+        "{diff}"
+    );
+    assert!(diff.contains("+brand new\n"), "{diff}");
+}

@@ -170,3 +170,46 @@ fn the_file_follows_the_diff_layout_with_findings_under_their_line() {
     assert!(finding > row_of(&rows, "new one"));
     assert!(hunk(&state).contains(&(finding as u16)));
 }
+
+/// What changes between two frames shows on the second: a note written, and
+/// then a line of the file's diff that is different now.
+#[test]
+fn a_file_step_shows_what_changed_since_it_was_last_drawn() {
+    let mut state = walk_with_findings();
+    let before = screen(&state);
+    assert!(
+        !before
+            .iter()
+            .any(|row| row.contains("written between frames"))
+    );
+
+    let guided = state.guided.as_mut().unwrap();
+    guided.progress.notes.push(crate::git::guided::GuidedNote {
+        path: "a.rs".into(),
+        line: 3,
+        side: crate::git::guided::Side::Right,
+        body: "written between frames".into(),
+        step: guided.steps[0].key(),
+        quote: " tail".into(),
+    });
+    let noted = screen(&state);
+    assert!(
+        noted
+            .iter()
+            .any(|row| row.contains("written between frames")),
+        "{noted:#?}"
+    );
+
+    let guided = state.guided.as_mut().unwrap();
+    let changed = guided.steps[0]
+        .lines
+        .iter()
+        .position(|line| line.text == "+new two")
+        .unwrap();
+    guided.steps[0].lines[changed].text = "+brand new two".into();
+    let edited = screen(&state);
+    assert!(
+        edited.iter().any(|row| row.contains("brand new two")),
+        "{edited:#?}"
+    );
+}

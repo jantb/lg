@@ -666,3 +666,44 @@ fn saving_preserves_executable_mode_and_refuses_a_replaced_symlink() {
     assert!(editor.save().is_err());
     assert_eq!(fs::read_to_string(outside).unwrap(), "do not change");
 }
+
+#[test]
+fn an_unsaved_resolution_survives_another_file_joining_the_conflict() {
+    let dir = fixture();
+    let mut app = HeadlessApp::new(TestBackend::new(160, 42)).unwrap();
+    app.state.repo_root = Some(dir.path().to_string_lossy().into_owned());
+    app.state.set_conflicts(vec![FILE.into()]);
+    app.state.modal = Modal::Conflict;
+    app.render().unwrap();
+    let result = |app: &HeadlessApp<TestBackend>| {
+        let preview = app.state.conflict.preview.as_ref().unwrap();
+        preview.editor.as_ref().unwrap().current().result.clone()
+    };
+    let theirs = find_label_beside(&app, "incoming first", "<<");
+    app.send_mouse(mouse(MouseEventKind::Down(MouseButton::Left), theirs))
+        .unwrap();
+    assert_eq!(result(&app), "incoming first\n");
+
+    app.state
+        .set_conflicts(vec!["another file.txt".into(), FILE.into()]);
+    app.render().unwrap();
+
+    assert_eq!(app.state.conflict.files[app.state.conflict.idx], FILE);
+    assert_eq!(result(&app), "incoming first\n");
+}
+
+#[test]
+fn a_new_conflict_starts_from_its_first_file_when_nothing_was_edited() {
+    let dir = fixture();
+    let mut app = HeadlessApp::new(TestBackend::new(160, 42)).unwrap();
+    app.state.repo_root = Some(dir.path().to_string_lossy().into_owned());
+    app.state.set_conflicts(vec![FILE.into()]);
+    app.state.modal = Modal::Conflict;
+    app.render().unwrap();
+
+    app.state
+        .set_conflicts(vec!["another file.txt".into(), FILE.into()]);
+
+    assert_eq!(app.state.conflict.idx, 0);
+    assert!(app.state.conflict.preview.is_none());
+}

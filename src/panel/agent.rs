@@ -137,7 +137,7 @@ fn profile_line(profile: &Agent) -> Line<'static> {
             crate::agents::confinement_label(profile.confinement)
         )),
     ];
-    if crate::agents::resolve(&profile.executable).is_some() {
+    if crate::agents::resolve_for_display(&profile.executable).is_some() {
         spans.push(dim(crate::agents::capabilities(profile)));
     } else {
         spans.push(Span::styled(
@@ -179,7 +179,7 @@ fn details(state: &AppState) -> Vec<Line<'static>> {
         .unwrap_or_default();
     let mut lines = vec![Line::from(vec![dim("Checkout  "), Span::raw(checkout)])];
     let mut command = match state.agent_profiles.get(state.agent_pick_idx) {
-        Some(profile) => match crate::agents::resolve(&profile.executable) {
+        Some(profile) => match crate::agents::resolve_for_display(&profile.executable) {
             Some(path) => {
                 let mut parts = vec![path.display().to_string()];
                 parts.extend(profile.args.iter().cloned());

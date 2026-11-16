@@ -62,7 +62,11 @@ pub fn install(cwd: &Path) -> Result<HookChannel> {
         std::process::id(),
         CHANNELS_OPENED.fetch_add(1, Ordering::Relaxed)
     );
-    let dir = channel_dir(cwd)?.join(name);
+    let checkout_dir = channel_dir(cwd)?;
+    if let Some(sessions_dir) = checkout_dir.parent() {
+        clear_channels_of_exited_lgs(sessions_dir);
+    }
+    let dir = checkout_dir.join(name);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
 
     // Created empty: a channel left behind by an lg that died under the same
@@ -83,6 +87,38 @@ pub fn install(cwd: &Path) -> Result<HookChannel> {
     std::fs::write(&channel.settings, settings_json(&events_path))
         .with_context(|| format!("write {}", channel.settings.display()))?;
     Ok(channel)
+}
+
+/// Remove the channels, in every checkout's directory under `sessions_dir`, of
+/// lg processes that have exited without dropping them. A pid reused by some
+/// other process keeps its channels, which only costs leaving them for later.
+fn clear_channels_of_exited_lgs(sessions_dir: &Path) {
+    let Ok(checkouts) = std::fs::read_dir(sessions_dir) else {
+        return;
+    };
+    for channel in checkouts
+        .flatten()
+        .filter_map(|checkout| std::fs::read_dir(checkout.path()).ok())
+        .flatten()
+        .flatten()
+    {
+        let name = channel.file_name();
+        let Some((pid, counter)) = name.to_str().and_then(|name| name.split_once('-')) else {
+            continue;
+        };
+        let (Ok(pid), Ok(_)) = (pid.parse::<libc::pid_t>(), counter.parse::<u64>()) else {
+            continue;
+        };
+        if pid > 0 && !process_exists(pid) && channel.path().is_dir() {
+            let _ = std::fs::remove_dir_all(channel.path());
+        }
+    }
+}
+
+fn process_exists(pid: libc::pid_t) -> bool {
+    // SAFETY: signal 0 only asks whether the pid can be signalled; nothing is sent.
+    let status = unsafe { libc::kill(pid, 0) };
+    status == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
 /// Where a session's hook file and the settings pointing at it live: under the
@@ -278,6 +314,45 @@ mod tests {
         let settings = channel.settings.clone();
         drop(channel);
         assert!(!settings.exists(), "{}", settings.display());
+    }
+
+    /// An lg that crashed never dropped its channels. The next lg clears them
+    /// away, but never one whose lg is still running its session.
+    #[test]
+    fn channels_of_an_lg_that_is_gone_are_cleared_and_a_running_ones_kept() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo.path())
+            .status()
+            .expect("run git init");
+        assert!(status.success(), "git init");
+        let other_checkout = channel_dir(repo.path())
+            .expect("channel dir")
+            .with_file_name("elsewhere");
+
+        let mut gone = std::process::Command::new("true").spawn().expect("spawn");
+        let gone_pid = gone.id();
+        gone.wait().expect("wait");
+        let mut running = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn");
+
+        let crashed = other_checkout.join(format!("{gone_pid}-0"));
+        let live = other_checkout.join(format!("{}-0", running.id()));
+        for dir in [&crashed, &live] {
+            std::fs::create_dir_all(dir).expect("create channel");
+            std::fs::write(dir.join("events"), "Stop\n").expect("write events");
+        }
+
+        let channel = install(repo.path()).expect("install");
+        let _ = running.kill();
+        let _ = running.wait();
+
+        assert!(!crashed.exists(), "{}", crashed.display());
+        assert!(live.join("events").exists(), "{}", live.display());
+        assert!(channel.settings.exists());
     }
 
     #[test]

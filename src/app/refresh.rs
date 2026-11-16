@@ -21,7 +21,8 @@ pub(super) fn refresh_snapshot(
             return files_snapshot(None, Vec::new());
         }
         let mut errors = Vec::new();
-        let files = status_files(&mut errors);
+        let config = crate::git::config_snapshot().unwrap_or_default();
+        let files = status_files(&config, &mut errors);
         return files_snapshot(files, errors);
     }
     // A folder that is no checkout has no cheap tier: what changed in it may
@@ -30,8 +31,11 @@ pub(super) fn refresh_snapshot(
     build_refresh_snapshot(workspace_root, scope)
 }
 
-fn status_files(errors: &mut Vec<String>) -> Option<Vec<crate::git::FileEntry>> {
-    match crate::git::status_entries() {
+fn status_files(
+    config: &crate::git::ConfigSnapshot,
+    errors: &mut Vec<String>,
+) -> Option<Vec<crate::git::FileEntry>> {
+    match crate::git::status_entries_with(config) {
         Ok(files) => Some(files),
         Err(e) => {
             errors.push(format!("git status failed: {e}"));
@@ -79,12 +83,13 @@ pub(super) fn build_refresh_snapshot(
     if current_root.is_none() {
         return no_repo_snapshot(workspace_root, scope);
     }
-    let files = status_files(&mut errors);
-    let branches = match crate::git::list_branches() {
-        Ok(branches) => Some(branches),
+    let config = crate::git::config_snapshot().ok();
+    let files = status_files(config.as_ref().unwrap_or(&Default::default()), &mut errors);
+    let (branches, listed_current) = match crate::git::list_branches_and_current() {
+        Ok((branches, current)) => (Some(branches), current),
         Err(e) => {
             errors.push(format!("git branch failed: {e}"));
-            None
+            (None, None)
         }
     };
     let remote_branches = match crate::git::list_remote_branches() {
@@ -116,14 +121,7 @@ pub(super) fn build_refresh_snapshot(
             None
         }
     };
-    let branch = crate::git::head_branch().ok().or_else(|| {
-        branches.as_ref().and_then(|branches| {
-            branches
-                .iter()
-                .find(|branch| branch.is_current)
-                .map(|branch| branch.name.clone())
-        })
-    });
+    let branch = listed_current.or_else(|| crate::git::head_branch().ok());
     let commits = match crate::git::list_commits(COMMIT_LIST_LIMIT) {
         Ok(commits) => Some(commits),
         Err(e) => {
@@ -131,7 +129,7 @@ pub(super) fn build_refresh_snapshot(
             None
         }
     };
-    let (commit_author, decorative_animations) = author_and_animations();
+    let (commit_author, decorative_animations) = author_and_animations(config.as_ref());
     RefreshSnapshot {
         scope,
         repo_root: current_root,
@@ -154,8 +152,8 @@ pub(super) fn build_refresh_snapshot(
 }
 
 /// Who commits here, and whether the decorative animations run for them.
-fn author_and_animations() -> (Option<String>, bool) {
-    let author = crate::git::author_config().ok();
+fn author_and_animations(config: Option<&crate::git::ConfigSnapshot>) -> (Option<String>, bool) {
+    let author = config.map(crate::git::author_config_from);
     let animations = crate::preferences::animations_enabled_for(author.as_ref());
     let line = author.map(|author| {
         format!(
@@ -207,7 +205,8 @@ fn no_repo_snapshot(workspace_root: Option<String>, scope: RefreshScope) -> Refr
         ),
         None => (Vec::new(), Some(Vec::new())),
     };
-    let (commit_author, decorative_animations) = author_and_animations();
+    let config = crate::git::config_snapshot().ok();
+    let (commit_author, decorative_animations) = author_and_animations(config.as_ref());
     RefreshSnapshot {
         scope,
         repo_root: None,
@@ -449,6 +448,55 @@ mod tests {
             .output()
             .expect("run git init");
         assert!(out.status.success(), "git init failed");
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=T", "-c", "user.email=t@example.com"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?} failed");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    fn refreshed_branch(dir: &Path) -> Option<String> {
+        crate::git::with_repo(dir, || {
+            build_refresh_snapshot(None, RefreshScope::Repository).branch
+        })
+    }
+
+    /// The branch name is what pushes and checkouts are asked for, so a tag
+    /// of the same name must not turn it into `heads/main`.
+    #[test]
+    fn the_refresh_names_the_branch_even_when_a_tag_shares_its_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        init_repo_at(tmp.path());
+        git_in(tmp.path(), &["commit", "--allow-empty", "-m", "first"]);
+        git_in(tmp.path(), &["tag", "main"]);
+
+        assert_eq!(refreshed_branch(tmp.path()).as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn the_refresh_names_the_branch_of_a_repository_with_no_commits_yet() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        init_repo_at(tmp.path());
+
+        assert_eq!(refreshed_branch(tmp.path()).as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn the_refresh_names_a_detached_head_by_its_commit() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        init_repo_at(tmp.path());
+        git_in(tmp.path(), &["commit", "--allow-empty", "-m", "first"]);
+        git_in(tmp.path(), &["checkout", "--detach"]);
+        let sha = git_in(tmp.path(), &["rev-parse", "--short", "HEAD"]);
+
+        let branch = refreshed_branch(tmp.path()).unwrap_or_default();
+        assert!(branch.contains(&sha), "{branch:?}");
     }
 
     /// lg is often opened on the folder a project is about to be cloned into.

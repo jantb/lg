@@ -595,6 +595,41 @@ fn resizing_moves_the_parsed_screen_too() {
     assert_eq!(session.screen().size(), (10, 40));
 }
 
+#[test]
+fn shrinking_a_shell_keeps_its_prompt_and_moves_older_output_to_scrollback() {
+    let mut session = fake_of(1, "/a", SessionKind::Terminal);
+    session.parser = vt100::Parser::new(24, 80, SCROLLBACK);
+    for line in 1..24 {
+        session
+            .parser
+            .process(format!("output {line}\r\n").as_bytes());
+    }
+    session.parser.process(b"prompt$ ");
+
+    session.resize(10, 80);
+
+    let visible = session.screen().contents();
+    assert!(visible.contains("prompt$"), "{visible}");
+    assert!(visible.contains("output 23"), "{visible}");
+    assert_eq!(session.screen().cursor_position(), (9, 8));
+    assert!(session.scroll(true, SCROLLBACK));
+    let history = session.screen().contents();
+    assert_eq!(history.lines().next(), Some("output 1"), "{history}");
+}
+
+#[test]
+fn shrinking_a_full_screen_program_leaves_its_screen_where_it_drew_it() {
+    let mut session = fake_of(1, "/a", SessionKind::Terminal);
+    session.parser = vt100::Parser::new(24, 80, SCROLLBACK);
+    session
+        .parser
+        .process(b"\x1b[?1049h\x1b[1;1Hheader\x1b[24;1Hfooter");
+
+    session.resize(10, 80);
+
+    assert_eq!(session.screen().contents().lines().next(), Some("header"));
+}
+
 /// A checkout with a stand-in for claude: a script that records the arguments
 /// of every launch and then waits to be closed, so a test can fire the hooks
 /// the session was really started with.

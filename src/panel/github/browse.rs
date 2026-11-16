@@ -26,7 +26,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         },
         Mode::Compose { .. } => compose_key(state, key),
         Mode::Merge(_) => merge_key(state, key),
-        Mode::ConfirmClose => confirm_close_key(state, key),
+        Mode::ConfirmClose { number } => confirm_close_key(state, number, key),
         Mode::Create(_) => create_key(state, key),
         Mode::Threads(_) => threads::handle_key(state, key),
     }
@@ -41,7 +41,7 @@ pub fn typing(state: &AppState) -> bool {
         Mode::Browse => state.github.tab == Tab::Repositories,
         Mode::Compose { .. } | Mode::Create(_) => true,
         Mode::Threads(view) => view.reply.is_some() || threads::chat::chat_has_keyboard(state),
-        Mode::Merge(_) | Mode::ConfirmClose => false,
+        Mode::Merge(_) | Mode::ConfirmClose { .. } => false,
     }
 }
 
@@ -187,7 +187,7 @@ fn browse_pull_requests(state: &mut AppState, key: KeyEvent) {
             },
         ),
         KeyCode::Char('X') => match pr.state {
-            crate::github::PrState::Open => state.github.mode = Mode::ConfirmClose,
+            crate::github::PrState::Open => state.github.mode = Mode::ConfirmClose { number },
             crate::github::PrState::Closed => dispatch(state, GitHubAction::Reopen { number }),
             crate::github::PrState::Merged => {
                 state.set_status(format!("#{number} is merged and cannot be reopened"), false)

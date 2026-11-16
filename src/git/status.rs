@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use super::config::{ConfigSnapshot, config_snapshot};
 use super::run;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,23 +69,24 @@ pub fn parse_porcelain_xy(bytes: &[u8]) -> Vec<FileEntry> {
 /// by file (`-uall`), in the one call, rather than as the directory: a new
 /// folder of files is staged and reviewed a file at a time like anything else.
 pub fn status_entries() -> Result<Vec<FileEntry>> {
+    status_entries_with(&config_snapshot().unwrap_or_default())
+}
+
+/// [`status_entries`], reading the settings from `config`.
+pub fn status_entries_with(config: &ConfigSnapshot) -> Result<Vec<FileEntry>> {
     // Every untracked file rather than the directory holding them, so each can
     // be staged on its own — unless the user told git not to list untracked
     // files at all, which passing `-uall` would quietly overrule.
-    let untracked = if untracked_files_hidden() {
+    let hidden = config
+        .get("status.showUntrackedFiles")
+        .is_some_and(|value| untracked_setting_is_off(&value));
+    let untracked = if hidden {
         "--untracked-files=no"
     } else {
         "--untracked-files=all"
     };
     let out = run(&["status", "-z", "--porcelain=v1", untracked])?;
     Ok(parse_porcelain_xy(&out.stdout))
-}
-
-/// Whether `status.showUntrackedFiles` says not to list untracked files.
-fn untracked_files_hidden() -> bool {
-    run(&["config", "--get", "status.showUntrackedFiles"])
-        .map(|out| untracked_setting_is_off(&String::from_utf8_lossy(&out.stdout)))
-        .unwrap_or(false)
 }
 
 /// Git spells "off" for this setting as `no`, and as any false boolean.

@@ -162,11 +162,6 @@ pub fn poll(state: &mut AppState) {
                 let still_listed =
                     selected.and_then(|number| gh.prs.iter().position(|pr| pr.number == number));
                 gh.pr_idx = still_listed.unwrap_or(gh.pr_idx.min(gh.prs.len().saturating_sub(1)));
-                // The close being confirmed was asked about the selected pull
-                // request; with that one gone, the selection is another one.
-                if still_listed.is_none() && gh.mode == Mode::ConfirmClose {
-                    gh.mode = Mode::Browse;
-                }
                 gh.prs_error = None;
                 put_mine_first(gh);
                 threads::load_counts(gh);

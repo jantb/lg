@@ -17,7 +17,7 @@ pub(super) const PLAIN_DIFF: [&str; 5] = [
     "--dst-prefix=b/",
 ];
 
-fn plain_diff(args: &[&str]) -> Result<Output> {
+pub(super) fn plain_diff(args: &[&str]) -> Result<Output> {
     run(&[&PLAIN_DIFF[..], args].concat())
 }
 
@@ -179,7 +179,7 @@ pub(super) fn push_added_file_diffs(
     Ok(())
 }
 
-fn untracked_paths(pathspec: &str) -> Result<Vec<String>> {
+pub(super) fn untracked_paths(pathspec: &str) -> Result<Vec<String>> {
     let out = run(&[
         "ls-files",
         "--others",
@@ -196,7 +196,7 @@ fn untracked_paths(pathspec: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-fn untracked_file_diff(path: &str) -> Result<String> {
+pub(super) fn untracked_file_diff(path: &str) -> Result<String> {
     no_index_diff(git_command(&added_file_diff_args(path)), path)
 }
 

@@ -36,8 +36,16 @@ pub struct ThreadsView {
     pub show_resolved: bool,
     /// How far the selected conversation is scrolled.
     pub scroll: u16,
-    /// The reply being written to the selected conversation, if one is.
-    pub reply: Option<TextInput>,
+    /// The reply being written, if one is.
+    pub reply: Option<Reply>,
+}
+
+/// A reply being written, and the conversation it was started on, which it
+/// stays with whatever is selected by the time it is sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reply {
+    pub thread: String,
+    pub text: TextInput,
 }
 
 impl ThreadsView {
@@ -69,11 +77,6 @@ impl ThreadsView {
     pub fn selected(&self) -> Option<&ReviewThread> {
         let i = *self.visible().get(self.idx)?;
         self.threads.get(i)
-    }
-
-    fn selected_mut(&mut self) -> Option<&mut ReviewThread> {
-        let i = *self.visible().get(self.idx)?;
-        self.threads.get_mut(i)
     }
 
     pub fn count(&self) -> ThreadCount {
@@ -172,8 +175,11 @@ fn browse_key(state: &mut AppState, key: KeyEvent) {
             view.scroll = 0;
         }
         KeyCode::Enter | KeyCode::Char('r') => {
-            if view.selected().is_some() {
-                view.reply = Some(TextInput::default());
+            if let Some(thread) = view.selected().map(|t| t.id.clone()) {
+                view.reply = Some(Reply {
+                    thread,
+                    text: TextInput::default(),
+                });
             } else {
                 state.set_status("no conversation selected", false);
             }
@@ -242,7 +248,7 @@ fn reply_key(state: &mut AppState, key: KeyEvent) {
     let Some(view) = current(state) else {
         return;
     };
-    let Some(text) = view.reply.as_mut() else {
+    let Some(Reply { thread: id, text }) = view.reply.as_mut() else {
         return;
     };
     match key.code {
@@ -254,12 +260,9 @@ fn reply_key(state: &mut AppState, key: KeyEvent) {
                 state.set_status("write a reply first; Esc cancels", false);
                 return;
             }
+            let id = id.clone();
             view.reply = None;
-            let Some(thread) = view.selected_mut() else {
-                return;
-            };
-            let id = thread.id.clone();
-            let resolve = alt && !thread.resolved;
+            let resolve = alt && !view.threads.iter().any(|t| t.id == id && t.resolved);
             let me = state
                 .github
                 .owners
@@ -267,7 +270,9 @@ fn reply_key(state: &mut AppState, key: KeyEvent) {
                 .map(|o| o.login.clone())
                 .filter(|l| !l.is_empty())
                 .unwrap_or_else(|| "you".into());
-            if let Some(thread) = current(state).and_then(ThreadsView::selected_mut) {
+            if let Some(thread) =
+                current(state).and_then(|view| view.threads.iter_mut().find(|t| t.id == id))
+            {
                 thread.comments.push(ThreadComment {
                     author: me,
                     body: body.clone(),
@@ -296,7 +301,7 @@ pub(super) fn paste(state: &mut AppState, text: &str) -> bool {
     };
     match view.reply.as_mut() {
         Some(reply) => {
-            reply.insert_str(&text.replace(['\r', '\n'], " "));
+            reply.text.insert_str(&text.replace(['\r', '\n'], " "));
             true
         }
         None => false,

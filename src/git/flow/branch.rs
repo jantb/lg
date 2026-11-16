@@ -305,15 +305,15 @@ pub fn delete_local_branch(name: &str, force: bool) -> Result<String> {
     Ok(format!("{prefix}{line}"))
 }
 
-pub fn delete_remote_branch(name: &str) -> Result<String> {
-    let configured_remote = crate::preferences::remote();
-    if name.is_empty() {
-        anyhow::bail!("branch name must not be empty");
+/// Delete `branch` on `remote`, unless it is one of the protected branches.
+pub fn delete_remote_branch(remote: &str, branch: &str) -> Result<String> {
+    if remote.is_empty() || branch.is_empty() {
+        anyhow::bail!("remote and branch name must not be empty");
     }
-    if is_protected_branch(name) {
-        anyhow::bail!("cannot delete protected branch {name}");
+    if is_protected_branch(branch) {
+        anyhow::bail!("cannot delete protected branch {branch}");
     }
-    run_combined(&["push", configured_remote.as_str(), "--delete", name]).map(|text| {
+    run_combined(&["push", remote, "--delete", branch]).map(|text| {
         text.lines()
             .rev()
             .find(|line| !line.trim().is_empty())

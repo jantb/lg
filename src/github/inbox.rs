@@ -228,18 +228,24 @@ pub fn read_inbox(dirs: &[PathBuf]) -> Result<Inbox> {
     }
     let notifications =
         parse_notifications(&run(&["api", "--paginate", "notifications?per_page=50"])?)?;
-    let search = |query: &str| -> Result<Vec<InboxItem>> {
-        parse_review_requests(&run(&[
-            "search",
-            "prs",
-            "--state=open",
-            "--limit",
-            "100",
-            "--json",
-            "number,title,url,repository,updatedAt",
-            "--",
-            query,
-        ])?)
+    let mut repos: Vec<String> = checkouts.keys().cloned().collect();
+    repos.sort();
+    let search = |qualifier: &str| -> Result<Vec<InboxItem>> {
+        let mut items = Vec::new();
+        for query in review_request_queries(qualifier, &repos) {
+            items.extend(parse_review_requests(&run(&[
+                "search",
+                "prs",
+                "--state=open",
+                "--limit",
+                "100",
+                "--json",
+                "number,title,url,repository,updatedAt",
+                "--",
+                &query,
+            ])?)?);
+        }
+        Ok(items)
     };
     // `review-requested` counts the user's teams too; `user-review-requested`
     // only the user, which is what tells the two apart.
@@ -252,6 +258,28 @@ pub fn read_inbox(dirs: &[PathBuf]) -> Result<Inbox> {
         checkouts.contains_key(&repo.to_lowercase())
     });
     Ok(Inbox { items, checkouts })
+}
+
+/// GitHub refuses a search query longer than this.
+const SEARCH_QUERY_MAX: usize = 256;
+
+/// `qualifier` scoped to `repos`, split over as many queries as it takes to
+/// keep each within what GitHub accepts. Searching all of GitHub and keeping
+/// the workspace's hits afterwards would lose them past the result cap.
+fn review_request_queries(qualifier: &str, repos: &[String]) -> Vec<String> {
+    let mut queries = Vec::new();
+    let mut query = qualifier.to_string();
+    for repo in repos {
+        let term = format!(" repo:{repo}");
+        if query.len() > qualifier.len() && query.len() + term.len() > SEARCH_QUERY_MAX {
+            queries.push(std::mem::replace(&mut query, qualifier.to_string()));
+        }
+        query.push_str(&term);
+    }
+    if query.len() > qualifier.len() {
+        queries.push(query);
+    }
+    queries
 }
 
 /// Mark a notification thread done, which takes it out of the GitHub inbox
@@ -551,6 +579,38 @@ mod tests {
         });
 
         assert!(items.is_empty(), "{items:?}");
+    }
+
+    #[test]
+    fn the_review_request_search_asks_only_about_the_workspaces_repositories() {
+        let repos: Vec<String> = (0..40)
+            .map(|i| format!("an-organisation/repository-number-{i}"))
+            .collect();
+
+        let queries = review_request_queries("review-requested:@me", &repos);
+
+        for query in &queries {
+            assert!(query.contains("review-requested:@me"), "{query}");
+            assert!(query.len() <= 256, "{} chars: {query}", query.len());
+        }
+        for repo in &repos {
+            let qualifier = format!("repo:{repo}");
+            assert!(
+                queries
+                    .iter()
+                    .any(|query| query.split(' ').any(|term| term == qualifier)),
+                "{repo} is in no query: {queries:?}"
+            );
+        }
+        let searched: HashSet<&str> = queries
+            .iter()
+            .flat_map(|query| query.split(' '))
+            .filter_map(|term| term.strip_prefix("repo:"))
+            .collect();
+        assert!(
+            searched.iter().all(|repo| repos.iter().any(|r| r == repo)),
+            "{searched:?}"
+        );
     }
 
     #[test]

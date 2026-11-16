@@ -44,9 +44,17 @@ pub fn local_branch_names() -> Vec<String> {
 
 /// What `git branch` is asked to print for every branch, one field per
 /// branch separated by unit separators.
-const BRANCH_FORMAT: &str = "%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)\x1f%(upstream:track)\x1f%(committerdate:unix)";
+const BRANCH_FORMAT: &str = "%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)\x1f%(upstream:track)\x1f%(committerdate:unix)\x1f%(refname)";
 
 pub fn list_branches() -> Result<Vec<Branch>> {
+    Ok(list_branches_at(None)?.0)
+}
+
+/// The local branches, and the branch checked out as `git branch
+/// --show-current` names it. When HEAD is detached, it is the line git lists
+/// for it, such as `(HEAD detached at 1a2b3c4)`. `None` when no branch is
+/// listed as current, as on a branch with no commits yet.
+pub fn list_branches_and_current() -> Result<(Vec<Branch>, Option<String>)> {
     list_branches_at(None)
 }
 
@@ -61,7 +69,7 @@ pub fn nested_repo_branches_at(root: &Path, repo_path: &str) -> Result<Vec<Branc
 }
 
 fn list_branches_in_dir(dir: &Path) -> Result<Vec<Branch>> {
-    list_branches_at(Some(dir))
+    Ok(list_branches_at(Some(dir))?.0)
 }
 
 /// Git in `dir`, or in the checkout lg is pointed at.
@@ -79,7 +87,7 @@ fn git_at(dir: Option<&Path>, args: &[&str]) -> Result<std::process::Output> {
 /// through `%(ahead-behind:...)`, rather than one `rev-list` per branch. Git
 /// older than 2.41 does not know that atom and refuses the whole format, and
 /// then the counts are taken the old way, one branch at a time.
-fn list_branches_at(dir: Option<&Path>) -> Result<Vec<Branch>> {
+fn list_branches_at(dir: Option<&Path>) -> Result<(Vec<Branch>, Option<String>)> {
     let configured_base = crate::preferences::base_branch();
     let configured_remote = crate::preferences::remote();
     let remote_main = format!("{configured_remote}/{configured_base}");
@@ -103,18 +111,30 @@ fn list_branches_at(dir: Option<&Path>) -> Result<Vec<Branch>> {
         ),
     };
     let text = String::from_utf8_lossy(&out.stdout);
+    let mut current = None;
     let mut branches: Vec<_> = text
         .lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(6, '\x1f');
+            let mut parts = line.splitn(7, '\x1f');
             let name = parts.next()?.trim().to_owned();
             let head = parts.next()?.trim();
             let upstream = parts.next().unwrap_or("").trim();
             let track = parts.next().unwrap_or("").trim();
             let (ahead, behind) = parse_upstream_track(track);
             let last_commit_unix = parse_unix_timestamp(parts.next().unwrap_or("").trim());
+            let refname = parts.next().unwrap_or("").trim();
             if name.is_empty() {
                 return None;
+            }
+            if head == "*" {
+                // `refname:short` turns `main` into `heads/main` when a tag
+                // shares the name; the full ref never does.
+                current = Some(
+                    refname
+                        .strip_prefix("refs/heads/")
+                        .unwrap_or(&name)
+                        .to_owned(),
+                );
             }
             let counts = parts.next().unwrap_or("");
             let behind_main = if !counts_against_main(&name, main_ref.as_deref()) {
@@ -141,7 +161,7 @@ fn list_branches_at(dir: Option<&Path>) -> Result<Vec<Branch>> {
         |branch| branch.last_commit_unix,
         |branch| branch.name.as_str(),
     );
-    Ok(branches)
+    Ok((branches, current))
 }
 
 /// How far every local branch is ahead of and behind `base`, by branch name,

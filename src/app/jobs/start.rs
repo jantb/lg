@@ -7,6 +7,7 @@ use crate::{
     state::{
         AppState, CommitLogJob, CommitLogMsg, DiffJob, DiffMsg, DiffSource, FetchJob, FetchMsg,
         ReadsCheckout, RefreshJob, RefreshMsg, RefreshScope, ReleaseStatusJob, ReleaseStatusMsg,
+        let_reader_go,
     },
 };
 
@@ -98,7 +99,7 @@ impl App {
         {
             // It reads the checkout lg has just left, and so does whatever was
             // queued behind it; neither is worth waiting for.
-            self.state.defer_thread_join(stale.handle.take());
+            let_reader_go(stale.handle.take());
             self.state.refresh_pending = None;
             self.state.refresh_pending_diff = false;
             self.state.refresh_pending_changed.clear();
@@ -172,7 +173,7 @@ impl App {
 
     pub(in crate::app) fn defer_release_status_job(&mut self) {
         if let Some(mut job) = self.state.release_status_job.take() {
-            self.state.defer_thread_join(job.handle.take());
+            let_reader_go(job.handle.take());
         }
     }
 
@@ -330,7 +331,7 @@ pub(super) fn load_selected_diff(state: &mut AppState, force: bool) {
     }
     if matches!(source, DiffSource::None) {
         if let Some(mut job) = state.diff_job.take() {
-            state.defer_thread_join(job.handle.take());
+            let_reader_go(job.handle.take());
         }
         return;
     }

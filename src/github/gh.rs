@@ -35,11 +35,12 @@ pub(super) fn command(dir: Option<&Path>, args: &[&str]) -> Command {
         // Clone and checkout run git underneath; a credential prompt there
         // would hang just the same.
         .env("GIT_TERMINAL_PROMPT", "0");
-    if let Some(dir) = dir
+    let dir = dir
         .map(Path::to_path_buf)
         .or_else(crate::git::repo_dir)
-        .filter(|dir| dir.is_dir())
-    {
+        .filter(|dir| dir.is_dir());
+    crate::git::batch_ssh(&mut command, dir.as_deref());
+    if let Some(dir) = dir {
         command.current_dir(dir);
     }
     command
@@ -98,5 +99,55 @@ pub(super) fn run_combined(dir: Option<&Path>, args: &[&str]) -> Result<String> 
         Ok(format!("{stdout}{stderr}"))
     } else {
         Err(failure(args, &stdout, &stderr))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env_of(command: &Command, name: &str) -> Option<String> {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new(name))
+            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    }
+
+    /// `gh pr checkout` and `gh repo clone` run git over ssh behind the TUI,
+    /// where a passphrase or host-key prompt would wait for good.
+    #[test]
+    fn ssh_under_gh_never_prompts_unless_the_user_chose_how_it_runs() {
+        let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+        if set("GIT_SSH_COMMAND") || set("GIT_SSH") {
+            return;
+        }
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        assert!(git(&["init", "-q"]).status.success());
+        if git(&["config", "--get", "core.sshCommand"])
+            .status
+            .success()
+        {
+            return;
+        }
+
+        let checkout = command(Some(repo.path()), &["pr", "checkout", "1"]);
+        let ssh = env_of(&checkout, "GIT_SSH_COMMAND").unwrap_or_default();
+        assert!(ssh.contains("BatchMode=yes"), "{ssh:?}");
+
+        assert!(
+            git(&["config", "core.sshCommand", "ssh -i /tmp/key"])
+                .status
+                .success()
+        );
+        let checkout = command(Some(repo.path()), &["pr", "checkout", "1"]);
+        assert_eq!(env_of(&checkout, "GIT_SSH_COMMAND"), None);
     }
 }

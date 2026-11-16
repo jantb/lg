@@ -1,7 +1,6 @@
 //! The final step: the whole changeset with the final review's findings under
 //! their lines, and its read of the change below.
 
-use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -92,23 +91,13 @@ pub(super) fn final_areas(
     split_for_diff(area, rows, diff_room(guided, area))
 }
 
-/// The whole change as last built, and what it was built from, so the
-/// layout, the draw, the chat's size and the mouse share one build a frame.
-#[derive(Default)]
-pub(in crate::panel::guided) struct FinalLinesCache(RefCell<Option<(u64, Arc<DiffLines>)>>);
-
 /// Every file's diff in turn, each under its title.
 pub(super) fn final_diff_lines(guided: &Guided, mode: DiffViewMode, width: u16) -> Arc<DiffLines> {
-    let inputs = final_inputs(guided, mode, width);
-    let mut cache = guided.final_lines.0.borrow_mut();
-    if let Some((built_from, lines)) = cache.as_ref()
-        && *built_from == inputs
-    {
-        return lines.clone();
-    }
-    let lines = Arc::new(build_final_diff_lines(guided, mode, width));
-    *cache = Some((inputs, lines.clone()));
-    lines
+    guided
+        .final_lines
+        .get_or_build(final_inputs(guided, mode, width), || {
+            build_final_diff_lines(guided, mode, width)
+        })
 }
 
 /// Everything [`build_final_diff_lines`] reads.

@@ -56,7 +56,7 @@ fn work_on_a_version_the_change_no_longer_has_stops_holding_the_walk() {
     guided.checks.push(Check {
         key: a_key.clone(),
         questions: Vec::new(),
-        answer: check_rx,
+        answer: check_rx.into(),
     });
     guided.check_queue.push(a_key.clone());
 

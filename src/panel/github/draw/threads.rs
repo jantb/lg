@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, Paragraph, Wrap};
 
 use crate::github::{ReviewThread, ThreadCount};
-use crate::panel::github::threads::ThreadsView;
+use crate::panel::github::threads::{Reply, ThreadsView};
 use crate::panel::keys;
 use crate::ui::{self, palette};
 
@@ -269,11 +269,13 @@ pub(super) fn draw_chat(
 
 /// The bottom line: the keys, or the reply being written with its cursor.
 pub(super) fn bottom_line(view: &ThreadsView, area: Rect, frame: &mut Frame) -> Line<'static> {
-    let Some(text) = &view.reply else {
+    let Some(Reply { thread, text }) = &view.reply else {
         return ui::key_hints(&keys::footer_pairs("GitHub conversations"));
     };
     let place = view
-        .selected()
+        .threads
+        .iter()
+        .find(|t| t.id == *thread)
         .map(ReviewThread::location)
         .unwrap_or_default();
     let prompt = format!("Reply on {place}: ");

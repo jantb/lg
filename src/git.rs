@@ -32,8 +32,8 @@ pub use attrs::{
     FileAttrs, SUPPRESSED_DIFF_MARKER, file_attrs, is_suppressed_diff_body, suppress_generated_diff,
 };
 pub use branches::{
-    Branch, RemoteBranch, list_branches, list_remote_branches, local_branch_names,
-    nested_repo_branches, nested_repo_branches_at, nested_repo_remote_branches,
+    Branch, RemoteBranch, list_branches, list_branches_and_current, list_remote_branches,
+    local_branch_names, nested_repo_branches, nested_repo_branches_at, nested_repo_remote_branches,
     nested_repo_remote_branches_at,
 };
 use commits::preferred_commit_ref;
@@ -42,11 +42,13 @@ pub use commits::{
     recent_commit_messages, unpushed_shas,
 };
 pub use config::{
-    AuthorConfig, IdeOpenCommand, add_to_gitignore, author_config, clear_local_author,
-    clear_subtree_author, ide_open_command, open_file_in_ide, open_file_in_ide_at,
-    open_project_in_ide, open_project_path_in_ide, project_open_command, set_local_author,
-    set_subtree_author, subtree_author_rule_exists,
+    AuthorConfig, ConfigSnapshot, IdeOpenCommand, add_to_gitignore, author_config,
+    author_config_from, clear_local_author, clear_subtree_author, config_snapshot,
+    ide_open_command, open_file_in_ide, open_file_in_ide_at, open_project_in_ide,
+    open_project_path_in_ide, project_open_command, set_local_author, set_subtree_author,
+    subtree_author_rule_exists,
 };
+pub(crate) use context::batch_ssh;
 use context::git_command;
 pub(crate) use context::git_command_in_dir;
 pub(crate) use context::repo_dir;
@@ -94,7 +96,8 @@ pub use review::{
 };
 pub use stash::{StashEntry, stash_apply, stash_drop, stash_list, stash_pop, stash_push};
 pub use status::{
-    FileEntry, all_ignored, parse_porcelain, parse_porcelain_xy, status_entries, status_porcelain,
+    FileEntry, all_ignored, parse_porcelain, parse_porcelain_xy, status_entries,
+    status_entries_with, status_porcelain,
 };
 pub use worktree::{
     Worktree, common_git_dir, default_worktree_path, forget_resolved_dirs, main_worktree,

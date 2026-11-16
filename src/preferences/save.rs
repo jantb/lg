@@ -5,9 +5,10 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use super::Preferences;
-use super::cache::{configured_category, invalidate, load};
+use super::cache::{invalidate, load};
 use super::layers::{
-    DETECTED_CATEGORY, Scope, checkout, folder_path, layers, merge, read_patch, scope_path,
+    Scope, checkout, folder_path, lay_over, layers, merge, read_patch, scope_path,
+    sets_branch_field,
 };
 
 pub fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
@@ -74,13 +75,7 @@ fn write_changes(
     category: &str,
     changes: serde_json::Value,
 ) -> Result<()> {
-    // Detected branches only hold while no file sets the category, so the
-    // first file to set it has to carry what was detected along.
-    let mut value = if category == DETECTED_CATEGORY && !configured_category(category) {
-        serde_json::to_value(load().config)?[category].take()
-    } else {
-        existing_category(&path, category)?
-    };
+    let mut value = existing_category(&path, category)?;
     merge(&mut value, changes);
     save_at(path, folder, category, value)
 }
@@ -101,9 +96,7 @@ fn save_at(
         .as_object_mut()
         .with_context(|| format!("{}: configuration is not a table", path.display()))?
         .remove("folder");
-    let mut effective = serde_json::to_value(load().config)?;
-    merge(&mut effective, patch.clone());
-    serde_json::from_value::<Preferences>(effective)?.validate()?;
+    validate_with(&path, &patch)?;
     if let Some(folder) = folder {
         patch["folder"] = folder.display().to_string().into();
     } else if let Some(folder) = saved_folder {
@@ -114,6 +107,24 @@ fn save_at(
     }
     invalidate();
     atomic_write(&path, toml::to_string_pretty(&patch)?.as_bytes())
+}
+
+/// Check the preferences in effect once `path` says `patch`, laid over them as
+/// a load lays each file.
+fn validate_with(path: &Path, patch: &serde_json::Value) -> Result<()> {
+    let promotions_from_file = layers(checkout().ok().as_ref())
+        .into_iter()
+        .any(|(_, other)| {
+            other != path
+                && other.exists()
+                && read_patch(&other).is_ok_and(|other| sets_branch_field(&other, "promotions"))
+        });
+    let effective = lay_over(
+        &serde_json::to_value(load().config)?,
+        patch,
+        promotions_from_file,
+    );
+    serde_json::from_value::<Preferences>(effective)?.validate()
 }
 
 /// Set some fields of `category` where the change will actually show: in the
@@ -218,9 +229,7 @@ pub fn import_document(scope: Scope, patch: serde_json::Value) -> Result<()> {
         serde_json::json!({"version":1})
     };
     merge(&mut document, patch);
-    let mut effective = serde_json::to_value(load().config)?;
-    merge(&mut effective, document.clone());
-    serde_json::from_value::<Preferences>(effective)?.validate()?;
+    validate_with(&path, &document)?;
     if path.exists() {
         std::fs::copy(&path, path.with_extension("toml.bak"))?;
     }

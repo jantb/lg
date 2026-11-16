@@ -108,7 +108,9 @@ pub fn is_deploy_branch_name(name: &str) -> bool {
 /// branch.
 pub fn is_protected_branch_name(name: &str) -> bool {
     let branches = crate::preferences::load().config.branches;
-    name == branches.base || branches.protected.iter().any(|b| b == name)
+    name == branches.base
+        || branches.protected.iter().any(|b| b == name)
+        || is_deploy_branch_name(name)
 }
 
 /// Deploy branch names for error messages, in promotion order.

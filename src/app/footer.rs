@@ -91,7 +91,7 @@ fn github_footer_title(state: &AppState) -> &'static str {
         (GitHubMode::Compose { .. }, _) => "GitHub review text",
         (GitHubMode::Merge(_), _) => "GitHub merge",
         (GitHubMode::Create(_), _) => "GitHub new pull request",
-        (GitHubMode::ConfirmClose, _) => "GitHub close",
+        (GitHubMode::ConfirmClose { .. }, _) => "GitHub close",
         (GitHubMode::Threads(_), _) if crate::panel::github::threads_chat_has_keyboard(state) => {
             "GitHub conversations: chat"
         }
@@ -620,7 +620,7 @@ mod tests {
         assert!(!repos.contains("approve"), "{repos}");
 
         state.github.tab = crate::panel::github::Tab::PullRequests;
-        state.github.mode = crate::panel::github::Mode::ConfirmClose;
+        state.github.mode = crate::panel::github::Mode::ConfirmClose { number: 1 };
         let close = footer_text(&state);
         assert!(close.contains("y close"), "{close}");
         assert!(!close.contains("approve"), "{close}");
