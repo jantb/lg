@@ -44,8 +44,9 @@ pub(super) fn pace(state: &AppState, shown_live: bool, sessions_more: bool) -> P
     } else {
         None
     };
-    let watched =
-        state.session_view().is_some() || crate::panel::guided::chat_on_screen(state).is_some();
+    let watched = state.session_view().is_some()
+        || crate::panel::guided::chat_on_screen(state).is_some()
+        || crate::panel::github::threads_chat_on_screen(state).is_some();
     let mut wake = if watched {
         if shown_live {
             SESSION_TICK_MS

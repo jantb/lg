@@ -141,8 +141,6 @@ pub enum Modal {
     DeleteBranch,
     Worktree,
     ConfirmDestructive,
-    /// Pull requests of the checkout on screen, and repositories to clone.
-    GitHub,
     /// A branch or pull request walked one hunk at a time.
     GuidedReview,
     /// The stash: its entries, and a new one being named.
@@ -303,6 +301,9 @@ pub enum PendingAction {
     GuidedChat {
         focus: bool,
     },
+    /// Start the Claude chat beside a pull request's conversations, handed
+    /// the one selected.
+    ThreadsChat,
     CopyToClipboard {
         label: String,
         text: String,
@@ -386,6 +387,11 @@ pub enum PendingAction {
     OpenProject,
     OpenProjectAt(String),
     OpenFile(String),
+    /// Open a file in the IDE at a given line.
+    OpenFileAt {
+        path: String,
+        line: usize,
+    },
     /// Open a file at a line in the terminal editor, with lg suspended until
     /// it exits.
     EditFile {

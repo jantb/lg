@@ -1,5 +1,5 @@
-//! Drawing the GitHub modal: a tab bar, the list beside the selected entry's
-//! details, and a bottom line that is whatever the modal is asking for.
+//! Drawing GitHub in the main pane: a tab bar, the list beside the selected
+//! entry's details, and a bottom line that is whatever it is asking for.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Position, Rect};
@@ -13,7 +13,7 @@ use crate::ui::{self, palette};
 
 use super::lookup::selected_pr;
 use super::{Compose, Mode, Tab};
-use areas::{columns, modal_area, too_small};
+use areas::{columns, thread_columns, too_small};
 use forms::{draw_create, draw_merge};
 use header::draw_tabs;
 use pull_requests::{draw_pr_detail, draw_pr_list, pr_hints};
@@ -25,8 +25,9 @@ mod header;
 mod inbox;
 mod pull_requests;
 mod repositories;
+mod threads;
 
-pub(super) use areas::{HeaderClick, header_click, list_click};
+pub(super) use areas::{HeaderClick, header_click, list_click, thread_chat_screen, thread_panes};
 
 pub(super) const LABEL: Style = Style::new().fg(Color::DarkGray);
 
@@ -37,13 +38,14 @@ const ROWS: [Constraint; 3] = [
     Constraint::Length(1),
 ];
 
-pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
-    let modal = modal_area(area);
+/// Draw GitHub into `area`, the main pane, framed like the pane it replaces.
+pub fn render(state: &AppState, area: Rect, frame: &mut Frame, focused: bool) {
     let title = match &state.github.repo {
         Some(repo) => format!("GitHub \u{b7} {}", repo.name),
         None => "GitHub".to_string(),
     };
-    let inner = ui::modal_frame(frame, modal, &title);
+    let block = ui::framed_with_activity(0, &title, focused, None, state.animation_ms, false);
+    let inner = ui::modal_frame_with(frame, area, block);
     if too_small(inner) {
         frame.render_widget(Paragraph::new("Terminal too small for GitHub"), inner);
         return;
@@ -52,6 +54,16 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
     draw_tabs(state, rows[0], frame);
     match (&state.github.mode, state.github.tab) {
         (Mode::Create(form), _) => draw_create(form, rows[1], frame),
+        (Mode::Threads(view), _) => {
+            let chat = super::threads::chat::session(state);
+            let (panes, gaps) = ui::modal_columns(frame, rows[1], thread_columns(chat.is_some()));
+            dividers.extend(gaps);
+            threads::draw_list(view, panes[0], frame, spinner(state));
+            threads::draw_conversation(view, panes[1], frame);
+            if let Some(id) = chat {
+                threads::draw_chat(state, view, id, panes[2], frame);
+            }
+        }
         (_, Tab::Inbox) => {
             let (panes, gaps) = ui::modal_columns(frame, rows[1], columns(Tab::Inbox));
             dividers.extend(gaps);
@@ -75,8 +87,8 @@ pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
         }
     }
     draw_bottom(state, rows[2], frame);
-    if state.decorative_animations {
-        ui::animate_modal_border(state.animation_ms, modal, &dividers, frame);
+    if focused && state.decorative_animations {
+        ui::animate_modal_border(state.animation_ms, area, &dividers, frame);
     }
 }
 
@@ -146,6 +158,7 @@ fn draw_bottom(state: &AppState, area: Rect, frame: &mut Frame) {
         }
         (Mode::Merge(_), _) => hints("GitHub merge"),
         (Mode::Create(_), _) => hints("GitHub new pull request"),
+        (Mode::Threads(view), _) => threads::bottom_line(view, area, frame),
         (Mode::Browse, Tab::Inbox) => hints("GitHub inbox"),
         (Mode::Browse, Tab::PullRequests) => ui::key_hints(&pr_hints(state)),
         (Mode::Browse, Tab::Repositories) => hints("GitHub repositories"),

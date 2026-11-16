@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::github::PrFilter;
-use crate::panel::github::Tab;
+use crate::panel::github::{Mode, Tab};
 use crate::state::AppState;
 use crate::ui::palette;
 
@@ -56,6 +56,26 @@ pub(super) fn header_spans(
         tab("Repositories", Tab::Repositories),
         plain(Span::raw("   ")),
     ];
+    // Going through conversations, the list's filters are out of reach, and
+    // `h` means something else; the header says whose conversations they are.
+    if let Mode::Threads(view) = &gh.mode {
+        spans.push(plain(Span::styled("conversations on ", LABEL)));
+        spans.push(plain(Span::styled(
+            format!("#{} ", view.number),
+            Style::default().fg(Color::Green),
+        )));
+        spans.push(plain(Span::styled(
+            view.title.clone(),
+            Style::default().fg(Color::White),
+        )));
+        if gh.threads_loading.is_some() || !gh.thread_writes.is_empty() {
+            spans.push(plain(Span::styled(
+                format!("   {} talking to GitHub", spinner(state)),
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+        return spans;
+    }
     match gh.tab {
         Tab::Inbox => {
             spans.push(plain(Span::styled("across this workspace", LABEL)));

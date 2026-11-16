@@ -11,7 +11,11 @@
 use std::path::PathBuf;
 use work::Pending;
 
-use crate::github::{MergeMethod, Owners, PrFilter, PullRequest, RepoInfo, Repository};
+use std::collections::HashMap;
+
+use crate::github::{
+    MergeMethod, Owners, PrFilter, PullRequest, RepoInfo, Repository, ThreadCount,
+};
 use crate::panel::text_input::TextInput;
 
 mod browse;
@@ -21,11 +25,16 @@ pub mod inbox;
 mod load;
 mod lookup;
 mod mouse;
+pub mod threads;
 mod work;
 
 pub use draw::render;
+pub use threads::chat::{
+    chat_has_keyboard as threads_chat_has_keyboard, chat_on_screen as threads_chat_on_screen,
+    fit_chat as fit_threads_chat,
+};
 
-pub use browse::{handle_key, handle_paste};
+pub use browse::{handle_key, handle_paste, typing};
 pub use load::{after_action, load_pull_requests, load_repositories, open, open_create, poll};
 pub use lookup::{
     clone_destination, clone_parent, clone_request, is_current_branch, is_mine, selected_pr,
@@ -56,7 +65,7 @@ impl Tab {
     }
 }
 
-/// What the modal is doing with the selected pull request, if anything
+/// What GitHub is doing with the selected pull request, if anything
 /// beyond showing it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Mode {
@@ -70,6 +79,8 @@ pub enum Mode {
     ConfirmClose,
     /// Writing a new pull request for the current branch.
     Create(CreateForm),
+    /// Going through the selected pull request's conversations.
+    Threads(threads::ThreadsView),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +181,19 @@ pub struct GitHub {
     pub prs_dir: Option<PathBuf>,
     /// How far the selected pull request's description is scrolled.
     pub detail_scroll: u16,
+    /// How many conversations each listed pull request has open, read after
+    /// the list itself.
+    pub thread_counts: HashMap<u64, ThreadCount>,
+    pub counts_loading: Option<Pending<HashMap<u64, ThreadCount>>>,
+    /// The conversations of the pull request [`Mode::Threads`] shows, on
+    /// their way.
+    pub threads_loading: Option<Pending<(u64, Vec<crate::github::ReviewThread>)>>,
+    /// Replies and resolutions sent and not yet answered. They run side by
+    /// side, so going through a dozen conversations never waits on GitHub.
+    pub thread_writes: Vec<Pending<threads::Written>>,
+    /// The Claude chat going through a pull request's conversations, kept
+    /// when they are left so it is there on coming back.
+    pub threads_chat: Option<threads::chat::ThreadsChat>,
 
     pub repos: Vec<Repository>,
     pub repo_idx: usize,

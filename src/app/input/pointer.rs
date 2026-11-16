@@ -49,12 +49,6 @@ pub(super) fn handle_modal_mouse(state: &mut AppState, area: Rect, m: &MouseEven
             panel::deployment::handle_mouse(state, area, m);
             true
         }
-        Modal::GitHub => {
-            state.column_drag_active = false;
-            state.row_drag_active = None;
-            panel::github::handle_mouse(state, area, m);
-            true
-        }
         Modal::Commit => {
             state.column_drag_active = false;
             state.row_drag_active = None;
@@ -119,6 +113,28 @@ pub(super) fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
         && row < rect.y.saturating_add(rect.height)
 }
 
+/// Whether GitHub in the main pane is where `m` goes: anything over the pane
+/// but its left edge, which is the divider the column is dragged by, and the
+/// drags and releases that follow a press in it — a selection in its chat can
+/// be dragged past the pane.
+fn github_takes_mouse(
+    state: &AppState,
+    rects: &ui::LayoutRects,
+    on_divider: bool,
+    m: &MouseEvent,
+) -> bool {
+    let lg_dragging = state.column_drag_active
+        || state.row_drag_active.is_some()
+        || state.selection.is_some_and(|selection| selection.dragging);
+    if !state.github_view() || lg_dragging {
+        return false;
+    }
+    match m.kind {
+        MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left) => true,
+        _ => !on_divider && rect_contains(rects.main, m.column, m.row),
+    }
+}
+
 /// Route one mouse event. Modals get it first, then the pane dividers, then
 /// whichever pane it landed in.
 pub(super) fn dispatch_mouse<H: AppHost>(host: &mut H, m: MouseEvent) -> Result<()> {
@@ -132,6 +148,16 @@ pub(super) fn dispatch_mouse<H: AppHost>(host: &mut H, m: MouseEvent) -> Result<
     let on_divider = m.row >= rects.status.y
         && m.row < rects.footer.y
         && (m.column == divider_col || m.column == rects.main.x);
+
+    if github_takes_mouse(host.state(), &rects, on_divider, &m) {
+        let state = host.state_mut();
+        if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
+            state.focus = Pane::Main;
+            state.selection = None;
+        }
+        panel::github::handle_mouse(state, rects.main, &m);
+        return Ok(());
+    }
 
     match m.kind {
         MouseEventKind::Down(MouseButton::Left)

@@ -1,4 +1,4 @@
-//! Where the modal and its parts sit on screen, and what a click there lands
+//! Where GitHub and its parts sit in the main pane, and what a click there lands
 //! on.
 
 use ratatui::layout::{Constraint, Position, Rect};
@@ -11,17 +11,6 @@ use crate::ui;
 
 use super::header::header_spans;
 use super::{ROWS, inbox};
-
-/// Nearly the whole screen, so long titles and descriptions fit, but clear of
-/// the footer, where the status line reports what the last action did, and
-/// no wider than a line is still comfortable to read across.
-pub(super) fn modal_area(area: Rect) -> Rect {
-    ui::centered(
-        area,
-        area.width.saturating_sub(4).min(220),
-        area.height.saturating_sub(2),
-    )
-}
 
 pub(super) fn too_small(inner: Rect) -> bool {
     inner.width < 40 || inner.height < 8
@@ -54,7 +43,7 @@ pub(in crate::panel::github) fn header_click(
     column: u16,
     row: u16,
 ) -> Option<HeaderClick> {
-    let inner = ui::modal_inner(modal_area(area));
+    let inner = ui::modal_inner(area);
     if too_small(inner) {
         return None;
     }
@@ -80,6 +69,65 @@ pub(super) fn columns(tab: Tab) -> &'static [Constraint] {
     }
 }
 
+/// How the conversations split the body: the list and the selected one, and
+/// with a chat going, Claude beside them with the most room.
+pub(super) fn thread_columns(chat: bool) -> &'static [Constraint] {
+    if chat {
+        &[
+            Constraint::Percentage(22),
+            Constraint::Percentage(33),
+            Constraint::Min(30),
+        ]
+    } else {
+        columns(Tab::PullRequests)
+    }
+}
+
+/// Where the conversations are drawn, measured the way [`render`] lays them
+/// out: the list (below its count), the selected conversation, and the chat
+/// pane, title row included, when one is going.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::panel::github) struct ThreadPanes {
+    pub list: Rect,
+    pub conversation: Rect,
+    pub chat: Option<Rect>,
+}
+
+pub(in crate::panel::github) fn thread_panes(area: Rect, chat: bool) -> Option<ThreadPanes> {
+    let inner = ui::modal_inner(area);
+    if too_small(inner) {
+        return None;
+    }
+    let body = ui::modal_row_areas(inner, &ROWS).0[1];
+    let panes = ui::modal_column_areas(body, thread_columns(chat)).0;
+    Some(ThreadPanes {
+        list: thread_list_rows(panes[0]),
+        conversation: panes[1],
+        chat: panes.get(2).copied(),
+    })
+}
+
+/// The rows of the conversation list: its pane below the count.
+pub(super) fn thread_list_rows(pane: Rect) -> Rect {
+    ratatui::layout::Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas::<2>(pane)
+        [1]
+}
+
+/// The chat's pane beside the conversations, title row included.
+pub(in crate::panel::github) fn thread_chat_area(area: Rect) -> Option<Rect> {
+    thread_panes(area, true)?.chat
+}
+
+/// The chat's terminal: its pane below the title row.
+pub(in crate::panel::github) fn thread_chat_screen(area: Rect) -> Option<Rect> {
+    let pane = thread_chat_area(area)?;
+    Some(Rect {
+        y: pane.y + 1,
+        height: pane.height.saturating_sub(1),
+        ..pane
+    })
+}
+
 /// The search line above the repository list, and the list under it.
 pub(super) fn repo_list_areas(area: Rect) -> [Rect; 2] {
     ratatui::layout::Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(area)
@@ -93,7 +141,7 @@ pub(in crate::panel::github) fn list_click(
     column: u16,
     row: u16,
 ) -> Option<usize> {
-    let inner = ui::modal_inner(modal_area(area));
+    let inner = ui::modal_inner(area);
     if too_small(inner) {
         return None;
     }

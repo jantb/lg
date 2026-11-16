@@ -1,4 +1,4 @@
-//! The mouse over the modal: tabs, filters and owners in the header, rows in
+//! The mouse over GitHub: tabs, filters and owners in the header, rows in
 //! the lists.
 
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
@@ -15,6 +15,10 @@ use super::{Mode, Tab, draw, inbox};
 /// picks a tab or an owner, steps the filter or shows and hides drafts, and a
 /// click in the list selects what it lands on.
 pub fn handle_mouse(state: &mut AppState, area: Rect, m: &MouseEvent) {
+    if matches!(state.github.mode, Mode::Threads(_)) {
+        super::threads::handle_mouse(state, area, m);
+        return;
+    }
     if state.github.mode != Mode::Browse {
         return;
     }

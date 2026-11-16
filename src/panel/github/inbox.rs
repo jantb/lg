@@ -1,6 +1,6 @@
 //! The inbox tab: what on GitHub is waiting on the user across the workspace's
 //! repositories. It is read in the background every few minutes, so the header
-//! can say so before anyone opens the modal, and each thing is announced once.
+//! can say so before anyone opens GitHub, and each thing is announced once.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use super::browse::{dispatch, switch_tab};
 use super::work::{Pending, spawn_read, take_answer};
 use crate::config::GITHUB_INBOX_INTERVAL_SECS;
 use crate::github::{InboxItem, PullRequest, Reason, Section, Subject};
-use crate::state::{AppState, GitHubAction, Modal, Poll, poll_once};
+use crate::state::{AppState, GitHubAction, Poll, poll_once};
 
 #[derive(Debug, Default)]
 pub struct Inbox {
@@ -292,7 +292,7 @@ fn open(state: &mut AppState) {
         },
     };
     if matches!(action, GitHubAction::ReviewInCheckout { .. }) {
-        state.modal = Modal::None;
+        state.show_diff();
     }
     dispatch(state, action);
 }
@@ -315,7 +315,7 @@ pub(super) fn select(state: &mut AppState, idx: usize) {
 pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) {
     let idx = state.github.inbox.idx;
     match key.code {
-        KeyCode::Esc => state.modal = Modal::None,
+        KeyCode::Esc => state.show_diff(),
         KeyCode::Tab => switch_tab(state, true),
         KeyCode::BackTab => switch_tab(state, false),
         KeyCode::Char('j') | KeyCode::Down => select(state, idx + 1),
@@ -337,7 +337,7 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) {
     }
 }
 
-/// The tab the modal opens on: the inbox while something is waiting.
+/// The tab GitHub opens on: the inbox while something is waiting.
 pub(super) fn opening_tab(state: &AppState) -> Option<Tab> {
     (!state.github.inbox.items().is_empty()).then_some(Tab::Inbox)
 }

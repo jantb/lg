@@ -382,6 +382,7 @@ fn local_branch_line(
     environments: &[crate::preferences::Environment],
     row_width: usize,
 ) -> Line<'static> {
+    let pushed = pushed_without_upstream(state, branch);
     if state
         .checkout_job
         .as_ref()
@@ -396,7 +397,7 @@ fn local_branch_line(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                visible_local_branch_name(branch, 2, row_width),
+                visible_local_branch_name(branch, pushed, 2, row_width),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -408,11 +409,14 @@ fn local_branch_line(
                 Style::default().fg(Color::Magenta),
             ));
         }
-        append_local_branch_status(&mut spans, branch);
+        append_local_branch_status(&mut spans, branch, pushed);
         Line::from(spans)
     } else if branch.is_current {
         let mut spans = vec![Span::styled(
-            format!("* {}", visible_local_branch_name(branch, 2, row_width)),
+            format!(
+                "* {}",
+                visible_local_branch_name(branch, pushed, 2, row_width)
+            ),
             current_branch_style(),
         )];
         for env in environments.iter().filter(|e| e.branch == branch.name) {
@@ -421,11 +425,14 @@ fn local_branch_line(
                 Style::default().fg(Color::Magenta),
             ));
         }
-        append_local_branch_status(&mut spans, branch);
+        append_local_branch_status(&mut spans, branch, pushed);
         Line::from(spans)
     } else {
         let mut spans = vec![Span::styled(
-            format!("  {}", visible_local_branch_name(branch, 2, row_width)),
+            format!(
+                "  {}",
+                visible_local_branch_name(branch, pushed, 2, row_width)
+            ),
             Style::default(),
         )];
         for env in environments.iter().filter(|e| e.branch == branch.name) {
@@ -434,7 +441,7 @@ fn local_branch_line(
                 Style::default().fg(Color::Magenta),
             ));
         }
-        append_local_branch_status(&mut spans, branch);
+        append_local_branch_status(&mut spans, branch, pushed);
         Line::from(spans)
     }
 }
@@ -472,8 +479,13 @@ fn remote_branch_line(state: &AppState, branch: &RemoteBranch, row_width: usize)
     }
 }
 
-fn visible_local_branch_name(branch: &Branch, prefix_width: usize, row_width: usize) -> String {
-    let status_width = local_branch_status_width(branch);
+fn visible_local_branch_name(
+    branch: &Branch,
+    pushed: bool,
+    prefix_width: usize,
+    row_width: usize,
+) -> String {
+    let status_width = local_branch_status_width(branch, pushed);
     let max_name_width = row_width
         .saturating_sub(prefix_width)
         .saturating_sub(status_width);
@@ -492,7 +504,26 @@ fn visible_remote_branch_name(
     truncate_chars(&branch.name, max_name_width)
 }
 
-fn append_local_branch_status(spans: &mut Vec<Span<'static>>, branch: &Branch) {
+/// Whether a branch that tracks nothing still has a namesake on a remote, as
+/// after `git push origin <branch>` without `-u`. Git calls that no upstream,
+/// but the commits are on the remote, and `u` sets the upstream to it.
+fn pushed_without_upstream(state: &AppState, branch: &Branch) -> bool {
+    branch.upstream.is_none()
+        && state
+            .remote_branches
+            .iter()
+            .any(|remote| remote.local_name == branch.name)
+}
+
+fn no_upstream_label(pushed: bool) -> &'static str {
+    if pushed {
+        "pushed, no upstream"
+    } else {
+        "no upstream"
+    }
+}
+
+fn append_local_branch_status(spans: &mut Vec<Span<'static>>, branch: &Branch, pushed: bool) {
     if branch.upstream_gone {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
@@ -514,9 +545,13 @@ fn append_local_branch_status(spans: &mut Vec<Span<'static>>, branch: &Branch) {
     } else {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
-            "no upstream",
+            no_upstream_label(pushed),
             Style::default()
-                .fg(Color::DarkGray)
+                .fg(if pushed {
+                    Color::Yellow
+                } else {
+                    Color::DarkGray
+                })
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -524,7 +559,7 @@ fn append_local_branch_status(spans: &mut Vec<Span<'static>>, branch: &Branch) {
     append_branch_age(spans, branch.last_commit_unix);
 }
 
-fn local_branch_status_width(branch: &Branch) -> usize {
+fn local_branch_status_width(branch: &Branch, pushed: bool) -> usize {
     let remote_width = if branch.upstream_gone {
         " (upstream gone)".chars().count()
     } else if branch.ahead > 0 || branch.behind > 0 {
@@ -532,7 +567,7 @@ fn local_branch_status_width(branch: &Branch) -> usize {
     } else if branch.upstream.is_some() {
         " \u{2713}".chars().count()
     } else {
-        " no upstream".chars().count()
+        1 + no_upstream_label(pushed).chars().count()
     };
     remote_width + main_behind_width(branch) + branch_age_width(branch.last_commit_unix)
 }

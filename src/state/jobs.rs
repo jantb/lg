@@ -191,7 +191,7 @@ pub enum OperationKind {
     /// linked worktrees.
     WorkingTree,
     /// Changes something on GitHub and nothing here: a review, a merge, a new
-    /// pull request. What the GitHub modal lists is read again afterwards.
+    /// pull request. What GitHub lists is read again afterwards.
     GitHub,
     /// Pushes the current branch and opens a pull request for it. The push is
     /// what keeps it behind a fetch, which [`Self::GitHub`] is not.

@@ -3,7 +3,7 @@ use ratatui::crossterm::event::{
 };
 
 use crate::github::{Checks, Mergeable, NewPullRequest, PrState, ReviewDecision, Verdict};
-use crate::state::{AppState, GitHubAction, Modal, PendingAction};
+use crate::state::{AppState, GitHubAction, PendingAction};
 
 use super::browse::select_pr;
 use super::*;
@@ -55,13 +55,13 @@ fn repo(name: &str, description: &str) -> Repository {
     }
 }
 
-/// The modal open on the pull requests of a checkout, as if the list had
+/// GitHub open on the pull requests of a checkout, as if the list had
 /// just come back from GitHub.
 fn with_prs(prs: Vec<PullRequest>) -> AppState {
     let mut state = AppState::new();
     state.repo_root = Some("/work/app".into());
     state.branch = Some("feat/login".into());
-    state.modal = Modal::GitHub;
+    state.show_github();
     state.github.prs = prs;
     state.github.repo = Some(RepoInfo {
         name: "acme/app".into(),
@@ -90,11 +90,7 @@ fn enter_checks_the_selected_pull_request_out_here() {
         github_action(&state),
         Some(GitHubAction::Checkout { number: 2 })
     );
-    assert_eq!(
-        state.modal,
-        Modal::None,
-        "the checkout is what to look at next"
-    );
+    assert!(!state.github_view(), "the checkout is what to look at next");
 }
 
 #[test]
@@ -130,7 +126,7 @@ fn approving_goes_out_with_the_words_typed_and_keeps_the_list_open() {
             body: "lgtm".into(),
         })
     );
-    assert_eq!(state.modal, Modal::GitHub);
+    assert!(state.github_view());
     assert_eq!(state.github.mode, Mode::Browse);
 }
 
@@ -177,11 +173,7 @@ fn escape_abandons_a_comment_without_sending_it() {
 
     assert!(github_action(&state).is_none());
     assert_eq!(state.github.mode, Mode::Browse);
-    assert_eq!(
-        state.modal,
-        Modal::GitHub,
-        "Esc backs out of the comment only"
-    );
+    assert!(state.github_view(), "Esc backs out of the comment only");
 }
 
 #[test]
@@ -296,7 +288,7 @@ fn no_pull_request_is_opened_from_the_base_branch() {
 fn typing_narrows_the_repositories_and_enter_clones_into_the_workspace() {
     let mut state = AppState::new();
     state.workspace_root = Some("/nonexistent-lg-workspace".into());
-    state.modal = Modal::GitHub;
+    state.show_github();
     state.github.tab = Tab::Repositories;
     state.github.repos = vec![
         repo("me/lg", "a git tui"),
@@ -328,7 +320,7 @@ fn typing_narrows_the_repositories_and_enter_clones_into_the_workspace() {
 fn a_typed_owner_and_name_can_be_cloned_without_being_listed() {
     let mut state = AppState::new();
     state.repo_root = Some("/nonexistent-lg-parent/current".into());
-    state.modal = Modal::GitHub;
+    state.show_github();
     state.github.tab = Tab::Repositories;
 
     type_text(&mut state, "rust-lang/rust");
@@ -349,7 +341,7 @@ fn a_typed_owner_and_name_can_be_cloned_without_being_listed() {
 fn with_owners(orgs: &[&str]) -> AppState {
     let mut state = AppState::new();
     state.workspace_root = Some("/nonexistent-lg-workspace".into());
-    state.modal = Modal::GitHub;
+    state.show_github();
     state.github.tab = Tab::Repositories;
     state.github.owners = Some(Owners {
         login: "me".into(),
@@ -382,7 +374,9 @@ fn click_owner(state: &mut AppState, width: u16, text: &str) {
     let area = ratatui::layout::Rect::new(0, 0, width, 30);
     let mut terminal =
         ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 30)).unwrap();
-    terminal.draw(|frame| render(state, area, frame)).unwrap();
+    terminal
+        .draw(|frame| render(state, area, frame, true))
+        .unwrap();
     let buf = terminal.backend().buffer();
     let (column, row) = (0..buf.area.height)
         .find_map(|y| {
@@ -432,7 +426,9 @@ fn a_long_list_scrolls_to_the_repository_selected_far_down_it() {
     state.github.repo_idx = 1042;
     let area = ratatui::layout::Rect::new(0, 0, 120, 30);
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
-    terminal.draw(|frame| render(&state, area, frame)).unwrap();
+    terminal
+        .draw(|frame| render(&state, area, frame, true))
+        .unwrap();
     let screen: String = {
         let buf = terminal.backend().buffer();
         (0..buf.area.height)
@@ -512,7 +508,7 @@ fn a_repository_already_cloned_is_opened_rather_than_cloned_again() {
 
     let mut state = AppState::new();
     state.workspace_root = Some(workspace.path().to_string_lossy().into_owned());
-    state.modal = Modal::GitHub;
+    state.show_github();
     state.github.tab = Tab::Repositories;
     state.github.repos = vec![repo("me/lg", "")];
     handle_key(&mut state, key(KeyCode::Enter)).unwrap();
@@ -676,7 +672,9 @@ fn a_narrow_header_steps_through_the_filters_from_the_one_shown() {
     let state = with_prs(Vec::new());
     let area = ratatui::layout::Rect::new(0, 0, 90, 30);
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 30)).unwrap();
-    terminal.draw(|frame| render(&state, area, frame)).unwrap();
+    terminal
+        .draw(|frame| render(&state, area, frame, true))
+        .unwrap();
     let buf = terminal.backend().buffer();
     let (column, row) = (0..buf.area.height)
         .find_map(|y| {
@@ -697,7 +695,9 @@ fn the_header_takes_clicks_on_its_tabs_filter_and_drafts() {
     let state = with_prs(Vec::new());
     let area = ratatui::layout::Rect::new(0, 0, 120, 30);
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
-    terminal.draw(|frame| render(&state, area, frame)).unwrap();
+    terminal
+        .draw(|frame| render(&state, area, frame, true))
+        .unwrap();
     let buf = terminal.backend().buffer();
     // Where `text` starts on screen, as the user would aim at it.
     let at = |text: &str| {
@@ -741,7 +741,9 @@ fn a_click_in_the_list_selects_the_row_it_lands_on() {
     state.github.tab = Tab::PullRequests;
     let area = ratatui::layout::Rect::new(0, 0, 120, 30);
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
-    terminal.draw(|frame| render(&state, area, frame)).unwrap();
+    terminal
+        .draw(|frame| render(&state, area, frame, true))
+        .unwrap();
     let buf = terminal.backend().buffer();
     let (column, row) = (0..buf.area.height)
         .find_map(|y| {
@@ -769,7 +771,9 @@ fn the_list_names_each_author_and_the_user_as_you() {
     arrive(&mut state, vec![by("alice", 1), by("me", 2)]);
     let area = ratatui::layout::Rect::new(0, 0, 120, 30);
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
-    terminal.draw(|frame| render(&state, area, frame)).unwrap();
+    terminal
+        .draw(|frame| render(&state, area, frame, true))
+        .unwrap();
     let buf = terminal.backend().buffer();
     // The list is the first column inside the frame; the details beside
     // it name the selected pull request too.

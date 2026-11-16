@@ -79,6 +79,38 @@ pub fn build_guided_chat_prompt(title: &str, review: &str, settings: &RepoSettin
     )
 }
 
+/// The opening of the chat beside a pull request's review conversations: the
+/// author goes through them with Claude one at a time, and the two settle on
+/// what to do about each before it is answered and resolved.
+pub fn build_threads_chat_prompt(
+    number: u64,
+    title: &str,
+    first: &str,
+    settings: &RepoSettings,
+) -> String {
+    format!(
+        "You are helping the author of pull request #{number} \"{title}\", checked out here, go\n\
+         through the review conversations reviewers left on it. They hand you one conversation at a\n\
+         time: where it is, the diff it was left on, and every comment in it.\n\
+         For each one, read the code it points at as it is now, and what around it you need. Say in\n\
+         a few lines whether the reviewer's point holds, holds in part, or does not, and why. If it\n\
+         holds, propose the fix; if not, what to answer instead. Then talk it through until you\n\
+         agree on a solution. Change nothing until they say so; keep any change minimal, match the\n\
+         surrounding style, and never commit or otherwise change git state. Once you agree, offer a\n\
+         short reply to post on the conversation, written to the reviewer.\n\n\
+         {}\n\n\
+         {first}",
+        crate::settings::language_instruction(settings)
+    )
+}
+
+/// The next conversation handed to a chat already going.
+pub fn build_threads_chat_next(thread: &str) -> String {
+    format!(
+        "Next conversation. Read the code it is on and say whether the point holds.\n\n{thread}"
+    )
+}
+
 pub fn build_guided_chat_file_read(brief: &str) -> String {
     format!(
         "lg has read what the reviewer is on now: a file, or the whole change. {brief}\n\

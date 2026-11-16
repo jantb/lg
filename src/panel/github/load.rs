@@ -1,20 +1,33 @@
-//! Opening the modal, and loading pull requests, repositories and owners
+//! Opening the view, and loading pull requests, repositories and owners
 //! into it as their answers come in.
 
-use crate::state::{AppState, Modal};
+use crate::state::AppState;
 
 use super::forms::start_create;
 use super::lookup::{is_mine, visible_repos};
 use super::work::take_answer;
-use super::{GitHub, Mode, Tab, inbox, work};
+use super::{GitHub, Mode, Tab, inbox, threads, work};
 
 pub fn open(state: &mut AppState) {
     let dir = crate::git::active_repo();
+    // Put in the background to look at a diff, it comes back where it was
+    // left: the same tab, the same pull request, its conversations still open.
+    if state.github.prs_dir == dir
+        && state.github.repo.is_some()
+        && matches!(state.github.mode, Mode::Browse | Mode::Threads(_))
+    {
+        state.show_github();
+        if state.github.mode == Mode::Browse && state.github.tab == Tab::PullRequests {
+            load_pull_requests(state);
+        }
+        return;
+    }
     if state.github.prs_dir != dir {
         state.github.prs.clear();
         state.github.repo = None;
         state.github.pr_idx = 0;
         state.github.prs_error = None;
+        state.github.thread_counts.clear();
     }
     state.github.mode = Mode::Browse;
     // With no checkout there are no pull requests to show, and cloning one is
@@ -24,7 +37,7 @@ pub fn open(state: &mut AppState) {
     } else {
         Tab::Repositories
     });
-    state.modal = Modal::GitHub;
+    state.show_github();
     match state.github.tab {
         Tab::Inbox => {}
         Tab::PullRequests => load_pull_requests(state),
@@ -32,7 +45,7 @@ pub fn open(state: &mut AppState) {
     }
 }
 
-/// Open the modal straight into the new pull request form for the branch
+/// Open GitHub straight into the new pull request form for the branch
 /// checked out here.
 pub fn open_create(state: &mut AppState) {
     if state.repo_root.is_none() {
@@ -126,7 +139,7 @@ pub(super) fn show_owner(state: &mut AppState, idx: usize) {
 /// A GitHub action has finished: what the lists show may no longer be true.
 /// A review given, say, is a review request answered.
 pub fn after_action(state: &mut AppState) {
-    if state.modal == Modal::GitHub {
+    if state.github_view() {
         load_pull_requests(state);
     }
     inbox::reload(state);
@@ -135,6 +148,7 @@ pub fn after_action(state: &mut AppState) {
 /// Take in whatever the lists being read have sent back.
 pub fn poll(state: &mut AppState) {
     inbox::poll(state);
+    threads::poll(state);
     let gh = &mut state.github;
     let mut create = false;
     if let Some(result) = take_answer(&mut gh.prs_loading) {
@@ -147,6 +161,7 @@ pub fn poll(state: &mut AppState) {
                 gh.pr_idx = gh.pr_idx.min(gh.prs.len().saturating_sub(1));
                 gh.prs_error = None;
                 put_mine_first(gh);
+                threads::load_counts(gh);
                 create = std::mem::take(&mut gh.create_on_load);
             }
             Err(err) => {
@@ -178,7 +193,7 @@ pub fn poll(state: &mut AppState) {
     }
     let visible = visible_repos(&state.github).len();
     state.github.repo_idx = state.github.repo_idx.min(visible.saturating_sub(1));
-    if create && state.modal == Modal::GitHub && state.github.mode == Mode::Browse {
+    if create && state.github_view() && state.github.mode == Mode::Browse {
         start_create(state);
     }
 }

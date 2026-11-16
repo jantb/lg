@@ -28,6 +28,8 @@ pub enum MainKeys {
     Diff,
     /// A terminal session, which has its own keys and its own way out.
     Session,
+    /// GitHub: pull requests, the inbox and repositories to clone.
+    GitHub,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +48,9 @@ pub enum DiffSource {
 pub enum MainView {
     Diff,
     Session(crate::session::SessionId),
+    /// GitHub, in the pane rather than over the screen, so the panes beside
+    /// it stay in view and can still be worked in.
+    GitHub,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,6 +315,24 @@ impl AppState {
         });
     }
 
+    /// Show GitHub in the main pane, and hand it the keyboard.
+    pub fn show_github(&mut self) {
+        self.main_view = MainView::GitHub;
+        self.session_capture = false;
+        self.focus = Pane::Main;
+    }
+
+    /// Whether GitHub is what the main pane shows.
+    pub fn github_view(&self) -> bool {
+        self.main_view == MainView::GitHub
+    }
+
+    /// Whether keys typed right now belong to GitHub: it is on screen, the
+    /// main pane has the focus and no modal sits over it.
+    pub fn github_has_keyboard(&self) -> bool {
+        self.modal == Modal::None && self.focus == Pane::Main && self.github_view()
+    }
+
     /// Go back to the diff, releasing the keyboard.
     pub fn show_diff(&mut self) {
         self.main_view = MainView::Diff;
@@ -320,6 +343,11 @@ impl AppState {
     /// commit. A session drawn there goes to the background: it keeps running,
     /// and Ctrl-N returns to it. Returns whether one was backgrounded.
     pub fn background_session_for_diff(&mut self) -> bool {
+        if self.github_view() {
+            self.show_diff();
+            self.set_status("GitHub in the background \u{2014} H returns to it", false);
+            return false;
+        }
         if self.session_view().is_none() {
             return false;
         }
@@ -382,6 +410,8 @@ impl AppState {
     pub fn main_keys(&self) -> MainKeys {
         if self.session_view().is_some() {
             MainKeys::Session
+        } else if self.github_view() {
+            MainKeys::GitHub
         } else {
             MainKeys::Diff
         }

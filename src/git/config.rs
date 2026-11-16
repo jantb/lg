@@ -69,7 +69,16 @@ pub fn ide_open_command(path: &str) -> Result<IdeOpenCommand> {
 }
 
 pub fn open_file_in_ide(path: &str) -> Result<String> {
-    let command = ide_open_command(path)?;
+    launch_ide(ide_open_command(path)?, path)
+}
+
+/// Open `path` in the IDE at `line`, rather than at its first change.
+pub fn open_file_in_ide_at(path: &str, line: usize) -> Result<String> {
+    let root = repo_root()?;
+    launch_ide(build_ide_open_command(&root, path, line), path)
+}
+
+fn launch_ide(command: IdeOpenCommand, path: &str) -> Result<String> {
     Command::new(&command.program)
         .args(&command.args)
         .stdin(Stdio::null())

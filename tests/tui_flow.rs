@@ -16,6 +16,8 @@ mod flow_and_conflicts;
 mod flow_menu;
 #[path = "tui_flow/focus_and_branches.rs"]
 mod focus_and_branches;
+#[path = "tui_flow/github_view.rs"]
+mod github_view;
 #[path = "tui_flow/hunks_stash_history.rs"]
 mod hunks_stash_history;
 #[path = "tui_flow/navigation.rs"]

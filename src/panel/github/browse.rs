@@ -6,7 +6,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::github::PrFilter;
 use crate::panel::text_input::Edit;
-use crate::state::{AppState, GitHubAction, Modal, PendingAction};
+use crate::state::{AppState, GitHubAction, PendingAction};
 
 use super::forms::{
     compose, compose_key, confirm_close_key, create_key, merge_key, start_create, start_merge,
@@ -15,7 +15,7 @@ use super::load::{load_owners, load_pull_requests, load_repositories, step_owner
 use super::lookup::{
     clone_destination, clone_request, selected_pr, visible_repos, worktree_path_for,
 };
-use super::{Compose, CreateField, Mode, Tab, inbox};
+use super::{Compose, CreateField, Mode, Tab, inbox, threads};
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
     match state.github.mode {
@@ -28,8 +28,21 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<()> {
         Mode::Merge(_) => merge_key(state, key),
         Mode::ConfirmClose => confirm_close_key(state, key),
         Mode::Create(_) => create_key(state, key),
+        Mode::Threads(_) => threads::handle_key(state, key),
     }
     Ok(())
+}
+
+/// Whether what is typed goes into text: a review, a reply, a new pull
+/// request, the chat beside the conversations, or the repository search. The
+/// keys that move the focus are then letters like any other.
+pub fn typing(state: &AppState) -> bool {
+    match &state.github.mode {
+        Mode::Browse => state.github.tab == Tab::Repositories,
+        Mode::Compose { .. } | Mode::Create(_) => true,
+        Mode::Threads(view) => view.reply.is_some() || threads::chat::chat_has_keyboard(state),
+        Mode::Merge(_) | Mode::ConfirmClose => false,
+    }
 }
 
 pub(super) fn switch_tab(state: &mut AppState, forward: bool) {
@@ -70,7 +83,7 @@ fn browse_pull_requests(state: &mut AppState, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Esc => {
-            state.modal = Modal::None;
+            state.show_diff();
             return;
         }
         KeyCode::Tab | KeyCode::BackTab => {
@@ -150,17 +163,18 @@ fn browse_pull_requests(state: &mut AppState, key: KeyEvent) {
     };
     match key.code {
         KeyCode::Enter => {
-            state.modal = Modal::None;
+            state.show_diff();
             dispatch(state, GitHubAction::Checkout { number });
         }
         KeyCode::Char('w') => match worktree_path_for(state, &pr) {
             Some(path) => {
-                state.modal = Modal::None;
+                state.show_diff();
                 dispatch(state, GitHubAction::CheckoutWorktree { number, path });
             }
             None => state.set_status("no main worktree to put a new one next to", true),
         },
         KeyCode::Char('v') => crate::panel::guided::open_pull_request(state, &pr),
+        KeyCode::Char('t') => threads::open(state, number, pr.title.clone(), pr.head.clone()),
         KeyCode::Char('a') if still_open(state) => compose(state, Compose::Approve),
         KeyCode::Char('x') if still_open(state) => compose(state, Compose::RequestChanges),
         KeyCode::Char('c') => compose(state, Compose::Comment),
@@ -187,7 +201,7 @@ fn browse_repositories(state: &mut AppState, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let visible = visible_repos(&state.github).len();
     match key.code {
-        KeyCode::Esc => state.modal = Modal::None,
+        KeyCode::Esc => state.show_diff(),
         KeyCode::Tab | KeyCode::BackTab => switch_tab(state, key.code == KeyCode::Tab),
         KeyCode::Down => {
             state.github.repo_idx = (state.github.repo_idx + 1).min(visible.saturating_sub(1))
@@ -232,7 +246,7 @@ fn clone_selected(state: &mut AppState) {
     if dir.exists() {
         // Already here: going to it is what cloning it again would have been for.
         if crate::git::repo_root_at(&dir).is_some() {
-            state.modal = Modal::None;
+            state.show_diff();
             state.pending_action = Some(PendingAction::SwitchRepository {
                 target: crate::state::RepoTarget::Path(dir),
             });
@@ -244,7 +258,7 @@ fn clone_selected(state: &mut AppState) {
         }
         return;
     }
-    state.modal = Modal::None;
+    state.show_diff();
     dispatch(
         state,
         GitHubAction::Clone {
@@ -254,10 +268,13 @@ fn clone_selected(state: &mut AppState) {
     );
 }
 
-/// Text pasted while the modal takes typing. Returns whether it was taken.
+/// Text pasted while GitHub takes typing. Returns whether it was taken.
 pub fn handle_paste(state: &mut AppState, text: &str) -> bool {
-    if state.modal != Modal::GitHub {
+    if !state.github_has_keyboard() {
         return false;
+    }
+    if matches!(state.github.mode, Mode::Threads(_)) {
+        return threads::paste(state, text);
     }
     let one_line = || text.replace(['\r', '\n'], " ");
     match &mut state.github.mode {

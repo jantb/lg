@@ -350,12 +350,15 @@ pub(super) fn toggle_layout(state: &mut AppState) {
 /// Leave the walk. Its progress is already on disk; the commentary stays in
 /// memory, so coming back the same session is instant.
 pub(super) fn leave(state: &mut AppState) {
-    let back = match state.guided.as_ref().map(|g| &g.source) {
-        Some(Source::PullRequest { .. }) => Modal::GitHub,
-        _ => Modal::None,
-    };
+    let from_github = matches!(
+        state.guided.as_ref().map(|g| &g.source),
+        Some(Source::PullRequest { .. })
+    );
     if let Some(guided) = state.guided.as_mut() {
         guided.mode = Mode::Browse;
     }
-    state.modal = back;
+    state.modal = Modal::None;
+    if from_github {
+        state.show_github();
+    }
 }

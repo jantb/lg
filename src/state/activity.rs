@@ -142,6 +142,7 @@ impl AppState {
             match &self.pending_action {
                 Some(PendingAction::GenerateMessage) => Some("starting generator"),
                 Some(PendingAction::GuidedChat { .. }) => Some("opening the review chat"),
+                Some(PendingAction::ThreadsChat) => Some("opening the chat"),
                 Some(PendingAction::CopyToClipboard { .. }) => Some("copying"),
                 Some(PendingAction::EditFile { .. }) => Some("opening the editor"),
                 Some(PendingAction::Commit) => Some("committing"),
@@ -184,7 +185,9 @@ impl AppState {
                 Some(PendingAction::OpenProject | PendingAction::OpenProjectAt(_)) => {
                     Some("opening project")
                 }
-                Some(PendingAction::OpenFile(_)) => Some("opening file"),
+                Some(PendingAction::OpenFile(_) | PendingAction::OpenFileAt { .. }) => {
+                    Some("opening file")
+                }
                 Some(PendingAction::DeleteBranch { .. }) => Some("deleting branch"),
                 Some(PendingAction::SetBranchUpstream { .. }) => Some("setting upstream"),
                 Some(PendingAction::SwitchRepository { .. }) => Some("switching repo"),

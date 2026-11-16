@@ -95,6 +95,48 @@ fn branches_panel_shows_remote_and_missing_upstream_indicators() {
 }
 
 #[test]
+fn branches_panel_marks_pushed_branch_without_upstream() {
+    let mut state = AppState::new();
+    state.branches = vec![Branch {
+        name: "feature/pushed".into(),
+        is_current: true,
+        upstream: None,
+        upstream_gone: false,
+        ahead: 0,
+        behind: 0,
+        behind_main: 0,
+        last_commit_unix: None,
+    }];
+    state.remote_branches = vec![RemoteBranch {
+        name: "origin/feature/pushed".into(),
+        remote: "origin".into(),
+        local_name: "feature/pushed".into(),
+        last_commit_unix: None,
+    }];
+
+    let backend = TestBackend::new(80, 4);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            panel::branches::render(&state, frame.area(), frame, false);
+        })
+        .unwrap();
+
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(
+        text.contains("pushed, no upstream"),
+        "missing pushed indicator: {text}"
+    );
+}
+
+#[test]
 fn branches_panel_shows_ahead_and_behind_counts() {
     let mut state = AppState::new();
     state.branches = vec![Branch {
